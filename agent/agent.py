@@ -602,12 +602,77 @@ def normalize_lynis_line(line: str) -> str:
     return line.strip(" \t-*")
 
 
+def get_lynis_report_paths(custom_path: str | None = None) -> list[Path]:
+    paths: list[Path] = []
+    if custom_path:
+        paths.append(Path(custom_path).expanduser())
+    env_path = os.environ.get("LYNIS_REPORT_PATH")
+    if env_path:
+        paths.append(Path(env_path).expanduser())
+    paths.extend([Path("/var/log/lynis-report.dat"), Path.home() / "lynis-report.dat", Path.cwd() / "lynis-report.dat"])
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def snapshot_file_mtimes(paths: list[Path]) -> dict[str, float | None]:
+    result: dict[str, float | None] = {}
+    for path in paths:
+        try:
+            result[str(path)] = path.stat().st_mtime
+        except OSError:
+            result[str(path)] = None
+    return result
+
+
+def read_updated_lynis_report(paths: list[Path], before: dict[str, float | None]) -> tuple[str | None, str | None]:
+    candidates: list[tuple[float, Path]] = []
+    for path in paths:
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        previous = before.get(str(path))
+        if previous is None or stat.st_mtime > previous:
+            candidates.append((stat.st_mtime, path))
+
+    for _, path in sorted(candidates, reverse=True):
+        content = read_text(str(path))
+        if content:
+            return content, str(path)
+    return None, None
+
+
+def extract_lynis_test_id(text: str, parts: list[str]) -> str | None:
+    patterns = [
+        re.compile(r"\[([A-Z0-9]{4}-[0-9]{4})\]", re.IGNORECASE),
+        re.compile(r"\b([A-Z0-9]{4}-[0-9]{4})\b", re.IGNORECASE),
+    ]
+    for value in [text, *parts]:
+        for pattern in patterns:
+            match = pattern.search(value)
+            if match:
+                return match.group(1).lower()
+    return None
+
+
+def lynis_finding_id(test_id: str | None, index: int) -> str:
+    if test_id:
+        return f"lynis_{test_id}"
+    return f"lynis_item_{index:03d}"
+
+
 def parse_lynis_findings(profile_id: str, output: str, limit: int = 30) -> list[Finding]:
     results: list[Finding] = []
     seen: set[str] = set()
     warning_pattern = re.compile(r"\[\s*WARNING\s*\]\s*:?\s*(.+)", re.IGNORECASE)
     suggestion_pattern = re.compile(r"\[\s*SUGGESTION\s*\]\s*:?\s*(.+)", re.IGNORECASE)
-    test_id_pattern = re.compile(r"\[([A-Z0-9]{4}-[0-9]{4})\]")
 
     for raw_line in output.splitlines():
         line = normalize_lynis_line(raw_line)
@@ -629,9 +694,8 @@ def parse_lynis_findings(profile_id: str, output: str, limit: int = 30) -> list[
         if risk is None or not title:
             continue
 
-        test_id_match = test_id_pattern.search(title)
-        test_id = test_id_match.group(1).lower() if test_id_match else f"item_{len(results) + 1:03d}"
-        finding_id = f"lynis_{test_id}"
+        test_id = extract_lynis_test_id(title, [])
+        finding_id = lynis_finding_id(test_id, len(results) + 1)
         if finding_id in seen:
             continue
 
@@ -657,7 +721,54 @@ def parse_lynis_findings(profile_id: str, output: str, limit: int = 30) -> list[
     return results
 
 
-def run_lynis_checks(profile_id: str, timeout: int = 120) -> list[Finding]:
+def parse_lynis_report_dat(profile_id: str, content: str, source_path: str, limit: int = 50) -> list[Finding]:
+    results: list[Finding] = []
+    seen: set[str] = set()
+    key_map: dict[str, tuple[Risk, str]] = {
+        "warning[]": ("high", "предупреждение"),
+        "suggestion[]": ("medium", "рекомендация"),
+    }
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key not in key_map:
+            continue
+
+        risk, kind = key_map[key]
+        parts = [part.strip() for part in value.split("|") if part.strip()]
+        title = parts[0] if parts else value.strip()
+        test_id = extract_lynis_test_id(title, parts)
+        finding_id = lynis_finding_id(test_id, len(results) + 1)
+        if finding_id in seen:
+            continue
+
+        seen.add(finding_id)
+        results.append(
+            finding(
+                id=finding_id,
+                profile_id=profile_id,
+                title=f"Lynis: {title}",
+                category="Lynis",
+                risk=risk,
+                status="manual",
+                description=f"Lynis report.dat содержит {kind}, требующее проверки администратором.",
+                recommendation="Проверить test-id в отчете Lynis, оценить влияние на сервер и добавить действие в план исправлений.",
+                remediation_available=False,
+                evidence=f"{source_path}: {line}",
+                source="lynis",
+            ),
+        )
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+def run_lynis_checks(profile_id: str, timeout: int = 120, report_path: str | None = None) -> list[Finding]:
     lynis_path = shutil.which("lynis")
     if lynis_path is None:
         return [
@@ -676,8 +787,16 @@ def run_lynis_checks(profile_id: str, timeout: int = 120) -> list[Finding]:
             ),
         ]
 
+    report_paths = get_lynis_report_paths(report_path)
+    report_mtimes = snapshot_file_mtimes(report_paths)
     code, stdout, stderr = run_command([lynis_path, "audit", "system", "--no-colors", "--quiet"], timeout=timeout)
     output = "\n".join(part for part in [stdout, stderr] if part)
+    report_content, report_source = read_updated_lynis_report(report_paths, report_mtimes)
+    if report_content and report_source:
+        parsed_report = parse_lynis_report_dat(profile_id, report_content, report_source)
+        if parsed_report:
+            return parsed_report
+
     parsed = parse_lynis_findings(profile_id, output)
     if parsed:
         return parsed
@@ -745,11 +864,16 @@ def build_summary(findings: list[Finding]) -> dict[str, int]:
     return summary
 
 
-def run_audit(profile_id: str, include_lynis: bool = False, lynis_timeout: int = 120) -> dict[str, object]:
+def run_audit(
+    profile_id: str,
+    include_lynis: bool = False,
+    lynis_timeout: int = 120,
+    lynis_report_path: str | None = None,
+) -> dict[str, object]:
     os_release = parse_os_release()
     findings = checks_for_profile(profile_id)
     if include_lynis:
-        findings.extend(run_lynis_checks(profile_id, timeout=lynis_timeout))
+        findings.extend(run_lynis_checks(profile_id, timeout=lynis_timeout, report_path=lynis_report_path))
 
     lynis_findings = [item for item in findings if item.source == "lynis"]
     return {
@@ -768,6 +892,7 @@ def run_audit(profile_id: str, include_lynis: bool = False, lynis_timeout: int =
                 "lynis": {
                     "enabled": include_lynis,
                     "findings": len(lynis_findings),
+                    "reportPath": lynis_report_path,
                 },
             },
         },
@@ -797,11 +922,17 @@ def main() -> None:
     parser.add_argument("--backup")
     parser.add_argument("--include-lynis", action="store_true", help="Run optional Lynis audit if lynis is installed")
     parser.add_argument("--lynis-timeout", type=int, default=120, help="Timeout for optional Lynis audit in seconds")
+    parser.add_argument("--lynis-report-path", help="Optional path to Lynis report.dat for parsing")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     args = parser.parse_args()
 
     if args.command == "audit":
-        payload = run_audit(args.profile, include_lynis=args.include_lynis, lynis_timeout=args.lynis_timeout)
+        payload = run_audit(
+            args.profile,
+            include_lynis=args.include_lynis,
+            lynis_timeout=args.lynis_timeout,
+            lynis_report_path=args.lynis_report_path,
+        )
     else:
         payload = no_op_response(args.command, args)
 

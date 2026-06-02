@@ -103,7 +103,7 @@ sudo ./uninstall.sh --dry-run
 
 Папка `agent` содержит безопасную audit-only версию Python-агента. Агент запускается на Ubuntu/Debian, определяет ОС, проверяет доступные настройки SSH, UFW, fail2ban, обновлений, Nginx и Docker, а затем возвращает JSON-отчет. Команды реального исправления и отката пока являются заглушками и не изменяют систему.
 
-Lynis уже подключается опционально: `python3 agent.py audit --profile basic_linux --include-lynis --pretty` или переключатель `Включить расширенный аудит Lynis` на странице `/agent/import`.
+Lynis уже подключается опционально: `python3 agent.py audit --profile basic_linux --include-lynis --pretty` или переключатель `Включить расширенный аудит Lynis` на странице `/agent/import`. Агент читает предупреждения из консоли Lynis и из `lynis-report.dat`, если файл доступен.
 
 ## Деплой на Vercel
 

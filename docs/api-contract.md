@@ -64,7 +64,8 @@ POST http://127.0.0.1:8765/audit
     "integrations": {
       "lynis": {
         "enabled": true,
-        "findings": 4
+        "findings": 4,
+        "reportPath": null
       }
     }
   },

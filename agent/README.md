@@ -9,6 +9,7 @@
 ```bash
 python3 agent.py audit --profile basic_linux --pretty
 python3 agent.py audit --profile basic_linux --include-lynis --pretty
+python3 agent.py audit --profile basic_linux --include-lynis --lynis-report-path ~/lynis-report.dat --pretty
 python3 agent.py audit --profile ssh_security --pretty
 python3 agent.py audit --profile web_server --pretty
 python3 agent.py audit --profile docker_host --pretty
@@ -128,6 +129,7 @@ sudo ./uninstall.sh --remove-files
 - Nginx-конфигурации для раскрытия версии, защитных заголовков и HTTPS.
 - Командная строка Docker для привилегированных контейнеров, docker.sock и root-пользователя, если Docker доступен.
 - Опциональный запуск Lynis с нормализацией предупреждений и рекомендаций в единый формат отчета.
+- Чтение `lynis-report.dat` из `/var/log`, домашнего каталога или явно указанного `--lynis-report-path`.
 
 ## Безопасность
 
@@ -145,5 +147,5 @@ python3 agent.py rollback --backup backup_2026_06_02_001
 - Реальный менеджер резервных копий.
 - Реальный менеджер исправлений.
 - Менеджер отката.
-- Интеграция OpenSCAP.
+- Интеграция OpenSCAP/SCAP Security Guide.
 - YAML-правила для пользовательских проверок.

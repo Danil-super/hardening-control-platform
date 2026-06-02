@@ -3,6 +3,10 @@ set -euo pipefail
 
 PROFILE="${PROFILE:-basic_linux}"
 BRIDGE_URL="${HCP_AGENT_URL:-http://127.0.0.1:8765}"
+REPORT_TMP="/tmp/hcp-agent-doctor-report.json"
+HEALTH_TMP="/tmp/hcp-agent-doctor-health.json"
+
+trap 'rm -f "$REPORT_TMP" "$HEALTH_TMP"' EXIT
 
 usage() {
   cat <<'EOF'
@@ -65,13 +69,19 @@ log "Checking Python syntax"
 python3 -m py_compile "${SCRIPT_DIR}/agent.py" "${SCRIPT_DIR}/server.py"
 rm -rf "${SCRIPT_DIR}/__pycache__"
 
+if [[ -d "${SCRIPT_DIR}/tests" ]]; then
+  log "Running parser tests"
+  python3 -m unittest discover -s "${SCRIPT_DIR}/tests"
+fi
+
 log "Running audit test for profile ${PROFILE}"
-python3 "${SCRIPT_DIR}/agent.py" audit --profile "$PROFILE" >/tmp/hcp-agent-doctor-report.json
-python3 - <<'PY'
+python3 "${SCRIPT_DIR}/agent.py" audit --profile "$PROFILE" >"$REPORT_TMP"
+REPORT_TMP="$REPORT_TMP" python3 - <<'PY'
 import json
+import os
 from pathlib import Path
 
-report = json.loads(Path("/tmp/hcp-agent-doctor-report.json").read_text(encoding="utf-8"))
+report = json.loads(Path(os.environ["REPORT_TMP"]).read_text(encoding="utf-8"))
 required = {"auditId", "createdAt", "hostname", "os", "profileId", "summary", "findings"}
 missing = sorted(required - set(report))
 if missing:
@@ -87,8 +97,8 @@ PY
 
 log "Checking bridge health at ${BRIDGE_URL}/health"
 if command -v curl >/dev/null; then
-  if curl --silent --show-error --fail --max-time 3 "${BRIDGE_URL%/}/health" >/tmp/hcp-agent-doctor-health.json; then
-    cat /tmp/hcp-agent-doctor-health.json
+  if curl --silent --show-error --fail --max-time 3 "${BRIDGE_URL%/}/health" >"$HEALTH_TMP"; then
+    cat "$HEALTH_TMP"
     printf '\n'
   else
     warn "Bridge is not reachable. Start it with: python3 server.py"
