@@ -1,6 +1,20 @@
 "use client";
 
-import { ClipboardList, Download, FileJson, FileText, GitCompare, History, PlugZap, Trash2, Upload } from "lucide-react";
+import {
+  CheckCircle2,
+  ClipboardList,
+  Download,
+  FileJson,
+  FileText,
+  GitCompare,
+  History,
+  PlugZap,
+  RefreshCw,
+  ShieldCheck,
+  Terminal,
+  Trash2,
+  Upload,
+} from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { RiskBadge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +35,19 @@ type AgentReport = {
     safeMode?: boolean;
     remediationEnabled?: boolean;
     user?: string;
+    integrations?: {
+      lynis?: {
+        enabled?: boolean;
+        findings?: number;
+        reportPath?: string | null;
+      };
+      openscap?: {
+        enabled?: boolean;
+        findings?: number;
+        contentPath?: string | null;
+        profile?: string | null;
+      };
+    };
   };
   summary?: {
     high?: number;
@@ -40,6 +67,7 @@ type StoredAgentReport = {
 };
 
 type SourceFilter = FindingSource | "all";
+type BridgeStatus = "idle" | "checking" | "online" | "offline";
 
 type AgentRemediationPlan = {
   generatedAt: string;
@@ -78,6 +106,22 @@ const profileOptions = [
   { id: "ssh_security", label: "Безопасность SSH" },
   { id: "web_server", label: "Усиление веб-сервера" },
   { id: "docker_host", label: "Усиление Docker-хоста" },
+];
+
+const auditOnlyCommands = [
+  {
+    label: "Базовый audit-only запуск",
+    command: "sudo python3 agent.py audit --profile basic_linux --pretty > ~/Загрузки/agent-report.json",
+  },
+  {
+    label: "С Lynis и OpenSCAP",
+    command:
+      "sudo python3 agent.py audit --profile basic_linux --include-lynis --include-openscap --pretty > ~/Загрузки/agent-report.json",
+  },
+  {
+    label: "Локальный bridge для сайта",
+    command: "cd agent\nsudo python3 server.py",
+  },
 ];
 
 const riskLabels: Record<RiskLevel, string> = {
@@ -182,6 +226,14 @@ function countSources(findings: Finding[]) {
     counts[finding.source] = (counts[finding.source] ?? 0) + 1;
     return counts;
   }, {} as Partial<Record<FindingSource, number>>);
+}
+
+function getIntegrationFindingCount(report: AgentReport | null, source: "lynis" | "openscap") {
+  const integrationCount = report?.agent?.integrations?.[source]?.findings;
+  if (typeof integrationCount === "number") {
+    return integrationCount;
+  }
+  return (report?.findings ?? []).filter((finding) => finding.source === source).length;
 }
 
 function buildRemediationPlan(report: AgentReport | null): AgentRemediationPlan | null {
@@ -384,6 +436,8 @@ export function AgentImportClient() {
   const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [bridgeStatus, setBridgeStatus] = useState<BridgeStatus>("idle");
+  const [bridgeMessage, setBridgeMessage] = useState("Bridge еще не проверялся.");
 
   const findings = report?.findings ?? [];
   const filteredFindings = useMemo(
@@ -469,6 +523,31 @@ export function AgentImportClient() {
     setRawJson(JSON.stringify(normalized, null, 2));
     setError("");
     window.localStorage.setItem(lastReportStorageKey, JSON.stringify(normalized));
+  }
+
+  async function checkBridgeHealth() {
+    setBridgeStatus("checking");
+    setBridgeMessage("Проверяем локальный bridge...");
+    try {
+      const base = endpoint.replace(/\/$/, "");
+      const response = await fetch(`${base}/health`, {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const payload = await response.json();
+      const version = typeof payload?.version === "string" ? `, версия ${payload.version}` : "";
+      setBridgeStatus("online");
+      setBridgeMessage(`Bridge доступен: ${payload?.service ?? "hcp-agent-bridge"}${version}.`);
+    } catch (event) {
+      const message = event instanceof Error ? event.message : "неизвестная ошибка";
+      setBridgeStatus("offline");
+      setBridgeMessage(`Bridge недоступен: ${message}. Запустите python3 server.py в папке agent.`);
+    }
   }
 
   async function fetchFromLocalAgent() {
@@ -580,6 +659,64 @@ export function AgentImportClient() {
   return (
     <div className="space-y-6">
       <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="rounded-md border border-sky-400/25 bg-sky-500/10 p-5">
+          <div className="flex items-center gap-3">
+            <ShieldCheck size={22} className="text-sky-200" aria-hidden="true" />
+            <h2 className="text-xl font-semibold text-white">Аудит системы без исправления</h2>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-slate-300">
+            Команда `audit` только читает конфигурации, запускает безопасные проверки и возвращает JSON. Она не меняет
+            файлы, не включает firewall, не перезапускает службы и не применяет remediation.
+          </p>
+          <div className="mt-4 grid gap-3">
+            {auditOnlyCommands.map((item) => (
+              <div key={item.label} className="rounded-md border border-slate-800 bg-slate-950/70 p-3">
+                <p className="text-xs font-semibold uppercase text-slate-500">{item.label}</p>
+                <code className="mt-2 block whitespace-pre-wrap break-words rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+                  {item.command}
+                </code>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <div className="flex items-center gap-3">
+            <Terminal size={22} className="text-sky-200" aria-hidden="true" />
+            <h2 className="text-xl font-semibold text-white">Готовность источников аудита</h2>
+          </div>
+          <div className="mt-4 space-y-3 text-sm">
+            <div className="rounded-md border border-emerald-400/30 bg-emerald-500/10 p-3">
+              <p className="font-semibold text-emerald-100">Базовый агент</p>
+              <p className="mt-1 leading-6 text-emerald-100/80">
+                Всегда включен. Проверяет SSH, UFW, обновления, fail2ban, Nginx и Docker в audit-only режиме.
+              </p>
+            </div>
+            <div className={`rounded-md border p-3 ${
+              includeLynis ? "border-amber-400/30 bg-amber-500/10" : "border-slate-800 bg-slate-900/70"
+            }`}>
+              <p className={includeLynis ? "font-semibold text-amber-100" : "font-semibold text-slate-200"}>Lynis</p>
+              <p className={includeLynis ? "mt-1 leading-6 text-amber-100/80" : "mt-1 leading-6 text-slate-400"}>
+                {includeLynis ? "Будет запрошен при следующем аудите." : "Выключен. Включите переключатель ниже, если Lynis установлен."}
+              </p>
+            </div>
+            <div className={`rounded-md border p-3 ${
+              includeOpenScap ? "border-violet-400/30 bg-violet-500/10" : "border-slate-800 bg-slate-900/70"
+            }`}>
+              <p className={includeOpenScap ? "font-semibold text-violet-100" : "font-semibold text-slate-200"}>
+                OpenSCAP / SCAP Security Guide
+              </p>
+              <p className={includeOpenScap ? "mt-1 leading-6 text-violet-100/80" : "mt-1 leading-6 text-slate-400"}>
+                {includeOpenScap
+                  ? "Будет запрошен при следующем аудите."
+                  : "Выключен. Для работы нужны openscap-scanner и SCAP Security Guide."}
+              </p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_420px]">
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
           <div className="flex items-center gap-3">
             <PlugZap size={22} className="text-sky-200" aria-hidden="true" />
@@ -613,6 +750,25 @@ export function AgentImportClient() {
                 ))}
               </select>
             </label>
+          </div>
+
+          <div className={`mt-4 rounded-md border p-4 text-sm ${
+            bridgeStatus === "online"
+              ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+              : bridgeStatus === "offline"
+                ? "border-red-400/30 bg-red-500/10 text-red-100"
+                : "border-slate-800 bg-slate-900/70 text-slate-300"
+          }`}>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-3">
+                <CheckCircle2 size={18} className="mt-0.5 shrink-0" aria-hidden="true" />
+                <p className="leading-6">{bridgeMessage}</p>
+              </div>
+              <Button variant="secondary" onClick={checkBridgeHealth} disabled={bridgeStatus === "checking"}>
+                <RefreshCw size={16} className={bridgeStatus === "checking" ? "animate-spin" : ""} aria-hidden="true" />
+                Проверить bridge
+              </Button>
+            </div>
           </div>
 
           <label className="mt-4 flex items-start gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300">
@@ -717,6 +873,38 @@ export function AgentImportClient() {
             <SummaryCard label="Средний" value={summary.medium} detail="Плановая проверка" />
             <SummaryCard label="Низкий" value={summary.low} detail="Улучшения" />
             <SummaryCard label="Инфо" value={summary.info} detail="Контекст" />
+          </div>
+
+          <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+            <div className="flex items-center gap-3">
+              <ShieldCheck size={22} className="text-sky-200" aria-hidden="true" />
+              <h2 className="text-xl font-semibold text-white">Что проверено в этом аудите</h2>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-3">
+              <div className="rounded-md border border-emerald-400/30 bg-emerald-500/10 p-4">
+                <p className="font-semibold text-emerald-100">Базовый агент</p>
+                <p className="mt-2 text-2xl font-semibold text-white">{sourceCounts.agent ?? 0}</p>
+                <p className="mt-1 text-sm leading-6 text-emerald-100/80">локальных проверок и системных сигналов</p>
+              </div>
+              <div className="rounded-md border border-amber-400/30 bg-amber-500/10 p-4">
+                <p className="font-semibold text-amber-100">Lynis</p>
+                <p className="mt-2 text-2xl font-semibold text-white">{getIntegrationFindingCount(report, "lynis")}</p>
+                <p className="mt-1 text-sm leading-6 text-amber-100/80">
+                  {report.agent?.integrations?.lynis?.enabled ? "источник был включен" : "источник не был включен в этом запуске"}
+                </p>
+              </div>
+              <div className="rounded-md border border-violet-400/30 bg-violet-500/10 p-4">
+                <p className="font-semibold text-violet-100">OpenSCAP</p>
+                <p className="mt-2 text-2xl font-semibold text-white">{getIntegrationFindingCount(report, "openscap")}</p>
+                <p className="mt-1 text-sm leading-6 text-violet-100/80">
+                  {report.agent?.integrations?.openscap?.enabled ? "источник был включен" : "источник не был включен в этом запуске"}
+                </p>
+              </div>
+            </div>
+            <p className="mt-4 text-sm leading-6 text-slate-400">
+              Если Lynis или OpenSCAP включены, но инструмент не установлен, отчет остается валидным и содержит отдельную
+              диагностическую находку вроде `lynis_not_installed` или `openscap_not_installed`.
+            </p>
           </div>
 
           <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
