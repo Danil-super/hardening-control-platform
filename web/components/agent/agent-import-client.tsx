@@ -375,6 +375,7 @@ export function AgentImportClient() {
   const [endpoint, setEndpoint] = useState("http://127.0.0.1:8765");
   const [profileId, setProfileId] = useState("basic_linux");
   const [includeLynis, setIncludeLynis] = useState(false);
+  const [includeOpenScap, setIncludeOpenScap] = useState(false);
   const [rawJson, setRawJson] = useState("");
   const [report, setReport] = useState<AgentReport | null>(null);
   const [history, setHistory] = useState<StoredAgentReport[]>([]);
@@ -475,8 +476,15 @@ export function AgentImportClient() {
     setError("");
     try {
       const base = endpoint.replace(/\/$/, "");
+      const params = new URLSearchParams({ profile: profileId });
+      if (includeLynis) {
+        params.set("includeLynis", "1");
+      }
+      if (includeOpenScap) {
+        params.set("includeOpenScap", "1");
+      }
       const response = await fetch(
-        `${base}/audit?profile=${encodeURIComponent(profileId)}${includeLynis ? "&includeLynis=1" : ""}`,
+        `${base}/audit?${params.toString()}`,
         {
           method: "GET",
           headers: { Accept: "application/json" },
@@ -619,6 +627,22 @@ export function AgentImportClient() {
               <span className="mt-1 block leading-6 text-slate-400">
                 Агент попробует запустить Lynis на локальном хосте и добавить найденные предупреждения в отчет.
                 Если Lynis не установлен, отчет останется валидным и покажет отдельную рекомендацию.
+              </span>
+            </span>
+          </label>
+
+          <label className="mt-3 flex items-start gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={includeOpenScap}
+              onChange={(event) => setIncludeOpenScap(event.target.checked)}
+              className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-950"
+            />
+            <span>
+              <span className="block font-semibold text-white">Включить аудит OpenSCAP / SCAP Security Guide</span>
+              <span className="mt-1 block leading-6 text-slate-400">
+                Агент попробует запустить `oscap xccdf eval`, разобрать XML-результаты и добавить несоответствия
+                как отдельный источник OpenSCAP. Если OpenSCAP или datastream SSG не найдены, отчет останется валидным.
               </span>
             </span>
           </label>

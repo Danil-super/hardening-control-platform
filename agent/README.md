@@ -10,6 +10,8 @@
 python3 agent.py audit --profile basic_linux --pretty
 python3 agent.py audit --profile basic_linux --include-lynis --pretty
 python3 agent.py audit --profile basic_linux --include-lynis --lynis-report-path ~/lynis-report.dat --pretty
+python3 agent.py audit --profile basic_linux --include-openscap --pretty
+python3 agent.py audit --profile basic_linux --include-openscap --openscap-content-path /usr/share/xml/scap/ssg/content/ssg-ubuntu2404-ds.xml --openscap-profile xccdf_org.ssgproject.content_profile_cis_level1_server --pretty
 python3 agent.py audit --profile ssh_security --pretty
 python3 agent.py audit --profile web_server --pretty
 python3 agent.py audit --profile docker_host --pretty
@@ -37,6 +39,7 @@ http://127.0.0.1:8765
 - `GET /profiles`
 - `GET /audit?profile=basic_linux`
 - `GET /audit?profile=basic_linux&includeLynis=1`
+- `GET /audit?profile=basic_linux&includeOpenScap=1`
 - `POST /audit` с JSON `{ "profileId": "basic_linux" }`
 
 После запуска сервера откройте на сайте страницу `/agent/import` и нажмите `Получить аудит от агента`.
@@ -130,6 +133,33 @@ sudo ./uninstall.sh --remove-files
 - Командная строка Docker для привилегированных контейнеров, docker.sock и root-пользователя, если Docker доступен.
 - Опциональный запуск Lynis с нормализацией предупреждений и рекомендаций в единый формат отчета.
 - Чтение `lynis-report.dat` из `/var/log`, домашнего каталога или явно указанного `--lynis-report-path`.
+- Опциональный запуск OpenSCAP/SCAP Security Guide через `oscap xccdf eval`.
+- Нормализация failed/error `rule-result` из XML-результатов OpenSCAP в единый формат отчета.
+
+## OpenSCAP / SCAP Security Guide
+
+Для расширенной проверки установите OpenSCAP и SCAP Security Guide. На Ubuntu/Debian обычно нужны пакеты:
+
+```bash
+sudo apt install openscap-scanner ssg-base scap-security-guide
+```
+
+Затем запустите:
+
+```bash
+sudo python3 agent.py audit --profile basic_linux --include-openscap --pretty
+```
+
+Агент пытается сам найти datastream в `/usr/share/xml/scap/ssg/content`. Если нужный XML не найден или нужен другой XCCDF-профиль, укажите их явно:
+
+```bash
+sudo python3 agent.py audit \
+  --profile basic_linux \
+  --include-openscap \
+  --openscap-content-path /usr/share/xml/scap/ssg/content/ssg-ubuntu2404-ds.xml \
+  --openscap-profile xccdf_org.ssgproject.content_profile_cis_level1_server \
+  --pretty
+```
 
 ## Безопасность
 
@@ -147,5 +177,5 @@ python3 agent.py rollback --backup backup_2026_06_02_001
 - Реальный менеджер резервных копий.
 - Реальный менеджер исправлений.
 - Менеджер отката.
-- Интеграция OpenSCAP/SCAP Security Guide.
+- Расширение OpenSCAP до отдельного compliance-отчета по выбранному профилю.
 - YAML-правила для пользовательских проверок.

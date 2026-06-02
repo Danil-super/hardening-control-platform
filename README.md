@@ -105,6 +105,8 @@ sudo ./uninstall.sh --dry-run
 
 Lynis уже подключается опционально: `python3 agent.py audit --profile basic_linux --include-lynis --pretty` или переключатель `Включить расширенный аудит Lynis` на странице `/agent/import`. Агент читает предупреждения из консоли Lynis и из `lynis-report.dat`, если файл доступен. Для части `test-id` уже есть маппинг в категории и план исправлений.
 
+OpenSCAP/SCAP Security Guide подключается опционально: `python3 agent.py audit --profile basic_linux --include-openscap --pretty` или переключатель `Включить аудит OpenSCAP / SCAP Security Guide` на странице `/agent/import`. Агент запускает `oscap xccdf eval`, ищет datastream SSG в `/usr/share/xml/scap/ssg/content` и нормализует failed/error `rule-result` в единый формат отчета. При необходимости путь и профиль можно задать через `--openscap-content-path` и `--openscap-profile`.
+
 ## Деплой на Vercel
 
 1. Опубликовать проект на GitHub.
@@ -118,7 +120,7 @@ Lynis уже подключается опционально: `python3 agent.py 
 - Нет запуска `systemctl`, `ufw`, `sshd`, `nginx` на Vercel.
 - Нет контейнеризации.
 - Нет многопользовательской авторизации.
-- Нет полной интеграции с OpenSCAP/SCAP Security Guide.
+- OpenSCAP подключен как начальный audit-only импорт; отдельный compliance-отчет по профилю еще не реализован.
 
 ## Roadmap
 

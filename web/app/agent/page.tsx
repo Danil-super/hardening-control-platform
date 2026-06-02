@@ -15,13 +15,17 @@ const auditResponse = `{
   "profileId": "basic_linux",
   "mode": "agent",
   "agent": {
-    "version": "0.2.0",
+    "version": "0.3.0",
     "safeMode": true,
     "remediationEnabled": false,
     "integrations": {
       "lynis": {
         "enabled": true,
         "findings": 4
+      },
+      "openscap": {
+        "enabled": true,
+        "findings": 6
       }
     }
   },
@@ -57,6 +61,7 @@ const currentChecks = [
   "Ограниченная проверка world-writable файлов",
   "Статическая проверка Nginx: раскрытие версии, защитные заголовки и HTTPS",
   "Проверка Docker-контейнеров, если командная строка Docker доступна",
+  "Опциональный импорт результатов Lynis и OpenSCAP / SCAP Security Guide",
 ];
 
 export default function AgentPage() {
@@ -78,6 +83,7 @@ export default function AgentPage() {
             <code>{`cd agent
 python3 agent.py audit --profile basic_linux --pretty
 python3 agent.py audit --profile basic_linux --include-lynis --pretty
+python3 agent.py audit --profile basic_linux --include-openscap --pretty
 python3 agent.py audit --profile ssh_security --pretty
 python3 agent.py audit --profile web_server --pretty
 python3 agent.py audit --profile docker_host --pretty`}</code>
@@ -118,7 +124,7 @@ python3 agent.py audit --profile docker_host --pretty`}</code>
           <p className="mt-3 text-sm leading-6 text-slate-400">
             Для автоматической связки запустите локальный промежуточный сервер: `python3 server.py`. После этого страница
             импорта сможет получить отчет по адресу `http://127.0.0.1:8765/audit?profile=basic_linux`. Расширенный аудит
-            Lynis включается через `includeLynis=1` или переключатель на странице импорта.
+            Lynis включается через `includeLynis=1`, а OpenSCAP через `includeOpenScap=1` или переключатели на странице импорта.
           </p>
       </section>
 

@@ -24,6 +24,7 @@ GET http://127.0.0.1:8765/health
 GET http://127.0.0.1:8765/profiles
 GET http://127.0.0.1:8765/audit?profile=basic_linux
 GET http://127.0.0.1:8765/audit?profile=basic_linux&includeLynis=1
+GET http://127.0.0.1:8765/audit?profile=basic_linux&includeOpenScap=1
 POST http://127.0.0.1:8765/audit
 ```
 
@@ -32,7 +33,8 @@ POST http://127.0.0.1:8765/audit
 ```json
 {
   "profileId": "basic_linux",
-  "includeLynis": true
+  "includeLynis": true,
+  "includeOpenScap": true
 }
 ```
 
@@ -42,7 +44,8 @@ POST http://127.0.0.1:8765/audit
 {
   "profileId": "basic_linux",
   "mode": "audit_only",
-  "includeLynis": true
+  "includeLynis": true,
+  "includeOpenScap": true
 }
 ```
 
@@ -57,7 +60,7 @@ POST http://127.0.0.1:8765/audit
   "profileId": "basic_linux",
   "mode": "agent",
   "agent": {
-    "version": "0.2.0",
+    "version": "0.3.0",
     "safeMode": true,
     "remediationEnabled": false,
     "user": "admin",
@@ -66,6 +69,12 @@ POST http://127.0.0.1:8765/audit
         "enabled": true,
         "findings": 4,
         "reportPath": null
+      },
+      "openscap": {
+        "enabled": true,
+        "findings": 6,
+        "contentPath": null,
+        "profile": null
       }
     }
   },
@@ -81,7 +90,7 @@ POST http://127.0.0.1:8765/audit
 
 ## Исправления
 
-В версии `0.2.0` исправления являются безопасной заглушкой и не изменяют ОС.
+В версии `0.3.0` исправления являются безопасной заглушкой и не изменяют ОС.
 
 ```http
 POST /agent/remediate

@@ -57,7 +57,8 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             params = parse_qs(parsed.query)
             profile = params.get("profile", ["basic_linux"])[0]
             include_lynis = parse_bool(params.get("includeLynis", ["false"])[0])
-            self.handle_audit(profile, include_lynis=include_lynis)
+            include_openscap = parse_bool(params.get("includeOpenScap", params.get("includeOpenscap", ["false"]))[0])
+            self.handle_audit(profile, include_lynis=include_lynis, include_openscap=include_openscap)
             return
 
         self.write_json({"error": "not_found", "message": "Unknown endpoint"}, HTTPStatus.NOT_FOUND)
@@ -78,9 +79,10 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
 
         profile = str(body.get("profileId") or body.get("profile") or "basic_linux")
         include_lynis = parse_body_bool(body.get("includeLynis", body.get("lynis", False)))
-        self.handle_audit(profile, include_lynis=include_lynis)
+        include_openscap = parse_body_bool(body.get("includeOpenScap", body.get("includeOpenscap", body.get("openscap", False))))
+        self.handle_audit(profile, include_lynis=include_lynis, include_openscap=include_openscap)
 
-    def handle_audit(self, profile: str, include_lynis: bool = False) -> None:
+    def handle_audit(self, profile: str, include_lynis: bool = False, include_openscap: bool = False) -> None:
         if profile not in ALLOWED_PROFILES:
             self.write_json(
                 {
@@ -92,7 +94,7 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        self.write_json(run_audit(profile, include_lynis=include_lynis))
+        self.write_json(run_audit(profile, include_lynis=include_lynis, include_openscap=include_openscap))
 
 
 def parse_bool(value: str) -> bool:
@@ -117,6 +119,7 @@ def main() -> None:
     print(f"Hardening Control Platform Agent Bridge listening on http://{args.host}:{args.port}")
     print("Endpoints: GET /health, GET /profiles, GET /audit?profile=basic_linux, POST /audit")
     print("Optional Lynis: GET /audit?profile=basic_linux&includeLynis=1")
+    print("Optional OpenSCAP: GET /audit?profile=basic_linux&includeOpenScap=1")
     print("Press Ctrl+C to stop the bridge.")
     try:
         server.serve_forever()

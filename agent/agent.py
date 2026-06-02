@@ -14,6 +14,8 @@ import re
 import shutil
 import socket
 import subprocess
+import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -55,6 +57,24 @@ LYNIS_TEST_MAPPINGS = {
         "category": "Усиление системы",
         "remediation_id": "restrict_compilers",
         "recommendation": "Ограничить доступ к компиляторам для непривилегированных пользователей или удалить их с production-хоста.",
+    },
+}
+
+OPENSCAP_RULE_MAPPINGS = {
+    "sshd_disable_root_login": {
+        "category": "SSH",
+        "remediation_id": "disable_ssh_root_login",
+        "recommendation": "Отключить вход root по SSH, проверить sshd_config и применить изменение после теста конфигурации.",
+    },
+    "sshd_disable_password_authentication": {
+        "category": "SSH",
+        "remediation_id": "disable_ssh_password_auth",
+        "recommendation": "Отключить парольную SSH-аутентификацию после проверки доступа по ключам.",
+    },
+    "sshd_disable_empty_passwords": {
+        "category": "SSH",
+        "remediation_id": None,
+        "recommendation": "Проверить PermitEmptyPasswords и учетные записи с пустым паролем вручную.",
     },
 }
 
@@ -889,6 +909,288 @@ def run_lynis_checks(profile_id: str, timeout: int = 120, report_path: str | Non
     ]
 
 
+def xml_local_name(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1]
+
+
+def slugify_id(value: str) -> str:
+    slug = re.sub(r"^xccdf_org\.ssgproject\.content_rule_", "", value)
+    slug = re.sub(r"[^a-zA-Z0-9]+", "_", slug).strip("_").lower()
+    return slug or "unknown_rule"
+
+
+def get_openscap_profile(custom_profile: str | None = None) -> str:
+    return custom_profile or os.environ.get("OPENSCAP_PROFILE") or "xccdf_org.ssgproject.content_profile_cis_level1_server"
+
+
+def openscap_content_candidates(custom_path: str | None = None, os_release: dict[str, str] | None = None) -> list[Path]:
+    release = os_release or parse_os_release()
+    paths: list[Path] = []
+    if custom_path:
+        paths.append(Path(custom_path).expanduser())
+    env_path = os.environ.get("OPENSCAP_CONTENT_PATH")
+    if env_path:
+        paths.append(Path(env_path).expanduser())
+
+    os_id = release.get("ID", "").lower()
+    version = re.sub(r"\D", "", release.get("VERSION_ID", ""))
+    id_like = release.get("ID_LIKE", "").lower().split()
+    content_dir = Path("/usr/share/xml/scap/ssg/content")
+    names: list[str] = []
+    if os_id and version:
+        names.append(f"ssg-{os_id}{version}-ds.xml")
+    if os_id:
+        names.append(f"ssg-{os_id}-ds.xml")
+    for like in id_like:
+        if like and version:
+            names.append(f"ssg-{like}{version[:1]}-ds.xml")
+        if like:
+            names.append(f"ssg-{like}-ds.xml")
+    names.extend(
+        [
+            "ssg-ubuntu2404-ds.xml",
+            "ssg-ubuntu2204-ds.xml",
+            "ssg-debian12-ds.xml",
+            "ssg-rhel9-ds.xml",
+            "ssg-rhel8-ds.xml",
+        ],
+    )
+    paths.extend(content_dir / name for name in names)
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path)
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def find_openscap_content_path(custom_path: str | None = None, os_release: dict[str, str] | None = None) -> Path | None:
+    for path in openscap_content_candidates(custom_path, os_release):
+        if path.exists() and path.is_file():
+            return path
+    return None
+
+
+def openscap_category(rule_id: str) -> str:
+    slug = slugify_id(rule_id)
+    for marker, category in [
+        ("sshd", "SSH"),
+        ("ssh", "SSH"),
+        ("firewall", "Межсетевой экран"),
+        ("ufw", "Межсетевой экран"),
+        ("audit", "Журналирование"),
+        ("sysctl", "Ядро"),
+        ("kernel", "Ядро"),
+        ("password", "Учетные записи"),
+        ("account", "Учетные записи"),
+        ("file", "Файловая система"),
+        ("permission", "Файловая система"),
+        ("package", "Пакеты"),
+        ("aide", "Контроль целостности"),
+    ]:
+        if marker in slug:
+            return category
+    return "OpenSCAP"
+
+
+def get_openscap_rule_mapping(rule_id: str) -> dict[str, object] | None:
+    slug = slugify_id(rule_id)
+    for marker, mapping in OPENSCAP_RULE_MAPPINGS.items():
+        if marker in slug:
+            return mapping
+    return None
+
+
+def text_from_child(element: ET.Element, child_name: str) -> str | None:
+    for child in element:
+        if xml_local_name(child.tag) == child_name and child.text:
+            return child.text.strip()
+    return None
+
+
+def collect_openscap_rule_titles(root: ET.Element) -> dict[str, str]:
+    titles: dict[str, str] = {}
+    for element in root.iter():
+        if xml_local_name(element.tag) != "Rule":
+            continue
+        rule_id = element.attrib.get("id")
+        title = text_from_child(element, "title")
+        if rule_id and title:
+            titles[rule_id] = title
+    return titles
+
+
+def risk_from_openscap_severity(severity: str | None) -> Risk:
+    value = (severity or "").lower()
+    if value == "high":
+        return "high"
+    if value == "medium":
+        return "medium"
+    if value == "low":
+        return "low"
+    return "info"
+
+
+def build_openscap_finding(
+    *,
+    profile_id: str,
+    rule_id: str,
+    title: str,
+    result: str,
+    severity: str | None,
+    source_path: str,
+) -> Finding:
+    mapping = get_openscap_rule_mapping(rule_id)
+    remediation_id = str(mapping["remediation_id"]) if mapping and mapping.get("remediation_id") else None
+    category = str(mapping["category"]) if mapping and mapping.get("category") else openscap_category(rule_id)
+    recommendation = (
+        str(mapping["recommendation"])
+        if mapping and mapping.get("recommendation")
+        else "Открыть правило SCAP Security Guide, оценить применимость к хосту и добавить действие в план исправлений."
+    )
+    slug = slugify_id(rule_id)
+    return finding(
+        id=f"openscap_{slug}",
+        profile_id=profile_id,
+        title=f"OpenSCAP: {title}",
+        category=category,
+        risk=risk_from_openscap_severity(severity),
+        status="manual",
+        description="OpenSCAP/SCAP Security Guide обнаружил несоответствие выбранному XCCDF-профилю.",
+        recommendation=recommendation,
+        remediation_available=remediation_id is not None,
+        remediation_id=remediation_id,
+        evidence=f"{source_path}: rule={rule_id}, result={result}, severity={severity or 'unknown'}",
+        source="openscap",
+    )
+
+
+def parse_openscap_results(profile_id: str, content: str, source_path: str, limit: int = 80) -> list[Finding]:
+    try:
+        root = ET.fromstring(content)
+    except ET.ParseError:
+        return []
+
+    titles = collect_openscap_rule_titles(root)
+    results: list[Finding] = []
+    seen: set[str] = set()
+    actionable_results = {"fail", "error"}
+
+    for element in root.iter():
+        if xml_local_name(element.tag) != "rule-result":
+            continue
+        rule_id = element.attrib.get("idref", "")
+        result = (text_from_child(element, "result") or "").lower()
+        if not rule_id or result not in actionable_results:
+            continue
+        finding_id = f"openscap_{slugify_id(rule_id)}"
+        if finding_id in seen:
+            continue
+
+        seen.add(finding_id)
+        severity = element.attrib.get("severity")
+        fallback_title = slugify_id(rule_id).replace("_", " ")
+        results.append(
+            build_openscap_finding(
+                profile_id=profile_id,
+                rule_id=rule_id,
+                title=titles.get(rule_id, fallback_title),
+                result=result,
+                severity=severity,
+                source_path=source_path,
+            ),
+        )
+        if len(results) >= limit:
+            break
+    return results
+
+
+def run_openscap_checks(
+    profile_id: str,
+    timeout: int = 240,
+    content_path: str | None = None,
+    oscap_profile: str | None = None,
+) -> list[Finding]:
+    oscap_path = shutil.which("oscap")
+    if oscap_path is None:
+        return [
+            finding(
+                id="openscap_not_installed",
+                profile_id=profile_id,
+                title="OpenSCAP не установлен",
+                category="OpenSCAP",
+                risk="info",
+                status="manual",
+                description="Расширенный аудит OpenSCAP запрошен, но команда oscap не найдена в системе.",
+                recommendation="Установить openscap-scanner и SCAP Security Guide, затем повторить аудит с флагом --include-openscap.",
+                remediation_available=False,
+                evidence="command not found",
+                source="openscap",
+            ),
+        ]
+
+    os_release = parse_os_release()
+    content = find_openscap_content_path(content_path, os_release)
+    if content is None:
+        candidates = ", ".join(str(path) for path in openscap_content_candidates(content_path, os_release)[:6])
+        return [
+            finding(
+                id="openscap_content_not_found",
+                profile_id=profile_id,
+                title="SCAP Security Guide datastream не найден",
+                category="OpenSCAP",
+                risk="info",
+                status="manual",
+                description="OpenSCAP установлен, но агент не нашел XML datastream с правилами SCAP Security Guide.",
+                recommendation="Установить пакет SCAP Security Guide или указать путь через --openscap-content-path.",
+                remediation_available=False,
+                evidence=f"checked={candidates}",
+                source="openscap",
+            ),
+        ]
+
+    profile = get_openscap_profile(oscap_profile)
+    with tempfile.TemporaryDirectory(prefix="hcp-openscap-") as temp_dir:
+        results_path = Path(temp_dir) / "results.xml"
+        report_path = Path(temp_dir) / "report.html"
+        command = [
+            oscap_path,
+            "xccdf",
+            "eval",
+            "--profile",
+            profile,
+            "--results",
+            str(results_path),
+            "--report",
+            str(report_path),
+            str(content),
+        ]
+        code, stdout, stderr = run_command(command, timeout=timeout)
+        if results_path.exists():
+            parsed = parse_openscap_results(profile_id, read_text(str(results_path)) or "", str(content))
+            if parsed:
+                return parsed
+
+        return [
+            finding(
+                id="openscap_completed",
+                profile_id=profile_id,
+                title="OpenSCAP выполнен, несоответствия не извлечены",
+                category="OpenSCAP",
+                risk="info",
+                status="passed" if code in {0, 2} else "manual",
+                description="Агент запустил OpenSCAP, но не нашел failed/error rule-result в XML-результатах.",
+                recommendation="Проверить выбранный XCCDF-профиль и полный HTML/XML-отчет OpenSCAP на хосте.",
+                remediation_available=False,
+                evidence=f"exit={code}, profile={profile}, content={content}, stdout_lines={len(stdout.splitlines())}, stderr={stderr[:240]}",
+                source="openscap",
+            ),
+        ]
+
+
 def checks_for_profile(profile_id: str) -> list[Finding]:
     basic = [
         check_ufw(profile_id),
@@ -940,13 +1242,27 @@ def run_audit(
     include_lynis: bool = False,
     lynis_timeout: int = 120,
     lynis_report_path: str | None = None,
+    include_openscap: bool = False,
+    openscap_timeout: int = 240,
+    openscap_content_path: str | None = None,
+    openscap_profile: str | None = None,
 ) -> dict[str, object]:
     os_release = parse_os_release()
     findings = checks_for_profile(profile_id)
     if include_lynis:
         findings.extend(run_lynis_checks(profile_id, timeout=lynis_timeout, report_path=lynis_report_path))
+    if include_openscap:
+        findings.extend(
+            run_openscap_checks(
+                profile_id,
+                timeout=openscap_timeout,
+                content_path=openscap_content_path,
+                oscap_profile=openscap_profile,
+            ),
+        )
 
     lynis_findings = [item for item in findings if item.source == "lynis"]
+    openscap_findings = [item for item in findings if item.source == "openscap"]
     return {
         "auditId": f"agent_audit_{profile_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
         "createdAt": utc_now(),
@@ -955,7 +1271,7 @@ def run_audit(
         "profileId": profile_id,
         "mode": "agent",
         "agent": {
-            "version": "0.2.0",
+            "version": "0.3.0",
             "safeMode": True,
             "remediationEnabled": False,
             "user": os.environ.get("USER", "unknown"),
@@ -964,6 +1280,12 @@ def run_audit(
                     "enabled": include_lynis,
                     "findings": len(lynis_findings),
                     "reportPath": lynis_report_path,
+                },
+                "openscap": {
+                    "enabled": include_openscap,
+                    "findings": len(openscap_findings),
+                    "contentPath": openscap_content_path,
+                    "profile": openscap_profile or os.environ.get("OPENSCAP_PROFILE"),
                 },
             },
         },
@@ -994,6 +1316,10 @@ def main() -> None:
     parser.add_argument("--include-lynis", action="store_true", help="Run optional Lynis audit if lynis is installed")
     parser.add_argument("--lynis-timeout", type=int, default=120, help="Timeout for optional Lynis audit in seconds")
     parser.add_argument("--lynis-report-path", help="Optional path to Lynis report.dat for parsing")
+    parser.add_argument("--include-openscap", action="store_true", help="Run optional OpenSCAP audit if oscap and SSG are installed")
+    parser.add_argument("--openscap-timeout", type=int, default=240, help="Timeout for optional OpenSCAP audit in seconds")
+    parser.add_argument("--openscap-content-path", help="Optional path to SCAP Security Guide datastream XML")
+    parser.add_argument("--openscap-profile", help="Optional XCCDF profile id for OpenSCAP")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     args = parser.parse_args()
 
@@ -1003,6 +1329,10 @@ def main() -> None:
             include_lynis=args.include_lynis,
             lynis_timeout=args.lynis_timeout,
             lynis_report_path=args.lynis_report_path,
+            include_openscap=args.include_openscap,
+            openscap_timeout=args.openscap_timeout,
+            openscap_content_path=args.openscap_content_path,
+            openscap_profile=args.openscap_profile,
         )
     else:
         payload = no_op_response(args.command, args)
