@@ -22,6 +22,42 @@ from typing import Literal
 Risk = Literal["high", "medium", "low", "info"]
 Status = Literal["failed", "passed", "fixed", "manual"]
 
+LYNIS_PREFIX_CATEGORIES = {
+    "acct": "Учетные записи",
+    "auth": "Аутентификация",
+    "boot": "Загрузка",
+    "cron": "Планировщик задач",
+    "dbs": "Базы данных",
+    "dns": "DNS",
+    "file": "Файловая система",
+    "fire": "Межсетевой экран",
+    "fs": "Файловая система",
+    "hrdn": "Усиление системы",
+    "krnl": "Ядро",
+    "logg": "Журналирование",
+    "mail": "Почта",
+    "netw": "Сеть",
+    "pkg": "Пакеты",
+    "schd": "Планировщик задач",
+    "ssh": "SSH",
+    "stor": "Хранилище",
+    "strg": "Хранилище",
+    "tool": "Инструменты безопасности",
+}
+
+LYNIS_TEST_MAPPINGS = {
+    "schd-7704": {
+        "category": "Планировщик задач",
+        "remediation_id": "review_cron_permissions",
+        "recommendation": "Проверить права cron-файлов, владельца root и отсутствие записи для обычных пользователей.",
+    },
+    "hrdn-7222": {
+        "category": "Усиление системы",
+        "remediation_id": "restrict_compilers",
+        "recommendation": "Ограничить доступ к компиляторам для непривилегированных пользователей или удалить их с production-хоста.",
+    },
+}
+
 
 @dataclass
 class Finding:
@@ -668,6 +704,49 @@ def lynis_finding_id(test_id: str | None, index: int) -> str:
     return f"lynis_item_{index:03d}"
 
 
+def get_lynis_category(test_id: str | None) -> str:
+    if not test_id:
+        return "Lynis"
+    exact = LYNIS_TEST_MAPPINGS.get(test_id)
+    if exact:
+        return str(exact["category"])
+    prefix = test_id.split("-", 1)[0]
+    return LYNIS_PREFIX_CATEGORIES.get(prefix, "Lynis")
+
+
+def build_lynis_finding(
+    *,
+    profile_id: str,
+    title: str,
+    risk: Risk,
+    test_id: str | None,
+    index: int,
+    description: str,
+    evidence: str,
+) -> Finding:
+    exact = LYNIS_TEST_MAPPINGS.get(test_id or "")
+    remediation_id = str(exact["remediation_id"]) if exact else None
+    recommendation = (
+        str(exact["recommendation"])
+        if exact
+        else "Проверить test-id в отчете Lynis, оценить влияние на сервер и добавить действие в план исправлений."
+    )
+    return finding(
+        id=lynis_finding_id(test_id, index),
+        profile_id=profile_id,
+        title=f"Lynis: {title}",
+        category=get_lynis_category(test_id),
+        risk=risk,
+        status="manual",
+        description=description,
+        recommendation=recommendation,
+        remediation_available=remediation_id is not None,
+        remediation_id=remediation_id,
+        evidence=evidence,
+        source="lynis",
+    )
+
+
 def parse_lynis_findings(profile_id: str, output: str, limit: int = 30) -> list[Finding]:
     results: list[Finding] = []
     seen: set[str] = set()
@@ -701,18 +780,14 @@ def parse_lynis_findings(profile_id: str, output: str, limit: int = 30) -> list[
 
         seen.add(finding_id)
         results.append(
-            finding(
-                id=finding_id,
+            build_lynis_finding(
                 profile_id=profile_id,
-                title=f"Lynis: {title}",
-                category="Lynis",
+                title=title,
                 risk=risk,
-                status="manual",
+                test_id=test_id,
+                index=len(results) + 1,
                 description="Lynis обнаружил предупреждение или рекомендацию, которую нужно проверить администратору.",
-                recommendation="Открыть подробности Lynis по test-id, оценить влияние на сервер и добавить действие в план исправлений.",
-                remediation_available=False,
                 evidence=line,
-                source="lynis",
             ),
         )
         if len(results) >= limit:
@@ -748,18 +823,14 @@ def parse_lynis_report_dat(profile_id: str, content: str, source_path: str, limi
 
         seen.add(finding_id)
         results.append(
-            finding(
-                id=finding_id,
+            build_lynis_finding(
                 profile_id=profile_id,
-                title=f"Lynis: {title}",
-                category="Lynis",
+                title=title,
                 risk=risk,
-                status="manual",
+                test_id=test_id,
+                index=len(results) + 1,
                 description=f"Lynis report.dat содержит {kind}, требующее проверки администратором.",
-                recommendation="Проверить test-id в отчете Lynis, оценить влияние на сервер и добавить действие в план исправлений.",
-                remediation_available=False,
                 evidence=f"{source_path}: {line}",
-                source="lynis",
             ),
         )
         if len(results) >= limit:

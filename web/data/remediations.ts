@@ -139,6 +139,46 @@ export const remediations: Remediation[] = [
     realModeNotes:
       "Для CSP нужен ручной режим, потому что политика зависит от конкретного приложения.",
   },
+  {
+    id: "review_cron_permissions",
+    title: "Проверить права cron-файлов",
+    description: "Проверяет владельцев и права cron-файлов, чтобы исключить изменение заданий обычными пользователями.",
+    findingIds: ["lynis_schd-7704"],
+    riskOfBreaking: "medium",
+    supportedOs: ["Ubuntu 22.04+", "Ubuntu 24.04", "Debian 12"],
+    targetFiles: ["/etc/crontab", "/etc/cron.d/*", "/etc/cron.daily/*", "/etc/cron.hourly/*"],
+    backupRequired: true,
+    rollbackAvailable: true,
+    demoSteps: [
+      "Собрать список cron-файлов из отчета Lynis",
+      "Создать резервную копию затронутых файлов",
+      "Проверить владельца root и группу root",
+      "Убрать запись для group/other там, где она не требуется",
+      "Повторить аудит Lynis",
+    ],
+    realModeNotes:
+      "Автоматическое изменение прав cron-файлов требует ручного подтверждения списка файлов, чтобы не сломать системные задания.",
+  },
+  {
+    id: "restrict_compilers",
+    title: "Ограничить доступ к компиляторам",
+    description: "Снижает риск компиляции вредоносного кода на production-хосте непривилегированными пользователями.",
+    findingIds: ["lynis_hrdn-7222"],
+    riskOfBreaking: "medium",
+    supportedOs: ["Ubuntu 22.04+", "Ubuntu 24.04", "Debian 12"],
+    targetFiles: ["/usr/bin/gcc", "/usr/bin/g++", "/usr/bin/cc", "пакеты build-essential"],
+    backupRequired: false,
+    rollbackAvailable: true,
+    demoSteps: [
+      "Проверить, нужны ли компиляторы на сервере",
+      "Определить пользователей и процессы, которым нужен доступ",
+      "Ограничить права через группу или удалить компиляторы с production-хоста",
+      "Зафиксировать исключения для CI/CD или build-серверов",
+      "Повторить аудит Lynis",
+    ],
+    realModeNotes:
+      "На build-хостах компиляторы могут быть необходимы. Для production-серверов предпочтительно удалить их или ограничить доступ отдельной группой.",
+  },
 ];
 
 export function getRemediation(remediationId: string) {
