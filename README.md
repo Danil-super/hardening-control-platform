@@ -75,6 +75,14 @@ python3 agent.py audit --profile basic_linux --pretty > agent-report.json
 
 После этого файл можно загрузить на странице `/agent/import`.
 
+Для установки агента как локального systemd-сервиса используйте:
+
+```bash
+cd agent
+./install.sh --dry-run
+sudo ./install.sh --enable --start
+```
+
 ## Термины
 
 - Аудит: проверка системы на небезопасные настройки.

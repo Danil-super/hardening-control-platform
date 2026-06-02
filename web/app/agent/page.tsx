@@ -35,6 +35,12 @@ const remediateRequest = `POST /agent/remediate
   "createBackup": true
 }`;
 
+const installCommands = `cd agent
+./install.sh --dry-run
+sudo ./install.sh --enable --start
+curl http://127.0.0.1:8765/health
+sudo systemctl status hcp-agent-bridge.service`;
+
 const currentChecks = [
   "Определение ОС через /etc/os-release",
   "Проверка sshd_config: прямой вход root, вход по паролю и пустые пароли",
@@ -104,6 +110,24 @@ python3 agent.py audit --profile docker_host --pretty`}</code>
           импорта сможет получить отчет по адресу `http://127.0.0.1:8765/audit?profile=basic_linux`. Если браузер
           блокирует локальный запрос, используйте загрузку JSON-файла на той же странице.
         </p>
+      </section>
+
+      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <h2 className="text-xl font-semibold text-white">Установка агента как сервиса</h2>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            В репозитории есть `agent/install.sh` и шаблон systemd unit. Скрипт копирует агента в `/opt`,
+            регистрирует локальный сервис и по умолчанию слушает только `127.0.0.1`. Перед установкой можно выполнить
+            dry-run, чтобы увидеть план без изменения системы.
+          </p>
+          <div className="mt-4 rounded-md border border-emerald-400/30 bg-emerald-500/10 p-4 text-sm leading-6 text-emerald-100">
+            Установленный сервис остается в режиме “только аудит”: он читает настройки и отдает JSON, но не применяет
+            исправления и не меняет ОС.
+          </div>
+        </div>
+        <pre className="overflow-x-auto rounded-md border border-slate-800 bg-slate-950/70 p-4 text-sm text-slate-200">
+          <code>{installCommands}</code>
+        </pre>
       </section>
 
       <section className="grid gap-5 lg:grid-cols-3">

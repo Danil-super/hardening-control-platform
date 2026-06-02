@@ -1,0 +1,20 @@
+[Unit]
+Description=Hardening Control Platform Agent Bridge
+Documentation=https://github.com/Danil-super/hardening-control-platform
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=__INSTALL_DIR__
+ExecStart=/usr/bin/python3 __INSTALL_DIR__/server.py --host __HOST__ --port __PORT__
+Restart=on-failure
+RestartSec=5
+
+# The agent is audit-only. It reads local configuration and does not modify OS state.
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

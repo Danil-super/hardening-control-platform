@@ -49,6 +49,35 @@ python3 agent.py audit --profile basic_linux --pretty > agent-report.json
 
 Если вы уже находитесь в папке `agent`, повторно выполнять `cd agent` не нужно.
 
+## Установка как systemd-сервис
+
+Перед установкой можно посмотреть план действий без изменения системы:
+
+```bash
+./install.sh --dry-run
+```
+
+Установка файлов агента и unit-файла:
+
+```bash
+sudo ./install.sh
+```
+
+Установка с автозапуском и немедленным стартом:
+
+```bash
+sudo ./install.sh --enable --start
+```
+
+После запуска проверьте состояние:
+
+```bash
+curl http://127.0.0.1:8765/health
+sudo systemctl status hcp-agent-bridge.service
+```
+
+По умолчанию сервис слушает только `127.0.0.1`, то есть не открывает внешний сетевой доступ.
+
 Поддерживаемые профили:
 
 - `basic_linux`
