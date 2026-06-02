@@ -102,7 +102,13 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), AgentRequestHandler)
     print(f"Hardening Control Platform Agent Bridge listening on http://{args.host}:{args.port}")
     print("Endpoints: GET /health, GET /profiles, GET /audit?profile=basic_linux, POST /audit")
-    server.serve_forever()
+    print("Press Ctrl+C to stop the bridge.")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\nAgent Bridge stopped.")
+    finally:
+        server.server_close()
 
 
 if __name__ == "__main__":

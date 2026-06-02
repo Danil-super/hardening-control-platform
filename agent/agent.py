@@ -234,7 +234,8 @@ def check_ufw(profile_id: str) -> Finding:
         )
 
     output = f"{stdout}\n{stderr}".lower()
-    if code != 0 and ("root" in output or "permission" in output):
+    permission_markers = ("root", "permission", "administrator", "права", "администратор")
+    if code != 0 and any(marker in output for marker in permission_markers):
         return finding(
             id="ufw_disabled",
             profile_id=profile_id,
@@ -250,8 +251,8 @@ def check_ufw(profile_id: str) -> Finding:
             evidence=stderr or stdout,
         )
 
-    inactive = "inactive" in output
-    active = "active" in output and not inactive
+    inactive = "inactive" in output or "неактив" in output
+    active = ("active" in output or "актив" in output) and not inactive
     if not inactive and not active:
         return finding(
             id="ufw_disabled",

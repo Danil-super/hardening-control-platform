@@ -21,6 +21,8 @@ python3 agent.py audit --profile docker_host --pretty
 python3 server.py
 ```
 
+Остановить bridge можно через `Ctrl+C`. Это штатное завершение сервера.
+
 По умолчанию он слушает:
 
 ```text
@@ -43,6 +45,8 @@ python3 agent.py audit --profile basic_linux --pretty > agent-report.json
 ```
 
 Затем загрузите `agent-report.json` на странице `/agent/import`.
+
+Если вы уже находитесь в папке `agent`, повторно выполнять `cd agent` не нужно.
 
 Поддерживаемые профили:
 
