@@ -1,10 +1,10 @@
 "use client";
 
-import { CheckCircle2, Loader2, Play } from "lucide-react";
+import { CheckCircle2, FileInput, Loader2, Play } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { auditSteps } from "@/lib/demo-audit";
-import { Button } from "@/components/ui/button";
+import { Button, LinkButton } from "@/components/ui/button";
 
 export function AuditRunner({ profileId }: { profileId: string }) {
   const router = useRouter();
@@ -29,12 +29,21 @@ export function AuditRunner({ profileId }: { profileId: string }) {
       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-semibold text-white">Процесс демо-аудита</h2>
-          <p className="mt-1 text-sm text-slate-400">Проверки выполняются на mock-данных и не меняют хостовую ОС.</p>
+          <p className="mt-1 text-sm leading-6 text-slate-400">
+            Проверки выполняются на демо-данных и не меняют хостовую ОС. Для реального аудита без исправлений используйте
+            локальный агент и импорт JSON.
+          </p>
         </div>
-        <Button onClick={runAudit} disabled={running}>
-          {running ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
-          {running ? "Аудит выполняется" : "Запустить аудит"}
-        </Button>
+        <div className="flex flex-wrap gap-3">
+          <LinkButton href="/agent/import" variant="secondary">
+            <FileInput size={16} aria-hidden="true" />
+            Реальный audit-only
+          </LinkButton>
+          <Button onClick={runAudit} disabled={running}>
+            {running ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}
+            {running ? "Аудит выполняется" : "Запустить демо"}
+          </Button>
+        </div>
       </div>
 
       <div className="mt-6 space-y-3">

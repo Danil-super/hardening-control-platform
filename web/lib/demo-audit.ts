@@ -19,6 +19,28 @@ export const remediationSteps = [
   "Повторный аудит завершен",
 ];
 
+function slugify(value: string) {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+}
+
+function formatBackupTimestamp(date: Date) {
+  return date.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");
+}
+
+function formatBackupName(profileId: string, remediationTitle: string, index: number, date: Date) {
+  const humanDate = date.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+  return `Резервная копия ${index + 1}: ${remediationTitle} · ${profileId} · ${humanDate}`;
+}
+
 export function createAuditReport(profileId: string, findings?: Finding[]): AuditReport {
   const profile = getProfile(profileId);
   const reportFindings = findings ?? getFindingsByProfile(profileId);
@@ -42,7 +64,8 @@ export function createBeforeAfterReport(
     remediationIds.includes(remediation.id),
   );
   const fixableFindingIds = new Set(selectedRemediations.flatMap((remediation) => remediation.findingIds));
-  const now = new Date().toISOString();
+  const createdAt = new Date();
+  const now = createdAt.toISOString();
 
   const afterFindings = before.findings.map((finding) => {
     if (fixableFindingIds.has(finding.id)) {
@@ -52,7 +75,11 @@ export function createBeforeAfterReport(
   });
 
   const backups: BackupRecord[] = selectedRemediations.map((remediation, index) => ({
-    id: `backup_${now.replace(/[-:.TZ]/g, "").slice(0, 14)}_${String(index + 1).padStart(2, "0")}`,
+    id: `backup-${profileId}-${slugify(remediation.id)}-${formatBackupTimestamp(createdAt)}-${String(index + 1).padStart(2, "0")}`,
+    name: formatBackupName(profileId, remediation.title, index, createdAt),
+    description: remediation.backupRequired
+      ? `Снимок затронутых файлов перед действием: ${remediation.title}.`
+      : `Журнал действия без файлового снимка: ${remediation.title}.`,
     createdAt: now,
     remediationId: remediation.id,
     targetFiles: remediation.targetFiles,

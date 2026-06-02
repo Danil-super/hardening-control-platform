@@ -21,6 +21,13 @@ export default async function AuditResultsPage({ params }: { params: Promise<{ p
         <h1 className="text-3xl font-semibold text-white">Результаты аудита</h1>
         <p className="mt-2 text-slate-400">{profile.title} · найдено: {report.findings.length} · режим: демо</p>
       </div>
+      <section className="rounded-md border border-sky-400/25 bg-sky-500/10 p-5">
+        <h2 className="text-lg font-semibold text-white">Как читать результат</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-300">
+          Сначала смотрите высокие и средние риски, затем источник проверки и рекомендацию. Кнопка перехода к
+          исправлениям формирует план и демо-отчет, но не применяет изменения на Linux-хосте.
+        </p>
+      </section>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <SummaryCard label="Оценка защищенности" value={`${report.summary.score}%`} detail="Рассчитано по активным рискам" />
         <SummaryCard label="Высокий" value={report.summary.high} detail="Критичный приоритет исправления" />

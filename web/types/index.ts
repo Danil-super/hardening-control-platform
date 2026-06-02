@@ -61,6 +61,8 @@ export type AuditReport = {
 
 export type BackupRecord = {
   id: string;
+  name: string;
+  description: string;
   createdAt: string;
   remediationId: string;
   targetFiles: string[];

@@ -61,6 +61,15 @@ export function RemediationPlanner({
   return (
     <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_360px]">
       <section className="space-y-4">
+        <div className="rounded-md border border-sky-400/25 bg-sky-500/10 p-5">
+          <h2 className="text-lg font-semibold text-white">Что делает этот экран</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-300">
+            Здесь выбирается план исправлений для демонстрационного отчета. Кнопка ниже не меняет Linux-хост:
+            она создает демо-отчет “до/после”, записи резервных копий и показывает, какие действия были бы выполнены
+            в реальном режиме после отдельного подтверждения администратора.
+          </p>
+        </div>
+
         {remediations.map((remediation) => (
           <article key={remediation.id} className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -115,10 +124,26 @@ export function RemediationPlanner({
       </section>
 
       <aside className="h-fit rounded-md border border-slate-800 bg-slate-950/80 p-5 xl:sticky xl:top-8">
-          <h2 className="text-lg font-semibold text-white">Демо-применение</h2>
+        <h2 className="text-lg font-semibold text-white">Демо-отчет без изменения ОС</h2>
         <p className="mt-2 text-sm leading-6 text-slate-400">
-          Выбрано действий: {selectedRemediations.length}. В демо-режиме создается отчет и записи резервных копий в памяти браузера.
+          Выбрано действий: {selectedRemediations.length}. Сайт сформирует отчет, записи резервных копий и повторный аудит
+          в памяти браузера.
         </p>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+          <div className="rounded-md bg-slate-900 p-3">
+            <p className="text-slate-500">С файловым снимком</p>
+            <p className="mt-1 text-2xl font-semibold text-white">
+              {selectedRemediations.filter((remediation) => remediation.backupRequired).length}
+            </p>
+          </div>
+          <div className="rounded-md bg-slate-900 p-3">
+            <p className="text-slate-500">С откатом</p>
+            <p className="mt-1 text-2xl font-semibold text-white">
+              {selectedRemediations.filter((remediation) => remediation.rollbackAvailable).length}
+            </p>
+          </div>
+        </div>
 
         <div className="mt-5 space-y-3">
           {remediationSteps.map((label, index) => {
@@ -142,7 +167,7 @@ export function RemediationPlanner({
         <div className="mt-5 grid gap-3">
           <Button onClick={applyDemo} disabled={!selected.length}>
             <DatabaseBackup size={16} aria-hidden="true" />
-            Применить демо
+            Сформировать демо-отчет
           </Button>
           <Button variant="secondary" onClick={exportCurrentPlan} disabled={!selected.length}>
             <Download size={16} aria-hidden="true" />

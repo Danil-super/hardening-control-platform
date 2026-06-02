@@ -32,6 +32,10 @@ export function FindingsExplorer({ findings, profileId }: { findings: Finding[];
   return (
     <section className="space-y-4">
       <div className="flex flex-col gap-3 rounded-md border border-slate-800 bg-slate-950/70 p-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p className="text-sm font-semibold text-white">Фильтры находок</p>
+          <p className="mt-1 text-sm text-slate-400">Отберите риски перед планированием исправлений.</p>
+        </div>
         <div className="flex flex-wrap gap-2">
           {riskFilters.map((value) => (
             <button
@@ -72,7 +76,7 @@ export function FindingsExplorer({ findings, profileId }: { findings: Finding[];
               </tr>
             </thead>
             <tbody>
-              {filteredFindings.map((finding) => (
+              {filteredFindings.length ? filteredFindings.map((finding) => (
                 <tr key={finding.id} className="border-b border-slate-900 align-top last:border-b-0">
                   <td className="px-4 py-4">
                     <p className="font-semibold text-white">{finding.title}</p>
@@ -85,14 +89,20 @@ export function FindingsExplorer({ findings, profileId }: { findings: Finding[];
                   <td className="px-4 py-4 text-slate-300">{finding.source === "demo" ? "демо" : finding.source}</td>
                   <td className="px-4 py-4 text-slate-300">{finding.remediationAvailable ? "доступно" : "вручную"}</td>
                 </tr>
-              ))}
+              )) : (
+                <tr>
+                  <td colSpan={6} className="px-4 py-6 text-center text-slate-400">
+                    Для выбранных фильтров находок нет.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
       <div className="flex justify-end">
-        <LinkButton href={`/remediation?profileId=${profileId}`}>Перейти к исправлениям</LinkButton>
+        <LinkButton href={`/remediation?profileId=${profileId}`}>Сформировать план исправлений</LinkButton>
       </div>
     </section>
   );

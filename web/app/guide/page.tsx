@@ -20,8 +20,8 @@ const demoSteps = [
     text: "В планировщике исправлений отметьте действия. Для каждого действия видны риск, затрагиваемые файлы, резервная копия и откат.",
   },
   {
-    title: "Применить демо-сценарий",
-    text: "Нажмите “Применить демо”. Сайт имитирует создание резервной копии, применение исправлений, проверку и повторный аудит.",
+    title: "Сформировать демо-отчет",
+    text: "Нажмите “Сформировать демо-отчет”. Сайт имитирует резервные копии, проверку и повторный аудит без изменения ОС.",
   },
   {
     title: "Открыть отчет",
@@ -30,12 +30,12 @@ const demoSteps = [
 ];
 
 const realAgentSteps = [
-  "Веб-платформа отправляет профиль аудита локальному Linux-агенту.",
-  "Агент определяет ОС через /etc/os-release и выполняет реальные проверки.",
-  "Агент возвращает результаты проверок в JSON-формате.",
-  "Пользователь выбирает исправления в веб-интерфейсе.",
-  "Агент создает резервную копию, применяет исправления и выполняет проверку результата.",
-  "Платформа формирует отчет “до/после” по реальным данным.",
+  "Запустить локальный bridge: python3 server.py в папке agent.",
+  "Открыть /agent/import и выбрать профиль аудита.",
+  "Нажать “Получить аудит от агента”; агент только читает настройки и возвращает JSON.",
+  "При необходимости включить Lynis или OpenSCAP как внешние источники.",
+  "Сохранить импорт в истории и сравнить два audit-only отчета.",
+  "План исправлений скачать отдельно; реальные изменения ОС сейчас не выполняются.",
 ];
 
 export default function GuidePage() {
@@ -81,13 +81,13 @@ export default function GuidePage() {
         <aside className="h-fit rounded-md border border-slate-800 bg-slate-950/70 p-5">
           <h2 className="text-xl font-semibold text-white">Что сказать на защите</h2>
           <p className="mt-3 text-sm leading-6 text-slate-400">
-            “Первая версия платформы работает в безопасном демо-режиме. Она показывает полный цикл управления
-            харденингом: выбор профиля, аудит, найденные проблемы, план исправлений, имитацию резервной копии, повторный
-            аудит и отчет. Реальное изменение Linux-хоста вынесено в будущий локальный агент.”
+            “Платформа разделяет демонстрационный сценарий и реальный audit-only агент. На Vercel сайт безопасно
+            показывает полный цикл харденинга, а локальный Python-агент уже умеет проверять Linux-хост без исправлений
+            и импортировать JSON-отчет в интерфейс.”
           </p>
           <div className="mt-5 rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
-            Важно подчеркнуть: MVP не является заменой Lynis или OpenSCAP. Это управляющий слой и демонстрационный
-            интерфейс, готовый к подключению агентского модуля.
+            Важно подчеркнуть: MVP не является заменой Lynis или OpenSCAP. Это управляющий слой, который умеет принимать
+            результаты локального агента и внешних сканеров.
           </div>
         </aside>
       </section>
@@ -95,7 +95,7 @@ export default function GuidePage() {
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
         <div className="flex items-center gap-3">
           <ServerCog className="text-sky-200" size={24} aria-hidden="true" />
-          <h2 className="text-xl font-semibold text-white">Как это станет реальным аудитом</h2>
+          <h2 className="text-xl font-semibold text-white">Как сделать реальный аудит без исправления</h2>
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {realAgentSteps.map((step, index) => (
@@ -111,7 +111,7 @@ export default function GuidePage() {
       </section>
 
       <div className="flex flex-wrap items-center justify-end gap-3">
-        <LinkButton href="/agent" variant="secondary">Посмотреть будущий агент</LinkButton>
+        <LinkButton href="/agent" variant="secondary">Посмотреть Linux-агент</LinkButton>
         <LinkButton href="/profiles">
           Перейти к профилям
           <ArrowRight size={16} aria-hidden="true" />

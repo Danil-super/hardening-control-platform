@@ -7,7 +7,7 @@ import { Button, LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { createBeforeAfterReport } from "@/lib/demo-audit";
 import { getReportDelta, serializeReport } from "@/lib/report-utils";
-import type { BeforeAfterReport } from "@/types";
+import type { BackupRecord, BeforeAfterReport } from "@/types";
 
 const riskLabels = {
   high: "Высокий",
@@ -47,6 +47,23 @@ function parseReport(raw: string | null) {
   }
 }
 
+function formatDate(value: string) {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
+}
+
+function getBackupName(backup: BackupRecord) {
+  return backup.name ?? `Резервная копия ${backup.id}`;
+}
+
+function getBackupDescription(backup: BackupRecord) {
+  return backup.description ?? `Запись по действию ${backup.remediationId}`;
+}
+
+function getRemediationTitle(report: BeforeAfterReport, remediationId: string) {
+  return report.appliedRemediations.find((remediation) => remediation.id === remediationId)?.title ?? remediationId;
+}
+
 function buildDemoHtmlReport(report: BeforeAfterReport) {
   const delta = getReportDelta(report);
   const generatedAt = new Date().toLocaleString("ru-RU");
@@ -62,10 +79,15 @@ function buildDemoHtmlReport(report: BeforeAfterReport) {
     items.length ? items.map((item) => `<li>${escapeHtml(item.title)}</li>`).join("") : "<li>Нет записей</li>";
   const backupRows = report.backups.map((backup) => `
     <tr>
-      <td>${escapeHtml(backup.id)}</td>
-      <td>${escapeHtml(backup.remediationId)}</td>
+      <td>
+        <strong>${escapeHtml(getBackupName(backup))}</strong>
+        <p class="muted">${escapeHtml(getBackupDescription(backup))}</p>
+        <small>${escapeHtml(backup.id)}</small>
+      </td>
+      <td>${escapeHtml(getRemediationTitle(report, backup.remediationId))}</td>
       <td>${backup.status === "created" ? "создана" : "пропущена"}</td>
       <td>${backup.rollbackAvailable ? "доступен" : "частичный"}</td>
+      <td>${escapeHtml(formatDate(backup.createdAt))}</td>
     </tr>
   `).join("");
 
@@ -134,8 +156,8 @@ function buildDemoHtmlReport(report: BeforeAfterReport) {
     <section>
       <h2>Резервные копии</h2>
       <table>
-        <thead><tr><th>ID</th><th>Исправление</th><th>Статус</th><th>Откат</th></tr></thead>
-        <tbody>${backupRows || "<tr><td colspan=\"4\">Записи отсутствуют.</td></tr>"}</tbody>
+        <thead><tr><th>Название</th><th>Исправление</th><th>Статус</th><th>Откат</th><th>Создано</th></tr></thead>
+        <tbody>${backupRows || "<tr><td colspan=\"5\">Записи отсутствуют.</td></tr>"}</tbody>
       </table>
     </section>
   </main>
@@ -175,10 +197,10 @@ export function ReportsClient() {
     <div className="space-y-6">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         <SummaryCard label="Оценка до" value={`${report.before.summary.score}%`} detail="Исходная оценка защищенности" />
-        <SummaryCard label="Оценка после" value={`${report.after.summary.score}%`} detail={`Изменение +${delta.score}`} />
+        <SummaryCard label="Оценка после" value={`${report.after.summary.score}%`} detail={`Изменение ${delta.score >= 0 ? "+" : ""}${delta.score}`} />
         <SummaryCard label="Исправлено" value={report.fixedFindings.length} detail="Проблемы с примененными действиями" />
         <SummaryCard label="Осталось" value={report.remainingFindings.length} detail="Вручную или не выбрано" />
-        <SummaryCard label="Резервные копии" value={report.backups.length} detail="Созданные/пропущенные демо-записи" />
+        <SummaryCard label="Резервные копии" value={report.backups.length} detail="Именованные записи плана" />
       </div>
 
       <div className="grid gap-5 lg:grid-cols-2">
@@ -197,11 +219,43 @@ export function ReportsClient() {
 
         <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
           <h2 className="text-lg font-semibold text-white">Записи резервных копий</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            Здесь показаны человекочитаемые названия бэкапов, затронутые файлы и возможность отката.
+          </p>
           <div className="mt-4 space-y-3">
             {report.backups.map((backup) => (
-              <div key={backup.id} className="rounded-md bg-slate-900 p-3 text-sm">
-                <p className="font-semibold text-white">{backup.id}</p>
-                <p className="mt-1 text-slate-400">{backup.remediationId} · {backup.status === "created" ? "создана" : "пропущена"}</p>
+              <div key={backup.id} className="rounded-md border border-slate-800 bg-slate-900 p-4 text-sm">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="font-semibold text-white">{getBackupName(backup)}</p>
+                    <p className="mt-1 leading-6 text-slate-400">{getBackupDescription(backup)}</p>
+                  </div>
+                  <span className={`w-fit rounded-md border px-2 py-1 text-xs font-semibold uppercase ${
+                    backup.status === "created"
+                      ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
+                      : "border-slate-600 bg-slate-800 text-slate-300"
+                  }`}>
+                    {backup.status === "created" ? "создана" : "только журнал"}
+                  </span>
+                </div>
+                <div className="mt-3 grid gap-3 md:grid-cols-2">
+                  <div>
+                    <p className="text-xs font-semibold uppercase text-slate-500">Исправление</p>
+                    <p className="mt-1 text-slate-200">{getRemediationTitle(report, backup.remediationId)}</p>
+                  </div>
+                  <div>
+                    <p className="text-xs font-semibold uppercase text-slate-500">Создано</p>
+                    <p className="mt-1 text-slate-200">{formatDate(backup.createdAt)}</p>
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {backup.targetFiles.map((file) => (
+                    <code key={file} className="rounded-md bg-slate-950 px-2 py-1 text-xs text-slate-300">{file}</code>
+                  ))}
+                </div>
+                <p className="mt-3 text-xs text-slate-500">
+                  ID: {backup.id} · Откат: {backup.rollbackAvailable ? "доступен" : "частичный или ручной"}
+                </p>
               </div>
             ))}
           </div>

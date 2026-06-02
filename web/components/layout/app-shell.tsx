@@ -11,7 +11,7 @@ const navItems = [
   { href: "/reports", label: "Отчеты", icon: FileText },
   { href: "/guide", label: "Инструкция", icon: BookOpen },
   { href: "/agent/import", label: "Импорт агента", icon: FileInput },
-  { href: "/agent", label: "Будущий агент", icon: Radar },
+  { href: "/agent", label: "Linux-агент", icon: Radar },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
