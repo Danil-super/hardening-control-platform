@@ -1,11 +1,12 @@
 "use client";
 
-import { Download, FileJson, FileText, GitCompare, History, PlugZap, Trash2, Upload } from "lucide-react";
+import { ClipboardList, Download, FileJson, FileText, GitCompare, History, PlugZap, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { RiskBadge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
-import type { Finding, RiskLevel } from "@/types";
+import { getRemediationsForFindings } from "@/data/remediations";
+import type { Finding, Remediation, RiskLevel } from "@/types";
 
 type AgentReport = {
   auditId?: string;
@@ -36,6 +37,35 @@ type StoredAgentReport = {
   label: string;
   importedAt: string;
   report: AgentReport;
+};
+
+type AgentRemediationPlan = {
+  generatedAt: string;
+  mode: "plan_only";
+  auditId?: string;
+  hostname?: string;
+  os?: string;
+  profileId?: string;
+  summary: ReturnType<typeof getSummary>;
+  safetyNotice: string;
+  remediations: Array<{
+    id: string;
+    title: string;
+    riskOfBreaking: Remediation["riskOfBreaking"];
+    targetFiles: string[];
+    backupRequired: boolean;
+    rollbackAvailable: boolean;
+    matchedFindingIds: string[];
+    steps: string[];
+    realModeNotes: string;
+  }>;
+  manualFindings: Array<{
+    id: string;
+    title: string;
+    risk: RiskLevel;
+    status: Finding["status"];
+    recommendation: string;
+  }>;
 };
 
 const historyStorageKey = "hcp:agent-report-history";
@@ -115,6 +145,54 @@ function getActiveFindingIds(report: AgentReport | null) {
       .filter((finding) => finding.status !== "passed" && finding.status !== "fixed")
       .map((finding) => finding.id),
   );
+}
+
+function getActiveFindings(report: AgentReport | null) {
+  return (report?.findings ?? []).filter((finding) => finding.status !== "passed" && finding.status !== "fixed");
+}
+
+function buildRemediationPlan(report: AgentReport | null): AgentRemediationPlan | null {
+  if (!report) {
+    return null;
+  }
+
+  const activeFindings = getActiveFindings(report);
+  const activeFindingIds = activeFindings.map((finding) => finding.id);
+  const plannedRemediations = getRemediationsForFindings(activeFindingIds);
+  const plannedFindingIds = new Set(plannedRemediations.flatMap((remediation) => remediation.findingIds));
+  const manualFindings = activeFindings.filter(
+    (finding) => !finding.remediationAvailable || !plannedFindingIds.has(finding.id),
+  );
+
+  return {
+    generatedAt: new Date().toISOString(),
+    mode: "plan_only",
+    auditId: report.auditId ?? report.id,
+    hostname: report.hostname,
+    os: report.os,
+    profileId: report.profileId,
+    summary: getSummary(report),
+    safetyNotice:
+      "План сформирован по отчету агента и не применяет изменения. Перед реальным выполнением нужны резервная копия, проверка доступа и отдельное подтверждение администратора.",
+    remediations: plannedRemediations.map((remediation) => ({
+      id: remediation.id,
+      title: remediation.title,
+      riskOfBreaking: remediation.riskOfBreaking,
+      targetFiles: remediation.targetFiles,
+      backupRequired: remediation.backupRequired,
+      rollbackAvailable: remediation.rollbackAvailable,
+      matchedFindingIds: remediation.findingIds.filter((findingId) => activeFindingIds.includes(findingId)),
+      steps: remediation.demoSteps,
+      realModeNotes: remediation.realModeNotes,
+    })),
+    manualFindings: manualFindings.map((finding) => ({
+      id: finding.id,
+      title: finding.title,
+      risk: finding.risk,
+      status: finding.status,
+      recommendation: finding.recommendation,
+    })),
+  };
 }
 
 function escapeHtml(value: unknown) {
@@ -272,6 +350,7 @@ export function AgentImportClient() {
 
   const findings = report?.findings ?? [];
   const summary = useMemo(() => getSummary(report), [report]);
+  const remediationPlan = useMemo(() => buildRemediationPlan(report), [report]);
   const baselineReport = history.find((item) => item.key === baselineKey)?.report ?? null;
   const currentReport = history.find((item) => item.key === currentKey)?.report ?? null;
   const comparison = useMemo(() => {
@@ -408,6 +487,17 @@ export function AgentImportClient() {
     downloadBlob(buildHtmlReport(report), `agent-report-${report.profileId ?? "audit"}.html`, "text/html;charset=utf-8");
   }
 
+  function downloadRemediationPlan() {
+    if (!remediationPlan) {
+      return;
+    }
+    downloadBlob(
+      JSON.stringify(remediationPlan, null, 2),
+      `agent-remediation-plan-${remediationPlan.profileId ?? "audit"}.json`,
+      "application/json",
+    );
+  }
+
   function loadFromHistory(key: string) {
     const item = history.find((entry) => entry.key === key);
     if (!item) {
@@ -516,6 +606,10 @@ export function AgentImportClient() {
             <FileText size={16} aria-hidden="true" />
             Скачать HTML-отчет
           </Button>
+          <Button variant="secondary" onClick={downloadRemediationPlan} disabled={!remediationPlan}>
+            <ClipboardList size={16} aria-hidden="true" />
+            Скачать план исправлений
+          </Button>
         </div>
         {error ? (
           <div className="mt-4 rounded-md border border-red-400/40 bg-red-500/15 p-4 text-sm leading-6 text-red-100">
@@ -569,6 +663,86 @@ export function AgentImportClient() {
               </div>
             </div>
           </div>
+
+          {remediationPlan ? (
+            <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="flex items-center gap-3">
+                    <ClipboardList size={22} className="text-sky-200" aria-hidden="true" />
+                    <h2 className="text-xl font-semibold text-white">План исправлений по отчету агента</h2>
+                  </div>
+                  <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-400">
+                    План не применяет изменения. Он связывает активные результаты проверок с известными действиями,
+                    показывает риск изменения, затрагиваемые файлы, необходимость резервной копии и доступность отката.
+                  </p>
+                </div>
+                <Button variant="secondary" onClick={downloadRemediationPlan}>
+                  <Download size={16} aria-hidden="true" />
+                  JSON-план
+                </Button>
+              </div>
+
+              <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+                <div className="space-y-3">
+                  {remediationPlan.remediations.length ? remediationPlan.remediations.map((remediation) => (
+                    <article key={remediation.id} className="rounded-md border border-slate-800 bg-slate-900/70 p-4">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div>
+                          <h3 className="font-semibold text-white">{remediation.title}</h3>
+                          <p className="mt-1 text-sm leading-6 text-slate-400">{remediation.realModeNotes}</p>
+                        </div>
+                        <RiskBadge risk={remediation.riskOfBreaking} />
+                      </div>
+                      <div className="mt-4 grid gap-3 text-sm md:grid-cols-2">
+                        <div className="rounded-md bg-slate-950/70 p-3">
+                          <p className="text-slate-500">Резервная копия</p>
+                          <p className="mt-1 font-semibold text-white">{remediation.backupRequired ? "обязательна" : "не обязательна"}</p>
+                        </div>
+                        <div className="rounded-md bg-slate-950/70 p-3">
+                          <p className="text-slate-500">Откат</p>
+                          <p className="mt-1 font-semibold text-white">{remediation.rollbackAvailable ? "доступен" : "частичный или ручной"}</p>
+                        </div>
+                      </div>
+                      <div className="mt-4">
+                        <p className="text-xs font-semibold uppercase text-slate-500">Затрагиваемые файлы</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {remediation.targetFiles.map((file) => (
+                            <code key={file} className="rounded-md bg-slate-950 px-2 py-1 text-xs text-slate-300">{file}</code>
+                          ))}
+                        </div>
+                      </div>
+                      <ol className="mt-4 grid gap-2 md:grid-cols-2">
+                        {remediation.steps.map((step) => (
+                          <li key={step} className="rounded-md border border-slate-800 bg-slate-950/60 px-3 py-2 text-sm text-slate-300">
+                            {step}
+                          </li>
+                        ))}
+                      </ol>
+                    </article>
+                  )) : (
+                    <p className="rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-400">
+                      Для активных результатов не найдено автоматизированных действий. Используйте ручные рекомендации ниже.
+                    </p>
+                  )}
+                </div>
+
+                <aside className="h-fit rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
+                  <p className="font-semibold">Ручная проверка: {remediationPlan.manualFindings.length}</p>
+                  <ul className="mt-3 space-y-2">
+                    {remediationPlan.manualFindings.length ? remediationPlan.manualFindings.map((finding) => (
+                      <li key={finding.id}>
+                        <span className="font-semibold">{finding.title}</span>
+                        <span className="block text-amber-100/80">{finding.recommendation}</span>
+                      </li>
+                    )) : (
+                      <li>Все активные результаты сопоставлены с известными действиями.</li>
+                    )}
+                  </ul>
+                </aside>
+              </div>
+            </div>
+          ) : null}
 
           <div className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
             <div className="overflow-x-auto">
