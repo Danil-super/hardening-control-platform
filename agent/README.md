@@ -1,8 +1,8 @@
-# Linux Agent
+# Linux-агент
 
-Это первая безопасная версия локального Linux Agent для Hardening Control Platform.
+Это первая безопасная версия локального Linux-агента для Hardening Control Platform.
 
-Агент работает в режиме `audit-only`: читает доступные конфигурации, выполняет безопасные команды проверки и возвращает JSON. Он не изменяет ОС, не перезапускает службы, не включает firewall и не применяет remediation.
+Агент работает в режиме “только аудит”: читает доступные конфигурации, выполняет безопасные команды проверки и возвращает JSON. Он не изменяет ОС, не перезапускает службы, не включает межсетевой экран и не применяет исправления.
 
 ## Запуск
 
@@ -15,13 +15,13 @@ python3 agent.py audit --profile docker_host --pretty
 
 ## Автоматический импорт в сайт
 
-Запустите локальный bridge-сервер:
+Запустите локальный промежуточный сервер:
 
 ```bash
 python3 server.py
 ```
 
-Остановить bridge можно через `Ctrl+C`. Это штатное завершение сервера.
+Остановить сервер можно через `Ctrl+C`. Это штатное завершение.
 
 По умолчанию он слушает:
 
@@ -36,10 +36,10 @@ http://127.0.0.1:8765
 - `GET /audit?profile=basic_linux`
 - `POST /audit` с JSON `{ "profileId": "basic_linux" }`
 
-После запуска bridge откройте на сайте страницу `/agent/import` и нажмите `Получить аудит от агента`.
+После запуска сервера откройте на сайте страницу `/agent/import` и нажмите `Получить аудит от агента`.
 Импортированные отчеты сохраняются в истории браузера; на этой же странице можно сравнить два отчета.
 
-Fallback без bridge:
+Ручной вариант без промежуточного сервера:
 
 ```bash
 python3 agent.py audit --profile basic_linux --pretty > agent-report.json
@@ -59,17 +59,17 @@ python3 agent.py audit --profile basic_linux --pretty > agent-report.json
 ## Что проверяется сейчас
 
 - `/etc/os-release` для определения ОС.
-- `/etc/ssh/sshd_config` для проверки root login, password auth и пустых паролей.
+- `/etc/ssh/sshd_config` для проверки прямого входа root, входа по паролю и пустых паролей.
 - `ufw status` для состояния UFW.
 - наличие `fail2ban-client`.
 - `/etc/apt/apt.conf.d/20auto-upgrades` и `apt-check` для обновлений.
 - ограниченная проверка world-writable файлов в `/tmp` и `/var/tmp`.
-- Nginx-конфигурации для server tokens, security headers и HTTPS.
-- Docker CLI для privileged containers, docker.sock и root user, если Docker доступен.
+- Nginx-конфигурации для раскрытия версии, защитных заголовков и HTTPS.
+- Командная строка Docker для привилегированных контейнеров, docker.sock и root-пользователя, если Docker доступен.
 
 ## Безопасность
 
-Команды `remediate` и `rollback` пока являются no-op:
+Команды `remediate` и `rollback` пока являются безопасной заглушкой:
 
 ```bash
 python3 agent.py remediate --audit audit_001 --remediation disable_ssh_root_login
@@ -80,9 +80,9 @@ python3 agent.py rollback --backup backup_2026_06_02_001
 
 ## Будущее развитие
 
-- Реальный Backup Manager.
-- Реальный Remediation Manager.
-- Rollback Manager.
+- Реальный менеджер резервных копий.
+- Реальный менеджер исправлений.
+- Менеджер отката.
 - Интеграция Lynis.
 - Интеграция OpenSCAP.
 - YAML-правила для пользовательских проверок.

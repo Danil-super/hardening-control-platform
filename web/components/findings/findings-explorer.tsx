@@ -92,7 +92,7 @@ export function FindingsExplorer({ findings, profileId }: { findings: Finding[];
       </div>
 
       <div className="flex justify-end">
-        <LinkButton href={`/remediation?profileId=${profileId}`}>Перейти к remediation</LinkButton>
+        <LinkButton href={`/remediation?profileId=${profileId}`}>Перейти к исправлениям</LinkButton>
       </div>
     </section>
   );

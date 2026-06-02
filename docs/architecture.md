@@ -1,28 +1,31 @@
-# Architecture
+# Архитектура
 
-Hardening Control Platform is split into a web demo platform and a future local Linux Agent.
+Hardening Control Platform состоит из веб-платформы, демонстрационного движка аудита и локального Linux-агента.
 
 ```text
-Web Platform
-  Dashboard
-  Profiles
-  Demo Audit Engine
-  Findings Viewer
-  Remediation Planner
-  Backup Simulation
-  Before/After Report
-  Export JSON
+Веб-платформа
+  Главная панель
+  Профили аудита
+  Демонстрационный аудит
+  Просмотр результатов проверок
+  Планировщик исправлений
+  Имитация резервных копий
+  Отчет до/после
+  Экспорт JSON и HTML
+  Импорт результатов агента
+  История и сравнение импортов
 
-Future Linux Agent
-  OS Detection
-  Lynis Runner
-  OpenSCAP Runner
-  Custom Rule Engine
-  Backup Manager
-  Remediation Manager
-  Rollback Manager
+Локальный Linux-агент
+  Определение ОС
+  Безопасные audit-only проверки
+  Проверки SSH, UFW, fail2ban, обновлений, Nginx и Docker
+  JSON-отчет
+  Локальный bridge-сервер
+  Заглушки remediation/rollback без изменения ОС
 ```
 
-The MVP keeps all audit data in local TypeScript modules. Remediation is simulated in the browser: selected actions produce backup records, mark matching findings as fixed, rerun the demo audit model and generate a before/after report.
+Веб-часть хранит демонстрационные данные в TypeScript-модулях. В демо-режиме выбранные действия создают записи резервных копий в памяти браузера, отмечают связанные проблемы как исправленные, запускают повторный аудит и формируют отчет “до/после”.
 
-The web layer is prepared for agent integration by using typed entities: `AuditProfile`, `Finding`, `Remediation`, `AuditReport`, `BackupRecord` and `BeforeAfterReport`.
+Реальный аудит подключается через локальный агент из папки `agent`. Агент читает доступные конфигурации, выполняет безопасные команды проверки и возвращает JSON. Bridge-сервер отдает результат по локальному endpoint `GET /audit?profile=basic_linux`, после чего страница `/agent/import` сохраняет отчет в истории и позволяет сравнить несколько запусков.
+
+Общие сущности проекта: `AuditProfile`, `Finding`, `Remediation`, `AuditReport`, `BackupRecord` и `BeforeAfterReport`.

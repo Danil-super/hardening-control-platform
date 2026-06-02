@@ -1,15 +1,17 @@
-# Diploma Description
+# Описание дипломного проекта
 
-Topic: development of an extensible web platform for auditing and secure hardening of Linux servers with support for remediation, backup, rollback and before/after reporting.
+Тема: разработка расширяемой веб-платформы для аудита и безопасного харденинга Linux-серверов с поддержкой планирования исправлений, резервных копий, отката и отчетности “до/после”.
 
-The project demonstrates a complete security workflow without requiring root access or a live Linux target:
+Проект показывает полный сценарий управления безопасностью:
 
-1. Select an audit profile.
-2. Run a demo audit.
-3. Review findings and risk levels.
-4. Select remediation actions.
-5. Simulate backup and remediation.
-6. Run a demo re-audit.
-7. Export the before/after report.
+1. Выбор профиля аудита.
+2. Запуск демонстрационного аудита.
+3. Просмотр найденных проблем и уровней риска.
+4. Выбор действий по исправлению.
+5. Имитация резервной копии и применения исправлений.
+6. Повторный аудит.
+7. Экспорт отчета “до/после” в JSON или HTML.
 
-The MVP is intentionally a browser-safe demo suitable for GitHub and Vercel. It is not a replacement for Lynis, OpenSCAP or SCAP Security Guide; it is a management and demonstration layer that can later integrate these tools through a local agent.
+Дополнительно реализован локальный Linux-агент в безопасном режиме “только аудит”. Он выполняет реальные проверки хоста без изменения ОС, отдает JSON-отчет через локальный bridge-сервер, а сайт импортирует эти данные, сохраняет историю запусков и сравнивает отчеты.
+
+MVP безопасен для публикации на GitHub и Vercel: веб-сайт не требует root-доступа и не выполняет системные команды на сервере деплоя. Платформа не заменяет Lynis, OpenSCAP или SCAP Security Guide; она является управляющим и демонстрационным слоем, который можно расширять за счет локального агента и внешних инструментов аудита.

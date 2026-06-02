@@ -25,8 +25,8 @@ export default function Home() {
               Hardening Control Platform
             </h1>
             <p className="mt-4 max-w-3xl text-lg leading-8 text-slate-300">
-              Платформа аудита и безопасного харденинга Linux-серверов: профиль, findings, remediation, backup,
-              повторный аудит и отчет “до/после”.
+              Платформа аудита и безопасного харденинга Linux-серверов: профиль, результаты проверок, план исправлений,
+              резервные копии, повторный аудит и отчет “до/после”.
             </p>
           </div>
           <LinkButton href="/profiles">Выбрать профиль</LinkButton>
@@ -51,8 +51,8 @@ export default function Home() {
           <Radar className="text-sky-200" size={24} aria-hidden="true" />
           <h2 className="mt-4 text-xl font-semibold text-white">Будущий агент</h2>
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            Архитектура подготовлена под локальный Python Agent для Ubuntu/Debian, Lynis/OpenSCAP, backup,
-            remediation и rollback.
+            Архитектура подготовлена под локальный Python-агент для Ubuntu/Debian, Lynis/OpenSCAP, резервные копии,
+            исправления и откат.
           </p>
           <LinkButton href="/agent" variant="secondary" className="mt-4 w-full">Открыть контракт</LinkButton>
         </div>

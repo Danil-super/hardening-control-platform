@@ -1,12 +1,23 @@
-# Future Roadmap
+# Roadmap
 
-- Implement real Python Agent for Ubuntu/Debian.
-- Add OS detection through `/etc/os-release`.
-- Add Lynis runner and result parser.
-- Add custom YAML rules for Linux checks.
-- Add real backup and rollback flows.
-- Add OpenSCAP integration.
-- Add local containerized development environment.
-- Add RHEL, AlmaLinux and Rocky Linux through OS adapters.
-- Add authentication and multi-server inventory.
-- Add GitHub/Vercel release workflow.
+## Уже реализовано
+
+- Веб-платформа на Next.js с русскоязычным интерфейсом.
+- Четыре профиля аудита: базовый Linux, SSH, веб-сервер и Docker-хост.
+- Демонстрационный аудит, результаты проверок, план исправлений, имитация резервных копий и отчет “до/после”.
+- Экспорт JSON и HTML для отчетов.
+- Локальный Python-агент для Ubuntu/Debian в безопасном режиме “только аудит”.
+- Bridge-сервер для автоматического импорта отчета агента в сайт.
+- История импортов и сравнение двух агентских отчетов.
+
+## Следующие этапы
+
+- Расширить проверки агента до полного покрытия всех демонстрационных профилей.
+- Добавить подключаемые YAML-правила для Linux-проверок.
+- Подключить Lynis и парсер результатов.
+- Подключить OpenSCAP/SCAP Security Guide.
+- Реализовать реальные резервные копии, исправления и откат.
+- Добавить контейнеризированную локальную среду для разработки и показа.
+- Добавить адаптеры RHEL, AlmaLinux и Rocky Linux.
+- Добавить авторизацию и инвентаризацию нескольких серверов.
+- Настроить стабильный release workflow для GitHub и Vercel.

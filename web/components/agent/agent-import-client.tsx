@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, FileJson, GitCompare, History, PlugZap, Trash2, Upload } from "lucide-react";
+import { Download, FileJson, FileText, GitCompare, History, PlugZap, Trash2, Upload } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { RiskBadge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -48,6 +48,20 @@ const profileOptions = [
   { id: "docker_host", label: "Усиление Docker-хоста" },
 ];
 
+const riskLabels: Record<RiskLevel, string> = {
+  high: "Высокий",
+  medium: "Средний",
+  low: "Низкий",
+  info: "Инфо",
+};
+
+const statusLabels: Record<Finding["status"], string> = {
+  failed: "Не пройдено",
+  passed: "Пройдено",
+  fixed: "Исправлено",
+  manual: "Требует ручной проверки",
+};
+
 function normalizeReport(payload: unknown): AgentReport {
   if (!payload || typeof payload !== "object") {
     throw new Error("JSON должен быть объектом отчета агента.");
@@ -55,7 +69,7 @@ function normalizeReport(payload: unknown): AgentReport {
 
   const report = payload as AgentReport;
   if (!Array.isArray(report.findings)) {
-    throw new Error("В JSON не найден массив findings.");
+    throw new Error("В JSON не найден массив результатов проверок.");
   }
 
   return report;
@@ -101,6 +115,148 @@ function getActiveFindingIds(report: AgentReport | null) {
       .filter((finding) => finding.status !== "passed" && finding.status !== "fixed")
       .map((finding) => finding.id),
   );
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function getAuditConclusion(report: AgentReport | null) {
+  const summary = getSummary(report);
+  if (summary.high > 0) {
+    return {
+      title: "Обнаружены критичные отклонения",
+      text: "Хост требует приоритетного устранения высоких рисков до ввода в промышленную эксплуатацию.",
+      tone: "danger",
+    };
+  }
+  if (summary.medium > 0 || summary.score < 80) {
+    return {
+      title: "Требуется плановое усиление",
+      text: "Критичных рисков нет, но остаются настройки, которые нужно проверить вручную или усилить по регламенту.",
+      tone: "warning",
+    };
+  }
+  return {
+    title: "Профиль в хорошем состоянии",
+    text: "По данным текущего аудита хост соответствует базовым требованиям выбранного профиля.",
+    tone: "success",
+  };
+}
+
+function buildHtmlReport(report: AgentReport) {
+  const summary = getSummary(report);
+  const conclusion = getAuditConclusion(report);
+  const generatedAt = new Date().toLocaleString("ru-RU");
+  const activeFindings = report.findings?.filter((finding) => finding.status !== "passed" && finding.status !== "fixed") ?? [];
+  const passedFindings = report.findings?.filter((finding) => finding.status === "passed" || finding.status === "fixed") ?? [];
+  const rows = (report.findings ?? []).map((finding) => `
+    <tr>
+      <td>
+        <strong>${escapeHtml(finding.title)}</strong>
+        <p>${escapeHtml(finding.description)}</p>
+        <small>${escapeHtml(finding.recommendation)}</small>
+      </td>
+      <td>${escapeHtml(riskLabels[finding.risk])}</td>
+      <td>${escapeHtml(statusLabels[finding.status])}</td>
+      <td>${escapeHtml(finding.category)}</td>
+      <td><code>${escapeHtml(finding.evidence ?? "нет данных")}</code></td>
+    </tr>
+  `).join("");
+
+  return `<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Отчет аудита ${escapeHtml(report.profileId ?? "agent")}</title>
+  <style>
+    body { margin: 0; background: #f8fafc; color: #0f172a; font-family: Arial, sans-serif; }
+    main { max-width: 1120px; margin: 0 auto; padding: 32px 20px 48px; }
+    header { border-bottom: 2px solid #0f172a; padding-bottom: 20px; }
+    h1 { margin: 0; font-size: 28px; }
+    h2 { margin: 28px 0 12px; font-size: 20px; }
+    p { line-height: 1.55; }
+    .muted { color: #475569; }
+    .grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 12px; margin-top: 18px; }
+    .card { background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 14px; }
+    .card span { display: block; color: #64748b; font-size: 12px; text-transform: uppercase; }
+    .card strong { display: block; margin-top: 8px; font-size: 24px; }
+    .conclusion { border-radius: 8px; padding: 16px; margin-top: 18px; border: 1px solid #cbd5e1; background: #fff; }
+    .danger { border-color: #fca5a5; background: #fef2f2; }
+    .warning { border-color: #fcd34d; background: #fffbeb; }
+    .success { border-color: #86efac; background: #f0fdf4; }
+    dl { display: grid; grid-template-columns: 180px 1fr; gap: 8px 16px; }
+    dt { color: #64748b; }
+    dd { margin: 0; font-weight: 700; }
+    table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #cbd5e1; }
+    th, td { border-bottom: 1px solid #e2e8f0; padding: 10px; text-align: left; vertical-align: top; font-size: 13px; }
+    th { background: #e2e8f0; font-size: 12px; text-transform: uppercase; }
+    code { white-space: pre-wrap; word-break: break-word; font-family: Consolas, monospace; font-size: 12px; }
+    small { color: #334155; }
+    @media print { body { background: #fff; } main { padding: 0; } }
+    @media (max-width: 820px) { .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } dl { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Отчет аудита защищенности хоста</h1>
+      <p class="muted">Сформировано: ${escapeHtml(generatedAt)} · Источник: локальный Linux-агент · Режим: только аудит</p>
+    </header>
+
+    <section class="grid">
+      <div class="card"><span>Оценка</span><strong>${summary.score}%</strong></div>
+      <div class="card"><span>Высокий риск</span><strong>${summary.high}</strong></div>
+      <div class="card"><span>Средний риск</span><strong>${summary.medium}</strong></div>
+      <div class="card"><span>Низкий риск</span><strong>${summary.low}</strong></div>
+      <div class="card"><span>Инфо</span><strong>${summary.info}</strong></div>
+    </section>
+
+    <section class="conclusion ${conclusion.tone}">
+      <h2>${escapeHtml(conclusion.title)}</h2>
+      <p>${escapeHtml(conclusion.text)}</p>
+      <p class="muted">Активных результатов с риском: ${activeFindings.length}. Пройдено или исправлено: ${passedFindings.length}.</p>
+    </section>
+
+    <section>
+      <h2>Параметры аудита</h2>
+      <dl>
+        <dt>Audit ID</dt><dd>${escapeHtml(report.auditId ?? report.id ?? "не указан")}</dd>
+        <dt>Хост</dt><dd>${escapeHtml(report.hostname ?? "не указан")}</dd>
+        <dt>ОС</dt><dd>${escapeHtml(report.os ?? "не указана")}</dd>
+        <dt>Профиль</dt><dd>${escapeHtml(report.profileId ?? "не указан")}</dd>
+        <dt>Версия агента</dt><dd>${escapeHtml(report.agent?.version ?? "не указана")}</dd>
+      </dl>
+    </section>
+
+    <section>
+      <h2>Результаты проверок</h2>
+      <table>
+        <thead>
+          <tr><th>Проблема</th><th>Риск</th><th>Статус</th><th>Категория</th><th>Данные проверки</th></tr>
+        </thead>
+        <tbody>${rows || "<tr><td colspan=\"5\">Результаты проверок отсутствуют.</td></tr>"}</tbody>
+      </table>
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+function downloadBlob(content: string, filename: string, type: string) {
+  const blob = new Blob([content], { type });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 export function AgentImportClient() {
@@ -242,13 +398,14 @@ export function AgentImportClient() {
     if (!report) {
       return;
     }
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `agent-report-${report.profileId ?? "audit"}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadBlob(JSON.stringify(report, null, 2), `agent-report-${report.profileId ?? "audit"}.json`, "application/json");
+  }
+
+  function downloadAuditHtmlReport() {
+    if (!report) {
+      return;
+    }
+    downloadBlob(buildHtmlReport(report), `agent-report-${report.profileId ?? "audit"}.html`, "text/html;charset=utf-8");
   }
 
   function loadFromHistory(key: string) {
@@ -281,7 +438,7 @@ export function AgentImportClient() {
           </div>
           <p className="mt-3 text-sm leading-6 text-slate-400">
             Запустите `python3 server.py` в папке `agent`, затем нажмите кнопку ниже. Сайт запросит JSON у локального
-            bridge-сервера и покажет реальные findings.
+            промежуточного сервера и покажет реальные результаты проверок.
           </p>
 
           <div className="mt-5 grid gap-3 md:grid-cols-[minmax(0,1fr)_260px]">
@@ -355,6 +512,10 @@ export function AgentImportClient() {
             <Download size={16} aria-hidden="true" />
             Скачать текущий отчет
           </Button>
+          <Button variant="secondary" onClick={downloadAuditHtmlReport} disabled={!report}>
+            <FileText size={16} aria-hidden="true" />
+            Скачать HTML-отчет
+          </Button>
         </div>
         {error ? (
           <div className="mt-4 rounded-md border border-red-400/40 bg-red-500/15 p-4 text-sm leading-6 text-red-100">
@@ -374,7 +535,21 @@ export function AgentImportClient() {
           </div>
 
           <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-            <h2 className="text-xl font-semibold text-white">Отчет агента</h2>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-white">Отчет агента</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-400">{getAuditConclusion(report).text}</p>
+              </div>
+              <span className={`rounded-md border px-3 py-2 text-sm font-semibold ${
+                getAuditConclusion(report).tone === "danger"
+                  ? "border-red-400/40 bg-red-500/15 text-red-100"
+                  : getAuditConclusion(report).tone === "warning"
+                    ? "border-amber-400/40 bg-amber-500/15 text-amber-100"
+                    : "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
+              }`}>
+                {getAuditConclusion(report).title}
+              </span>
+            </div>
             <div className="mt-4 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
               <div className="rounded-md bg-slate-900 p-3">
                 <p className="text-slate-500">Audit ID</p>
@@ -404,7 +579,7 @@ export function AgentImportClient() {
                     <th className="px-4 py-3">Риск</th>
                     <th className="px-4 py-3">Статус</th>
                     <th className="px-4 py-3">Категория</th>
-                    <th className="px-4 py-3">Evidence</th>
+                    <th className="px-4 py-3">Данные проверки</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -460,7 +635,7 @@ export function AgentImportClient() {
                 >
                   <span className="block text-sm font-semibold text-white">{item.label}</span>
                   <span className="mt-1 block text-xs text-slate-500">
-                    Импорт: {new Date(item.importedAt).toLocaleString("ru-RU")} · Score {itemSummary.score}% · H:{itemSummary.high} M:{itemSummary.medium} L:{itemSummary.low} I:{itemSummary.info}
+                    Импорт: {new Date(item.importedAt).toLocaleString("ru-RU")} · Оценка {itemSummary.score}% · высокий:{itemSummary.high} средний:{itemSummary.medium} низкий:{itemSummary.low} инфо:{itemSummary.info}
                   </span>
                 </button>
               );
@@ -514,11 +689,11 @@ export function AgentImportClient() {
             <div className="mt-5 space-y-4">
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div className="rounded-md bg-slate-900 p-3">
-                  <p className="text-slate-500">Score до</p>
+                  <p className="text-slate-500">Оценка до</p>
                   <p className="mt-1 text-2xl font-semibold text-white">{comparison.before.score}%</p>
                 </div>
                 <div className="rounded-md bg-slate-900 p-3">
-                  <p className="text-slate-500">Score после</p>
+                  <p className="text-slate-500">Оценка после</p>
                   <p className="mt-1 text-2xl font-semibold text-white">
                     {comparison.after.score}%{" "}
                     <span className={comparison.delta.score >= 0 ? "text-emerald-200" : "text-red-200"}>
@@ -546,7 +721,7 @@ export function AgentImportClient() {
                   Исправлено/ушло из активных: {comparison.fixed.length}
                 </div>
                 <div className="rounded-md border border-red-400/30 bg-red-500/10 p-3 text-red-100">
-                  Новые активные findings: {comparison.newFindings.length}
+                  Новые активные результаты: {comparison.newFindings.length}
                 </div>
               </div>
             </div>
