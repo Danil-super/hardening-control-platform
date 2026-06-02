@@ -1,5 +1,6 @@
 import { notFound } from "next/navigation";
 import { AuditRunner } from "@/components/audit/audit-runner";
+import { DemoHostCard } from "@/components/dashboard/demo-host-card";
 import { LinkButton } from "@/components/ui/button";
 import { getProfile } from "@/data/profiles";
 
@@ -20,6 +21,7 @@ export default async function AuditPage({ params }: { params: Promise<{ profileI
         </div>
         <LinkButton href="/profiles" variant="secondary">Все профили</LinkButton>
       </div>
+      <DemoHostCard compact />
       <AuditRunner profileId={profile.id} />
     </div>
   );

@@ -1,4 +1,5 @@
 import { Activity, FileText, Layers, Radar, ShieldAlert } from "lucide-react";
+import { DemoHostCard } from "@/components/dashboard/demo-host-card";
 import { ProcessStrip } from "@/components/dashboard/process-strip";
 import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
@@ -31,6 +32,8 @@ export default function Home() {
           <LinkButton href="/profiles">Выбрать профиль</LinkButton>
         </div>
       </section>
+
+      <DemoHostCard />
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Профили" value={auditProfiles.length} detail="Linux, SSH, веб, Docker" icon={<Layers size={20} />} />

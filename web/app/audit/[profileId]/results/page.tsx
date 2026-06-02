@@ -1,4 +1,5 @@
 import { notFound } from "next/navigation";
+import { DemoHostCard } from "@/components/dashboard/demo-host-card";
 import { FindingsExplorer } from "@/components/findings/findings-explorer";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { getProfile } from "@/data/profiles";
@@ -27,6 +28,7 @@ export default async function AuditResultsPage({ params }: { params: Promise<{ p
         <SummaryCard label="Низкий" value={report.summary.low} detail="Улучшение усиления" />
         <SummaryCard label="Инфо" value={report.summary.info} detail="Контекстные проверки" />
       </div>
+      <DemoHostCard compact />
       <FindingsExplorer findings={report.findings} profileId={profile.id} />
     </div>
   );

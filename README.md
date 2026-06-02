@@ -36,6 +36,7 @@ npm run build
 - `/audit/[profileId]/results` summary, score, findings, фильтры по риску и категории.
 - `/remediation` выбор remediation, risk, affected files, backup, rollback и demo steps.
 - `/reports` отчет “до/после” и экспорт JSON.
+- `/guide` инструкция и сценарий демонстрации MVP.
 - `/agent` будущий Local Linux Agent и API-контракт.
 
 ## Краткая инструкция по работе на сайте
