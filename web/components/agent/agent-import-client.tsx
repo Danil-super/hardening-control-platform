@@ -6,7 +6,7 @@ import { RiskBadge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { getRemediationsForFindings } from "@/data/remediations";
-import type { Finding, Remediation, RiskLevel } from "@/types";
+import type { Finding, FindingSource, Remediation, RiskLevel } from "@/types";
 
 type AgentReport = {
   auditId?: string;
@@ -38,6 +38,8 @@ type StoredAgentReport = {
   importedAt: string;
   report: AgentReport;
 };
+
+type SourceFilter = FindingSource | "all";
 
 type AgentRemediationPlan = {
   generatedAt: string;
@@ -91,6 +93,30 @@ const statusLabels: Record<Finding["status"], string> = {
   fixed: "Исправлено",
   manual: "Требует ручной проверки",
 };
+
+const sourceLabels: Record<FindingSource, string> = {
+  demo: "Демо",
+  agent: "Агент",
+  lynis: "Lynis",
+  openscap: "OpenSCAP",
+  custom: "Пользовательский",
+};
+
+const sourceClasses: Record<FindingSource, string> = {
+  demo: "border-emerald-400/40 bg-emerald-500/15 text-emerald-100",
+  agent: "border-sky-400/40 bg-sky-500/15 text-sky-100",
+  lynis: "border-amber-400/40 bg-amber-500/15 text-amber-100",
+  openscap: "border-violet-400/40 bg-violet-500/15 text-violet-100",
+  custom: "border-slate-400/40 bg-slate-500/15 text-slate-200",
+};
+
+function SourceBadge({ source }: { source: FindingSource }) {
+  return (
+    <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold uppercase ${sourceClasses[source]}`}>
+      {sourceLabels[source]}
+    </span>
+  );
+}
 
 function normalizeReport(payload: unknown): AgentReport {
   if (!payload || typeof payload !== "object") {
@@ -149,6 +175,13 @@ function getActiveFindingIds(report: AgentReport | null) {
 
 function getActiveFindings(report: AgentReport | null) {
   return (report?.findings ?? []).filter((finding) => finding.status !== "passed" && finding.status !== "fixed");
+}
+
+function countSources(findings: Finding[]) {
+  return findings.reduce((counts, finding) => {
+    counts[finding.source] = (counts[finding.source] ?? 0) + 1;
+    return counts;
+  }, {} as Partial<Record<FindingSource, number>>);
 }
 
 function buildRemediationPlan(report: AgentReport | null): AgentRemediationPlan | null {
@@ -242,6 +275,7 @@ function buildHtmlReport(report: AgentReport) {
       </td>
       <td>${escapeHtml(riskLabels[finding.risk])}</td>
       <td>${escapeHtml(statusLabels[finding.status])}</td>
+      <td>${escapeHtml(sourceLabels[finding.source])}</td>
       <td>${escapeHtml(finding.category)}</td>
       <td><code>${escapeHtml(finding.evidence ?? "нет данных")}</code></td>
     </tr>
@@ -317,9 +351,9 @@ function buildHtmlReport(report: AgentReport) {
       <h2>Результаты проверок</h2>
       <table>
         <thead>
-          <tr><th>Проблема</th><th>Риск</th><th>Статус</th><th>Категория</th><th>Данные проверки</th></tr>
+          <tr><th>Проблема</th><th>Риск</th><th>Статус</th><th>Источник</th><th>Категория</th><th>Данные проверки</th></tr>
         </thead>
-        <tbody>${rows || "<tr><td colspan=\"5\">Результаты проверок отсутствуют.</td></tr>"}</tbody>
+        <tbody>${rows || "<tr><td colspan=\"6\">Результаты проверок отсутствуют.</td></tr>"}</tbody>
       </table>
     </section>
   </main>
@@ -346,10 +380,20 @@ export function AgentImportClient() {
   const [history, setHistory] = useState<StoredAgentReport[]>([]);
   const [baselineKey, setBaselineKey] = useState("");
   const [currentKey, setCurrentKey] = useState("");
+  const [sourceFilter, setSourceFilter] = useState<SourceFilter>("all");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
   const findings = report?.findings ?? [];
+  const filteredFindings = useMemo(
+    () => findings.filter((finding) => sourceFilter === "all" || finding.source === sourceFilter),
+    [findings, sourceFilter],
+  );
+  const sourceCounts = useMemo(() => countSources(findings), [findings]);
+  const sourceOptions = useMemo(
+    () => (Object.keys(sourceCounts) as FindingSource[]).sort((left, right) => left.localeCompare(right)),
+    [sourceCounts],
+  );
   const summary = useMemo(() => getSummary(report), [report]);
   const remediationPlan = useMemo(() => buildRemediationPlan(report), [report]);
   const baselineReport = history.find((item) => item.key === baselineKey)?.report ?? null;
@@ -417,6 +461,7 @@ export function AgentImportClient() {
     saveHistory(nextHistory);
     setReport(normalized);
     setCurrentKey(key);
+    setSourceFilter("all");
     if (!baselineKey && nextHistory[1]) {
       setBaselineKey(nextHistory[1].key);
     }
@@ -510,6 +555,7 @@ export function AgentImportClient() {
     setReport(item.report);
     setCurrentKey(key);
     setRawJson(JSON.stringify(item.report, null, 2));
+    setSourceFilter("all");
     setError("");
   }
 
@@ -519,6 +565,7 @@ export function AgentImportClient() {
     setCurrentKey("");
     setReport(null);
     setRawJson("");
+    setSourceFilter("all");
     window.localStorage.removeItem(lastReportStorageKey);
   }
 
@@ -649,6 +696,45 @@ export function AgentImportClient() {
           </div>
 
           <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-white">Источники результатов</h2>
+                <p className="mt-2 text-sm leading-6 text-slate-400">
+                  Разделение показывает, какие проверки выполнены базовым агентом, а какие пришли из внешних сканеров.
+                </p>
+              </div>
+              <label className="block min-w-[220px]">
+                <span className="text-xs font-semibold uppercase text-slate-500">Фильтр источника</span>
+                <select
+                  value={sourceFilter}
+                  onChange={(event) => setSourceFilter(event.target.value as SourceFilter)}
+                  className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+                >
+                  <option value="all">Все источники</option>
+                  {sourceOptions.map((source) => (
+                    <option key={source} value={source}>
+                      {sourceLabels[source]} ({sourceCounts[source] ?? 0})
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+              {sourceOptions.length ? sourceOptions.map((source) => (
+                <div key={source} className="rounded-md border border-slate-800 bg-slate-900/70 p-3">
+                  <SourceBadge source={source} />
+                  <p className="mt-3 text-2xl font-semibold text-white">{sourceCounts[source] ?? 0}</p>
+                  <p className="mt-1 text-xs text-slate-500">результатов проверки</p>
+                </div>
+              )) : (
+                <p className="rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-400">
+                  Источники появятся после импорта отчета.
+                </p>
+              )}
+            </div>
+          </div>
+
+          <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <h2 className="text-xl font-semibold text-white">Отчет агента</h2>
@@ -766,10 +852,11 @@ export function AgentImportClient() {
 
           <div className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[940px] border-collapse text-left text-sm">
+              <table className="w-full min-w-[1040px] border-collapse text-left text-sm">
                 <thead className="border-b border-slate-800 bg-slate-900/80 text-xs uppercase text-slate-400">
                   <tr>
                     <th className="px-4 py-3">Проблема</th>
+                    <th className="px-4 py-3">Источник</th>
                     <th className="px-4 py-3">Риск</th>
                     <th className="px-4 py-3">Статус</th>
                     <th className="px-4 py-3">Категория</th>
@@ -777,13 +864,14 @@ export function AgentImportClient() {
                   </tr>
                 </thead>
                 <tbody>
-                  {findings.map((finding) => (
+                  {filteredFindings.map((finding) => (
                     <tr key={finding.id} className="border-b border-slate-900 align-top last:border-b-0">
                       <td className="px-4 py-4">
                         <p className="font-semibold text-white">{finding.title}</p>
                         <p className="mt-1 max-w-xl leading-6 text-slate-400">{finding.description}</p>
                         <p className="mt-2 text-slate-300">{finding.recommendation}</p>
                       </td>
+                      <td className="px-4 py-4"><SourceBadge source={finding.source} /></td>
                       <td className="px-4 py-4"><RiskBadge risk={finding.risk} /></td>
                       <td className="px-4 py-4"><StatusBadge status={finding.status} /></td>
                       <td className="px-4 py-4 text-slate-300">{finding.category}</td>
@@ -796,6 +884,11 @@ export function AgentImportClient() {
                   ))}
                 </tbody>
               </table>
+              {!filteredFindings.length ? (
+                <div className="border-t border-slate-800 p-5 text-sm text-slate-400">
+                  Для выбранного источника результатов нет.
+                </div>
+              ) : null}
             </div>
           </div>
         </section>
