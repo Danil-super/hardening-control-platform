@@ -2,7 +2,7 @@ export type RiskLevel = "high" | "medium" | "low" | "info";
 
 export type FindingStatus = "failed" | "passed" | "fixed" | "manual";
 
-export type FindingSource = "demo" | "lynis" | "openscap" | "custom";
+export type FindingSource = "demo" | "agent" | "lynis" | "openscap" | "custom";
 
 export type AuditProfile = {
   id: string;
@@ -27,6 +27,7 @@ export type Finding = {
   remediationAvailable: boolean;
   remediationId?: string;
   affectedFiles?: string[];
+  evidence?: string;
 };
 
 export type Remediation = {

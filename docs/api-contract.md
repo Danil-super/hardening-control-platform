@@ -8,6 +8,32 @@
 POST /agent/audit
 ```
 
+## Local Agent Bridge
+
+Для автоматического импорта веб-интерфейс может обращаться к локальному bridge-серверу агента:
+
+```bash
+cd agent
+python3 server.py
+```
+
+Endpoints:
+
+```http
+GET http://127.0.0.1:8765/health
+GET http://127.0.0.1:8765/profiles
+GET http://127.0.0.1:8765/audit?profile=basic_linux
+POST http://127.0.0.1:8765/audit
+```
+
+POST body:
+
+```json
+{
+  "profileId": "basic_linux"
+}
+```
+
 Request:
 
 ```json

@@ -37,6 +37,7 @@ npm run build
 - `/remediation` выбор remediation, risk, affected files, backup, rollback и demo steps.
 - `/reports` отчет “до/после” и экспорт JSON.
 - `/guide` инструкция и сценарий демонстрации MVP.
+- `/agent/import` автоматический или ручной импорт JSON-отчета локального агента.
 - `/agent` будущий Local Linux Agent и API-контракт.
 
 ## Краткая инструкция по работе на сайте
@@ -49,6 +50,26 @@ npm run build
 6. Откройте `Отчеты`, чтобы увидеть сравнение “до/после” и скачать JSON-отчет.
 
 Подробная инструкция находится в `docs/site-guide.md`.
+
+## Связка с локальным агентом
+
+Запустить agent bridge:
+
+```bash
+cd agent
+python3 server.py
+```
+
+Затем открыть на сайте `/agent/import` и нажать `Получить аудит от агента`.
+
+Ручной fallback:
+
+```bash
+cd agent
+python3 agent.py audit --profile basic_linux --pretty > agent-report.json
+```
+
+После этого файл можно загрузить на странице `/agent/import`.
 
 ## Термины
 

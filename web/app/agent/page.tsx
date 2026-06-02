@@ -1,4 +1,5 @@
 import { CheckCircle2, Shield, Terminal } from "lucide-react";
+import { LinkButton } from "@/components/ui/button";
 
 const auditRequest = `POST /agent/audit
 {
@@ -68,6 +69,9 @@ python3 agent.py audit --profile docker_host --pretty`}</code>
           <div className="mt-4 rounded-md border border-emerald-400/30 bg-emerald-500/10 p-4 text-sm leading-6 text-emerald-100">
             Агент безопасен для запуска: он не изменяет файлы, не перезапускает службы и не включает firewall.
           </div>
+          <LinkButton href="/agent/import" className="mt-4 w-full">
+            Открыть импорт результатов агента
+          </LinkButton>
         </div>
 
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
@@ -90,6 +94,15 @@ python3 agent.py audit --profile docker_host --pretty`}</code>
           Команды `remediate` и `rollback` сейчас возвращают JSON со статусом `not_implemented`. Это сделано намеренно:
           сначала агент должен безопасно собирать факты и отдавать отчет, а реальные изменения будут добавляться только
           после реализации backup и rollback.
+        </p>
+      </section>
+
+      <section className="rounded-md border border-sky-400/25 bg-slate-950/70 p-5">
+        <h2 className="text-xl font-semibold text-white">Автоматизация импорта</h2>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          Для автоматической связки запустите локальный bridge: `python3 server.py`. После этого страница импорта сможет
+          получить отчет по адресу `http://127.0.0.1:8765/audit?profile=basic_linux`. Если браузер блокирует локальный
+          запрос, используйте загрузку JSON-файла на той же странице.
         </p>
       </section>
 

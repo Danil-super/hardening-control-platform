@@ -13,6 +13,37 @@ python3 agent.py audit --profile web_server --pretty
 python3 agent.py audit --profile docker_host --pretty
 ```
 
+## Автоматический импорт в сайт
+
+Запустите локальный bridge-сервер:
+
+```bash
+python3 server.py
+```
+
+По умолчанию он слушает:
+
+```text
+http://127.0.0.1:8765
+```
+
+Доступные endpoints:
+
+- `GET /health`
+- `GET /profiles`
+- `GET /audit?profile=basic_linux`
+- `POST /audit` с JSON `{ "profileId": "basic_linux" }`
+
+После запуска bridge откройте на сайте страницу `/agent/import` и нажмите `Получить аудит от агента`.
+
+Fallback без bridge:
+
+```bash
+python3 agent.py audit --profile basic_linux --pretty > agent-report.json
+```
+
+Затем загрузите `agent-report.json` на странице `/agent/import`.
+
 Поддерживаемые профили:
 
 - `basic_linux`
