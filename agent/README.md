@@ -8,6 +8,7 @@
 
 ```bash
 python3 agent.py audit --profile basic_linux --pretty
+python3 agent.py audit --profile basic_linux --include-lynis --pretty
 python3 agent.py audit --profile ssh_security --pretty
 python3 agent.py audit --profile web_server --pretty
 python3 agent.py audit --profile docker_host --pretty
@@ -34,6 +35,7 @@ http://127.0.0.1:8765
 - `GET /health`
 - `GET /profiles`
 - `GET /audit?profile=basic_linux`
+- `GET /audit?profile=basic_linux&includeLynis=1`
 - `POST /audit` с JSON `{ "profileId": "basic_linux" }`
 
 После запуска сервера откройте на сайте страницу `/agent/import` и нажмите `Получить аудит от агента`.
@@ -125,6 +127,7 @@ sudo ./uninstall.sh --remove-files
 - ограниченная проверка world-writable файлов в `/tmp` и `/var/tmp`.
 - Nginx-конфигурации для раскрытия версии, защитных заголовков и HTTPS.
 - Командная строка Docker для привилегированных контейнеров, docker.sock и root-пользователя, если Docker доступен.
+- Опциональный запуск Lynis с нормализацией предупреждений и рекомендаций в единый формат отчета.
 
 ## Безопасность
 
@@ -142,6 +145,5 @@ python3 agent.py rollback --backup backup_2026_06_02_001
 - Реальный менеджер резервных копий.
 - Реальный менеджер исправлений.
 - Менеджер отката.
-- Интеграция Lynis.
 - Интеграция OpenSCAP.
 - YAML-правила для пользовательских проверок.

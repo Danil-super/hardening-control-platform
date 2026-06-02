@@ -56,7 +56,8 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
         if parsed.path == "/audit":
             params = parse_qs(parsed.query)
             profile = params.get("profile", ["basic_linux"])[0]
-            self.handle_audit(profile)
+            include_lynis = parse_bool(params.get("includeLynis", ["false"])[0])
+            self.handle_audit(profile, include_lynis=include_lynis)
             return
 
         self.write_json({"error": "not_found", "message": "Unknown endpoint"}, HTTPStatus.NOT_FOUND)
@@ -76,9 +77,10 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             return
 
         profile = str(body.get("profileId") or body.get("profile") or "basic_linux")
-        self.handle_audit(profile)
+        include_lynis = parse_body_bool(body.get("includeLynis", body.get("lynis", False)))
+        self.handle_audit(profile, include_lynis=include_lynis)
 
-    def handle_audit(self, profile: str) -> None:
+    def handle_audit(self, profile: str, include_lynis: bool = False) -> None:
         if profile not in ALLOWED_PROFILES:
             self.write_json(
                 {
@@ -90,7 +92,19 @@ class AgentRequestHandler(BaseHTTPRequestHandler):
             )
             return
 
-        self.write_json(run_audit(profile))
+        self.write_json(run_audit(profile, include_lynis=include_lynis))
+
+
+def parse_bool(value: str) -> bool:
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+def parse_body_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return parse_bool(value)
+    return bool(value)
 
 
 def main() -> None:
@@ -102,6 +116,7 @@ def main() -> None:
     server = ThreadingHTTPServer((args.host, args.port), AgentRequestHandler)
     print(f"Hardening Control Platform Agent Bridge listening on http://{args.host}:{args.port}")
     print("Endpoints: GET /health, GET /profiles, GET /audit?profile=basic_linux, POST /audit")
+    print("Optional Lynis: GET /audit?profile=basic_linux&includeLynis=1")
     print("Press Ctrl+C to stop the bridge.")
     try:
         server.serve_forever()

@@ -15,9 +15,15 @@ const auditResponse = `{
   "profileId": "basic_linux",
   "mode": "agent",
   "agent": {
-    "version": "0.1.0",
+    "version": "0.2.0",
     "safeMode": true,
-    "remediationEnabled": false
+    "remediationEnabled": false,
+    "integrations": {
+      "lynis": {
+        "enabled": true,
+        "findings": 4
+      }
+    }
   },
   "findings": [],
   "summary": {
@@ -71,6 +77,7 @@ export default function AgentPage() {
           <pre className="mt-4 overflow-x-auto rounded-md bg-slate-900 p-4 text-sm text-slate-200">
             <code>{`cd agent
 python3 agent.py audit --profile basic_linux --pretty
+python3 agent.py audit --profile basic_linux --include-lynis --pretty
 python3 agent.py audit --profile ssh_security --pretty
 python3 agent.py audit --profile web_server --pretty
 python3 agent.py audit --profile docker_host --pretty`}</code>
@@ -107,12 +114,12 @@ python3 agent.py audit --profile docker_host --pretty`}</code>
       </section>
 
       <section className="rounded-md border border-sky-400/25 bg-slate-950/70 p-5">
-        <h2 className="text-xl font-semibold text-white">Автоматизация импорта</h2>
-        <p className="mt-3 text-sm leading-6 text-slate-400">
-          Для автоматической связки запустите локальный промежуточный сервер: `python3 server.py`. После этого страница
-          импорта сможет получить отчет по адресу `http://127.0.0.1:8765/audit?profile=basic_linux`. Если браузер
-          блокирует локальный запрос, используйте загрузку JSON-файла на той же странице.
-        </p>
+          <h2 className="text-xl font-semibold text-white">Автоматизация импорта</h2>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            Для автоматической связки запустите локальный промежуточный сервер: `python3 server.py`. После этого страница
+            импорта сможет получить отчет по адресу `http://127.0.0.1:8765/audit?profile=basic_linux`. Расширенный аудит
+            Lynis включается через `includeLynis=1` или переключатель на странице импорта.
+          </p>
       </section>
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">

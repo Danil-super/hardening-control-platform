@@ -340,6 +340,7 @@ function downloadBlob(content: string, filename: string, type: string) {
 export function AgentImportClient() {
   const [endpoint, setEndpoint] = useState("http://127.0.0.1:8765");
   const [profileId, setProfileId] = useState("basic_linux");
+  const [includeLynis, setIncludeLynis] = useState(false);
   const [rawJson, setRawJson] = useState("");
   const [report, setReport] = useState<AgentReport | null>(null);
   const [history, setHistory] = useState<StoredAgentReport[]>([]);
@@ -429,10 +430,13 @@ export function AgentImportClient() {
     setError("");
     try {
       const base = endpoint.replace(/\/$/, "");
-      const response = await fetch(`${base}/audit?profile=${encodeURIComponent(profileId)}`, {
-        method: "GET",
-        headers: { Accept: "application/json" },
-      });
+      const response = await fetch(
+        `${base}/audit?profile=${encodeURIComponent(profileId)}${includeLynis ? "&includeLynis=1" : ""}`,
+        {
+          method: "GET",
+          headers: { Accept: "application/json" },
+        },
+      );
 
       if (!response.ok) {
         throw new Error(`Локальный агент вернул HTTP ${response.status}`);
@@ -555,6 +559,22 @@ export function AgentImportClient() {
               </select>
             </label>
           </div>
+
+          <label className="mt-4 flex items-start gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-300">
+            <input
+              type="checkbox"
+              checked={includeLynis}
+              onChange={(event) => setIncludeLynis(event.target.checked)}
+              className="mt-1 h-4 w-4 rounded border-slate-600 bg-slate-950"
+            />
+            <span>
+              <span className="block font-semibold text-white">Включить расширенный аудит Lynis</span>
+              <span className="mt-1 block leading-6 text-slate-400">
+                Агент попробует запустить Lynis на локальном хосте и добавить найденные предупреждения в отчет.
+                Если Lynis не установлен, отчет останется валидным и покажет отдельную рекомендацию.
+              </span>
+            </span>
+          </label>
 
           <Button onClick={fetchFromLocalAgent} disabled={loading} className="mt-5">
             <PlugZap size={16} aria-hidden="true" />

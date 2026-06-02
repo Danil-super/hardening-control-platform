@@ -103,6 +103,8 @@ sudo ./uninstall.sh --dry-run
 
 Папка `agent` содержит безопасную audit-only версию Python-агента. Агент запускается на Ubuntu/Debian, определяет ОС, проверяет доступные настройки SSH, UFW, fail2ban, обновлений, Nginx и Docker, а затем возвращает JSON-отчет. Команды реального исправления и отката пока являются заглушками и не изменяют систему.
 
+Lynis уже подключается опционально: `python3 agent.py audit --profile basic_linux --include-lynis --pretty` или переключатель `Включить расширенный аудит Lynis` на странице `/agent/import`.
+
 ## Деплой на Vercel
 
 1. Опубликовать проект на GitHub.
@@ -116,7 +118,7 @@ sudo ./uninstall.sh --dry-run
 - Нет запуска `systemctl`, `ufw`, `sshd`, `nginx` на Vercel.
 - Нет контейнеризации.
 - Нет многопользовательской авторизации.
-- Нет полной интеграции с Lynis/OpenSCAP.
+- Нет полной интеграции с OpenSCAP/SCAP Security Guide.
 
 ## Roadmap
 

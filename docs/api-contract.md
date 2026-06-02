@@ -23,6 +23,7 @@ python3 server.py
 GET http://127.0.0.1:8765/health
 GET http://127.0.0.1:8765/profiles
 GET http://127.0.0.1:8765/audit?profile=basic_linux
+GET http://127.0.0.1:8765/audit?profile=basic_linux&includeLynis=1
 POST http://127.0.0.1:8765/audit
 ```
 
@@ -30,7 +31,8 @@ POST http://127.0.0.1:8765/audit
 
 ```json
 {
-  "profileId": "basic_linux"
+  "profileId": "basic_linux",
+  "includeLynis": true
 }
 ```
 
@@ -39,7 +41,8 @@ POST http://127.0.0.1:8765/audit
 ```json
 {
   "profileId": "basic_linux",
-  "mode": "audit_only"
+  "mode": "audit_only",
+  "includeLynis": true
 }
 ```
 
@@ -54,10 +57,16 @@ POST http://127.0.0.1:8765/audit
   "profileId": "basic_linux",
   "mode": "agent",
   "agent": {
-    "version": "0.1.0",
+    "version": "0.2.0",
     "safeMode": true,
     "remediationEnabled": false,
-    "user": "admin"
+    "user": "admin",
+    "integrations": {
+      "lynis": {
+        "enabled": true,
+        "findings": 4
+      }
+    }
   },
   "findings": [],
   "summary": {
@@ -71,7 +80,7 @@ POST http://127.0.0.1:8765/audit
 
 ## Исправления
 
-В версии `0.1.0` исправления являются безопасной заглушкой и не изменяют ОС.
+В версии `0.2.0` исправления являются безопасной заглушкой и не изменяют ОС.
 
 ```http
 POST /agent/remediate

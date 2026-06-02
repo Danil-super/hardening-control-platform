@@ -108,6 +108,7 @@ def finding(
     remediation_id: str | None = None,
     affected_files: list[str] | None = None,
     evidence: str | None = None,
+    source: str = "agent",
 ) -> Finding:
     return Finding(
         id=id,
@@ -116,7 +117,7 @@ def finding(
         category=category,
         risk=risk,
         status=status,
-        source="agent",
+        source=source,
         description=description,
         recommendation=recommendation,
         remediationAvailable=remediation_available,
@@ -596,6 +597,108 @@ def check_docker_root_user(profile_id: str) -> Finding:
     )
 
 
+def normalize_lynis_line(line: str) -> str:
+    line = re.sub(r"\x1b\[[0-9;]*m", "", line)
+    return line.strip(" \t-*")
+
+
+def parse_lynis_findings(profile_id: str, output: str, limit: int = 30) -> list[Finding]:
+    results: list[Finding] = []
+    seen: set[str] = set()
+    warning_pattern = re.compile(r"\[\s*WARNING\s*\]\s*:?\s*(.+)", re.IGNORECASE)
+    suggestion_pattern = re.compile(r"\[\s*SUGGESTION\s*\]\s*:?\s*(.+)", re.IGNORECASE)
+    test_id_pattern = re.compile(r"\[([A-Z0-9]{4}-[0-9]{4})\]")
+
+    for raw_line in output.splitlines():
+        line = normalize_lynis_line(raw_line)
+        if not line:
+            continue
+
+        risk: Risk | None = None
+        title = ""
+        match = warning_pattern.search(line)
+        if match:
+            risk = "high"
+            title = match.group(1).strip()
+        else:
+            match = suggestion_pattern.search(line)
+            if match:
+                risk = "medium"
+                title = match.group(1).strip()
+
+        if risk is None or not title:
+            continue
+
+        test_id_match = test_id_pattern.search(title)
+        test_id = test_id_match.group(1).lower() if test_id_match else f"item_{len(results) + 1:03d}"
+        finding_id = f"lynis_{test_id}"
+        if finding_id in seen:
+            continue
+
+        seen.add(finding_id)
+        results.append(
+            finding(
+                id=finding_id,
+                profile_id=profile_id,
+                title=f"Lynis: {title}",
+                category="Lynis",
+                risk=risk,
+                status="manual",
+                description="Lynis обнаружил предупреждение или рекомендацию, которую нужно проверить администратору.",
+                recommendation="Открыть подробности Lynis по test-id, оценить влияние на сервер и добавить действие в план исправлений.",
+                remediation_available=False,
+                evidence=line,
+                source="lynis",
+            ),
+        )
+        if len(results) >= limit:
+            break
+
+    return results
+
+
+def run_lynis_checks(profile_id: str, timeout: int = 120) -> list[Finding]:
+    lynis_path = shutil.which("lynis")
+    if lynis_path is None:
+        return [
+            finding(
+                id="lynis_not_installed",
+                profile_id=profile_id,
+                title="Lynis не установлен",
+                category="Lynis",
+                risk="info",
+                status="manual",
+                description="Расширенный аудит Lynis запрошен, но команда lynis не найдена в системе.",
+                recommendation="Установить Lynis через пакетный менеджер и повторить аудит с флагом --include-lynis.",
+                remediation_available=False,
+                evidence="command not found",
+                source="lynis",
+            ),
+        ]
+
+    code, stdout, stderr = run_command([lynis_path, "audit", "system", "--no-colors", "--quiet"], timeout=timeout)
+    output = "\n".join(part for part in [stdout, stderr] if part)
+    parsed = parse_lynis_findings(profile_id, output)
+    if parsed:
+        return parsed
+
+    return [
+        finding(
+            id="lynis_completed",
+            profile_id=profile_id,
+            title="Lynis выполнен, предупреждения не извлечены",
+            category="Lynis",
+            risk="info",
+            status="passed" if code == 0 else "manual",
+            description="Агент запустил Lynis, но не нашел строк WARNING/SUGGESTION в выводе.",
+            recommendation="При необходимости изучить полный вывод Lynis на хосте или запустить Lynis вручную.",
+            remediation_available=False,
+            evidence=f"exit={code}, output_lines={len(output.splitlines())}",
+            source="lynis",
+        ),
+    ]
+
+
 def checks_for_profile(profile_id: str) -> list[Finding]:
     basic = [
         check_ufw(profile_id),
@@ -642,9 +745,13 @@ def build_summary(findings: list[Finding]) -> dict[str, int]:
     return summary
 
 
-def run_audit(profile_id: str) -> dict[str, object]:
+def run_audit(profile_id: str, include_lynis: bool = False, lynis_timeout: int = 120) -> dict[str, object]:
     os_release = parse_os_release()
     findings = checks_for_profile(profile_id)
+    if include_lynis:
+        findings.extend(run_lynis_checks(profile_id, timeout=lynis_timeout))
+
+    lynis_findings = [item for item in findings if item.source == "lynis"]
     return {
         "auditId": f"agent_audit_{profile_id}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}",
         "createdAt": utc_now(),
@@ -653,10 +760,16 @@ def run_audit(profile_id: str) -> dict[str, object]:
         "profileId": profile_id,
         "mode": "agent",
         "agent": {
-            "version": "0.1.0",
+            "version": "0.2.0",
             "safeMode": True,
             "remediationEnabled": False,
             "user": os.environ.get("USER", "unknown"),
+            "integrations": {
+                "lynis": {
+                    "enabled": include_lynis,
+                    "findings": len(lynis_findings),
+                },
+            },
         },
         "summary": build_summary(findings),
         "findings": [asdict(item) for item in findings],
@@ -682,11 +795,13 @@ def main() -> None:
     parser.add_argument("--audit")
     parser.add_argument("--remediation")
     parser.add_argument("--backup")
+    parser.add_argument("--include-lynis", action="store_true", help="Run optional Lynis audit if lynis is installed")
+    parser.add_argument("--lynis-timeout", type=int, default=120, help="Timeout for optional Lynis audit in seconds")
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
     args = parser.parse_args()
 
     if args.command == "audit":
-        payload = run_audit(args.profile)
+        payload = run_audit(args.profile, include_lynis=args.include_lynis, lynis_timeout=args.lynis_timeout)
     else:
         payload = no_op_response(args.command, args)
 
