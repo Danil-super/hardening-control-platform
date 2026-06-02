@@ -81,6 +81,8 @@ python3 agent.py audit --profile basic_linux --pretty > agent-report.json
 cd agent
 ./install.sh --dry-run
 sudo ./install.sh --enable --start
+./doctor.sh
+sudo ./uninstall.sh --dry-run
 ```
 
 ## Термины

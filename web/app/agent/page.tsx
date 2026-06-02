@@ -38,8 +38,11 @@ const remediateRequest = `POST /agent/remediate
 const installCommands = `cd agent
 ./install.sh --dry-run
 sudo ./install.sh --enable --start
+./doctor.sh
 curl http://127.0.0.1:8765/health
-sudo systemctl status hcp-agent-bridge.service`;
+sudo systemctl status hcp-agent-bridge.service
+sudo ./uninstall.sh --dry-run
+sudo ./uninstall.sh --remove-files`;
 
 const currentChecks = [
   "Определение ОС через /etc/os-release",
@@ -114,11 +117,16 @@ python3 agent.py audit --profile docker_host --pretty`}</code>
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h2 className="text-xl font-semibold text-white">Установка агента как сервиса</h2>
+          <h2 className="text-xl font-semibold text-white">Жизненный цикл агента</h2>
           <p className="mt-3 text-sm leading-6 text-slate-400">
             В репозитории есть `agent/install.sh` и шаблон systemd unit. Скрипт копирует агента в `/opt`,
             регистрирует локальный сервис и по умолчанию слушает только `127.0.0.1`. Перед установкой можно выполнить
             dry-run, чтобы увидеть план без изменения системы.
+          </p>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            `doctor.sh` проверяет синтаксис, выполняет тестовый аудит и пробует обратиться к `/health`.
+            `uninstall.sh` останавливает сервис, снимает автозапуск и удаляет unit-файл; установленные файлы удаляются
+            только при явном флаге `--remove-files`.
           </p>
           <div className="mt-4 rounded-md border border-emerald-400/30 bg-emerald-500/10 p-4 text-sm leading-6 text-emerald-100">
             Установленный сервис остается в режиме “только аудит”: он читает настройки и отдает JSON, но не применяет

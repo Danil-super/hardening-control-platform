@@ -72,11 +72,41 @@ sudo ./install.sh --enable --start
 После запуска проверьте состояние:
 
 ```bash
+./doctor.sh
 curl http://127.0.0.1:8765/health
 sudo systemctl status hcp-agent-bridge.service
 ```
 
 По умолчанию сервис слушает только `127.0.0.1`, то есть не открывает внешний сетевой доступ.
+
+## Диагностика
+
+Скрипт `doctor.sh` проверяет наличие Python, синтаксис агента, выполняет один audit-only запуск и проверяет `/health`, если промежуточный сервер уже запущен:
+
+```bash
+./doctor.sh
+./doctor.sh --profile ssh_security
+```
+
+## Удаление сервиса
+
+Перед удалением можно посмотреть план:
+
+```bash
+sudo ./uninstall.sh --dry-run
+```
+
+Удалить unit-файл, остановить сервис и снять автозапуск:
+
+```bash
+sudo ./uninstall.sh
+```
+
+Удалить также установленные файлы агента:
+
+```bash
+sudo ./uninstall.sh --remove-files
+```
 
 Поддерживаемые профили:
 
