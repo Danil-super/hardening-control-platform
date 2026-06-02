@@ -1,4 +1,4 @@
-import { Terminal } from "lucide-react";
+import { CheckCircle2, Shield, Terminal } from "lucide-react";
 
 const auditRequest = `POST /agent/audit
 {
@@ -7,9 +7,17 @@ const auditRequest = `POST /agent/audit
 }`;
 
 const auditResponse = `{
-  "auditId": "audit_001",
+  "auditId": "agent_audit_basic_linux_20260602150000",
+  "createdAt": "2026-06-02T15:00:00+00:00",
   "hostname": "ubuntu-server",
   "os": "Ubuntu 24.04",
+  "profileId": "basic_linux",
+  "mode": "agent",
+  "agent": {
+    "version": "0.1.0",
+    "safeMode": true,
+    "remediationEnabled": false
+  },
   "findings": [],
   "summary": {
     "high": 3,
@@ -26,38 +34,63 @@ const remediateRequest = `POST /agent/remediate
   "createBackup": true
 }`;
 
+const currentChecks = [
+  "Определение ОС через /etc/os-release",
+  "Проверка sshd_config: root login, password auth, empty passwords",
+  "Проверка UFW, fail2ban и unattended-upgrades",
+  "Ограниченная проверка world-writable файлов",
+  "Статическая проверка Nginx: server tokens, headers, HTTPS",
+  "Проверка Docker-контейнеров, если Docker CLI доступен",
+];
+
 export default function AgentPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-semibold text-white">Будущий локальный Linux Agent</h1>
+        <h1 className="text-3xl font-semibold text-white">Локальный Linux Agent</h1>
         <p className="mt-2 max-w-3xl text-slate-400">
-          В первой версии агент не меняет систему. Эта страница фиксирует будущий контракт для Ubuntu/Debian,
-          Lynis, OpenSCAP, backup, remediation и rollback.
+          Первая версия агента уже поддерживает безопасный audit-only режим. Он читает локальные конфигурации,
+          выполняет безвредные проверки и возвращает JSON. Изменения ОС, remediation и rollback пока не выполняются.
         </p>
       </div>
 
       <section className="grid gap-5 lg:grid-cols-2">
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
           <Terminal size={22} className="text-sky-200" aria-hidden="true" />
-          <h2 className="mt-4 text-xl font-semibold text-white">Предполагаемый запуск</h2>
+          <h2 className="mt-4 text-xl font-semibold text-white">Запуск audit-only агента</h2>
           <pre className="mt-4 overflow-x-auto rounded-md bg-slate-900 p-4 text-sm text-slate-200">
-            <code>{`python3 agent.py audit --profile basic_linux
-python3 agent.py remediate --audit audit_001 --remediation disable_ssh_root_login
-python3 agent.py rollback --backup backup_2026_06_02_001`}</code>
+            <code>{`cd agent
+python3 agent.py audit --profile basic_linux --pretty
+python3 agent.py audit --profile ssh_security --pretty
+python3 agent.py audit --profile web_server --pretty
+python3 agent.py audit --profile docker_host --pretty`}</code>
           </pre>
+          <div className="mt-4 rounded-md border border-emerald-400/30 bg-emerald-500/10 p-4 text-sm leading-6 text-emerald-100">
+            Агент безопасен для запуска: он не изменяет файлы, не перезапускает службы и не включает firewall.
+          </div>
         </div>
 
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h2 className="text-xl font-semibold text-white">Будущие возможности</h2>
+          <Shield size={22} className="text-sky-200" aria-hidden="true" />
+          <h2 className="mt-4 text-xl font-semibold text-white">Что проверяется сейчас</h2>
           <ul className="mt-4 space-y-3 text-sm text-slate-300">
-            <li>Определение ОС через /etc/os-release</li>
-            <li>Запуск Lynis и парсинг результатов</li>
-            <li>OpenSCAP как дополнительный модуль соответствия требованиям</li>
-            <li>YAML-правила для пользовательских проверок</li>
-            <li>Менеджер резервных копий, исправлений и отката</li>
+            {currentChecks.map((check) => (
+              <li key={check} className="flex gap-2">
+                <CheckCircle2 size={16} className="mt-0.5 shrink-0 text-emerald-200" aria-hidden="true" />
+                <span>{check}</span>
+              </li>
+            ))}
           </ul>
         </div>
+      </section>
+
+      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+        <h2 className="text-xl font-semibold text-white">Что пока не выполняется</h2>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          Команды `remediate` и `rollback` сейчас возвращают JSON со статусом `not_implemented`. Это сделано намеренно:
+          сначала агент должен безопасно собирать факты и отдавать отчет, а реальные изменения будут добавляться только
+          после реализации backup и rollback.
+        </p>
       </section>
 
       <section className="grid gap-5 lg:grid-cols-3">

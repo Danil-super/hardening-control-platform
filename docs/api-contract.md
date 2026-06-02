@@ -1,6 +1,6 @@
 # Agent API Contract
 
-The first version does not call a real agent. The contract below defines the planned JSON shape.
+Первая версия агента поддерживает безопасный `audit-only` режим и возвращает JSON. Изменения ОС, remediation и rollback пока не выполняются.
 
 ## Audit
 
@@ -21,9 +21,18 @@ Response:
 
 ```json
 {
-  "auditId": "audit_001",
+  "auditId": "agent_audit_basic_linux_20260602150000",
+  "createdAt": "2026-06-02T15:00:00+00:00",
   "hostname": "ubuntu-server",
   "os": "Ubuntu 24.04",
+  "profileId": "basic_linux",
+  "mode": "agent",
+  "agent": {
+    "version": "0.1.0",
+    "safeMode": true,
+    "remediationEnabled": false,
+    "user": "admin"
+  },
   "findings": [],
   "summary": {
     "high": 3,
@@ -35,6 +44,8 @@ Response:
 ```
 
 ## Remediation
+
+В версии `0.1.0` remediation является no-op и не изменяет ОС.
 
 ```http
 POST /agent/remediate
@@ -54,10 +65,12 @@ Response:
 
 ```json
 {
-  "status": "success",
-  "backupId": "backup_2026_06_02_001",
-  "applied": ["disable_ssh_root_login", "enable_ufw"],
-  "failed": [],
-  "validation": "passed"
+  "status": "not_implemented",
+  "command": "remediate",
+  "createdAt": "2026-06-02T15:00:00+00:00",
+  "message": "Первая версия агента поддерживает только безопасный audit-only режим. Изменения ОС не выполняются.",
+  "audit": "audit_001",
+  "remediation": "disable_ssh_root_login",
+  "backup": null
 }
 ```
