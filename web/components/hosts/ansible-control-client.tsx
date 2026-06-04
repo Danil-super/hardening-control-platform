@@ -1,7 +1,19 @@
 "use client";
 
-import { CheckCircle2, Download, Play, RefreshCw, Search, Server, Terminal, Wrench } from "lucide-react";
+import {
+  CheckCircle2,
+  Download,
+  FileText,
+  Play,
+  RefreshCw,
+  Search,
+  Server,
+  ShieldCheck,
+  Terminal,
+  Wrench,
+} from "lucide-react";
 import { useEffect, useState } from "react";
+import { SummaryCard } from "@/components/ui/summary-card";
 import { Button } from "@/components/ui/button";
 
 type HealthPayload = {
@@ -54,6 +66,41 @@ type DiscoveryResult = {
   message?: string;
 };
 
+type ManagedHost = {
+  alias: string;
+  address: string;
+  user: string | null;
+  become: boolean | null;
+  groups: string[];
+  raw: string;
+  lastReport: {
+    path: string;
+    fileName: string;
+    createdAt: string | null;
+    profileId: string | null;
+    score: number | null;
+    high: number;
+    medium: number;
+    low: number;
+    info: number;
+  } | null;
+};
+
+type HostsPayload = {
+  ok?: boolean;
+  inventoryReady?: boolean;
+  inventoryPath?: string;
+  reportsPath?: string;
+  hosts?: ManagedHost[];
+  summary?: {
+    total: number;
+    withReports: number;
+    withoutReports: number;
+    becomeEnabled: number;
+    averageScore: number | null;
+  };
+};
+
 const profileOptions = [
   { id: "basic_linux", label: "Базовое усиление Linux" },
   { id: "ssh_security", label: "Безопасность SSH" },
@@ -94,8 +141,30 @@ const actions = [
   },
 ];
 
+function formatDate(value: string | null | undefined) {
+  if (!value) {
+    return "нет данных";
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
+}
+
+function scoreTone(score: number | null | undefined) {
+  if (typeof score !== "number") {
+    return "border-slate-700 bg-slate-900 text-slate-300";
+  }
+  if (score >= 80) {
+    return "border-emerald-400/40 bg-emerald-500/15 text-emerald-100";
+  }
+  if (score >= 55) {
+    return "border-amber-400/40 bg-amber-500/15 text-amber-100";
+  }
+  return "border-red-400/40 bg-red-500/15 text-red-100";
+}
+
 export function AnsibleControlClient() {
   const [health, setHealth] = useState<HealthPayload | null>(null);
+  const [hosts, setHosts] = useState<HostsPayload | null>(null);
   const [discoveryInfo, setDiscoveryInfo] = useState<DiscoveryInfo | null>(null);
   const [discoveryResult, setDiscoveryResult] = useState<DiscoveryResult | null>(null);
   const [scanCidr, setScanCidr] = useState("");
@@ -109,6 +178,7 @@ export function AnsibleControlClient() {
 
   useEffect(() => {
     loadDiscoveryInfo();
+    loadHosts();
   }, []);
 
   async function loadDiscoveryInfo() {
@@ -118,6 +188,11 @@ export function AnsibleControlClient() {
     if (payload.defaultCidr) {
       setScanCidr(payload.defaultCidr);
     }
+  }
+
+  async function loadHosts() {
+    const response = await fetch("/api/ansible/hosts");
+    setHosts(await response.json());
   }
 
   async function checkHealth() {
@@ -141,6 +216,7 @@ export function AnsibleControlClient() {
         body: JSON.stringify({ action, profileId, limit: limit.trim() || undefined }),
       });
       setRunResult(await response.json());
+      await loadHosts();
     } finally {
       setLoading("");
     }
@@ -157,10 +233,18 @@ export function AnsibleControlClient() {
         body: JSON.stringify({ cidr: scanCidr, sshUser, become, addToInventory }),
       });
       setDiscoveryResult(await response.json());
+      await loadHosts();
     } finally {
       setLoading("");
     }
   }
+
+  function selectHostLimit(host: ManagedHost) {
+    setLimit(host.alias);
+    document.getElementById("ansible-actions")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
+
+  const averageScore = hosts?.summary?.averageScore;
 
   return (
     <div className="space-y-6">
@@ -220,6 +304,121 @@ export function AnsibleControlClient() {
             </div>
           </div>
         </aside>
+      </section>
+
+      <section className="space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-white">Управляемые хосты</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+              Список строится из `ansible/inventory.ini`. После audit-only запуска здесь появится последняя оценка
+              защищенности и счетчики рисков по каждому хосту.
+            </p>
+          </div>
+          <Button variant="secondary" onClick={loadHosts} disabled={Boolean(loading)}>
+            <RefreshCw size={16} aria-hidden="true" />
+            Обновить список
+          </Button>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <SummaryCard
+            label="Хостов в inventory"
+            value={hosts?.summary?.total ?? 0}
+            detail={hosts?.inventoryReady ? "Файл inventory найден" : "Inventory пока не создан"}
+            icon={<Server size={18} aria-hidden="true" />}
+          />
+          <SummaryCard
+            label="С отчётами"
+            value={hosts?.summary?.withReports ?? 0}
+            detail={`Без отчёта: ${hosts?.summary?.withoutReports ?? 0}`}
+            icon={<FileText size={18} aria-hidden="true" />}
+          />
+          <SummaryCard
+            label="Средняя оценка"
+            value={averageScore === null || averageScore === undefined ? "нет" : `${averageScore}%`}
+            detail="По последним найденным отчётам"
+            icon={<ShieldCheck size={18} aria-hidden="true" />}
+          />
+          <SummaryCard
+            label="Sudo-доступ"
+            value={hosts?.summary?.becomeEnabled ?? 0}
+            detail="Хосты с ansible_become=true"
+            icon={<Wrench size={18} aria-hidden="true" />}
+          />
+        </div>
+
+        <div className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
+          {hosts?.hosts?.length ? (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[920px] text-left text-sm">
+                <thead className="border-b border-slate-800 bg-slate-900/70 text-xs uppercase text-slate-500">
+                  <tr>
+                    <th className="px-4 py-3">Хост</th>
+                    <th className="px-4 py-3">Подключение</th>
+                    <th className="px-4 py-3">Группы</th>
+                    <th className="px-4 py-3">Последний аудит</th>
+                    <th className="px-4 py-3">Риски</th>
+                    <th className="px-4 py-3">Действие</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {hosts.hosts.map((host) => (
+                    <tr key={host.alias} className="align-top">
+                      <td className="px-4 py-4">
+                        <p className="font-semibold text-white">{host.alias}</p>
+                        <p className="mt-1 text-xs text-slate-500">{host.address}</p>
+                      </td>
+                      <td className="px-4 py-4 text-slate-300">
+                        <p>{host.user ? `пользователь: ${host.user}` : "пользователь не указан"}</p>
+                        <p className={host.become ? "mt-1 text-emerald-200" : "mt-1 text-slate-500"}>
+                          {host.become ? "sudo включен" : "sudo не указан"}
+                        </p>
+                      </td>
+                      <td className="px-4 py-4 text-slate-300">{host.groups.join(", ")}</td>
+                      <td className="px-4 py-4">
+                        {host.lastReport ? (
+                          <div>
+                            <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${scoreTone(host.lastReport.score)}`}>
+                              {host.lastReport.score === null ? "оценка нет" : `${host.lastReport.score}%`}
+                            </span>
+                            <p className="mt-2 text-xs text-slate-400">{formatDate(host.lastReport.createdAt)}</p>
+                            <p className="mt-1 text-xs text-slate-500">{host.lastReport.profileId ?? "профиль не указан"}</p>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500">аудит ещё не запускался</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4 text-xs text-slate-300">
+                        {host.lastReport ? (
+                          <div className="grid grid-cols-4 gap-1">
+                            <span className="rounded-md bg-red-500/15 px-2 py-1 text-red-100">H {host.lastReport.high}</span>
+                            <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-100">M {host.lastReport.medium}</span>
+                            <span className="rounded-md bg-sky-500/15 px-2 py-1 text-sky-100">L {host.lastReport.low}</span>
+                            <span className="rounded-md bg-slate-800 px-2 py-1 text-slate-300">I {host.lastReport.info}</span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500">нет данных</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-4">
+                        <Button variant="secondary" onClick={() => selectHostLimit(host)}>
+                          <Terminal size={16} aria-hidden="true" />
+                          Выбрать
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="p-5 text-sm leading-6 text-slate-400">
+              В inventory пока нет активных хостов. Используйте автообнаружение ниже или добавьте строки в
+              `ansible/inventory.ini`, затем обновите список.
+            </div>
+          )}
+        </div>
       </section>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
@@ -365,7 +564,7 @@ export function AnsibleControlClient() {
         ) : null}
       </section>
 
-      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <section id="ansible-actions" className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
         {actions.map((action) => {
           const Icon = action.icon;
           return (
