@@ -1,7 +1,7 @@
 "use client";
 
-import { CheckCircle2, Download, Play, RefreshCw, Server, Terminal, Wrench } from "lucide-react";
-import { useState } from "react";
+import { CheckCircle2, Download, Play, RefreshCw, Search, Server, Terminal, Wrench } from "lucide-react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 
 type HealthPayload = {
@@ -20,6 +20,35 @@ type RunPayload = {
   message?: string;
   stdout?: string;
   stderr?: string;
+};
+
+type DiscoveryInfo = {
+  candidates?: Array<{
+    cidr: string;
+    device?: string;
+    source?: string;
+  }>;
+  defaultCidr?: string;
+  maxHostsPerScan?: number;
+  message?: string;
+};
+
+type DiscoveryResult = {
+  ok?: boolean;
+  cidr?: string;
+  scannedHosts?: number;
+  sshUser?: string;
+  become?: boolean;
+  addToInventory?: boolean;
+  found?: Array<{
+    ip: string;
+    sshOpen: boolean;
+    alias: string;
+    added: boolean;
+  }>;
+  added?: number;
+  inventoryPath?: string;
+  message?: string;
 };
 
 const profileOptions = [
@@ -64,10 +93,29 @@ const actions = [
 
 export function AnsibleControlClient() {
   const [health, setHealth] = useState<HealthPayload | null>(null);
+  const [discoveryInfo, setDiscoveryInfo] = useState<DiscoveryInfo | null>(null);
+  const [discoveryResult, setDiscoveryResult] = useState<DiscoveryResult | null>(null);
+  const [scanCidr, setScanCidr] = useState("");
+  const [sshUser, setSshUser] = useState("danil");
+  const [become, setBecome] = useState(true);
+  const [addToInventory, setAddToInventory] = useState(true);
   const [profileId, setProfileId] = useState("basic_linux");
   const [limit, setLimit] = useState("");
   const [loading, setLoading] = useState("");
   const [runResult, setRunResult] = useState<RunPayload | null>(null);
+
+  useEffect(() => {
+    loadDiscoveryInfo();
+  }, []);
+
+  async function loadDiscoveryInfo() {
+    const response = await fetch("/api/ansible/discover");
+    const payload = await response.json();
+    setDiscoveryInfo(payload);
+    if (payload.defaultCidr) {
+      setScanCidr(payload.defaultCidr);
+    }
+  }
 
   async function checkHealth() {
     setLoading("health");
@@ -90,6 +138,22 @@ export function AnsibleControlClient() {
         body: JSON.stringify({ action, profileId, limit: limit.trim() || undefined }),
       });
       setRunResult(await response.json());
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function scanNetwork() {
+    setLoading("discover");
+    setDiscoveryResult(null);
+    setRunResult(null);
+    try {
+      const response = await fetch("/api/ansible/discover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cidr: scanCidr, sshUser, become, addToInventory }),
+      });
+      setDiscoveryResult(await response.json());
     } finally {
       setLoading("");
     }
@@ -153,6 +217,129 @@ export function AnsibleControlClient() {
             </div>
           </div>
         </aside>
+      </section>
+
+      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <div className="flex items-center gap-3">
+              <Search size={22} className="text-sky-200" aria-hidden="true" />
+              <h2 className="text-xl font-semibold text-white">Автообнаружение хостов в локальной сети</h2>
+            </div>
+            <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-400">
+              Сканирование ищет хосты с открытым SSH-портом 22 в приватной локальной подсети и может сразу добавить их
+              в `ansible/inventory.ini`. Для безопасности размер сканирования ограничен подсетями от /24 до /30.
+            </p>
+          </div>
+          <Button variant="secondary" onClick={loadDiscoveryInfo} disabled={Boolean(loading)}>
+            <RefreshCw size={16} aria-hidden="true" />
+            Определить подсеть
+          </Button>
+        </div>
+
+        <div className="mt-5 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+          <label className="block">
+            <span className="text-xs font-semibold uppercase text-slate-500">Подсеть для сканирования</span>
+            <input
+              value={scanCidr}
+              onChange={(event) => setScanCidr(event.target.value)}
+              placeholder="192.168.1.0/24"
+              className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-semibold uppercase text-slate-500">SSH-пользователь</span>
+            <input
+              value={sshUser}
+              onChange={(event) => setSshUser(event.target.value)}
+              placeholder="danil"
+              className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+            />
+          </label>
+          <label className="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+            <input
+              type="checkbox"
+              checked={become}
+              onChange={(event) => setBecome(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-600 bg-slate-950"
+            />
+            <span>
+              <span className="block font-semibold text-white">become=true</span>
+              <span className="mt-1 block text-xs leading-5 text-slate-500">Для sudo-проверок агента.</span>
+            </span>
+          </label>
+          <label className="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+            <input
+              type="checkbox"
+              checked={addToInventory}
+              onChange={(event) => setAddToInventory(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-600 bg-slate-950"
+            />
+            <span>
+              <span className="block font-semibold text-white">Добавить в inventory</span>
+              <span className="mt-1 block text-xs leading-5 text-slate-500">Новые IP попадут в linux_hosts.</span>
+            </span>
+          </label>
+        </div>
+
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <Button onClick={scanNetwork} disabled={Boolean(loading) || !scanCidr}>
+            <Search size={16} className={loading === "discover" ? "animate-pulse" : ""} aria-hidden="true" />
+            {loading === "discover" ? "Сканирование..." : "Сканировать и добавить"}
+          </Button>
+          <p className="text-sm text-slate-500">
+            {discoveryInfo?.message ?? "Подсеть будет определена автоматически при открытии страницы."}
+          </p>
+        </div>
+
+        {discoveryInfo?.candidates?.length ? (
+          <div className="mt-4 flex flex-wrap gap-2">
+            {discoveryInfo.candidates.map((candidate) => (
+              <button
+                key={`${candidate.cidr}-${candidate.device ?? ""}`}
+                onClick={() => setScanCidr(candidate.cidr)}
+                className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:border-sky-300"
+              >
+                {candidate.cidr}{candidate.device ? ` · ${candidate.device}` : ""}
+              </button>
+            ))}
+          </div>
+        ) : null}
+
+        {discoveryResult ? (
+          <div className="mt-5 rounded-md border border-slate-800 bg-slate-900/70 p-4">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="font-semibold text-white">
+                  Найдено SSH-хостов: {discoveryResult.found?.length ?? 0}
+                </p>
+                <p className="mt-1 text-sm text-slate-400">
+                  Подсеть: {discoveryResult.cidr ?? "не указана"} · просканировано: {discoveryResult.scannedHosts ?? 0} ·
+                  добавлено: {discoveryResult.added ?? 0}
+                </p>
+              </div>
+              <span className={`w-fit rounded-md border px-2 py-1 text-xs font-semibold uppercase ${
+                discoveryResult.ok ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100" : "border-red-400/40 bg-red-500/15 text-red-100"
+              }`}>
+                {discoveryResult.ok ? "готово" : "ошибка"}
+              </span>
+            </div>
+            {discoveryResult.message ? <p className="mt-3 text-sm text-red-100">{discoveryResult.message}</p> : null}
+            {discoveryResult.found?.length ? (
+              <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {discoveryResult.found.map((host) => (
+                  <div key={host.ip} className="rounded-md border border-slate-800 bg-slate-950/70 p-3 text-sm">
+                    <p className="font-semibold text-white">{host.alias}</p>
+                    <p className="mt-1 text-slate-400">{host.ip} · SSH открыт</p>
+                    <p className={host.added ? "mt-1 text-emerald-200" : "mt-1 text-slate-500"}>
+                      {host.added ? "добавлен в inventory" : "уже был в inventory или добавление выключено"}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </section>
 
       <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">

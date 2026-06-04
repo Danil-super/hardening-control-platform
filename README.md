@@ -26,6 +26,13 @@ npm install
 npm run dev
 ```
 
+Для доступа к сайту с других устройств в локальной сети:
+
+```bash
+cd web
+npm run dev:lan
+```
+
 Сборка:
 
 ```bash
@@ -93,6 +100,8 @@ ansible-playbook -i ansible/inventory.ini ansible/playbooks/audit.yml -e audit_p
 ```
 
 На сайте откройте `/hosts`, чтобы проверить Ansible control node, выполнить ping, установить агента и запускать audit-only playbook'и. Реальные отчеты сохраняются в `ansible/reports/` и не отправляются в GitHub.
+
+На странице `/hosts` также есть автообнаружение хостов: платформа определяет локальную приватную подсеть, сканирует SSH-порт 22 и может добавить найденные IP в `ansible/inventory.ini`. Сканирование ограничено подсетями `/24`-`/30` и предназначено только для вашей локальной сети.
 
 Ручной вариант:
 

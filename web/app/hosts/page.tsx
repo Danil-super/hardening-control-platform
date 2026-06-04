@@ -30,7 +30,7 @@ export default function HostsPage() {
           <p className="text-xs font-semibold uppercase text-slate-500">Шаг 3</p>
           <h2 className="mt-3 text-lg font-semibold text-white">Запустить сайт локально</h2>
           <code className="mt-3 block rounded-md bg-slate-900 p-3 text-xs text-slate-200">
-            cd web && npm run dev
+            cd web && npm run dev:lan
           </code>
         </div>
       </section>
