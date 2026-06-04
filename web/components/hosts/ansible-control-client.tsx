@@ -42,10 +42,13 @@ type DiscoveryResult = {
   addToInventory?: boolean;
   found?: Array<{
     ip: string;
+    reachable: boolean;
     sshOpen: boolean;
+    methods: string[];
     alias: string;
     added: boolean;
   }>;
+  sshReady?: number;
   added?: number;
   inventoryPath?: string;
   message?: string;
@@ -227,8 +230,9 @@ export function AnsibleControlClient() {
               <h2 className="text-xl font-semibold text-white">Автообнаружение хостов в локальной сети</h2>
             </div>
             <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-400">
-              Сканирование ищет хосты с открытым SSH-портом 22 в приватной локальной подсети и может сразу добавить их
-              в `ansible/inventory.ini`. Для безопасности размер сканирования ограничен подсетями от /24 до /30.
+              Сканирование ищет устройства в приватной локальной подсети через ping, ARP/neighbor table и проверку
+              SSH-порта 22. В `ansible/inventory.ini` добавляются только хосты с открытым SSH, потому что Ansible
+              подключается по SSH. Размер сканирования ограничен подсетями от /24 до /30.
             </p>
           </div>
           <Button variant="secondary" onClick={loadDiscoveryInfo} disabled={Boolean(loading)}>
@@ -311,7 +315,7 @@ export function AnsibleControlClient() {
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <div>
                 <p className="font-semibold text-white">
-                  Найдено SSH-хостов: {discoveryResult.found?.length ?? 0}
+                  Найдено устройств: {discoveryResult.found?.length ?? 0} · SSH доступен: {discoveryResult.sshReady ?? 0}
                 </p>
                 <p className="mt-1 text-sm text-slate-400">
                   Подсеть: {discoveryResult.cidr ?? "не указана"} · просканировано: {discoveryResult.scannedHosts ?? 0} ·
@@ -329,15 +333,34 @@ export function AnsibleControlClient() {
               <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
                 {discoveryResult.found.map((host) => (
                   <div key={host.ip} className="rounded-md border border-slate-800 bg-slate-950/70 p-3 text-sm">
-                    <p className="font-semibold text-white">{host.alias}</p>
-                    <p className="mt-1 text-slate-400">{host.ip} · SSH открыт</p>
-                    <p className={host.added ? "mt-1 text-emerald-200" : "mt-1 text-slate-500"}>
-                      {host.added ? "добавлен в inventory" : "уже был в inventory или добавление выключено"}
+                    <div className="flex items-start justify-between gap-2">
+                      <p className="font-semibold text-white">{host.alias}</p>
+                      <span className={`rounded-md border px-2 py-1 text-xs font-semibold uppercase ${
+                        host.sshOpen
+                          ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
+                          : "border-amber-400/40 bg-amber-500/15 text-amber-100"
+                      }`}>
+                        {host.sshOpen ? "SSH открыт" : "SSH закрыт"}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-slate-400">{host.ip}</p>
+                    <p className="mt-1 text-xs text-slate-500">Сигналы: {host.methods.join(", ") || "нет данных"}</p>
+                    <p className={host.added ? "mt-2 text-emerald-200" : "mt-2 text-slate-500"}>
+                      {host.added
+                        ? "добавлен в inventory"
+                        : host.sshOpen
+                          ? "уже был в inventory или добавление выключено"
+                          : "не добавлен: для Ansible нужно включить SSH"}
                     </p>
                   </div>
                 ))}
               </div>
-            ) : null}
+            ) : (
+              <div className="mt-4 rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
+                Устройства не найдены. Проверьте, что выбрана правильная подсеть, устройства находятся в той же сети,
+                а firewall не блокирует ping/ARP/SSH. Для Ansible на целевых Linux-хостах нужен открытый SSH-порт 22.
+              </div>
+            )}
           </div>
         ) : null}
       </section>

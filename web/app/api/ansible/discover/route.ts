@@ -19,7 +19,9 @@ type RouteCandidate = {
 
 type DiscoveredHost = {
   ip: string;
+  reachable: boolean;
   sshOpen: boolean;
+  methods: string[];
   alias: string;
   added: boolean;
 };
@@ -88,6 +90,12 @@ function listHosts(cidr: string) {
   return hosts;
 }
 
+function ipInCidr(ip: string, cidr: string) {
+  const parsed = parseCidr(cidr);
+  const value = ipToInt(ip);
+  return Boolean(parsed && value !== null && value > parsed.network && value < parsed.broadcast);
+}
+
 function aliasForIp(ip: string) {
   return `auto_${ip.replaceAll(".", "_")}`;
 }
@@ -141,9 +149,44 @@ function checkSsh(ip: string, timeout = 450) {
   });
 }
 
-async function scanSshHosts(cidr: string) {
+async function checkPing(ip: string) {
+  try {
+    await execFileAsync("ping", ["-c", "1", "-W", "1", ip], {
+      timeout: 1_500,
+      maxBuffer: 64 * 1024,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readNeighborIps(cidr: string) {
+  try {
+    const { stdout } = await execFileAsync("ip", ["-4", "neigh", "show"], {
+      timeout: 5_000,
+      maxBuffer: 1024 * 1024,
+    });
+    return new Set(
+      stdout
+        .split("\n")
+        .map((line) => {
+          const ip = line.match(/^(\d{1,3}(?:\.\d{1,3}){3})\s/)?.[1];
+          if (!ip || !ipInCidr(ip, cidr) || /\bFAILED\b|\bINCOMPLETE\b/.test(line)) {
+            return null;
+          }
+          return ip;
+        })
+        .filter((ip): ip is string => Boolean(ip)),
+    );
+  } catch {
+    return new Set<string>();
+  }
+}
+
+async function scanLocalHosts(cidr: string) {
   const hosts = listHosts(cidr);
-  const found: DiscoveredHost[] = [];
+  const foundByIp = new Map<string, DiscoveredHost>();
   const concurrency = 32;
   let index = 0;
 
@@ -151,14 +194,41 @@ async function scanSshHosts(cidr: string) {
     while (index < hosts.length) {
       const ip = hosts[index];
       index += 1;
-      const sshOpen = await checkSsh(ip);
-      if (sshOpen) {
-        found.push({ ip, sshOpen, alias: aliasForIp(ip), added: false });
+      const [sshOpen, pingOk] = await Promise.all([checkSsh(ip), checkPing(ip)]);
+      if (sshOpen || pingOk) {
+        foundByIp.set(ip, {
+          ip,
+          reachable: true,
+          sshOpen,
+          methods: [sshOpen ? "ssh" : "", pingOk ? "ping" : ""].filter(Boolean),
+          alias: aliasForIp(ip),
+          added: false,
+        });
       }
     }
   }
 
   await Promise.all(Array.from({ length: Math.min(concurrency, hosts.length) }, () => worker()));
+  const neighborIps = await readNeighborIps(cidr);
+  for (const ip of neighborIps) {
+    const existing = foundByIp.get(ip);
+    if (existing) {
+      if (!existing.methods.includes("arp")) {
+        existing.methods.push("arp");
+      }
+    } else {
+      foundByIp.set(ip, {
+        ip,
+        reachable: true,
+        sshOpen: false,
+        methods: ["arp"],
+        alias: aliasForIp(ip),
+        added: false,
+      });
+    }
+  }
+
+  const found = [...foundByIp.values()];
   return found.sort((left, right) => {
     const leftInt = ipToInt(left.ip) ?? 0;
     const rightInt = ipToInt(right.ip) ?? 0;
@@ -191,7 +261,7 @@ function addHostsToInventory(hosts: DiscoveredHost[], sshUser: string, become: b
   );
 
   const newLines = hosts
-    .filter((host) => !existingIps.has(host.ip))
+    .filter((host) => host.sshOpen && !existingIps.has(host.ip))
     .map((host) => {
       host.added = true;
       return `${host.alias} ansible_host=${host.ip} ansible_user=${sshUser} ansible_become=${become ? "true" : "false"}`;
@@ -253,8 +323,9 @@ export async function POST(request: Request) {
   const sshUser = isSafeSshUser(body?.sshUser) ? body.sshUser : process.env.USER || "root";
   const become = typeof body?.become === "boolean" ? body.become : true;
   const addToInventory = Boolean(body?.addToInventory);
-  const hosts = await scanSshHosts(cidr);
+  const hosts = await scanLocalHosts(cidr);
   const inventory = addToInventory ? addHostsToInventory(hosts, sshUser, become) : null;
+  const sshReady = hosts.filter((host) => host.sshOpen).length;
 
   return NextResponse.json({
     ok: true,
@@ -264,6 +335,7 @@ export async function POST(request: Request) {
     become,
     addToInventory,
     found: hosts,
+    sshReady,
     added: inventory?.added ?? 0,
     inventoryPath: inventory?.inventoryPath ?? path.join(getRepoRoot(), "ansible", "inventory.ini"),
   });
