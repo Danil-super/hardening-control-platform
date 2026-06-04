@@ -11,6 +11,9 @@ const execFileAsync = promisify(execFile);
 
 const playbooks = {
   ping: { file: "ping.yml", timeout: 120_000 },
+  collectFacts: { file: "collect-facts.yml", timeout: 240_000 },
+  agentlessAudit: { file: "agentless-audit.yml", timeout: 600_000 },
+  closeDangerousPorts: { file: "close-dangerous-ports.yml", timeout: 240_000, response: true },
   installAgent: { file: "install-agent.yml", timeout: 240_000 },
   audit: { file: "audit.yml", timeout: 600_000 },
   auditLynis: { file: "audit-lynis.yml", timeout: 900_000 },
@@ -38,6 +41,7 @@ export async function POST(request: Request) {
   const action = body?.action;
   const profileId = typeof body?.profileId === "string" && profileIds.has(body.profileId) ? body.profileId : "basic_linux";
   const limit = body?.limit;
+  const confirmResponse = body?.confirmResponse === true;
 
   if (!isPlaybookAction(action)) {
     return NextResponse.json(
@@ -49,6 +53,29 @@ export async function POST(request: Request) {
   if (limit && !isSafeLimit(limit)) {
     return NextResponse.json(
       { ok: false, error: "bad_limit", message: "Limit может содержать только имена хостов/групп без пробелов." },
+      { status: 400 },
+    );
+  }
+
+  const selected = playbooks[action];
+  if ("response" in selected && selected.response && !limit) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "limit_required",
+        message: "Для response-playbook выберите конкретный хост или группу в поле Limit.",
+      },
+      { status: 400 },
+    );
+  }
+
+  if ("response" in selected && selected.response && !confirmResponse) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "confirmation_required",
+        message: "Response-playbook требует явного подтверждения администратора.",
+      },
       { status: 400 },
     );
   }
@@ -66,7 +93,6 @@ export async function POST(request: Request) {
     );
   }
 
-  const selected = playbooks[action];
   const playbookPath = path.join(repoRoot, "ansible", "playbooks", selected.file);
   const args = ["-i", inventoryPath, playbookPath, "-e", `audit_profile=${profileId}`];
   if (limit) {

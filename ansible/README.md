@@ -1,6 +1,6 @@
 # Ansible control node
 
-Этот каталог предназначен для главного компьютера в локальной сети. На нем запускаются сайт, Ansible и playbook'и для удаленного audit-only мониторинга Linux-хостов.
+Этот каталог предназначен для главного компьютера в локальной сети. На нем запускаются сайт, Ansible и playbook'и для безагентного мониторинга Linux-хостов по SSH.
 
 ## Установка на главном компьютере
 
@@ -23,39 +23,40 @@ cp ansible/inventory.example.ini ansible/inventory.ini
 ansible all -i ansible/inventory.ini -m ping
 ```
 
-## Установка audit-only агента на хосты
+## Безагентный режим
+
+```bash
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/collect-facts.yml
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/agentless-audit.yml -e audit_profile=basic_linux
+```
+
+Эти playbook'и ничего не устанавливают на хосты. Ansible подключается по SSH, собирает факты, проверяет открытые порты, firewall и сохраняет JSON-отчеты на главном компьютере в `ansible/reports/`.
+
+## Response-playbook
+
+Response-playbook может менять настройки хоста, поэтому запускайте его только с `--limit` и после проверки отчета:
+
+```bash
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-dangerous-ports.yml --limit server1
+```
+
+`close-dangerous-ports.yml` блокирует распространенные опасные порты через активный `ufw` или `firewalld`. Если поддерживаемый firewall не активен, playbook выводит предупреждение и не закрывает порты.
+
+## Опциональный audit-only агент
+
+Агент не обязателен для базовой работы платформы. Его можно использовать как расширенный локальный сборщик, если нужны более глубокие проверки или интеграции.
 
 ```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-agent.yml
-```
-
-Playbook создает `/opt/hcp-agent` и копирует туда `agent.py` и `server.py`. Он не меняет security-настройки ОС.
-
-## Audit-only запуск
-
-Базовый аудит:
-
-```bash
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/audit.yml -e audit_profile=basic_linux
-```
-
-Аудит с Lynis:
-
-```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/audit-lynis.yml -e audit_profile=basic_linux
-```
-
-Аудит с Lynis и OpenSCAP:
-
-```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/audit-openscap.yml -e audit_profile=basic_linux
 ```
 
-Отчеты сохраняются на главном компьютере в `ansible/reports/`.
+Playbook установки создает `/opt/hcp-agent` и копирует туда `agent.py` и `server.py`.
 
 ## Важно
 
-- Audit playbook'и используют `changed_when: false`.
-- Они запускают `agent.py audit` и возвращают JSON.
-- Они не выполняют `remediate`, не меняют firewall, SSH, Nginx или Docker.
-- Реальные исправления нужно добавлять отдельными playbook'ами только после backup, `--check` и подтверждения администратора.
+- Безагентные audit playbook'и используют `changed_when: false`.
+- Базовый режим не требует установки постоянного агента на каждый хост.
+- Response-playbook'и отделены от аудита и требуют явного выбора хоста или группы.
+- Реальные исправления нужно запускать только после анализа отчета, backup-плана и подтверждения администратора.

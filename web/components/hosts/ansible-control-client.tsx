@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  AlertTriangle,
   CheckCircle2,
   Download,
   FileText,
@@ -106,40 +107,90 @@ const profileOptions = [
   { id: "ssh_security", label: "Безопасность SSH" },
   { id: "web_server", label: "Усиление веб-сервера" },
   { id: "docker_host", label: "Усиление Docker-хоста" },
-];
+] as const;
 
-const actions = [
+type ActionConfig = {
+  id: string;
+  title: string;
+  description: string;
+  icon: typeof Server;
+  mode: "agentless" | "response" | "optional";
+  variant: "primary" | "secondary" | "danger";
+  requiresLimit?: boolean;
+  requiresConfirmation?: boolean;
+};
+
+const actions: ActionConfig[] = [
   {
     id: "ping",
     title: "Проверить доступность",
     description: "Запускает Ansible ping по inventory. Настройки хостов не меняются.",
     icon: Server,
+    mode: "agentless",
+    variant: "primary",
+  },
+  {
+    id: "collectFacts",
+    title: "Собрать факты",
+    description: "Собирает ОС, сеть, ядро и ресурсы через Ansible без установки агента.",
+    icon: FileText,
+    mode: "agentless",
+    variant: "primary",
+  },
+  {
+    id: "agentlessAudit",
+    title: "Безагентный аудит",
+    description: "Проверяет открытые порты, firewall и базовые признаки риска через SSH.",
+    icon: ShieldCheck,
+    mode: "agentless",
+    variant: "primary",
+  },
+  {
+    id: "closeDangerousPorts",
+    title: "Закрыть опасные порты",
+    description: "Response-playbook: блокирует опасные TCP/UDP-порты через активный ufw/firewalld.",
+    icon: AlertTriangle,
+    mode: "response",
+    variant: "danger",
+    requiresLimit: true,
+    requiresConfirmation: true,
   },
   {
     id: "installAgent",
-    title: "Установить audit-only агент",
-    description: "Копирует agent.py и server.py в /opt/hcp-agent на выбранные хосты.",
+    title: "Установить расширенный агент",
+    description: "Опционально копирует agent.py и server.py для глубокого локального аудита.",
     icon: Download,
+    mode: "optional",
+    variant: "secondary",
   },
   {
     id: "audit",
-    title: "Запустить audit-only",
-    description: "Запускает базовый аудит и сохраняет JSON-отчеты в ansible/reports.",
+    title: "Аудит через агент",
+    description: "Запускает уже установленный agent.py и сохраняет JSON-отчеты в ansible/reports.",
     icon: Play,
+    mode: "optional",
+    variant: "secondary",
   },
   {
     id: "auditLynis",
-    title: "Audit-only с Lynis",
-    description: "Добавляет результаты Lynis, если инструмент установлен на хостах.",
+    title: "Агент + Lynis",
+    description: "Опционально добавляет результаты Lynis, если агент и инструмент доступны.",
     icon: Terminal,
+    mode: "optional",
+    variant: "secondary",
   },
   {
     id: "auditOpenScap",
-    title: "Audit-only с Lynis + OpenSCAP",
-    description: "Добавляет внешние сканеры Lynis и OpenSCAP/SSG.",
+    title: "Агент + OpenSCAP",
+    description: "Опционально добавляет внешние сканеры Lynis и OpenSCAP/SSG.",
     icon: Wrench,
+    mode: "optional",
+    variant: "secondary",
   },
 ];
+
+const agentlessActions = actions.filter((action) => action.mode !== "optional");
+const optionalAgentActions = actions.filter((action) => action.mode === "optional");
 
 function formatDate(value: string | null | undefined) {
   if (!value) {
@@ -207,13 +258,30 @@ export function AnsibleControlClient() {
   }
 
   async function runAction(action: string) {
+    const selectedAction = actions.find((item) => item.id === action);
+    if (selectedAction?.requiresLimit && !limit.trim()) {
+      setRunResult({
+        ok: false,
+        action,
+        message: "Для response-playbook выберите конкретный хост или группу в поле Limit.",
+      });
+      return;
+    }
+
+    const confirmResponse = selectedAction?.requiresConfirmation
+      ? window.confirm("Запустить response-playbook? Он может изменить firewall на выбранных хостах.")
+      : false;
+    if (selectedAction?.requiresConfirmation && !confirmResponse) {
+      return;
+    }
+
     setLoading(action);
     setRunResult(null);
     try {
       const response = await fetch("/api/ansible/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, profileId, limit: limit.trim() || undefined }),
+        body: JSON.stringify({ action, profileId, limit: limit.trim() || undefined, confirmResponse }),
       });
       setRunResult(await response.json());
       await loadHosts();
@@ -468,7 +536,7 @@ export function AnsibleControlClient() {
             />
             <span>
               <span className="block font-semibold text-white">become=true</span>
-              <span className="mt-1 block text-xs leading-5 text-slate-500">Для sudo-проверок агента.</span>
+              <span className="mt-1 block text-xs leading-5 text-slate-500">Для sudo-проверок Ansible.</span>
             </span>
           </label>
           <label className="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
@@ -564,36 +632,78 @@ export function AnsibleControlClient() {
         ) : null}
       </section>
 
-      <section id="ansible-actions" className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        {actions.map((action) => {
-          const Icon = action.icon;
-          return (
-            <article key={action.id} className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
-              <Icon size={22} className="text-sky-200" aria-hidden="true" />
-              <h3 className="mt-4 font-semibold text-white">{action.title}</h3>
-              <p className="mt-2 min-h-20 text-sm leading-6 text-slate-400">{action.description}</p>
-              <Button
-                variant={action.id === "installAgent" ? "secondary" : "primary"}
-                onClick={() => runAction(action.id)}
-                disabled={Boolean(loading)}
-                className="mt-4 w-full"
-              >
-                {loading === action.id ? (
-                  <RefreshCw size={16} className="animate-spin" aria-hidden="true" />
-                ) : (
-                  <CheckCircle2 size={16} aria-hidden="true" />
-                )}
-                Запустить
-              </Button>
-            </article>
-          );
-        })}
+      <section id="ansible-actions" className="space-y-4">
+        <div>
+          <h2 className="text-xl font-semibold text-white">Безагентное управление</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            Главный сервер подключается к хостам по SSH, выполняет проверки и response-playbook'и без установки
+            постоянного агента на целевые устройства.
+          </p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {agentlessActions.map((action) => {
+            const Icon = action.icon;
+            return (
+              <article key={action.id} className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+                <Icon size={22} className={action.variant === "danger" ? "text-red-200" : "text-sky-200"} aria-hidden="true" />
+                <h3 className="mt-4 font-semibold text-white">{action.title}</h3>
+                <p className="mt-2 min-h-20 text-sm leading-6 text-slate-400">{action.description}</p>
+                <Button
+                  variant={action.variant}
+                  onClick={() => runAction(action.id)}
+                  disabled={Boolean(loading)}
+                  className="mt-4 w-full"
+                >
+                  {loading === action.id ? (
+                    <RefreshCw size={16} className="animate-spin" aria-hidden="true" />
+                  ) : (
+                    <CheckCircle2 size={16} aria-hidden="true" />
+                  )}
+                  Запустить
+                </Button>
+              </article>
+            );
+          })}
+        </div>
+
+        <div className="pt-3">
+          <h2 className="text-xl font-semibold text-white">Опциональный расширенный агент</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            Этот режим можно использовать для глубоких локальных проверок, но он не является обязательным для базового
+            мониторинга и реакции через Ansible.
+          </p>
+        </div>
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          {optionalAgentActions.map((action) => {
+            const Icon = action.icon;
+            return (
+              <article key={action.id} className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+                <Icon size={22} className="text-slate-300" aria-hidden="true" />
+                <h3 className="mt-4 font-semibold text-white">{action.title}</h3>
+                <p className="mt-2 min-h-20 text-sm leading-6 text-slate-400">{action.description}</p>
+                <Button
+                  variant={action.variant}
+                  onClick={() => runAction(action.id)}
+                  disabled={Boolean(loading)}
+                  className="mt-4 w-full"
+                >
+                  {loading === action.id ? (
+                    <RefreshCw size={16} className="animate-spin" aria-hidden="true" />
+                  ) : (
+                    <CheckCircle2 size={16} aria-hidden="true" />
+                  )}
+                  Запустить
+                </Button>
+              </article>
+            );
+          })}
+        </div>
       </section>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
         <h2 className="text-xl font-semibold text-white">Журнал выполнения</h2>
         <p className="mt-2 text-sm leading-6 text-slate-400">
-          Результаты audit-only playbook'ов сохраняются на главном компьютере в `ansible/reports`.
+          Результаты audit-only и agentless playbook'ов сохраняются на главном компьютере в `ansible/reports`.
         </p>
         {runResult ? (
           <div className="mt-4 space-y-3">

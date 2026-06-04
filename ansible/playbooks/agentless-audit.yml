@@ -1,0 +1,203 @@
+---
+- name: Run agentless security audit
+  hosts: linux_hosts
+  become: true
+  gather_facts: true
+
+  vars:
+    agentless_report_dir: "{{ playbook_dir }}/../reports"
+
+  tasks:
+    - name: Ensure local report directory exists
+      ansible.builtin.file:
+        path: "{{ agentless_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Build agentless audit JSON
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json
+        import os
+        import socket
+        import subprocess
+        from datetime import datetime, timezone
+
+        profile_id = os.environ.get("AUDIT_PROFILE", "basic_linux")
+        dangerous_ports = {
+            21: ("FTP открыт", "FTP передает данные без шифрования. Закройте порт или замените сервис на SFTP/SSH."),
+            23: ("Telnet открыт", "Telnet небезопасен. Закройте порт и используйте SSH."),
+            25: ("SMTP открыт", "Проверьте, должен ли SMTP быть доступен с этой сети."),
+            3306: ("MySQL открыт", "Ограничьте доступ к MySQL только доверенными хостами."),
+            5432: ("PostgreSQL открыт", "Ограничьте доступ к PostgreSQL только доверенными хостами."),
+            6379: ("Redis открыт", "Redis не должен быть открыт в локальной сети без строгой фильтрации."),
+            9200: ("Elasticsearch открыт", "Ограничьте доступ к Elasticsearch и проверьте аутентификацию."),
+            11211: ("Memcached открыт", "Memcached не должен быть доступен из сети без фильтрации."),
+        }
+
+        def run(command):
+            try:
+                completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=8)
+                return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
+            except Exception as exc:
+                return None, "", str(exc)
+
+        def finding(id, title, category, risk, status, description, recommendation, evidence="", remediation_id=None):
+            return {
+                "id": id,
+                "profileId": profile_id,
+                "title": title,
+                "category": category,
+                "risk": risk,
+                "status": status,
+                "source": "custom",
+                "description": description,
+                "recommendation": recommendation,
+                "remediationAvailable": bool(remediation_id),
+                "remediationId": remediation_id,
+                "affectedFiles": [],
+                "evidence": evidence,
+            }
+
+        findings = []
+        code, ss_output, ss_error = run(["ss", "-tuln"])
+        open_ports = set()
+        if code == 0:
+            for line in ss_output.splitlines():
+                parts = line.split()
+                if len(parts) < 5 or parts[0] not in {"tcp", "udp"}:
+                    continue
+                address = parts[4]
+                if ":" not in address:
+                    continue
+                try:
+                    open_ports.add(int(address.rsplit(":", 1)[1]))
+                except ValueError:
+                    continue
+        else:
+            findings.append(finding(
+                "agentless_ports_unavailable",
+                "Не удалось получить список открытых портов",
+                "Сеть",
+                "info",
+                "manual",
+                "Команда ss недоступна или завершилась с ошибкой.",
+                "Установите iproute2 или проверьте открытые порты вручную.",
+                ss_error,
+            ))
+
+        for port, (title, recommendation) in dangerous_ports.items():
+            if port in open_ports:
+                findings.append(finding(
+                    f"dangerous_port_{port}",
+                    title,
+                    "Сеть",
+                    "high" if port in {21, 23, 6379, 9200, 11211} else "medium",
+                    "failed",
+                    f"На хосте прослушивается потенциально опасный порт {port}.",
+                    recommendation,
+                    f"open_port={port}",
+                    "close_dangerous_ports",
+                ))
+
+        if not any(item["id"].startswith("dangerous_port_") for item in findings):
+            findings.append(finding(
+                "dangerous_ports_absent",
+                "Опасные сетевые порты не обнаружены",
+                "Сеть",
+                "info",
+                "passed",
+                "Проверены распространенные опасные порты.",
+                "Продолжайте регулярный сетевой аудит.",
+                "checked_ports=" + ",".join(str(port) for port in sorted(dangerous_ports)),
+            ))
+
+        ufw_code, ufw_output, _ = run(["ufw", "status"])
+        firewalld_code, firewalld_output, _ = run(["firewall-cmd", "--state"])
+        firewall_active = (
+            (ufw_code == 0 and "Status: active" in ufw_output)
+            or (firewalld_code == 0 and firewalld_output.strip() == "running")
+        )
+        findings.append(finding(
+            "firewall_active",
+            "Межсетевой экран активен" if firewall_active else "Межсетевой экран не активен или не определен",
+            "Сеть",
+            "medium",
+            "passed" if firewall_active else "failed",
+            "Проверяется наличие активного ufw или firewalld.",
+            "Включите и настройте ufw/firewalld на хосте.",
+            f"ufw={ufw_output or 'n/a'}; firewalld={firewalld_output or 'n/a'}",
+            None if firewall_active else "enable_firewall",
+        ))
+
+        root_code, root_output, _ = run(["getent", "passwd", "root"])
+        findings.append(finding(
+            "root_account_present",
+            "Учетная запись root найдена",
+            "Учетные записи",
+            "info",
+            "manual",
+            "Проверяется наличие root-записи и необходимость ручной проверки SSH-доступа.",
+            "Проверьте, запрещен ли вход root по SSH и настроен ли sudo для администраторов.",
+            root_output if root_code == 0 else "root entry unavailable",
+        ))
+
+        weights = {"high": 20, "medium": 10, "low": 4, "info": 1}
+        summary = {"high": 0, "medium": 0, "low": 0, "info": 0}
+        penalty = 0
+        for item in findings:
+            if item["status"] in {"passed", "fixed"}:
+                continue
+            summary[item["risk"]] += 1
+            penalty += weights[item["risk"]]
+        summary["score"] = max(0, min(100, 100 - penalty))
+
+        os_name = "Unknown Linux"
+        try:
+            with open("/etc/os-release", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if line.startswith("PRETTY_NAME="):
+                        os_name = line.split("=", 1)[1].strip().strip('"')
+                        break
+        except OSError:
+            pass
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        print(json.dumps({
+            "auditId": "agentless_" + profile_id + "_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+            "createdAt": created_at,
+            "hostname": socket.gethostname(),
+            "os": os_name,
+            "profileId": profile_id,
+            "mode": "agentless",
+            "agentless": {
+                "version": "0.1.0",
+                "control": "ansible",
+                "persistentAgent": False,
+                "openPorts": sorted(open_ports),
+            },
+            "summary": summary,
+            "findings": findings,
+        }, ensure_ascii=False))
+        PY
+      args:
+        executable: /bin/bash
+      environment:
+        AUDIT_PROFILE: "{{ audit_profile | default('basic_linux') }}"
+      changed_when: false
+      register: agentless_audit
+
+    - name: Save agentless JSON report on control node
+      ansible.builtin.copy:
+        content: "{{ agentless_audit.stdout }}"
+        dest: "{{ agentless_report_dir }}/{{ inventory_hostname }}-{{ audit_profile | default('basic_linux') }}.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Show report path
+      ansible.builtin.debug:
+        msg: "Saved {{ agentless_report_dir }}/{{ inventory_hostname }}-{{ audit_profile | default('basic_linux') }}.json"

@@ -1,0 +1,44 @@
+---
+- name: Collect Linux facts without installing an agent
+  hosts: linux_hosts
+  become: true
+  gather_facts: true
+
+  vars:
+    facts_report_dir: "{{ playbook_dir }}/../reports"
+
+  tasks:
+    - name: Ensure local report directory exists
+      ansible.builtin.file:
+        path: "{{ facts_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Save selected facts on control node
+      ansible.builtin.copy:
+        content: "{{ fact_payload | to_nice_json }}"
+        dest: "{{ facts_report_dir }}/{{ inventory_hostname }}-facts.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+      vars:
+        fact_payload:
+          createdAt: "{{ ansible_date_time.iso8601 }}"
+          hostname: "{{ ansible_hostname | default(inventory_hostname) }}"
+          inventoryHost: "{{ inventory_hostname }}"
+          os: "{{ ansible_distribution | default('Linux') }} {{ ansible_distribution_version | default('') }}"
+          kernel: "{{ ansible_kernel | default('unknown') }}"
+          architecture: "{{ ansible_architecture | default('unknown') }}"
+          interfaces: "{{ ansible_interfaces | default([]) }}"
+          defaultIpv4: "{{ ansible_default_ipv4 | default({}) }}"
+          memoryMb: "{{ ansible_memtotal_mb | default(null) }}"
+          processorCount: "{{ ansible_processor_vcpus | default(ansible_processor_count | default(null)) }}"
+          virtualizationType: "{{ ansible_virtualization_type | default('unknown') }}"
+          virtualizationRole: "{{ ansible_virtualization_role | default('unknown') }}"
+
+    - name: Show facts report path
+      ansible.builtin.debug:
+        msg: "Saved {{ facts_report_dir }}/{{ inventory_hostname }}-facts.json"
