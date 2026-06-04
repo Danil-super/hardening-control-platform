@@ -1,10 +1,11 @@
-import { Activity, BookOpen, FileInput, FileText, Home, Layers, Radar, Shield, Wrench } from "lucide-react";
+import { Activity, BookOpen, FileInput, FileText, Home, Layers, Radar, Server, Shield, Wrench } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { DemoBadge } from "@/components/ui/badge";
 
 const navItems = [
   { href: "/", label: "Панель", icon: Home },
+  { href: "/hosts", label: "Хосты", icon: Server },
   { href: "/profiles", label: "Профили", icon: Layers },
   { href: "/audit/basic_linux", label: "Демо-аудит", icon: Activity },
   { href: "/remediation", label: "Исправления", icon: Wrench },

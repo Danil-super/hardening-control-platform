@@ -1,0 +1,4 @@
+---
+- import_playbook: audit.yml
+  vars:
+    audit_extra_args: "--include-lynis"

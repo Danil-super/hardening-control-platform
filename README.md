@@ -6,6 +6,8 @@ MVP показывает полный демонстрационный цикл:
 
 Дополнительно реализован локальный Python-агент в режиме “только аудит”. Он выполняет реальные проверки хоста, возвращает JSON-отчет и подключается к сайту через локальный промежуточный сервер.
 
+Также добавлен локальный Ansible-контур для главного компьютера в сети: inventory, playbook'и audit-only мониторинга и страница `/hosts` для проверки control node и запуска разрешенных playbook'ов.
+
 ## Стек
 
 - Next.js App Router
@@ -14,6 +16,7 @@ MVP показывает полный демонстрационный цикл:
 - lucide-react
 - Демонстрационные данные в TypeScript
 - Локальный агент на Python
+- Ansible для локального управления хостами в сети
 
 ## Запуск сайта
 
@@ -39,6 +42,7 @@ npm run build
 - `/remediation` выбор исправлений, риск изменения, затрагиваемые файлы, резервная копия, откат и шаги выполнения.
 - `/reports` отчет “до/после”, экспорт JSON и HTML.
 - `/guide` инструкция и сценарий демонстрации MVP.
+- `/hosts` локальная Ansible-панель для главного компьютера и хостов сети.
 - `/agent` описание локального Linux-агента.
 - `/agent/import` автоматический или ручной импорт JSON-отчета агента, история, сравнение отчетов и план исправлений.
 
@@ -65,6 +69,30 @@ python3 server.py
 Затем открыть на сайте `/agent/import` и нажать `Получить аудит от агента`.
 
 Страница импорта сохраняет историю отчетов в браузере, позволяет сравнить два запуска и формирует безопасный план исправлений без применения изменений.
+
+## Локальная сеть и Ansible
+
+На главном компьютере установите Ansible, создайте inventory и проверьте SSH-доступ:
+
+```bash
+sudo apt install ansible openssh-client python3
+cp ansible/inventory.example.ini ansible/inventory.ini
+ansible all -i ansible/inventory.ini -m ping
+```
+
+Установить audit-only агент на хосты:
+
+```bash
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-agent.yml
+```
+
+Запустить audit-only мониторинг:
+
+```bash
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/audit.yml -e audit_profile=basic_linux
+```
+
+На сайте откройте `/hosts`, чтобы проверить Ansible control node, выполнить ping, установить агента и запускать audit-only playbook'и. Реальные отчеты сохраняются в `ansible/reports/` и не отправляются в GitHub.
 
 Ручной вариант:
 
@@ -120,6 +148,7 @@ OpenSCAP/SCAP Security Guide подключается опционально: `p
 - Нет запуска `systemctl`, `ufw`, `sshd`, `nginx` на Vercel.
 - Нет контейнеризации.
 - Нет многопользовательской авторизации.
+- Ansible-запуск доступен только при локальном запуске сайта на главном компьютере, не на Vercel.
 - OpenSCAP подключен как начальный audit-only импорт; отдельный compliance-отчет по профилю еще не реализован.
 
 ## Roadmap

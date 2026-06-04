@@ -1,4 +1,4 @@
-import { Activity, FileInput, FileText, Layers, Radar, ShieldAlert, Wrench } from "lucide-react";
+import { Activity, FileInput, FileText, Layers, Radar, Server, ShieldAlert, Wrench } from "lucide-react";
 import { DemoHostCard } from "@/components/dashboard/demo-host-card";
 import { ProcessStrip } from "@/components/dashboard/process-strip";
 import { LinkButton } from "@/components/ui/button";
@@ -35,7 +35,15 @@ export default function Home() {
 
       <DemoHostCard />
 
-      <section className="grid gap-4 lg:grid-cols-3">
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <Server size={22} className="text-sky-200" aria-hidden="true" />
+          <h2 className="mt-4 text-lg font-semibold text-white">0. Подключить хосты сети</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            На главном компьютере настройте Ansible inventory, проверьте SSH и запускайте audit-only playbook'и.
+          </p>
+          <LinkButton href="/hosts" variant="secondary" className="mt-4 w-full">Открыть хосты</LinkButton>
+        </div>
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
           <Radar size={22} className="text-sky-200" aria-hidden="true" />
           <h2 className="mt-4 text-lg font-semibold text-white">1. Быстро показать демо</h2>

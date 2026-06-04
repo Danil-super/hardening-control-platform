@@ -1,0 +1,8 @@
+---
+- name: Check host availability
+  hosts: linux_hosts
+  gather_facts: false
+
+  tasks:
+    - name: Ping hosts through Ansible
+      ansible.builtin.ping:

@@ -12,3 +12,7 @@ __pycache__/
 web/node_modules/
 web/.next/
 web/out/
+
+ansible/inventory.ini
+ansible/reports/*.json
+!ansible/reports/.gitkeep
