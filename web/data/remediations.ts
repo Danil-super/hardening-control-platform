@@ -39,7 +39,7 @@ export const remediations: Remediation[] = [
       "Перезагрузить службу SSH",
     ],
     realModeNotes:
-      "В реальном режиме агент должен отказать в действии, если не подтвержден рабочий ключевой доступ.",
+      "В реальном режиме response-playbook должен отказать в действии, если не подтвержден рабочий ключевой доступ.",
   },
   {
     id: "enable_ufw",
@@ -143,18 +143,18 @@ export const remediations: Remediation[] = [
     id: "review_cron_permissions",
     title: "Проверить права cron-файлов",
     description: "Проверяет владельцев и права cron-файлов, чтобы исключить изменение заданий обычными пользователями.",
-    findingIds: ["lynis_schd-7704"],
+    findingIds: ["cron_permissions"],
     riskOfBreaking: "medium",
     supportedOs: ["Ubuntu 22.04+", "Ubuntu 24.04", "Debian 12"],
     targetFiles: ["/etc/crontab", "/etc/cron.d/*", "/etc/cron.daily/*", "/etc/cron.hourly/*"],
     backupRequired: true,
     rollbackAvailable: true,
     demoSteps: [
-      "Собрать список cron-файлов из отчета Lynis",
+      "Собрать список cron-файлов из безагентного аудита",
       "Создать резервную копию затронутых файлов",
       "Проверить владельца root и группу root",
       "Убрать запись для group/other там, где она не требуется",
-      "Повторить аудит Lynis",
+      "Повторить безагентный аудит",
     ],
     realModeNotes:
       "Автоматическое изменение прав cron-файлов требует ручного подтверждения списка файлов, чтобы не сломать системные задания.",
@@ -163,7 +163,7 @@ export const remediations: Remediation[] = [
     id: "restrict_compilers",
     title: "Ограничить доступ к компиляторам",
     description: "Снижает риск компиляции вредоносного кода на production-хосте непривилегированными пользователями.",
-    findingIds: ["lynis_hrdn-7222"],
+    findingIds: ["compiler_access"],
     riskOfBreaking: "medium",
     supportedOs: ["Ubuntu 22.04+", "Ubuntu 24.04", "Debian 12"],
     targetFiles: ["/usr/bin/gcc", "/usr/bin/g++", "/usr/bin/cc", "пакеты build-essential"],
@@ -174,7 +174,7 @@ export const remediations: Remediation[] = [
       "Определить пользователей и процессы, которым нужен доступ",
       "Ограничить права через группу или удалить компиляторы с production-хоста",
       "Зафиксировать исключения для CI/CD или build-серверов",
-      "Повторить аудит Lynis",
+      "Повторить безагентный аудит",
     ],
     realModeNotes:
       "На build-хостах компиляторы могут быть необходимы. Для production-серверов предпочтительно удалить их или ограничить доступ отдельной группой.",

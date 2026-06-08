@@ -1,7 +1,7 @@
 import { DatabaseBackup, FileCheck, ListChecks, Radar, ShieldCheck, Wrench } from "lucide-react";
 
 const steps = [
-  { label: "Аудит", detail: "Запуск демо-проверок или импорт отчета агента", icon: Radar },
+  { label: "Аудит", detail: "Демо-проверки или безагентный аудит через Ansible", icon: Radar },
   { label: "Находки", detail: "Риски, статусы, источники и рекомендации", icon: ListChecks },
   { label: "План", detail: "Выбор действий без автоматического изменения ОС", icon: Wrench },
   { label: "Бэкапы", detail: "Именованные записи для файлов и действий", icon: DatabaseBackup },

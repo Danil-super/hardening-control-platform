@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, FileInput, Loader2, Play } from "lucide-react";
+import { CheckCircle2, Loader2, Play, Server } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { auditSteps } from "@/lib/demo-audit";
@@ -31,13 +31,13 @@ export function AuditRunner({ profileId }: { profileId: string }) {
           <h2 className="text-lg font-semibold text-white">Процесс демо-аудита</h2>
           <p className="mt-1 text-sm leading-6 text-slate-400">
             Проверки выполняются на демо-данных и не меняют хостовую ОС. Для реального аудита без исправлений используйте
-            локальный агент и импорт JSON.
+            главный сервер Ansible и страницу хостов.
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
-          <LinkButton href="/agent/import" variant="secondary">
-            <FileInput size={16} aria-hidden="true" />
-            Реальный audit-only
+          <LinkButton href="/hosts" variant="secondary">
+            <Server size={16} aria-hidden="true" />
+            Центр Ansible
           </LinkButton>
           <Button onClick={runAudit} disabled={running}>
             {running ? <Loader2 size={16} className="animate-spin" aria-hidden="true" /> : <Play size={16} aria-hidden="true" />}

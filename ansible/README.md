@@ -42,21 +42,9 @@ ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-dangerous-port
 
 `close-dangerous-ports.yml` блокирует распространенные опасные порты через активный `ufw` или `firewalld`. Если поддерживаемый firewall не активен, playbook выводит предупреждение и не закрывает порты.
 
-## Опциональный audit-only агент
-
-Агент не обязателен для базовой работы платформы. Его можно использовать как расширенный локальный сборщик, если нужны более глубокие проверки или интеграции.
-
-```bash
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/install-agent.yml
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/audit-lynis.yml -e audit_profile=basic_linux
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/audit-openscap.yml -e audit_profile=basic_linux
-```
-
-Playbook установки создает `/opt/hcp-agent` и копирует туда `agent.py` и `server.py`.
-
 ## Важно
 
 - Безагентные audit playbook'и используют `changed_when: false`.
-- Базовый режим не требует установки постоянного агента на каждый хост.
+- Система не устанавливает постоянные агенты на управляемые хосты.
 - Response-playbook'и отделены от аудита и требуют явного выбора хоста или группы.
 - Реальные исправления нужно запускать только после анализа отчета, backup-плана и подтверждения администратора.

@@ -30,12 +30,12 @@ const demoSteps = [
 ];
 
 const realAgentSteps = [
-  "Запустить локальный bridge: python3 server.py в папке agent.",
-  "Открыть /agent/import и выбрать профиль аудита.",
-  "Нажать “Получить аудит от агента”; агент только читает настройки и возвращает JSON.",
-  "При необходимости включить Lynis или OpenSCAP как внешние источники.",
-  "Сохранить импорт в истории и сравнить два audit-only отчета.",
-  "План исправлений скачать отдельно; реальные изменения ОС сейчас не выполняются.",
+  "Запустить сайт локально на главном сервере: cd web && npm run dev:lan.",
+  "Открыть /hosts, проверить Ansible control node и выбрать подсеть локальной сети.",
+  "Сканировать сеть и добавить SSH-доступные Linux-хосты в inventory.",
+  "Выбрать хост или группу в таблице управляемых хостов.",
+  "Запустить “Собрать факты” или “Безагентный аудит”; установка агента на хосты не требуется.",
+  "При подтвержденном риске запустить response-playbook, например “Закрыть опасные порты”.",
 ];
 
 export default function GuidePage() {
@@ -45,8 +45,8 @@ export default function GuidePage() {
         <div>
           <h1 className="text-3xl font-semibold text-white">Инструкция и сценарий демонстрации</h1>
           <p className="mt-2 max-w-3xl text-slate-400">
-            Эта страница объясняет, как показывать MVP на защите и почему аудит сейчас работает через демонстрационный
-            источник данных, а не через реальный Linux-сервер.
+            Эта страница объясняет, как показывать MVP на защите и как перейти от демо-сценария к централизованному
+            управлению Linux-хостами через Ansible.
           </p>
         </div>
         <LinkButton href="/profiles">Начать демонстрацию</LinkButton>
@@ -81,13 +81,13 @@ export default function GuidePage() {
         <aside className="h-fit rounded-md border border-slate-800 bg-slate-950/70 p-5">
           <h2 className="text-xl font-semibold text-white">Что сказать на защите</h2>
           <p className="mt-3 text-sm leading-6 text-slate-400">
-            “Платформа разделяет демонстрационный сценарий и реальный audit-only агент. На Vercel сайт безопасно
-            показывает полный цикл харденинга, а локальный Python-агент уже умеет проверять Linux-хост без исправлений
-            и импортировать JSON-отчет в интерфейс.”
+            “Платформа разделяет демонстрационный сценарий и локальный режим главного сервера. В демо сайт безопасно
+            показывает полный цикл харденинга, а в локальной сети главный сервер Ansible управляет хостами по SSH без
+            установки постоянных агентов.”
           </p>
           <div className="mt-5 rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
-            Важно подчеркнуть: MVP не является заменой Lynis или OpenSCAP. Это управляющий слой, который умеет принимать
-            результаты локального агента и внешних сканеров.
+            Важно подчеркнуть: MVP не является IDS или антивирусом. Это управляющий слой для аудита, инвентаризации и
+            запуска заранее разрешенных Ansible response-playbook'ов.
           </div>
         </aside>
       </section>
@@ -95,7 +95,7 @@ export default function GuidePage() {
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
         <div className="flex items-center gap-3">
           <ServerCog className="text-sky-200" size={24} aria-hidden="true" />
-          <h2 className="text-xl font-semibold text-white">Как сделать реальный аудит без исправления</h2>
+          <h2 className="text-xl font-semibold text-white">Как сделать реальный аудит без агентов</h2>
         </div>
         <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
           {realAgentSteps.map((step, index) => (
@@ -111,7 +111,7 @@ export default function GuidePage() {
       </section>
 
       <div className="flex flex-wrap items-center justify-end gap-3">
-        <LinkButton href="/agent" variant="secondary">Посмотреть Linux-агент</LinkButton>
+        <LinkButton href="/hosts" variant="secondary">Открыть центр Ansible</LinkButton>
         <LinkButton href="/profiles">
           Перейти к профилям
           <ArrowRight size={16} aria-hidden="true" />

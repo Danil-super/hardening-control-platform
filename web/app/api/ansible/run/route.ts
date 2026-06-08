@@ -14,10 +14,6 @@ const playbooks = {
   collectFacts: { file: "collect-facts.yml", timeout: 240_000 },
   agentlessAudit: { file: "agentless-audit.yml", timeout: 600_000 },
   closeDangerousPorts: { file: "close-dangerous-ports.yml", timeout: 240_000, response: true },
-  installAgent: { file: "install-agent.yml", timeout: 240_000 },
-  audit: { file: "audit.yml", timeout: 600_000 },
-  auditLynis: { file: "audit-lynis.yml", timeout: 900_000 },
-  auditOpenScap: { file: "audit-openscap.yml", timeout: 1_200_000 },
 } as const;
 
 const profileIds = new Set(["basic_linux", "ssh_security", "web_server", "docker_host"]);

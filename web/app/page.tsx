@@ -1,4 +1,4 @@
-import { Activity, FileInput, FileText, Layers, Radar, Server, ShieldAlert, Wrench } from "lucide-react";
+import { Activity, FileText, Layers, Radar, Server, ShieldAlert, Wrench } from "lucide-react";
 import { DemoHostCard } from "@/components/dashboard/demo-host-card";
 import { ProcessStrip } from "@/components/dashboard/process-strip";
 import { LinkButton } from "@/components/ui/button";
@@ -40,7 +40,7 @@ export default function Home() {
           <Server size={22} className="text-sky-200" aria-hidden="true" />
           <h2 className="mt-4 text-lg font-semibold text-white">0. Подключить хосты сети</h2>
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            На главном компьютере настройте Ansible inventory, проверьте SSH и запускайте audit-only playbook'и.
+            На главном компьютере настройте Ansible inventory, проверьте SSH и запускайте безагентные playbook'и.
           </p>
           <LinkButton href="/hosts" variant="secondary" className="mt-4 w-full">Открыть хосты</LinkButton>
         </div>
@@ -53,12 +53,12 @@ export default function Home() {
           <LinkButton href="/audit/basic_linux" variant="secondary" className="mt-4 w-full">Запустить демо-аудит</LinkButton>
         </div>
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <FileInput size={22} className="text-sky-200" aria-hidden="true" />
-          <h2 className="mt-4 text-lg font-semibold text-white">2. Проверить реальный хост</h2>
+          <ShieldAlert size={22} className="text-sky-200" aria-hidden="true" />
+          <h2 className="mt-4 text-lg font-semibold text-white">2. Проверить реальную сеть</h2>
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            Импортируйте JSON локального агента. Это audit-only режим: агент читает настройки и ничего не исправляет.
+            Запустите сбор фактов и безагентный аудит с главного сервера без установки модулей на хосты.
           </p>
-          <LinkButton href="/agent/import" variant="secondary" className="mt-4 w-full">Импорт агента</LinkButton>
+          <LinkButton href="/hosts" variant="secondary" className="mt-4 w-full">Открыть центр</LinkButton>
         </div>
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
           <Wrench size={22} className="text-sky-200" aria-hidden="true" />
@@ -73,7 +73,7 @@ export default function Home() {
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Профили" value={auditProfiles.length} detail="Linux, SSH, веб, Docker" icon={<Layers size={20} />} />
         <SummaryCard label="Демо-проблемы" value={demoFindings.length} detail="Реалистичные риски Linux" icon={<Activity size={20} />} />
-        <SummaryCard label="Исправления" value={remediations.length} detail="Резервные копии и откат описаны" icon={<ShieldAlert size={20} />} />
+        <SummaryCard label="Исправления" value={remediations.length} detail="Резервные копии и откат описаны" icon={<Wrench size={20} />} />
         <SummaryCard label="Отчеты" value="До/после" detail="Экспорт JSON готов" icon={<FileText size={20} />} />
       </div>
 
@@ -83,13 +83,13 @@ export default function Home() {
           <ProcessStrip />
         </div>
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <Radar className="text-sky-200" size={24} aria-hidden="true" />
-          <h2 className="mt-4 text-xl font-semibold text-white">Локальный Linux-агент</h2>
+          <Server className="text-sky-200" size={24} aria-hidden="true" />
+          <h2 className="mt-4 text-xl font-semibold text-white">Главный сервер Ansible</h2>
           <p className="mt-2 text-sm leading-6 text-slate-400">
-            Python-агент уже работает в audit-only режиме, поддерживает Lynis и OpenSCAP как внешние источники и
-            импортирует результаты в сайт.
+            Централизованная модель: один сервер управляет inventory, запускает аудит по SSH и применяет
+            response-playbook'и только после подтверждения.
           </p>
-          <LinkButton href="/agent" variant="secondary" className="mt-4 w-full">Открыть агента</LinkButton>
+          <LinkButton href="/hosts" variant="secondary" className="mt-4 w-full">Открыть Ansible</LinkButton>
         </div>
       </section>
     </div>

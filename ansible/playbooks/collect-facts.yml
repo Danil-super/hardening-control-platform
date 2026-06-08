@@ -1,5 +1,5 @@
 ---
-- name: Collect Linux facts without installing an agent
+- name: Collect Linux facts from the control node
   hosts: linux_hosts
   become: true
   gather_facts: true

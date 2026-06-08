@@ -1,4 +1,4 @@
-import { Activity, BookOpen, FileInput, FileText, Home, Layers, Radar, Server, Shield, Wrench } from "lucide-react";
+import { Activity, BookOpen, FileText, Home, Layers, Server, Shield, Wrench } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { DemoBadge } from "@/components/ui/badge";
@@ -11,8 +11,6 @@ const navItems = [
   { href: "/remediation", label: "Исправления", icon: Wrench },
   { href: "/reports", label: "Отчеты", icon: FileText },
   { href: "/guide", label: "Инструкция", icon: BookOpen },
-  { href: "/agent/import", label: "Импорт агента", icon: FileInput },
-  { href: "/agent", label: "Linux-агент", icon: Radar },
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {

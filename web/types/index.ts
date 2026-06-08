@@ -2,7 +2,7 @@ export type RiskLevel = "high" | "medium" | "low" | "info";
 
 export type FindingStatus = "failed" | "passed" | "fixed" | "manual";
 
-export type FindingSource = "demo" | "agent" | "lynis" | "openscap" | "custom";
+export type FindingSource = "demo" | "agentless" | "custom";
 
 export type AuditProfile = {
   id: string;
@@ -48,7 +48,7 @@ export type AuditReport = {
   id: string;
   createdAt: string;
   profileId: string;
-  mode: "demo" | "agent";
+  mode: "demo" | "agentless";
   summary: {
     high: number;
     medium: number;

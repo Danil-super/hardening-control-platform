@@ -1,4 +1,2 @@
 ---
 audit_profile: basic_linux
-agent_install_dir: /opt/hcp-agent
-agent_report_dir: "{{ playbook_dir }}/../reports"

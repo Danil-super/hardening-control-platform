@@ -3,9 +3,7 @@
 import {
   AlertTriangle,
   CheckCircle2,
-  Download,
   FileText,
-  Play,
   RefreshCw,
   Search,
   Server,
@@ -114,7 +112,7 @@ type ActionConfig = {
   title: string;
   description: string;
   icon: typeof Server;
-  mode: "agentless" | "response" | "optional";
+  mode: "agentless" | "response";
   variant: "primary" | "secondary" | "danger";
   requiresLimit?: boolean;
   requiresConfirmation?: boolean;
@@ -155,42 +153,7 @@ const actions: ActionConfig[] = [
     requiresLimit: true,
     requiresConfirmation: true,
   },
-  {
-    id: "installAgent",
-    title: "Установить расширенный агент",
-    description: "Опционально копирует agent.py и server.py для глубокого локального аудита.",
-    icon: Download,
-    mode: "optional",
-    variant: "secondary",
-  },
-  {
-    id: "audit",
-    title: "Аудит через агент",
-    description: "Запускает уже установленный agent.py и сохраняет JSON-отчеты в ansible/reports.",
-    icon: Play,
-    mode: "optional",
-    variant: "secondary",
-  },
-  {
-    id: "auditLynis",
-    title: "Агент + Lynis",
-    description: "Опционально добавляет результаты Lynis, если агент и инструмент доступны.",
-    icon: Terminal,
-    mode: "optional",
-    variant: "secondary",
-  },
-  {
-    id: "auditOpenScap",
-    title: "Агент + OpenSCAP",
-    description: "Опционально добавляет внешние сканеры Lynis и OpenSCAP/SSG.",
-    icon: Wrench,
-    mode: "optional",
-    variant: "secondary",
-  },
 ];
-
-const agentlessActions = actions.filter((action) => action.mode !== "optional");
-const optionalAgentActions = actions.filter((action) => action.mode === "optional");
 
 function formatDate(value: string | null | undefined) {
   if (!value) {
@@ -641,7 +604,7 @@ export function AnsibleControlClient() {
           </p>
         </div>
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {agentlessActions.map((action) => {
+          {actions.map((action) => {
             const Icon = action.icon;
             return (
               <article key={action.id} className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
@@ -666,44 +629,12 @@ export function AnsibleControlClient() {
           })}
         </div>
 
-        <div className="pt-3">
-          <h2 className="text-xl font-semibold text-white">Опциональный расширенный агент</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            Этот режим можно использовать для глубоких локальных проверок, но он не является обязательным для базового
-            мониторинга и реакции через Ansible.
-          </p>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {optionalAgentActions.map((action) => {
-            const Icon = action.icon;
-            return (
-              <article key={action.id} className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
-                <Icon size={22} className="text-slate-300" aria-hidden="true" />
-                <h3 className="mt-4 font-semibold text-white">{action.title}</h3>
-                <p className="mt-2 min-h-20 text-sm leading-6 text-slate-400">{action.description}</p>
-                <Button
-                  variant={action.variant}
-                  onClick={() => runAction(action.id)}
-                  disabled={Boolean(loading)}
-                  className="mt-4 w-full"
-                >
-                  {loading === action.id ? (
-                    <RefreshCw size={16} className="animate-spin" aria-hidden="true" />
-                  ) : (
-                    <CheckCircle2 size={16} aria-hidden="true" />
-                  )}
-                  Запустить
-                </Button>
-              </article>
-            );
-          })}
-        </div>
       </section>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
         <h2 className="text-xl font-semibold text-white">Журнал выполнения</h2>
         <p className="mt-2 text-sm leading-6 text-slate-400">
-          Результаты audit-only и agentless playbook'ов сохраняются на главном компьютере в `ansible/reports`.
+          Результаты безагентных Ansible playbook'ов сохраняются на главном компьютере в `ansible/reports`.
         </p>
         {runResult ? (
           <div className="mt-4 space-y-3">
