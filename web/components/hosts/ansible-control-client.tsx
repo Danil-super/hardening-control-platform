@@ -2,8 +2,13 @@
 
 import {
   AlertTriangle,
+  Ban,
   CheckCircle2,
+  Clock,
   FileText,
+  KeyRound,
+  ListChecks,
+  Power,
   RefreshCw,
   Search,
   Server,
@@ -31,6 +36,45 @@ type RunPayload = {
   message?: string;
   stdout?: string;
   stderr?: string;
+};
+
+type SchedulerPayload = {
+  ok?: boolean;
+  active?: boolean;
+  state?: {
+    enabled: boolean;
+    action: string;
+    intervalMinutes: number;
+    profileId: string;
+    limit: string | null;
+    lastRunAt: string | null;
+    nextRunAt: string | null;
+    running: boolean;
+  };
+  message?: string;
+};
+
+type IncidentPayload = {
+  ok?: boolean;
+  incidents?: Array<{
+    id: string;
+    createdAt: string;
+    action: string;
+    kind: "audit" | "response" | "system";
+    status: "success" | "failed";
+    profileId: string;
+    limit: string | null;
+    message: string;
+    command?: string;
+  }>;
+  summary?: {
+    total: number;
+    success: number;
+    failed: number;
+    audit: number;
+    response: number;
+    system: number;
+  };
 };
 
 type DiscoveryInfo = {
@@ -144,10 +188,48 @@ const actions: ActionConfig[] = [
     variant: "primary",
   },
   {
+    id: "collectEvents",
+    title: "Собрать события",
+    description: "Читает auth/syslog/UFW/Suricata-события через Ansible, если логи доступны.",
+    icon: ListChecks,
+    mode: "agentless",
+    variant: "primary",
+  },
+  {
     id: "closeDangerousPorts",
     title: "Закрыть опасные порты",
     description: "Response-playbook: блокирует опасные TCP/UDP-порты через активный ufw/firewalld.",
     icon: AlertTriangle,
+    mode: "response",
+    variant: "danger",
+    requiresLimit: true,
+    requiresConfirmation: true,
+  },
+  {
+    id: "closePort",
+    title: "Закрыть порт",
+    description: "Response-playbook: блокирует выбранный порт через ufw/firewalld.",
+    icon: Ban,
+    mode: "response",
+    variant: "danger",
+    requiresLimit: true,
+    requiresConfirmation: true,
+  },
+  {
+    id: "blockIp",
+    title: "Заблокировать IP",
+    description: "Response-playbook: добавляет firewall-правило drop/deny для IP-адреса источника.",
+    icon: AlertTriangle,
+    mode: "response",
+    variant: "danger",
+    requiresLimit: true,
+    requiresConfirmation: true,
+  },
+  {
+    id: "stopService",
+    title: "Остановить сервис",
+    description: "Response-playbook: останавливает и отключает выбранный systemd-сервис.",
+    icon: Power,
     mode: "response",
     variant: "danger",
     requiresLimit: true,
@@ -189,10 +271,21 @@ export function AnsibleControlClient() {
   const [limit, setLimit] = useState("");
   const [loading, setLoading] = useState("");
   const [runResult, setRunResult] = useState<RunPayload | null>(null);
+  const [scheduler, setScheduler] = useState<SchedulerPayload | null>(null);
+  const [incidents, setIncidents] = useState<IncidentPayload | null>(null);
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleAction, setScheduleAction] = useState("agentlessAudit");
+  const [scheduleInterval, setScheduleInterval] = useState(15);
+  const [targetPort, setTargetPort] = useState("23");
+  const [targetProtocol, setTargetProtocol] = useState("tcp");
+  const [blockIp, setBlockIp] = useState("");
+  const [serviceName, setServiceName] = useState("nginx");
 
   useEffect(() => {
     loadDiscoveryInfo();
     loadHosts();
+    loadScheduler();
+    loadIncidents();
   }, []);
 
   async function loadDiscoveryInfo() {
@@ -207,6 +300,22 @@ export function AnsibleControlClient() {
   async function loadHosts() {
     const response = await fetch("/api/ansible/hosts");
     setHosts(await response.json());
+  }
+
+  async function loadScheduler() {
+    const response = await fetch("/api/ansible/scheduler");
+    const payload = await response.json();
+    setScheduler(payload);
+    if (payload.state) {
+      setScheduleEnabled(payload.state.enabled);
+      setScheduleAction(payload.state.action);
+      setScheduleInterval(payload.state.intervalMinutes);
+    }
+  }
+
+  async function loadIncidents() {
+    const response = await fetch("/api/ansible/incidents");
+    setIncidents(await response.json());
   }
 
   async function checkHealth() {
@@ -231,6 +340,15 @@ export function AnsibleControlClient() {
       return;
     }
 
+    const extraVars =
+      action === "closePort"
+        ? { target_port: targetPort, target_protocol: targetProtocol }
+        : action === "blockIp"
+          ? { block_ip: blockIp }
+          : action === "stopService"
+            ? { service_name: serviceName }
+            : {};
+
     const confirmResponse = selectedAction?.requiresConfirmation
       ? window.confirm("Запустить response-playbook? Он может изменить firewall на выбранных хостах.")
       : false;
@@ -244,10 +362,38 @@ export function AnsibleControlClient() {
       const response = await fetch("/api/ansible/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, profileId, limit: limit.trim() || undefined, confirmResponse }),
+        body: JSON.stringify({ action, profileId, limit: limit.trim() || undefined, confirmResponse, extraVars }),
       });
       setRunResult(await response.json());
       await loadHosts();
+      await loadIncidents();
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function saveScheduler() {
+    setLoading("scheduler");
+    setRunResult(null);
+    try {
+      const response = await fetch("/api/ansible/scheduler", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: scheduleEnabled,
+          action: scheduleAction,
+          intervalMinutes: scheduleInterval,
+          profileId,
+          limit: limit.trim() || undefined,
+        }),
+      });
+      const payload = await response.json();
+      setScheduler(payload);
+      setRunResult({
+        ok: payload.ok,
+        action: "scheduler",
+        message: payload.ok ? "Планировщик обновлен." : payload.message,
+      });
     } finally {
       setLoading("");
     }
@@ -335,6 +481,28 @@ export function AnsibleControlClient() {
             </div>
           </div>
         </aside>
+      </section>
+
+      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+        <div className="flex items-center gap-3">
+          <KeyRound size={22} className="text-sky-200" aria-hidden="true" />
+          <h2 className="text-xl font-semibold text-white">SSH-доступ к хостам</h2>
+        </div>
+        <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-400">
+          Для постоянной работы Ansible лучше использовать SSH-ключи. Парольный доступ можно использовать для первичной
+          проверки вручную, но веб-панель рассчитана на ключевой доступ с главного сервера.
+        </p>
+        <div className="mt-4 grid gap-3 md:grid-cols-3">
+          <code className="rounded-md border border-slate-800 bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+            ssh-keygen -t ed25519 -C hcp-control
+          </code>
+          <code className="rounded-md border border-slate-800 bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+            ssh-copy-id danil@192.168.1.10
+          </code>
+          <code className="rounded-md border border-slate-800 bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+            ansible all -i ansible/inventory.ini -m ping
+          </code>
+        </div>
       </section>
 
       <section className="space-y-4">
@@ -603,6 +771,50 @@ export function AnsibleControlClient() {
             постоянного агента на целевые устройства.
           </p>
         </div>
+
+        <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <h3 className="font-semibold text-white">Параметры response-действий</h3>
+          <div className="mt-4 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">Порт</span>
+              <input
+                value={targetPort}
+                onChange={(event) => setTargetPort(event.target.value)}
+                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">Протокол</span>
+              <select
+                value={targetProtocol}
+                onChange={(event) => setTargetProtocol(event.target.value)}
+                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+              >
+                <option value="tcp">tcp</option>
+                <option value="udp">udp</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">IP для блокировки</span>
+              <input
+                value={blockIp}
+                onChange={(event) => setBlockIp(event.target.value)}
+                placeholder="192.168.1.50"
+                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">Systemd-сервис</span>
+              <input
+                value={serviceName}
+                onChange={(event) => setServiceName(event.target.value)}
+                placeholder="nginx"
+                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+              />
+            </label>
+          </div>
+        </div>
+
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
           {actions.map((action) => {
             const Icon = action.icon;
@@ -628,7 +840,103 @@ export function AnsibleControlClient() {
             );
           })}
         </div>
+      </section>
 
+      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_420px]">
+        <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <div className="flex items-center gap-3">
+            <Clock size={22} className="text-sky-200" aria-hidden="true" />
+            <h2 className="text-xl font-semibold text-white">Планировщик проверок</h2>
+          </div>
+          <p className="mt-3 text-sm leading-6 text-slate-400">
+            Планировщик работает пока запущен локальный сайт. Он запускает только безопасные audit-playbook'и;
+            response-действия по расписанию запрещены.
+          </p>
+          <div className="mt-4 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
+            <label className="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+              <input
+                type="checkbox"
+                checked={scheduleEnabled}
+                onChange={(event) => setScheduleEnabled(event.target.checked)}
+                className="h-4 w-4 rounded border-slate-600 bg-slate-950"
+              />
+              <span className="font-semibold text-white">Включить</span>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">Действие</span>
+              <select
+                value={scheduleAction}
+                onChange={(event) => setScheduleAction(event.target.value)}
+                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+              >
+                <option value="ping">Проверить доступность</option>
+                <option value="collectFacts">Собрать факты</option>
+                <option value="agentlessAudit">Безагентный аудит</option>
+                <option value="collectEvents">Собрать события</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-500">Интервал</span>
+              <select
+                value={scheduleInterval}
+                onChange={(event) => setScheduleInterval(Number(event.target.value))}
+                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+              >
+                <option value={5}>5 минут</option>
+                <option value={15}>15 минут</option>
+                <option value={30}>30 минут</option>
+                <option value={60}>60 минут</option>
+              </select>
+            </label>
+            <Button onClick={saveScheduler} disabled={Boolean(loading)} className="mt-6">
+              <Clock size={16} aria-hidden="true" />
+              Сохранить
+            </Button>
+          </div>
+          <p className="mt-4 text-sm text-slate-400">
+            Статус: {scheduler?.state?.enabled ? "включен" : "выключен"} · следующий запуск:{" "}
+            {formatDate(scheduler?.state?.nextRunAt)}
+          </p>
+        </div>
+
+        <aside className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <div className="flex items-center gap-3">
+            <ListChecks size={22} className="text-sky-200" aria-hidden="true" />
+            <h2 className="text-xl font-semibold text-white">Журнал инцидентов</h2>
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
+            <div className="rounded-md bg-slate-900 p-3">
+              <p className="text-slate-500">Всего</p>
+              <p className="mt-1 text-2xl font-semibold text-white">{incidents?.summary?.total ?? 0}</p>
+            </div>
+            <div className="rounded-md bg-emerald-500/10 p-3">
+              <p className="text-emerald-200">Успешно</p>
+              <p className="mt-1 text-2xl font-semibold text-white">{incidents?.summary?.success ?? 0}</p>
+            </div>
+            <div className="rounded-md bg-red-500/10 p-3">
+              <p className="text-red-200">Ошибки</p>
+              <p className="mt-1 text-2xl font-semibold text-white">{incidents?.summary?.failed ?? 0}</p>
+            </div>
+          </div>
+          <div className="mt-4 max-h-72 space-y-2 overflow-auto pr-1">
+            {incidents?.incidents?.length ? incidents.incidents.slice(0, 8).map((incident) => (
+              <div key={incident.id} className="rounded-md border border-slate-800 bg-slate-900/70 p-3 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-semibold text-white">{incident.action}</p>
+                  <span className={incident.status === "success" ? "text-emerald-200" : "text-red-200"}>
+                    {incident.status === "success" ? "успех" : "ошибка"}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-slate-500">{formatDate(incident.createdAt)} · {incident.limit ?? "без limit"}</p>
+                <p className="mt-2 text-slate-300">{incident.message}</p>
+              </div>
+            )) : (
+              <p className="rounded-md border border-slate-800 bg-slate-900/70 p-3 text-sm text-slate-400">
+                Журнал пока пуст. Запустите проверку или response-playbook.
+              </p>
+            )}
+          </div>
+        </aside>
       </section>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">

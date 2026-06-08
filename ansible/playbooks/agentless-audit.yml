@@ -101,7 +101,63 @@
                     recommendation,
                     f"open_port={port}",
                     "close_dangerous_ports",
-                ))
+            ))
+
+        ssh_config = ""
+        try:
+            with open("/etc/ssh/sshd_config", encoding="utf-8", errors="replace") as handle:
+                ssh_config = handle.read()
+        except OSError as exc:
+            findings.append(finding(
+                "sshd_config_unavailable",
+                "Конфигурация SSH недоступна для чтения",
+                "SSH",
+                "info",
+                "manual",
+                "Не удалось прочитать /etc/ssh/sshd_config.",
+                "Проверьте конфигурацию SSH вручную.",
+                str(exc),
+            ))
+
+        def ssh_value(name):
+            value = None
+            for raw_line in ssh_config.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                parts = line.split(None, 1)
+                if len(parts) == 2 and parts[0].lower() == name.lower():
+                    value = parts[1].strip().lower()
+            return value
+
+        if ssh_config:
+            permit_root = ssh_value("PermitRootLogin")
+            root_failed = permit_root in {None, "yes", "prohibit-password", "without-password", "forced-commands-only"}
+            findings.append(finding(
+                "ssh_root_login",
+                "Вход root по SSH допускается" if root_failed else "Вход root по SSH отключен",
+                "SSH",
+                "high",
+                "failed" if root_failed else "passed",
+                "Проверяется параметр PermitRootLogin.",
+                "Установите PermitRootLogin no и проверьте sshd -t.",
+                "PermitRootLogin=" + (permit_root or "default"),
+                "disable_ssh_root_login" if root_failed else None,
+            ))
+
+            password_auth = ssh_value("PasswordAuthentication")
+            password_failed = password_auth in {None, "yes"}
+            findings.append(finding(
+                "ssh_password_auth",
+                "Парольная SSH-аутентификация разрешена" if password_failed else "Парольная SSH-аутентификация отключена",
+                "SSH",
+                "high",
+                "failed" if password_failed else "passed",
+                "Проверяется параметр PasswordAuthentication.",
+                "Отключите парольный SSH-вход после проверки доступа по ключам.",
+                "PasswordAuthentication=" + (password_auth or "default"),
+                "disable_ssh_password_auth" if password_failed else None,
+            ))
 
         if not any(item["id"].startswith("dangerous_port_") for item in findings):
             findings.append(finding(
@@ -131,6 +187,75 @@
             "Включите и настройте ufw/firewalld на хосте.",
             f"ufw={ufw_output or 'n/a'}; firewalld={firewalld_output or 'n/a'}",
             None if firewall_active else "enable_firewall",
+        ))
+
+        sudo_code, sudo_output, sudo_error = run(["bash", "-lc", "getent group sudo wheel adm 2>/dev/null"])
+        sudo_evidence = sudo_output or sudo_error or "groups unavailable"
+        sudo_users = []
+        for line in sudo_output.splitlines():
+            parts = line.split(":")
+            if len(parts) >= 4 and parts[3].strip():
+                sudo_users.extend(user for user in parts[3].split(",") if user)
+        findings.append(finding(
+            "sudo_users_review",
+            "Проверить пользователей с повышенными правами",
+            "Учетные записи",
+            "medium" if len(sudo_users) > 3 else "info",
+            "manual",
+            "Собран список пользователей в административных группах sudo/wheel/adm.",
+            "Проверьте, что каждый пользователь с sudo-доступом действительно нужен.",
+            sudo_evidence,
+        ))
+
+        failed_log_code, failed_log_output, failed_log_error = run([
+            "bash",
+            "-lc",
+            "grep -Ei 'failed password|authentication failure|invalid user' /var/log/auth.log /var/log/secure 2>/dev/null | tail -n 20",
+        ])
+        failed_login_detected = bool(failed_log_output.strip())
+        findings.append(finding(
+            "failed_logins",
+            "Обнаружены неудачные попытки входа" if failed_login_detected else "Неудачные попытки входа не найдены в доступных логах",
+            "Аутентификация",
+            "medium",
+            "failed" if failed_login_detected else "passed",
+            "Проверяются последние записи auth.log/secure по неудачным входам.",
+            "При множественных попытках включите блокировку источника, fail2ban или правила firewall.",
+            failed_log_output or failed_log_error or "no matching log lines",
+            "block_source_ip" if failed_login_detected else None,
+        ))
+
+        critical_services = ["ssh", "sshd", "nginx", "apache2", "docker"]
+        service_lines = []
+        for service in critical_services:
+            code, output, error = run(["systemctl", "is-active", service])
+            service_lines.append(f"{service}={output or error or code}")
+        findings.append(finding(
+            "critical_services_review",
+            "Проверить состояние критичных сервисов",
+            "Сервисы",
+            "info",
+            "manual",
+            "Собрано состояние распространенных сервисов: SSH, web и Docker.",
+            "Проверьте, что каждый активный сервис нужен хосту и защищен.",
+            "; ".join(service_lines),
+        ))
+
+        writable_code, writable_output, writable_error = run([
+            "bash",
+            "-lc",
+            "find /tmp /var/tmp -xdev -type d -perm -0002 ! -perm -1000 -print 2>/dev/null | head -n 20",
+        ])
+        writable_failed = bool(writable_output.strip())
+        findings.append(finding(
+            "world_writable_dirs",
+            "Найдены world-writable директории без sticky bit" if writable_failed else "World-writable директории без sticky bit не найдены",
+            "Файловая система",
+            "medium",
+            "failed" if writable_failed else "passed",
+            "Проверяются /tmp и /var/tmp на небезопасные права директорий.",
+            "Добавьте sticky bit или исправьте права директорий.",
+            writable_output or writable_error or "no unsafe directories",
         ))
 
         root_code, root_output, _ = run(["getent", "passwd", "root"])

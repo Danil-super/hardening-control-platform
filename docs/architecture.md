@@ -19,6 +19,9 @@ Hardening Control Platform состоит из веб-платформы, дем
   Ping и проверка SSH-доступа
   Автообнаружение SSH-доступных хостов
   Безагентный сбор фактов и аудит
+  Сбор событий из auth/syslog/UFW/Suricata
+  Планировщик audit-playbook'ов
+  Журнал инцидентов
   Запуск response-playbook'ов после подтверждения
   Сохранение JSON-отчетов в ansible/reports
 ```

@@ -14,5 +14,7 @@ web/.next/
 web/out/
 
 ansible/inventory.ini
+ansible/incidents.json
+ansible/scheduler.json
 ansible/reports/*.json
 !ansible/reports/.gitkeep

@@ -1,0 +1,79 @@
+---
+- name: Close selected port with host firewall
+  hosts: linux_hosts
+  become: true
+  gather_facts: false
+
+  vars:
+    target_protocol: "{{ target_protocol | default('tcp') }}"
+
+  tasks:
+    - name: Validate target port
+      ansible.builtin.assert:
+        that:
+          - target_port is defined
+          - target_port | int > 0
+          - target_port | int <= 65535
+          - target_protocol in ['tcp', 'udp']
+        fail_msg: "Укажите target_port от 1 до 65535 и target_protocol tcp/udp."
+
+    - name: Check ufw availability
+      ansible.builtin.shell: command -v ufw
+      changed_when: false
+      failed_when: false
+      register: ufw_binary
+
+    - name: Check firewalld availability
+      ansible.builtin.shell: command -v firewall-cmd
+      changed_when: false
+      failed_when: false
+      register: firewalld_binary
+
+    - name: Read ufw status
+      ansible.builtin.command: ufw status
+      changed_when: false
+      failed_when: false
+      register: ufw_status
+      when: ufw_binary.rc == 0
+
+    - name: Read firewalld status
+      ansible.builtin.command: firewall-cmd --state
+      changed_when: false
+      failed_when: false
+      register: firewalld_status
+      when: firewalld_binary.rc == 0
+
+    - name: Deny selected port with ufw
+      ansible.builtin.command: "ufw deny {{ target_port }}/{{ target_protocol }}"
+      when:
+        - ufw_binary.rc == 0
+        - "'Status: active' in (ufw_status.stdout | default(''))"
+
+    - name: Remove selected port from firewalld runtime config
+      ansible.builtin.command: "firewall-cmd --remove-port={{ target_port }}/{{ target_protocol }}"
+      changed_when: false
+      failed_when: false
+      when:
+        - firewalld_binary.rc == 0
+        - "(firewalld_status.stdout | default('')) == 'running'"
+
+    - name: Remove selected port from firewalld permanent config
+      ansible.builtin.command: "firewall-cmd --permanent --remove-port={{ target_port }}/{{ target_protocol }}"
+      changed_when: false
+      failed_when: false
+      when:
+        - firewalld_binary.rc == 0
+        - "(firewalld_status.stdout | default('')) == 'running'"
+
+    - name: Reload firewalld
+      ansible.builtin.command: firewall-cmd --reload
+      when:
+        - firewalld_binary.rc == 0
+        - "(firewalld_status.stdout | default('')) == 'running'"
+
+    - name: Warn when no active supported firewall was found
+      ansible.builtin.debug:
+        msg: "На хосте нет активного ufw/firewalld. Порт {{ target_port }}/{{ target_protocol }} не закрыт."
+      when:
+        - not (ufw_binary.rc == 0 and 'Status: active' in (ufw_status.stdout | default('')))
+        - not (firewalld_binary.rc == 0 and (firewalld_status.stdout | default('')) == 'running')

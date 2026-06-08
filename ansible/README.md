@@ -23,11 +23,31 @@ cp ansible/inventory.example.ini ansible/inventory.ini
 ansible all -i ansible/inventory.ini -m ping
 ```
 
+## SSH-ключи
+
+На главном сервере создайте ключ и добавьте его на каждый управляемый Linux-хост:
+
+```bash
+ssh-keygen -t ed25519 -C hcp-control
+ssh-copy-id danil@192.168.1.10
+ssh danil@192.168.1.10
+```
+
+Если на хосте не установлен SSH-сервер:
+
+```bash
+sudo apt install openssh-server
+sudo systemctl enable --now ssh
+```
+
+Парольный режим подходит только для ручной отладки: `ansible all -i ansible/inventory.ini -m ping --ask-pass --ask-become-pass`.
+
 ## Безагентный режим
 
 ```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/collect-facts.yml
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/agentless-audit.yml -e audit_profile=basic_linux
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/collect-security-events.yml
 ```
 
 Эти playbook'и ничего не устанавливают на хосты. Ansible подключается по SSH, собирает факты, проверяет открытые порты, firewall и сохраняет JSON-отчеты на главном компьютере в `ansible/reports/`.
@@ -38,6 +58,9 @@ Response-playbook может менять настройки хоста, поэ�
 
 ```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-dangerous-ports.yml --limit server1
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-port.yml --limit server1 -e target_port=23 -e target_protocol=tcp
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/block-ip.yml --limit server1 -e block_ip=192.168.1.50
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/stop-service.yml --limit server1 -e service_name=nginx
 ```
 
 `close-dangerous-ports.yml` блокирует распространенные опасные порты через активный `ufw` или `firewalld`. Если поддерживаемый firewall не активен, playbook выводит предупреждение и не закрывает порты.

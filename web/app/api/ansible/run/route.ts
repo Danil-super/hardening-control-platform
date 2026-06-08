@@ -1,42 +1,23 @@
-import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import path from "node:path";
-import { promisify } from "node:util";
 import { NextResponse } from "next/server";
+import {
+  appendIncident,
+  isPlaybookAction,
+  isSafeLimit,
+  normalizeProfileId,
+  playbooks,
+  runAnsiblePlaybook,
+  validateExtraVars,
+} from "@/lib/ansible-control";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const execFileAsync = promisify(execFile);
-
-const playbooks = {
-  ping: { file: "ping.yml", timeout: 120_000 },
-  collectFacts: { file: "collect-facts.yml", timeout: 240_000 },
-  agentlessAudit: { file: "agentless-audit.yml", timeout: 600_000 },
-  closeDangerousPorts: { file: "close-dangerous-ports.yml", timeout: 240_000, response: true },
-} as const;
-
-const profileIds = new Set(["basic_linux", "ssh_security", "web_server", "docker_host"]);
-
-type PlaybookAction = keyof typeof playbooks;
-
-function getRepoRoot() {
-  return path.resolve(process.cwd(), "..");
-}
-
-function isPlaybookAction(value: unknown): value is PlaybookAction {
-  return typeof value === "string" && value in playbooks;
-}
-
-function isSafeLimit(value: unknown): value is string {
-  return typeof value === "string" && /^[a-zA-Z0-9_.:-]+(,[a-zA-Z0-9_.:-]+)*$/.test(value);
-}
-
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   const action = body?.action;
-  const profileId = typeof body?.profileId === "string" && profileIds.has(body.profileId) ? body.profileId : "basic_linux";
+  const profileId = normalizeProfileId(body?.profileId);
   const limit = body?.limit;
+  const safeLimit = typeof limit === "string" ? limit : undefined;
   const confirmResponse = body?.confirmResponse === true;
 
   if (!isPlaybookAction(action)) {
@@ -46,15 +27,23 @@ export async function POST(request: Request) {
     );
   }
 
-  if (limit && !isSafeLimit(limit)) {
+  if (safeLimit && !isSafeLimit(safeLimit)) {
     return NextResponse.json(
       { ok: false, error: "bad_limit", message: "Limit может содержать только имена хостов/групп без пробелов." },
       { status: 400 },
     );
   }
 
+  const extraVars = validateExtraVars(action, body?.extraVars);
+  if (!extraVars.ok) {
+    return NextResponse.json(
+      { ok: false, error: "bad_extra_vars", message: extraVars.message },
+      { status: 400 },
+    );
+  }
+
   const selected = playbooks[action];
-  if ("response" in selected && selected.response && !limit) {
+  if (selected.kind === "response" && selected.requiresLimit && !safeLimit) {
     return NextResponse.json(
       {
         ok: false,
@@ -65,7 +54,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if ("response" in selected && selected.response && !confirmResponse) {
+  if (selected.kind === "response" && !confirmResponse) {
     return NextResponse.json(
       {
         ok: false,
@@ -76,56 +65,54 @@ export async function POST(request: Request) {
     );
   }
 
-  const repoRoot = getRepoRoot();
-  const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
-  if (!existsSync(inventoryPath)) {
-    return NextResponse.json(
-      {
-        ok: false,
-        error: "inventory_missing",
-        message: "Создайте ansible/inventory.ini из ansible/inventory.example.ini.",
-      },
-      { status: 400 },
-    );
-  }
-
-  const playbookPath = path.join(repoRoot, "ansible", "playbooks", selected.file);
-  const args = ["-i", inventoryPath, playbookPath, "-e", `audit_profile=${profileId}`];
-  if (limit) {
-    args.push("--limit", limit);
-  }
-
   try {
-    const { stdout, stderr } = await execFileAsync("ansible-playbook", args, {
-      cwd: repoRoot,
-      timeout: selected.timeout,
-      maxBuffer: 1024 * 1024 * 8,
-      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+    const { stdout, stderr, command, repoRoot } = await runAnsiblePlaybook({
+      action,
+      profileId,
+      limit: safeLimit,
+      extraVars: extraVars.values,
     });
+    appendIncident({
+      action,
+      kind: selected.kind,
+      status: "success",
+      profileId,
+      limit: safeLimit || null,
+      message: selected.kind === "response" ? "Response-playbook выполнен." : "Проверка выполнена.",
+      command,
+    }, repoRoot);
 
     return NextResponse.json({
       ok: true,
       action,
       profileId,
-      limit: limit || null,
-      command: `ansible-playbook ${args.join(" ")}`,
+      limit: safeLimit || null,
+      command,
       stdout,
       stderr,
     });
   } catch (error) {
-    const output = error as { stdout?: string; stderr?: string; message?: string };
+    const output = error as { stdout?: string; stderr?: string; message?: string; code?: string };
+    appendIncident({
+      action,
+      kind: selected.kind,
+      status: "failed",
+      profileId,
+      limit: safeLimit || null,
+      message: output.message ?? "Playbook завершился с ошибкой.",
+    });
     return NextResponse.json(
       {
         ok: false,
         action,
         profileId,
-        limit: limit || null,
-        command: `ansible-playbook ${args.join(" ")}`,
+        limit: safeLimit || null,
+        command: "",
         message: output.message ?? "Playbook завершился с ошибкой.",
         stdout: output.stdout ?? "",
         stderr: output.stderr ?? "",
       },
-      { status: 500 },
+      { status: output.code === "inventory_missing" ? 400 : 500 },
     );
   }
 }

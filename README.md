@@ -69,6 +69,26 @@ cp ansible/inventory.example.ini ansible/inventory.ini
 ansible all -i ansible/inventory.ini -m ping
 ```
 
+### SSH-доступ
+
+Рекомендуемый способ подключения — SSH-ключи с главного сервера:
+
+```bash
+ssh-keygen -t ed25519 -C hcp-control
+ssh-copy-id danil@192.168.1.10
+ssh danil@192.168.1.10
+ansible all -i ansible/inventory.ini -m ping
+```
+
+На целевом Linux-хосте должен быть включен SSH:
+
+```bash
+sudo apt install openssh-server
+sudo systemctl enable --now ssh
+```
+
+Парольный режим возможен для ручной проверки через `ansible --ask-pass --ask-become-pass`, но веб-панель рассчитана на ключевой SSH-доступ.
+
 Собрать факты без установки агентов:
 
 ```bash
@@ -85,9 +105,14 @@ ansible-playbook -i ansible/inventory.ini ansible/playbooks/agentless-audit.yml 
 
 ```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-dangerous-ports.yml --limit server1
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-port.yml --limit server1 -e target_port=23 -e target_protocol=tcp
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/block-ip.yml --limit server1 -e block_ip=192.168.1.50
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/stop-service.yml --limit server1 -e service_name=nginx
 ```
 
 На сайте откройте `/hosts`, чтобы проверить Ansible control node, выполнить ping, запустить безагентный аудит и выполнить разрешенные response-playbook'и. Реальные отчеты сохраняются в `ansible/reports/` и не отправляются в GitHub.
+
+Журнал инцидентов сохраняется локально в `ansible/incidents.json`, настройки планировщика — в `ansible/scheduler.json`.
 
 На странице `/hosts` также есть автообнаружение хостов: платформа определяет локальную приватную подсеть, сканирует SSH-порт 22 и может добавить найденные IP в `ansible/inventory.ini`. Сканирование ограничено подсетями `/24`-`/30` и предназначено только для вашей локальной сети.
 
