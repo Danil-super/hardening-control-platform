@@ -1,0 +1,37 @@
+import { NextResponse, type NextRequest } from "next/server";
+import { authCookieName, createEdgeSessionToken, isProtectedPath } from "@/lib/auth-edge";
+
+export async function proxy(request: NextRequest) {
+  const { pathname, search } = request.nextUrl;
+  if (!isProtectedPath(pathname)) {
+    return NextResponse.next();
+  }
+
+  const expectedToken = await createEdgeSessionToken();
+  const currentToken = request.cookies.get(authCookieName)?.value;
+  if (expectedToken && currentToken === expectedToken) {
+    return NextResponse.next();
+  }
+
+  if (pathname.startsWith("/api/ansible")) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: expectedToken ? "auth_required" : "auth_not_configured",
+        message: expectedToken
+          ? "Требуется вход администратора."
+          : "Задайте HCP_ADMIN_PASSWORD в web/.env.local и перезапустите сайт.",
+      },
+      { status: expectedToken ? 401 : 503 },
+    );
+  }
+
+  const loginUrl = request.nextUrl.clone();
+  loginUrl.pathname = "/login";
+  loginUrl.searchParams.set("next", `${pathname}${search}`);
+  return NextResponse.redirect(loginUrl);
+}
+
+export const config = {
+  matcher: ["/hosts", "/playbooks", "/reports/agentless/:path*", "/api/ansible/:path*"],
+};

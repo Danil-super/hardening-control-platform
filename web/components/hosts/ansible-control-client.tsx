@@ -4,28 +4,22 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle2,
-  Clock,
   FileText,
-  KeyRound,
-  ListChecks,
+  Plus,
   Power,
   RefreshCw,
   Search,
   Server,
   ShieldCheck,
   Terminal,
-  Wrench,
 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { SummaryCard } from "@/components/ui/summary-card";
-import { Button } from "@/components/ui/button";
+import { useEffect, useMemo, useState } from "react";
+import { Button, LinkButton } from "@/components/ui/button";
 
 type HealthPayload = {
   ansibleInstalled?: boolean;
   version?: string | null;
   inventoryReady?: boolean;
-  inventoryPath?: string;
-  inventoryExamplePath?: string;
   message?: string;
 };
 
@@ -38,86 +32,13 @@ type RunPayload = {
   stderr?: string;
 };
 
-type SchedulerPayload = {
-  ok?: boolean;
-  active?: boolean;
-  state?: {
-    enabled: boolean;
-    action: string;
-    intervalMinutes: number;
-    profileId: string;
-    limit: string | null;
-    lastRunAt: string | null;
-    nextRunAt: string | null;
-    running: boolean;
-  };
-  message?: string;
-};
-
-type IncidentPayload = {
-  ok?: boolean;
-  incidents?: Array<{
-    id: string;
-    createdAt: string;
-    action: string;
-    kind: "audit" | "response" | "system";
-    status: "success" | "failed";
-    profileId: string;
-    limit: string | null;
-    message: string;
-    command?: string;
-  }>;
-  summary?: {
-    total: number;
-    success: number;
-    failed: number;
-    audit: number;
-    response: number;
-    system: number;
-  };
-};
-
-type DiscoveryInfo = {
-  candidates?: Array<{
-    cidr: string;
-    device?: string;
-    source?: string;
-  }>;
-  defaultCidr?: string;
-  maxHostsPerScan?: number;
-  message?: string;
-};
-
-type DiscoveryResult = {
-  ok?: boolean;
-  cidr?: string;
-  scannedHosts?: number;
-  sshUser?: string;
-  become?: boolean;
-  addToInventory?: boolean;
-  found?: Array<{
-    ip: string;
-    reachable: boolean;
-    sshOpen: boolean;
-    methods: string[];
-    alias: string;
-    added: boolean;
-  }>;
-  sshReady?: number;
-  added?: number;
-  inventoryPath?: string;
-  message?: string;
-};
-
 type ManagedHost = {
   alias: string;
   address: string;
   user: string | null;
   become: boolean | null;
   groups: string[];
-  raw: string;
   lastReport: {
-    path: string;
     fileName: string;
     createdAt: string | null;
     profileId: string | null;
@@ -130,10 +51,7 @@ type ManagedHost = {
 };
 
 type HostsPayload = {
-  ok?: boolean;
   inventoryReady?: boolean;
-  inventoryPath?: string;
-  reportsPath?: string;
   hosts?: ManagedHost[];
   summary?: {
     total: number;
@@ -144,102 +62,52 @@ type HostsPayload = {
   };
 };
 
-const profileOptions = [
-  { id: "basic_linux", label: "Базовое усиление Linux" },
-  { id: "ssh_security", label: "Безопасность SSH" },
-  { id: "web_server", label: "Усиление веб-сервера" },
-  { id: "docker_host", label: "Усиление Docker-хоста" },
-] as const;
-
-type ActionConfig = {
-  id: string;
-  title: string;
-  description: string;
-  icon: typeof Server;
-  mode: "agentless" | "response";
-  variant: "primary" | "secondary" | "danger";
-  requiresLimit?: boolean;
-  requiresConfirmation?: boolean;
+type PreflightPayload = {
+  ok?: boolean;
+  message?: string;
+  checks?: {
+    ssh: { ok: boolean; message: string };
+    python: { ok: boolean; message: string };
+    sudo: { ok: boolean; message: string };
+  };
+  facts?: {
+    os: string | null;
+    python: string | null;
+  };
 };
 
-const actions: ActionConfig[] = [
-  {
-    id: "ping",
-    title: "Проверить доступность",
-    description: "Запускает Ansible ping по inventory. Настройки хостов не меняются.",
-    icon: Server,
-    mode: "agentless",
-    variant: "primary",
-  },
-  {
-    id: "collectFacts",
-    title: "Собрать факты",
-    description: "Собирает ОС, сеть, ядро и ресурсы через Ansible без установки агента.",
-    icon: FileText,
-    mode: "agentless",
-    variant: "primary",
-  },
-  {
-    id: "agentlessAudit",
-    title: "Безагентный аудит",
-    description: "Проверяет открытые порты, firewall и базовые признаки риска через SSH.",
-    icon: ShieldCheck,
-    mode: "agentless",
-    variant: "primary",
-  },
-  {
-    id: "collectEvents",
-    title: "Собрать события",
-    description: "Читает auth/syslog/UFW/Suricata-события через Ansible, если логи доступны.",
-    icon: ListChecks,
-    mode: "agentless",
-    variant: "primary",
-  },
-  {
-    id: "closeDangerousPorts",
-    title: "Закрыть опасные порты",
-    description: "Response-playbook: блокирует опасные TCP/UDP-порты через активный ufw/firewalld.",
-    icon: AlertTriangle,
-    mode: "response",
-    variant: "danger",
-    requiresLimit: true,
-    requiresConfirmation: true,
-  },
-  {
-    id: "closePort",
-    title: "Закрыть порт",
-    description: "Response-playbook: блокирует выбранный порт через ufw/firewalld.",
-    icon: Ban,
-    mode: "response",
-    variant: "danger",
-    requiresLimit: true,
-    requiresConfirmation: true,
-  },
-  {
-    id: "blockIp",
-    title: "Заблокировать IP",
-    description: "Response-playbook: добавляет firewall-правило drop/deny для IP-адреса источника.",
-    icon: AlertTriangle,
-    mode: "response",
-    variant: "danger",
-    requiresLimit: true,
-    requiresConfirmation: true,
-  },
-  {
-    id: "stopService",
-    title: "Остановить сервис",
-    description: "Response-playbook: останавливает и отключает выбранный systemd-сервис.",
-    icon: Power,
-    mode: "response",
-    variant: "danger",
-    requiresLimit: true,
-    requiresConfirmation: true,
-  },
-];
+type DiscoveryPayload = {
+  ok?: boolean;
+  defaultCidr?: string;
+  candidates?: Array<{ cidr: string; device?: string }>;
+  found?: Array<{ ip: string; sshOpen: boolean; alias: string; methods: string[] }>;
+  message?: string;
+};
+
+const profileOptions = [
+  { id: "basic_linux", label: "Linux" },
+  { id: "ssh_security", label: "SSH" },
+  { id: "web_server", label: "Web" },
+  { id: "docker_host", label: "Docker" },
+] as const;
+
+const auditActions = [
+  { id: "ping", label: "Ping", icon: Server },
+  { id: "collectFacts", label: "Факты", icon: FileText },
+  { id: "agentlessAudit", label: "Аудит", icon: ShieldCheck },
+  { id: "collectEvents", label: "События", icon: Terminal },
+] as const;
+
+const responseActions = [
+  { id: "closeDangerousPorts", label: "Закрыть опасные", icon: AlertTriangle },
+  { id: "closePort", label: "Закрыть порт", icon: Ban },
+  { id: "blockIp", label: "Блок IP", icon: AlertTriangle },
+  { id: "stopService", label: "Стоп сервис", icon: Power },
+] as const;
 
 function formatDate(value: string | null | undefined) {
   if (!value) {
-    return "нет данных";
+    return "нет отчета";
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
@@ -258,85 +126,155 @@ function scoreTone(score: number | null | undefined) {
   return "border-red-400/40 bg-red-500/15 text-red-100";
 }
 
+function reportHref(fileName: string) {
+  return `/reports/agentless/${encodeURIComponent(fileName.replace(/\.json$/i, ""))}`;
+}
+
 export function AnsibleControlClient() {
   const [health, setHealth] = useState<HealthPayload | null>(null);
   const [hosts, setHosts] = useState<HostsPayload | null>(null);
-  const [discoveryInfo, setDiscoveryInfo] = useState<DiscoveryInfo | null>(null);
-  const [discoveryResult, setDiscoveryResult] = useState<DiscoveryResult | null>(null);
-  const [scanCidr, setScanCidr] = useState("");
-  const [sshUser, setSshUser] = useState("danil");
-  const [become, setBecome] = useState(true);
-  const [addToInventory, setAddToInventory] = useState(true);
   const [profileId, setProfileId] = useState("basic_linux");
-  const [limit, setLimit] = useState("");
+  const [selectedAlias, setSelectedAlias] = useState("");
   const [loading, setLoading] = useState("");
   const [runResult, setRunResult] = useState<RunPayload | null>(null);
-  const [scheduler, setScheduler] = useState<SchedulerPayload | null>(null);
-  const [incidents, setIncidents] = useState<IncidentPayload | null>(null);
-  const [scheduleEnabled, setScheduleEnabled] = useState(false);
-  const [scheduleAction, setScheduleAction] = useState("agentlessAudit");
-  const [scheduleInterval, setScheduleInterval] = useState(15);
+  const [freshReportHref, setFreshReportHref] = useState("");
+  const [manualAlias, setManualAlias] = useState("server1");
+  const [manualAddress, setManualAddress] = useState("");
+  const [manualUser, setManualUser] = useState("danil");
+  const [manualPort, setManualPort] = useState("22");
+  const [manualGroup, setManualGroup] = useState("linux_hosts");
+  const [manualBecome, setManualBecome] = useState(true);
+  const [preflight, setPreflight] = useState<PreflightPayload | null>(null);
+  const [scanCidr, setScanCidr] = useState("");
+  const [discovery, setDiscovery] = useState<DiscoveryPayload | null>(null);
   const [targetPort, setTargetPort] = useState("23");
   const [targetProtocol, setTargetProtocol] = useState("tcp");
   const [blockIp, setBlockIp] = useState("");
   const [serviceName, setServiceName] = useState("nginx");
 
+  const selectedHost = useMemo(
+    () => hosts?.hosts?.find((host) => host.alias === selectedAlias) ?? null,
+    [hosts, selectedAlias],
+  );
+
   useEffect(() => {
-    loadDiscoveryInfo();
-    loadHosts();
-    loadScheduler();
-    loadIncidents();
+    void refreshAll();
   }, []);
 
-  async function loadDiscoveryInfo() {
-    const response = await fetch("/api/ansible/discover");
-    const payload = await response.json();
-    setDiscoveryInfo(payload);
-    if (payload.defaultCidr) {
-      setScanCidr(payload.defaultCidr);
+  async function refreshAll() {
+    setLoading("refresh");
+    try {
+      const [healthResponse, hostsResponse] = await Promise.all([
+        fetch("/api/ansible/health"),
+        fetch("/api/ansible/hosts"),
+      ]);
+      const nextHealth = await healthResponse.json();
+      const nextHosts = await hostsResponse.json();
+      setHealth(nextHealth);
+      setHosts(nextHosts);
+      if (!selectedAlias && nextHosts.hosts?.[0]) {
+        setSelectedAlias(nextHosts.hosts[0].alias);
+      }
+      return nextHosts as HostsPayload;
+    } finally {
+      setLoading("");
     }
   }
 
   async function loadHosts() {
     const response = await fetch("/api/ansible/hosts");
-    setHosts(await response.json());
+    const payload = await response.json();
+    setHosts(payload);
+    return payload as HostsPayload;
   }
 
-  async function loadScheduler() {
-    const response = await fetch("/api/ansible/scheduler");
-    const payload = await response.json();
-    setScheduler(payload);
-    if (payload.state) {
-      setScheduleEnabled(payload.state.enabled);
-      setScheduleAction(payload.state.action);
-      setScheduleInterval(payload.state.intervalMinutes);
+  async function addManualHost() {
+    setLoading("manualHost");
+    setRunResult(null);
+    setFreshReportHref("");
+    try {
+      const response = await fetch("/api/ansible/hosts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          alias: manualAlias,
+          address: manualAddress,
+          user: manualUser,
+          port: manualPort,
+          group: manualGroup,
+          become: manualBecome,
+        }),
+      });
+      const payload = await response.json();
+      setRunResult({ ok: payload.ok, action: "addHost", message: payload.message });
+      if (payload.ok) {
+        setSelectedAlias(manualAlias.trim());
+        setManualAddress("");
+        await refreshAll();
+      }
+    } finally {
+      setLoading("");
     }
   }
 
-  async function loadIncidents() {
-    const response = await fetch("/api/ansible/incidents");
-    setIncidents(await response.json());
+  async function checkPreflight() {
+    setLoading("preflight");
+    setRunResult(null);
+    setPreflight(null);
+    try {
+      const response = await fetch("/api/ansible/hosts/preflight", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          alias: manualAlias,
+          address: manualAddress,
+          user: manualUser,
+          port: manualPort,
+          become: manualBecome,
+        }),
+      });
+      setPreflight(await response.json());
+    } finally {
+      setLoading("");
+    }
   }
 
-  async function checkHealth() {
-    setLoading("health");
-    setRunResult(null);
+  async function detectNetwork() {
+    setLoading("detect");
     try {
-      const response = await fetch("/api/ansible/health");
-      setHealth(await response.json());
+      const response = await fetch("/api/ansible/discover");
+      const payload = await response.json();
+      setDiscovery(payload);
+      if (payload.defaultCidr) {
+        setScanCidr(payload.defaultCidr);
+      }
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function scanNetwork() {
+    setLoading("scan");
+    try {
+      const response = await fetch("/api/ansible/discover", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cidr: scanCidr, sshUser: manualUser, become: manualBecome, addToInventory: false }),
+      });
+      setDiscovery(await response.json());
     } finally {
       setLoading("");
     }
   }
 
   async function runAction(action: string) {
-    const selectedAction = actions.find((item) => item.id === action);
-    if (selectedAction?.requiresLimit && !limit.trim()) {
-      setRunResult({
-        ok: false,
-        action,
-        message: "Для response-playbook выберите конкретный хост или группу в поле Limit.",
-      });
+    if (!selectedAlias) {
+      setRunResult({ ok: false, action, message: "Выберите хост." });
+      return;
+    }
+
+    const isResponse = responseActions.some((item) => item.id === action);
+    if (isResponse && !window.confirm("Запустить response-playbook на выбранном хосте?")) {
       return;
     }
 
@@ -349,620 +287,357 @@ export function AnsibleControlClient() {
             ? { service_name: serviceName }
             : {};
 
-    const confirmResponse = selectedAction?.requiresConfirmation
-      ? window.confirm("Запустить response-playbook? Он может изменить firewall на выбранных хостах.")
-      : false;
-    if (selectedAction?.requiresConfirmation && !confirmResponse) {
-      return;
-    }
-
     setLoading(action);
     setRunResult(null);
+    setFreshReportHref("");
     try {
       const response = await fetch("/api/ansible/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action, profileId, limit: limit.trim() || undefined, confirmResponse, extraVars }),
-      });
-      setRunResult(await response.json());
-      await loadHosts();
-      await loadIncidents();
-    } finally {
-      setLoading("");
-    }
-  }
-
-  async function saveScheduler() {
-    setLoading("scheduler");
-    setRunResult(null);
-    try {
-      const response = await fetch("/api/ansible/scheduler", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          enabled: scheduleEnabled,
-          action: scheduleAction,
-          intervalMinutes: scheduleInterval,
+          action,
           profileId,
-          limit: limit.trim() || undefined,
+          limit: selectedAlias,
+          confirmResponse: isResponse,
+          extraVars,
         }),
       });
       const payload = await response.json();
-      setScheduler(payload);
-      setRunResult({
-        ok: payload.ok,
-        action: "scheduler",
-        message: payload.ok ? "Планировщик обновлен." : payload.message,
-      });
+      setRunResult(payload);
+      const nextHosts = await loadHosts();
+      if (payload.ok && action === "agentlessAudit") {
+        const report = nextHosts.hosts?.find((host) => host.alias === selectedAlias)?.lastReport;
+        if (report) {
+          setFreshReportHref(reportHref(report.fileName));
+        }
+      }
     } finally {
       setLoading("");
     }
   }
 
-  async function scanNetwork() {
-    setLoading("discover");
-    setDiscoveryResult(null);
-    setRunResult(null);
-    try {
-      const response = await fetch("/api/ansible/discover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cidr: scanCidr, sshUser, become, addToInventory }),
-      });
-      setDiscoveryResult(await response.json());
-      await loadHosts();
-    } finally {
-      setLoading("");
-    }
-  }
-
-  function selectHostLimit(host: ManagedHost) {
-    setLimit(host.alias);
-    document.getElementById("ansible-actions")?.scrollIntoView({ behavior: "smooth", block: "start" });
-  }
-
-  const averageScore = hosts?.summary?.averageScore;
+  const summary = hosts?.summary;
 
   return (
-    <div className="space-y-6">
-      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
-        <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <div className="flex items-center gap-3">
-            <Server size={22} className="text-sky-200" aria-hidden="true" />
-            <h2 className="text-xl font-semibold text-white">Главный компьютер Ansible</h2>
-          </div>
-          <p className="mt-3 text-sm leading-6 text-slate-400">
-            Этот экран работает на локально запущенном сайте. Он проверяет Ansible на главном компьютере и запускает
-            только разрешенные playbook'и из папки `ansible/playbooks`.
-          </p>
-          <div className="mt-5 grid gap-3 text-sm md:grid-cols-2">
-            <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">Профиль аудита</span>
-              <select
-                value={profileId}
-                onChange={(event) => setProfileId(event.target.value)}
-                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-              >
-                {profileOptions.map((profile) => (
-                  <option key={profile.id} value={profile.id}>{profile.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">Ограничить хост/группу</span>
-              <input
-                value={limit}
-                onChange={(event) => setLimit(event.target.value)}
-                placeholder="server1 или linux_hosts"
-                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-              />
-            </label>
-          </div>
-          <Button onClick={checkHealth} disabled={loading === "health"} className="mt-5">
-            <RefreshCw size={16} className={loading === "health" ? "animate-spin" : ""} aria-hidden="true" />
-            Проверить control node
-          </Button>
-        </div>
-
-        <aside className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h2 className="text-xl font-semibold text-white">Статус</h2>
-          <div className="mt-4 space-y-3 text-sm">
-            <div className={`rounded-md border p-3 ${
-              health?.ansibleInstalled ? "border-emerald-400/30 bg-emerald-500/10" : "border-slate-800 bg-slate-900/70"
-            }`}>
-              <p className="font-semibold text-white">Ansible</p>
-              <p className="mt-1 leading-6 text-slate-300">{health?.version ?? "Статус еще не проверен."}</p>
-            </div>
-            <div className={`rounded-md border p-3 ${
-              health?.inventoryReady ? "border-emerald-400/30 bg-emerald-500/10" : "border-amber-400/30 bg-amber-500/10"
-            }`}>
-              <p className="font-semibold text-white">Inventory</p>
-              <p className="mt-1 leading-6 text-slate-300">{health?.message ?? "Нажмите проверку control node."}</p>
-            </div>
-          </div>
-        </aside>
+    <div className="space-y-5">
+      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
+        <StatusTile label="Ansible" value={health?.ansibleInstalled ? "OK" : "нет"} good={Boolean(health?.ansibleInstalled)} />
+        <StatusTile label="Inventory" value={hosts?.inventoryReady ? "OK" : "нет"} good={Boolean(hosts?.inventoryReady)} />
+        <StatusTile label="Хосты" value={summary?.total ?? 0} />
+        <StatusTile label="С отчетами" value={summary?.withReports ?? 0} />
+        <StatusTile label="Средний score" value={summary?.averageScore === null || summary?.averageScore === undefined ? "нет" : `${summary.averageScore}%`} />
       </section>
 
-      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-        <div className="flex items-center gap-3">
-          <KeyRound size={22} className="text-sky-200" aria-hidden="true" />
-          <h2 className="text-xl font-semibold text-white">SSH-доступ к хостам</h2>
-        </div>
-        <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-400">
-          Для постоянной работы Ansible лучше использовать SSH-ключи. Парольный доступ можно использовать для первичной
-          проверки вручную, но веб-панель рассчитана на ключевой доступ с главного сервера.
-        </p>
-        <div className="mt-4 grid gap-3 md:grid-cols-3">
-          <code className="rounded-md border border-slate-800 bg-slate-900 p-3 text-xs leading-5 text-slate-200">
-            ssh-keygen -t ed25519 -C hcp-control
-          </code>
-          <code className="rounded-md border border-slate-800 bg-slate-900 p-3 text-xs leading-5 text-slate-200">
-            ssh-copy-id danil@192.168.1.10
-          </code>
-          <code className="rounded-md border border-slate-800 bg-slate-900 p-3 text-xs leading-5 text-slate-200">
-            ansible all -i ansible/inventory.ini -m ping
-          </code>
-        </div>
-      </section>
-
-      <section className="space-y-4">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-          <div>
-            <h2 className="text-xl font-semibold text-white">Управляемые хосты</h2>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-              Список строится из `ansible/inventory.ini`. После audit-only запуска здесь появится последняя оценка
-              защищенности и счетчики рисков по каждому хосту.
-            </p>
-          </div>
-          <Button variant="secondary" onClick={loadHosts} disabled={Boolean(loading)}>
-            <RefreshCw size={16} aria-hidden="true" />
-            Обновить список
-          </Button>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <SummaryCard
-            label="Хостов в inventory"
-            value={hosts?.summary?.total ?? 0}
-            detail={hosts?.inventoryReady ? "Файл inventory найден" : "Inventory пока не создан"}
-            icon={<Server size={18} aria-hidden="true" />}
-          />
-          <SummaryCard
-            label="С отчётами"
-            value={hosts?.summary?.withReports ?? 0}
-            detail={`Без отчёта: ${hosts?.summary?.withoutReports ?? 0}`}
-            icon={<FileText size={18} aria-hidden="true" />}
-          />
-          <SummaryCard
-            label="Средняя оценка"
-            value={averageScore === null || averageScore === undefined ? "нет" : `${averageScore}%`}
-            detail="По последним найденным отчётам"
-            icon={<ShieldCheck size={18} aria-hidden="true" />}
-          />
-          <SummaryCard
-            label="Sudo-доступ"
-            value={hosts?.summary?.becomeEnabled ?? 0}
-            detail="Хосты с ansible_become=true"
-            icon={<Wrench size={18} aria-hidden="true" />}
-          />
-        </div>
-
-        <div className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
-          {hosts?.hosts?.length ? (
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[920px] text-left text-sm">
-                <thead className="border-b border-slate-800 bg-slate-900/70 text-xs uppercase text-slate-500">
-                  <tr>
-                    <th className="px-4 py-3">Хост</th>
-                    <th className="px-4 py-3">Подключение</th>
-                    <th className="px-4 py-3">Группы</th>
-                    <th className="px-4 py-3">Последний аудит</th>
-                    <th className="px-4 py-3">Риски</th>
-                    <th className="px-4 py-3">Действие</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800">
-                  {hosts.hosts.map((host) => (
-                    <tr key={host.alias} className="align-top">
-                      <td className="px-4 py-4">
-                        <p className="font-semibold text-white">{host.alias}</p>
-                        <p className="mt-1 text-xs text-slate-500">{host.address}</p>
-                      </td>
-                      <td className="px-4 py-4 text-slate-300">
-                        <p>{host.user ? `пользователь: ${host.user}` : "пользователь не указан"}</p>
-                        <p className={host.become ? "mt-1 text-emerald-200" : "mt-1 text-slate-500"}>
-                          {host.become ? "sudo включен" : "sudo не указан"}
-                        </p>
-                      </td>
-                      <td className="px-4 py-4 text-slate-300">{host.groups.join(", ")}</td>
-                      <td className="px-4 py-4">
-                        {host.lastReport ? (
-                          <div>
-                            <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${scoreTone(host.lastReport.score)}`}>
-                              {host.lastReport.score === null ? "оценка нет" : `${host.lastReport.score}%`}
-                            </span>
-                            <p className="mt-2 text-xs text-slate-400">{formatDate(host.lastReport.createdAt)}</p>
-                            <p className="mt-1 text-xs text-slate-500">{host.lastReport.profileId ?? "профиль не указан"}</p>
-                          </div>
-                        ) : (
-                          <span className="text-slate-500">аудит ещё не запускался</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-4 text-xs text-slate-300">
-                        {host.lastReport ? (
-                          <div className="grid grid-cols-4 gap-1">
-                            <span className="rounded-md bg-red-500/15 px-2 py-1 text-red-100">H {host.lastReport.high}</span>
-                            <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-100">M {host.lastReport.medium}</span>
-                            <span className="rounded-md bg-sky-500/15 px-2 py-1 text-sky-100">L {host.lastReport.low}</span>
-                            <span className="rounded-md bg-slate-800 px-2 py-1 text-slate-300">I {host.lastReport.info}</span>
-                          </div>
-                        ) : (
-                          <span className="text-slate-500">нет данных</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-4">
-                        <Button variant="secondary" onClick={() => selectHostLimit(host)}>
-                          <Terminal size={16} aria-hidden="true" />
-                          Выбрать
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            <div className="p-5 text-sm leading-6 text-slate-400">
-              В inventory пока нет активных хостов. Используйте автообнаружение ниже или добавьте строки в
-              `ansible/inventory.ini`, затем обновите список.
-            </div>
-          )}
-        </div>
-      </section>
-
-      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-          <div>
-            <div className="flex items-center gap-3">
-              <Search size={22} className="text-sky-200" aria-hidden="true" />
-              <h2 className="text-xl font-semibold text-white">Автообнаружение хостов в локальной сети</h2>
-            </div>
-            <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-400">
-              Сканирование ищет устройства в приватной локальной подсети через ping, ARP/neighbor table и проверку
-              SSH-порта 22. В `ansible/inventory.ini` добавляются только хосты с открытым SSH, потому что Ansible
-              подключается по SSH. Размер сканирования ограничен подсетями от /24 до /30.
-            </p>
-          </div>
-          <Button variant="secondary" onClick={loadDiscoveryInfo} disabled={Boolean(loading)}>
-            <RefreshCw size={16} aria-hidden="true" />
-            Определить подсеть
-          </Button>
-        </div>
-
-        <div className="mt-5 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
-          <label className="block">
-            <span className="text-xs font-semibold uppercase text-slate-500">Подсеть для сканирования</span>
-            <input
-              value={scanCidr}
-              onChange={(event) => setScanCidr(event.target.value)}
-              placeholder="192.168.1.0/24"
-              className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-            />
-          </label>
-          <label className="block">
-            <span className="text-xs font-semibold uppercase text-slate-500">SSH-пользователь</span>
-            <input
-              value={sshUser}
-              onChange={(event) => setSshUser(event.target.value)}
-              placeholder="danil"
-              className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-            />
-          </label>
-          <label className="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[140px_180px_130px_90px_140px_110px_110px_110px]">
+          <Field label="Alias" value={manualAlias} onChange={setManualAlias} placeholder="web-01" />
+          <Field label="IP/host" value={manualAddress} onChange={setManualAddress} placeholder="192.168.1.10" />
+          <Field label="SSH user" value={manualUser} onChange={setManualUser} placeholder="danil" />
+          <Field label="Port" value={manualPort} onChange={setManualPort} placeholder="22" />
+          <Field label="Group" value={manualGroup} onChange={setManualGroup} placeholder="linux_hosts" />
+          <label className="flex h-10 items-center gap-2 self-end rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-200">
             <input
               type="checkbox"
-              checked={become}
-              onChange={(event) => setBecome(event.target.checked)}
+              checked={manualBecome}
+              onChange={(event) => setManualBecome(event.target.checked)}
               className="h-4 w-4 rounded border-slate-600 bg-slate-950"
             />
-            <span>
-              <span className="block font-semibold text-white">become=true</span>
-              <span className="mt-1 block text-xs leading-5 text-slate-500">Для sudo-проверок Ansible.</span>
-            </span>
+            sudo
           </label>
-          <label className="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <input
-              type="checkbox"
-              checked={addToInventory}
-              onChange={(event) => setAddToInventory(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-600 bg-slate-950"
-            />
-            <span>
-              <span className="block font-semibold text-white">Добавить в inventory</span>
-              <span className="mt-1 block text-xs leading-5 text-slate-500">Новые IP попадут в linux_hosts.</span>
-            </span>
-          </label>
-        </div>
-
-        <div className="mt-4 flex flex-wrap items-center gap-3">
-          <Button onClick={scanNetwork} disabled={Boolean(loading) || !scanCidr}>
-            <Search size={16} className={loading === "discover" ? "animate-pulse" : ""} aria-hidden="true" />
-            {loading === "discover" ? "Сканирование..." : "Сканировать и добавить"}
+          <Button variant="secondary" onClick={checkPreflight} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="self-end">
+            <CheckCircle2 size={16} className={loading === "preflight" ? "animate-spin" : ""} aria-hidden="true" />
+            Проверить
           </Button>
-          <p className="text-sm text-slate-500">
-            {discoveryInfo?.message ?? "Подсеть будет определена автоматически при открытии страницы."}
-          </p>
+          <Button onClick={addManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="self-end">
+            <Plus size={16} aria-hidden="true" />
+            Сохранить
+          </Button>
         </div>
-
-        {discoveryInfo?.candidates?.length ? (
-          <div className="mt-4 flex flex-wrap gap-2">
-            {discoveryInfo.candidates.map((candidate) => (
-              <button
-                key={`${candidate.cidr}-${candidate.device ?? ""}`}
-                onClick={() => setScanCidr(candidate.cidr)}
-                className="rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-xs text-slate-200 hover:border-sky-300"
-              >
-                {candidate.cidr}{candidate.device ? ` · ${candidate.device}` : ""}
-              </button>
-            ))}
+        {preflight ? (
+          <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
+            <CheckBadge label="SSH" ok={preflight.checks?.ssh.ok} text={preflight.checks?.ssh.message ?? preflight.message ?? ""} />
+            <CheckBadge label="Python" ok={preflight.checks?.python.ok} text={preflight.checks?.python.message ?? ""} />
+            <CheckBadge label="sudo" ok={preflight.checks?.sudo.ok} text={preflight.checks?.sudo.message ?? ""} />
+            <CheckBadge label="OS" ok={Boolean(preflight.facts?.os)} text={preflight.facts?.os ?? "не определена"} />
           </div>
         ) : null}
-
-        {discoveryResult ? (
-          <div className="mt-5 rounded-md border border-slate-800 bg-slate-900/70 p-4">
-            <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <div>
-                <p className="font-semibold text-white">
-                  Найдено устройств: {discoveryResult.found?.length ?? 0} · SSH доступен: {discoveryResult.sshReady ?? 0}
-                </p>
-                <p className="mt-1 text-sm text-slate-400">
-                  Подсеть: {discoveryResult.cidr ?? "не указана"} · просканировано: {discoveryResult.scannedHosts ?? 0} ·
-                  добавлено: {discoveryResult.added ?? 0}
-                </p>
-              </div>
-              <span className={`w-fit rounded-md border px-2 py-1 text-xs font-semibold uppercase ${
-                discoveryResult.ok ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100" : "border-red-400/40 bg-red-500/15 text-red-100"
-              }`}>
-                {discoveryResult.ok ? "готово" : "ошибка"}
-              </span>
-            </div>
-            {discoveryResult.message ? <p className="mt-3 text-sm text-red-100">{discoveryResult.message}</p> : null}
-            {discoveryResult.found?.length ? (
-              <div className="mt-4 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                {discoveryResult.found.map((host) => (
-                  <div key={host.ip} className="rounded-md border border-slate-800 bg-slate-950/70 p-3 text-sm">
-                    <div className="flex items-start justify-between gap-2">
-                      <p className="font-semibold text-white">{host.alias}</p>
-                      <span className={`rounded-md border px-2 py-1 text-xs font-semibold uppercase ${
-                        host.sshOpen
-                          ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
-                          : "border-amber-400/40 bg-amber-500/15 text-amber-100"
-                      }`}>
-                        {host.sshOpen ? "SSH открыт" : "SSH закрыт"}
-                      </span>
-                    </div>
-                    <p className="mt-2 text-slate-400">{host.ip}</p>
-                    <p className="mt-1 text-xs text-slate-500">Сигналы: {host.methods.join(", ") || "нет данных"}</p>
-                    <p className={host.added ? "mt-2 text-emerald-200" : "mt-2 text-slate-500"}>
-                      {host.added
-                        ? "добавлен в inventory"
-                        : host.sshOpen
-                          ? "уже был в inventory или добавление выключено"
-                          : "не добавлен: для Ansible нужно включить SSH"}
-                    </p>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="mt-4 rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
-                Устройства не найдены. Проверьте, что выбрана правильная подсеть, устройства находятся в той же сети,
-                а firewall не блокирует ping/ARP/SSH. Для Ansible на целевых Linux-хостах нужен открытый SSH-порт 22.
-              </div>
-            )}
-          </div>
-        ) : null}
-      </section>
-
-      <section id="ansible-actions" className="space-y-4">
-        <div>
-          <h2 className="text-xl font-semibold text-white">Безагентное управление</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            Главный сервер подключается к хостам по SSH, выполняет проверки и response-playbook'и без установки
-            постоянного агента на целевые устройства.
-          </p>
-        </div>
-
-        <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h3 className="font-semibold text-white">Параметры response-действий</h3>
-          <div className="mt-4 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
-            <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">Порт</span>
-              <input
-                value={targetPort}
-                onChange={(event) => setTargetPort(event.target.value)}
-                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">Протокол</span>
-              <select
-                value={targetProtocol}
-                onChange={(event) => setTargetProtocol(event.target.value)}
-                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-              >
-                <option value="tcp">tcp</option>
-                <option value="udp">udp</option>
-              </select>
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">IP для блокировки</span>
-              <input
-                value={blockIp}
-                onChange={(event) => setBlockIp(event.target.value)}
-                placeholder="192.168.1.50"
-                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-              />
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">Systemd-сервис</span>
-              <input
-                value={serviceName}
-                onChange={(event) => setServiceName(event.target.value)}
-                placeholder="nginx"
-                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-              />
-            </label>
-          </div>
-        </div>
-
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {actions.map((action) => {
-            const Icon = action.icon;
-            return (
-              <article key={action.id} className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
-                <Icon size={22} className={action.variant === "danger" ? "text-red-200" : "text-sky-200"} aria-hidden="true" />
-                <h3 className="mt-4 font-semibold text-white">{action.title}</h3>
-                <p className="mt-2 min-h-20 text-sm leading-6 text-slate-400">{action.description}</p>
-                <Button
-                  variant={action.variant}
-                  onClick={() => runAction(action.id)}
-                  disabled={Boolean(loading)}
-                  className="mt-4 w-full"
-                >
-                  {loading === action.id ? (
-                    <RefreshCw size={16} className="animate-spin" aria-hidden="true" />
-                  ) : (
-                    <CheckCircle2 size={16} aria-hidden="true" />
-                  )}
-                  Запустить
-                </Button>
-              </article>
-            );
-          })}
-        </div>
-      </section>
-
-      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_420px]">
-        <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <div className="flex items-center gap-3">
-            <Clock size={22} className="text-sky-200" aria-hidden="true" />
-            <h2 className="text-xl font-semibold text-white">Планировщик проверок</h2>
-          </div>
-          <p className="mt-3 text-sm leading-6 text-slate-400">
-            Планировщик работает пока запущен локальный сайт. Он запускает только безопасные audit-playbook'и;
-            response-действия по расписанию запрещены.
-          </p>
-          <div className="mt-4 grid gap-3 text-sm md:grid-cols-2 xl:grid-cols-4">
-            <label className="flex items-center gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-              <input
-                type="checkbox"
-                checked={scheduleEnabled}
-                onChange={(event) => setScheduleEnabled(event.target.checked)}
-                className="h-4 w-4 rounded border-slate-600 bg-slate-950"
-              />
-              <span className="font-semibold text-white">Включить</span>
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">Действие</span>
-              <select
-                value={scheduleAction}
-                onChange={(event) => setScheduleAction(event.target.value)}
-                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-              >
-                <option value="ping">Проверить доступность</option>
-                <option value="collectFacts">Собрать факты</option>
-                <option value="agentlessAudit">Безагентный аудит</option>
-                <option value="collectEvents">Собрать события</option>
-              </select>
-            </label>
-            <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-500">Интервал</span>
-              <select
-                value={scheduleInterval}
-                onChange={(event) => setScheduleInterval(Number(event.target.value))}
-                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-              >
-                <option value={5}>5 минут</option>
-                <option value={15}>15 минут</option>
-                <option value={30}>30 минут</option>
-                <option value={60}>60 минут</option>
-              </select>
-            </label>
-            <Button onClick={saveScheduler} disabled={Boolean(loading)} className="mt-6">
-              <Clock size={16} aria-hidden="true" />
-              Сохранить
+        <div className="mt-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+          <div className="flex flex-wrap items-end gap-2">
+            <Field label="CIDR scan" value={scanCidr} onChange={setScanCidr} placeholder="192.168.1.0/24" />
+            <Button variant="secondary" onClick={detectNetwork} disabled={Boolean(loading)}>
+              <Search size={16} aria-hidden="true" />
+              Подсеть
+            </Button>
+            <Button variant="secondary" onClick={scanNetwork} disabled={Boolean(loading) || !scanCidr}>
+              <Search size={16} className={loading === "scan" ? "animate-pulse" : ""} aria-hidden="true" />
+              Найти SSH
             </Button>
           </div>
-          <p className="mt-4 text-sm text-slate-400">
-            Статус: {scheduler?.state?.enabled ? "включен" : "выключен"} · следующий запуск:{" "}
-            {formatDate(scheduler?.state?.nextRunAt)}
-          </p>
+          {discovery?.candidates?.length ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {discovery.candidates.map((candidate) => (
+                <button
+                  key={candidate.cidr}
+                  onClick={() => setScanCidr(candidate.cidr)}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-300"
+                >
+                  {candidate.cidr}{candidate.device ? ` · ${candidate.device}` : ""}
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {discovery?.found?.length ? (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {discovery.found.filter((host) => host.sshOpen).map((host) => (
+                <button
+                  key={host.ip}
+                  onClick={() => {
+                    setManualAddress(host.ip);
+                    setManualAlias(host.alias);
+                  }}
+                  className="rounded-md border border-emerald-400/30 bg-emerald-500/10 px-2 py-1 text-xs text-emerald-100"
+                >
+                  {host.ip}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      </section>
+
+      <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
+        <div className="flex flex-col gap-3 border-b border-slate-800 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <h2 className="text-lg font-semibold text-white">Хосты</h2>
+          <div className="flex flex-wrap gap-2">
+            <select
+              value={profileId}
+              onChange={(event) => setProfileId(event.target.value)}
+              className="h-10 rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+            >
+              {profileOptions.map((profile) => (
+                <option key={profile.id} value={profile.id}>{profile.label}</option>
+              ))}
+            </select>
+            <Button variant="secondary" onClick={refreshAll} disabled={Boolean(loading)}>
+              <RefreshCw size={16} className={loading === "refresh" ? "animate-spin" : ""} aria-hidden="true" />
+              Обновить
+            </Button>
+            <LinkButton href="/reports" variant="secondary">
+              <FileText size={16} aria-hidden="true" />
+              Отчеты
+            </LinkButton>
+          </div>
         </div>
 
-        <aside className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <div className="flex items-center gap-3">
-            <ListChecks size={22} className="text-sky-200" aria-hidden="true" />
-            <h2 className="text-xl font-semibold text-white">Журнал инцидентов</h2>
-          </div>
-          <div className="mt-4 grid grid-cols-3 gap-2 text-sm">
-            <div className="rounded-md bg-slate-900 p-3">
-              <p className="text-slate-500">Всего</p>
-              <p className="mt-1 text-2xl font-semibold text-white">{incidents?.summary?.total ?? 0}</p>
-            </div>
-            <div className="rounded-md bg-emerald-500/10 p-3">
-              <p className="text-emerald-200">Успешно</p>
-              <p className="mt-1 text-2xl font-semibold text-white">{incidents?.summary?.success ?? 0}</p>
-            </div>
-            <div className="rounded-md bg-red-500/10 p-3">
-              <p className="text-red-200">Ошибки</p>
-              <p className="mt-1 text-2xl font-semibold text-white">{incidents?.summary?.failed ?? 0}</p>
-            </div>
-          </div>
-          <div className="mt-4 max-h-72 space-y-2 overflow-auto pr-1">
-            {incidents?.incidents?.length ? incidents.incidents.slice(0, 8).map((incident) => (
-              <div key={incident.id} className="rounded-md border border-slate-800 bg-slate-900/70 p-3 text-sm">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="font-semibold text-white">{incident.action}</p>
-                  <span className={incident.status === "success" ? "text-emerald-200" : "text-red-200"}>
-                    {incident.status === "success" ? "успех" : "ошибка"}
-                  </span>
-                </div>
-                <p className="mt-1 text-xs text-slate-500">{formatDate(incident.createdAt)} · {incident.limit ?? "без limit"}</p>
-                <p className="mt-2 text-slate-300">{incident.message}</p>
-              </div>
-            )) : (
-              <p className="rounded-md border border-slate-800 bg-slate-900/70 p-3 text-sm text-slate-400">
-                Журнал пока пуст. Запустите проверку или response-playbook.
-              </p>
-            )}
-          </div>
-        </aside>
-      </section>
-
-      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-        <h2 className="text-xl font-semibold text-white">Журнал выполнения</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-400">
-          Результаты безагентных Ansible playbook'ов сохраняются на главном компьютере в `ansible/reports`.
-        </p>
-        {runResult ? (
-          <div className="mt-4 space-y-3">
-            <div className={`rounded-md border p-4 text-sm ${
-              runResult.ok ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-red-400/30 bg-red-500/10 text-red-100"
-            }`}>
-              <p className="font-semibold">{runResult.ok ? "Playbook выполнен" : "Playbook завершился с ошибкой"}</p>
-              <p className="mt-2 break-all">{runResult.command}</p>
-              {runResult.message ? <p className="mt-2">{runResult.message}</p> : null}
-            </div>
-            <pre className="max-h-[420px] overflow-auto rounded-md bg-slate-900 p-4 text-xs leading-5 text-slate-200">
-{`${runResult.stdout ?? ""}${runResult.stderr ? `\n\nSTDERR:\n${runResult.stderr}` : ""}`}
-            </pre>
+        {hosts?.hosts?.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[880px] text-left text-sm">
+              <thead className="bg-slate-900/70 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-4 py-3">Хост</th>
+                  <th className="px-4 py-3">SSH</th>
+                  <th className="px-4 py-3">Score</th>
+                  <th className="px-4 py-3">Риски</th>
+                  <th className="px-4 py-3">Последний отчет</th>
+                  <th className="px-4 py-3">Действия</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {hosts.hosts.map((host) => (
+                  <tr key={host.alias} className={selectedAlias === host.alias ? "bg-sky-500/5" : ""}>
+                    <td className="px-4 py-4">
+                      <button onClick={() => setSelectedAlias(host.alias)} className="text-left">
+                        <span className="block font-semibold text-white">{host.alias}</span>
+                        <span className="mt-1 block text-xs text-slate-500">{host.address}</span>
+                      </button>
+                    </td>
+                    <td className="px-4 py-4 text-slate-300">
+                      <span>{host.user ?? "user ?"}</span>
+                      <span className={host.become ? "ml-2 text-emerald-200" : "ml-2 text-slate-500"}>
+                        {host.become ? "sudo" : "no sudo"}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4">
+                      <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${scoreTone(host.lastReport?.score)}`}>
+                        {host.lastReport?.score === null || host.lastReport?.score === undefined ? "нет" : `${host.lastReport.score}%`}
+                      </span>
+                    </td>
+                    <td className="px-4 py-4 text-xs">
+                      {host.lastReport ? (
+                        <div className="grid grid-cols-4 gap-1">
+                          <span className="rounded-md bg-red-500/15 px-2 py-1 text-red-100">H {host.lastReport.high}</span>
+                          <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-100">M {host.lastReport.medium}</span>
+                          <span className="rounded-md bg-sky-500/15 px-2 py-1 text-sky-100">L {host.lastReport.low}</span>
+                          <span className="rounded-md bg-slate-800 px-2 py-1 text-slate-300">I {host.lastReport.info}</span>
+                        </div>
+                      ) : (
+                        <span className="text-slate-500">нет данных</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-4 text-slate-300">{formatDate(host.lastReport?.createdAt)}</td>
+                    <td className="px-4 py-4">
+                      <div className="flex flex-wrap gap-2">
+                        <Button variant="secondary" onClick={() => setSelectedAlias(host.alias)}>
+                          Выбрать
+                        </Button>
+                        {host.lastReport ? (
+                          <LinkButton href={reportHref(host.lastReport.fileName)} variant="secondary">
+                            Отчет
+                          </LinkButton>
+                        ) : null}
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         ) : (
-          <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-4 text-sm text-slate-400">
-            Запустите проверку или playbook, чтобы увидеть вывод.
-          </div>
+          <div className="p-5 text-sm text-slate-400">Добавьте первый хост, затем запустите Ping или Аудит.</div>
         )}
       </section>
+
+      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div id="ansible-actions" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Действия</h2>
+              <p className="mt-1 text-sm text-slate-400">
+                Хост: <span className="text-slate-100">{selectedHost?.alias ?? "не выбран"}</span>
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {auditActions.map((action) => {
+                const Icon = action.icon;
+                return (
+                  <Button key={action.id} onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
+                    <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
+                    {action.label}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+            <div className="grid gap-3 md:grid-cols-4">
+              <Field label="Порт" value={targetPort} onChange={setTargetPort} placeholder="23" />
+              <label className="block">
+                <span className="text-xs font-semibold uppercase text-slate-500">Протокол</span>
+                <select
+                  value={targetProtocol}
+                  onChange={(event) => setTargetProtocol(event.target.value)}
+                  className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100"
+                >
+                  <option value="tcp">tcp</option>
+                  <option value="udp">udp</option>
+                </select>
+              </label>
+              <Field label="IP block" value={blockIp} onChange={setBlockIp} placeholder="192.168.1.50" />
+              <Field label="Service" value={serviceName} onChange={setServiceName} placeholder="nginx" />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              {responseActions.map((action) => {
+                const Icon = action.icon;
+                return (
+                  <Button key={action.id} variant="danger" onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
+                    <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
+                    {action.label}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
+        <aside className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+          <h2 className="text-lg font-semibold text-white">Последний запуск</h2>
+          {runResult ? (
+            <div className="mt-3 space-y-3 text-sm">
+              <div className={`rounded-md border p-3 ${
+                runResult.ok ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-red-400/30 bg-red-500/10 text-red-100"
+              }`}>
+                <p className="font-semibold">{runResult.ok ? "Успешно" : "Ошибка"}</p>
+                {runResult.message ? <p className="mt-1">{runResult.message}</p> : null}
+                {freshReportHref ? (
+                  <LinkButton href={freshReportHref} variant="secondary" className="mt-3 w-full bg-slate-950/60">
+                    Открыть отчет
+                  </LinkButton>
+                ) : null}
+              </div>
+              <pre className="max-h-64 overflow-auto rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+{`${runResult.stdout ?? ""}${runResult.stderr ? `\n\nSTDERR:\n${runResult.stderr}` : ""}`}
+              </pre>
+            </div>
+          ) : (
+            <p className="mt-3 text-sm leading-6 text-slate-400">Выберите хост и запустите действие.</p>
+          )}
+        </aside>
+      </section>
     </div>
+  );
+}
+
+function StatusTile({
+  label,
+  value,
+  good,
+}: {
+  label: string;
+  value: string | number;
+  good?: boolean;
+}) {
+  return (
+    <div className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+      <p className="text-xs font-semibold uppercase text-slate-500">{label}</p>
+      <p className={good === false ? "mt-2 text-2xl font-semibold text-red-100" : "mt-2 text-2xl font-semibold text-white"}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function CheckBadge({
+  label,
+  ok,
+  text,
+}: {
+  label: string;
+  ok?: boolean;
+  text: string;
+}) {
+  return (
+    <div className={`rounded-md border p-3 ${
+      ok ? "border-emerald-400/30 bg-emerald-500/10" : "border-red-400/30 bg-red-500/10"
+    }`}>
+      <p className={ok ? "font-semibold text-emerald-100" : "font-semibold text-red-100"}>
+        {label}: {ok ? "OK" : "ERROR"}
+      </p>
+      <p className="mt-1 truncate text-xs text-slate-300" title={text}>{text || "нет данных"}</p>
+    </div>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label className="block">
+      <span className="text-xs font-semibold uppercase text-slate-500">{label}</span>
+      <input
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+      />
+    </label>
   );
 }

@@ -1,41 +1,37 @@
-import { ArrowRight, CheckCircle2, MonitorPlay, ServerCog } from "lucide-react";
-import { DemoHostCard } from "@/components/dashboard/demo-host-card";
+import { ArrowRight, CheckCircle2, KeyRound, ServerCog, ShieldCheck, Terminal } from "lucide-react";
 import { LinkButton } from "@/components/ui/button";
 
-const demoSteps = [
-  {
-    title: "Открыть профили аудита",
-    text: "Перейдите в раздел “Профили” и выберите сценарий проверки: базовый Linux, SSH, веб-сервер или Docker-хост.",
-  },
-  {
-    title: "Запустить демо-аудит",
-    text: "На странице профиля нажмите “Запустить аудит”. Платформа покажет этапы проверки и сформирует результаты из демонстрационного движка.",
-  },
-  {
-    title: "Изучить результаты",
-    text: "На странице результатов посмотрите оценку защищенности, количество рисков и таблицу найденных проблем.",
-  },
-  {
-    title: "Выбрать исправления",
-    text: "В планировщике исправлений отметьте действия. Для каждого действия видны риск, затрагиваемые файлы, резервная копия и откат.",
-  },
-  {
-    title: "Сформировать демо-отчет",
-    text: "Нажмите “Сформировать демо-отчет”. Сайт имитирует резервные копии, проверку и повторный аудит без изменения ОС.",
-  },
-  {
-    title: "Открыть отчет",
-    text: "В разделе “Отчеты” сравните состояние до/после, список исправленных проблем, оставшиеся риски и JSON-экспорт.",
-  },
+const setupSteps = [
+  "Запустите сайт на главном сервере: cd web && npm run dev:lan.",
+  "Откройте /login и войдите с паролем из web/.env.local.",
+  "На странице /hosts проверьте Ansible control node.",
+  "Добавьте Linux-хост вручную или через автообнаружение локальной сети.",
+  "Настройте SSH-ключи с главного сервера на целевой хост.",
+  "Запустите Ansible ping, затем SSH-аудит Ansible.",
+  "Откройте созданный JSON-отчет в разделе “Отчеты”.",
 ];
 
-const realAgentSteps = [
-  "Запустить сайт локально на главном сервере: cd web && npm run dev:lan.",
-  "Открыть /hosts, проверить Ansible control node и выбрать подсеть локальной сети.",
-  "Сканировать сеть и добавить SSH-доступные Linux-хосты в inventory.",
-  "Выбрать хост или группу в таблице управляемых хостов.",
-  "Запустить “Собрать факты” или “Безагентный аудит”; установка агента на хосты не требуется.",
-  "При подтвержденном риске запустить response-playbook, например “Закрыть опасные порты”.",
+const rules = [
+  {
+    icon: ServerCog,
+    title: "Один главный сервер",
+    text: "Веб-интерфейс, Ansible, inventory, журнал и отчеты находятся на control node.",
+  },
+  {
+    icon: KeyRound,
+    title: "Подключение по SSH",
+    text: "Хосты управляются через SSH-ключи. Постоянные агенты и фоновые сервисы на них не устанавливаются.",
+  },
+  {
+    icon: ShieldCheck,
+    title: "Только разрешенные playbook'и",
+    text: "Веб-интерфейс запускает действия из allowlist, а response-действия требуют limit и подтверждение.",
+  },
+  {
+    icon: Terminal,
+    title: "Отчеты локально",
+    text: "Результаты сохраняются на главном сервере в ansible/reports и открываются через веб-интерфейс.",
+  },
 ];
 
 export default function GuidePage() {
@@ -43,35 +39,25 @@ export default function GuidePage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold text-white">Инструкция и сценарий демонстрации</h1>
+          <h1 className="text-3xl font-semibold text-white">Инструкция</h1>
           <p className="mt-2 max-w-3xl text-slate-400">
-            Эта страница объясняет, как показывать MVP на защите и как перейти от демо-сценария к централизованному
-            управлению Linux-хостами через Ansible.
+            Короткий рабочий сценарий для централизованного управления Linux-хостами через Ansible и SSH.
           </p>
         </div>
-        <LinkButton href="/profiles">Начать демонстрацию</LinkButton>
+        <LinkButton href="/hosts">Открыть управление</LinkButton>
       </div>
-
-      <DemoHostCard />
 
       <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_380px]">
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <div className="flex items-center gap-3">
-            <MonitorPlay className="text-sky-200" size={24} aria-hidden="true" />
-            <h2 className="text-xl font-semibold text-white">Как показать работу сайта</h2>
-          </div>
-
+          <h2 className="text-xl font-semibold text-white">Как начать</h2>
           <div className="mt-5 space-y-3">
-            {demoSteps.map((step, index) => (
-              <article key={step.title} className="rounded-md border border-slate-800 bg-slate-900/70 p-4">
+            {setupSteps.map((step, index) => (
+              <article key={step} className="rounded-md border border-slate-800 bg-slate-900/70 p-4">
                 <div className="flex items-start gap-3">
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-sky-400 text-sm font-bold text-slate-950">
                     {index + 1}
                   </span>
-                  <div>
-                    <h3 className="font-semibold text-white">{step.title}</h3>
-                    <p className="mt-1 text-sm leading-6 text-slate-400">{step.text}</p>
-                  </div>
+                  <p className="text-sm leading-6 text-slate-300">{step}</p>
                 </div>
               </article>
             ))}
@@ -79,41 +65,53 @@ export default function GuidePage() {
         </div>
 
         <aside className="h-fit rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h2 className="text-xl font-semibold text-white">Что сказать на защите</h2>
-          <p className="mt-3 text-sm leading-6 text-slate-400">
-            “Платформа разделяет демонстрационный сценарий и локальный режим главного сервера. В демо сайт безопасно
-            показывает полный цикл харденинга, а в локальной сети главный сервер Ansible управляет хостами по SSH без
-            установки постоянных агентов.”
-          </p>
-          <div className="mt-5 rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
-            Важно подчеркнуть: MVP не является IDS или антивирусом. Это управляющий слой для аудита, инвентаризации и
-            запуска заранее разрешенных Ansible response-playbook'ов.
+          <h2 className="text-xl font-semibold text-white">Команды на главном сервере</h2>
+          <div className="mt-4 space-y-3">
+            <code className="block rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+              ssh-keygen -t ed25519 -C hcp-control
+            </code>
+            <code className="block rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+              ssh-copy-id user@192.168.1.10
+            </code>
+            <code className="block rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+              ansible all -i ansible/inventory.ini -m ping
+            </code>
           </div>
         </aside>
       </section>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-        <div className="flex items-center gap-3">
-          <ServerCog className="text-sky-200" size={24} aria-hidden="true" />
-          <h2 className="text-xl font-semibold text-white">Как сделать реальный аудит без агентов</h2>
-        </div>
-        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-          {realAgentSteps.map((step, index) => (
-            <div key={step} className="rounded-md border border-slate-800 bg-slate-900/70 p-4">
-              <div className="flex items-center gap-2 text-emerald-200">
-                <CheckCircle2 size={17} aria-hidden="true" />
-                <span className="text-xs font-semibold uppercase">Этап {index + 1}</span>
+        <h2 className="text-xl font-semibold text-white">Правила работы платформы</h2>
+        <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          {rules.map((rule) => {
+            const Icon = rule.icon;
+            return (
+              <div key={rule.title} className="rounded-md border border-slate-800 bg-slate-900/70 p-4">
+                <Icon size={20} className="text-sky-200" aria-hidden="true" />
+                <h3 className="mt-3 font-semibold text-white">{rule.title}</h3>
+                <p className="mt-2 text-sm leading-6 text-slate-400">{rule.text}</p>
               </div>
-              <p className="mt-3 text-sm leading-6 text-slate-300">{step}</p>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </section>
 
-      <div className="flex flex-wrap items-center justify-end gap-3">
-        <LinkButton href="/hosts" variant="secondary">Открыть центр Ansible</LinkButton>
-        <LinkButton href="/profiles">
-          Перейти к профилям
+      <section className="rounded-md border border-emerald-400/30 bg-emerald-500/10 p-5">
+        <div className="flex items-start gap-3">
+          <CheckCircle2 size={22} className="mt-0.5 text-emerald-200" aria-hidden="true" />
+          <div>
+            <h2 className="text-lg font-semibold text-white">Коротко</h2>
+            <p className="mt-2 text-sm leading-6 text-emerald-100">
+              Веб-интерфейс не является агентом. Он управляет Ansible на главном сервере, а Ansible подключается к
+              Linux-хостам по SSH и сохраняет отчеты локально.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <div className="flex justify-end">
+        <LinkButton href="/hosts">
+          Перейти к хостам
           <ArrowRight size={16} aria-hidden="true" />
         </LinkButton>
       </div>

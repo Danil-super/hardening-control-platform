@@ -14,7 +14,22 @@ const riskFilterLabels: Record<RiskLevel | "all", string> = {
   info: "Инфо",
 };
 
-export function FindingsExplorer({ findings, profileId }: { findings: Finding[]; profileId: string }) {
+const sourceLabels: Record<Finding["source"], string> = {
+  agentless: "Ansible SSH",
+  custom: "Ansible SSH",
+};
+
+export function FindingsExplorer({
+  findings,
+  profileId,
+  remediationLinkHref,
+  remediationLinkLabel = "Сформировать план исправлений",
+}: {
+  findings: Finding[];
+  profileId: string;
+  remediationLinkHref?: string;
+  remediationLinkLabel?: string;
+}) {
   const [risk, setRisk] = useState<RiskLevel | "all">("all");
   const [category, setCategory] = useState("all");
 
@@ -86,7 +101,7 @@ export function FindingsExplorer({ findings, profileId }: { findings: Finding[];
                   <td className="px-4 py-4"><RiskBadge risk={finding.risk} /></td>
                   <td className="px-4 py-4 text-slate-300">{finding.category}</td>
                   <td className="px-4 py-4"><StatusBadge status={finding.status} /></td>
-                  <td className="px-4 py-4 text-slate-300">{finding.source === "demo" ? "демо" : finding.source}</td>
+                  <td className="px-4 py-4 text-slate-300">{sourceLabels[finding.source]}</td>
                   <td className="px-4 py-4 text-slate-300">{finding.remediationAvailable ? "доступно" : "вручную"}</td>
                 </tr>
               )) : (
@@ -102,7 +117,9 @@ export function FindingsExplorer({ findings, profileId }: { findings: Finding[];
       </div>
 
       <div className="flex justify-end">
-        <LinkButton href={`/remediation?profileId=${profileId}`}>Сформировать план исправлений</LinkButton>
+        <LinkButton href={remediationLinkHref ?? `/remediation?profileId=${profileId}`}>
+          {remediationLinkLabel}
+        </LinkButton>
       </div>
     </section>
   );

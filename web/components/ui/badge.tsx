@@ -43,11 +43,3 @@ export function StatusBadge({ status }: { status: FindingStatus }) {
     </span>
   );
 }
-
-export function DemoBadge() {
-  return (
-    <span className="inline-flex rounded-md border border-emerald-400/40 bg-emerald-500/15 px-2 py-1 text-xs font-semibold uppercase text-emerald-100">
-      Демо-режим
-    </span>
-  );
-}

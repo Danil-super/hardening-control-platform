@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Hardening Control Platform",
-  description: "Демо-платформа для аудита Linux, планирования исправлений и отчетов до/после.",
+  description: "Веб-панель для централизованного Ansible-аудита Linux-хостов по SSH.",
 };
 
 export default function RootLayout({

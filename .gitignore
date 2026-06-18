@@ -12,9 +12,13 @@ __pycache__/
 web/node_modules/
 web/.next/
 web/out/
+web/test
+web/test.pub
 
 ansible/inventory.ini
 ansible/incidents.json
 ansible/scheduler.json
 ansible/reports/*.json
 !ansible/reports/.gitkeep
+ansible/playbooks/custom/*
+!ansible/playbooks/custom/.gitkeep
