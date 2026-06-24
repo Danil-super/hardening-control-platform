@@ -13,6 +13,29 @@ export function isProtectedPath(pathname: string) {
   );
 }
 
+export function isMutatingRequest(method: string) {
+  return !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+}
+
+export function hasTrustedOrigin(request: {
+  headers: Headers;
+  nextUrl: { origin: string };
+}) {
+  const origin = request.headers.get("origin");
+  const referer = request.headers.get("referer");
+  if (origin) {
+    return origin === request.nextUrl.origin;
+  }
+  if (referer) {
+    try {
+      return new URL(referer).origin === request.nextUrl.origin;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
 export async function createEdgeSessionToken() {
   const password = process.env.HCP_ADMIN_PASSWORD?.trim() || "";
   const secret = process.env.HCP_AUTH_SECRET?.trim() || password;

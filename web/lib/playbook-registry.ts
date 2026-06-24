@@ -37,9 +37,11 @@ const builtinTitles: Record<string, string> = {
   ping: "Ping",
   collectFacts: "Сбор фактов",
   agentlessAudit: "SSH-аудит Ansible",
+  packageInventory: "Инвентарь пакетов",
   collectEvents: "Сбор событий",
   closeDangerousPorts: "Закрыть опасные порты",
   closePort: "Закрыть порт",
+  updatePackage: "Обновить пакет",
   blockIp: "Заблокировать IP",
   stopService: "Остановить сервис",
 };
@@ -51,6 +53,9 @@ const builtinVariables: Record<string, PlaybookVariable[]> = {
   ],
   blockIp: [
     { name: "block_ip", label: "IP", type: "string", required: true },
+  ],
+  updatePackage: [
+    { name: "package_name", label: "Пакет", type: "string", required: true, defaultValue: "openssl" },
   ],
   stopService: [
     { name: "service_name", label: "Сервис", type: "string", required: true, defaultValue: "nginx" },

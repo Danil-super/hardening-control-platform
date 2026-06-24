@@ -6,6 +6,10 @@
 
   vars:
     agentless_report_dir: "{{ playbook_dir }}/../reports"
+    agentless_rules_file: "{{ playbook_dir }}/../audit-rules/basic-linux.yml"
+
+  vars_files:
+    - ../audit-rules/basic-linux.yml
 
   tasks:
     - name: Ensure local report directory exists
@@ -27,16 +31,12 @@
         from datetime import datetime, timezone
 
         profile_id = os.environ.get("AUDIT_PROFILE", "basic_linux")
-        dangerous_ports = {
-            21: ("FTP открыт", "FTP передает данные без шифрования. Закройте порт или замените сервис на SFTP/SSH."),
-            23: ("Telnet открыт", "Telnet небезопасен. Закройте порт и используйте SSH."),
-            25: ("SMTP открыт", "Проверьте, должен ли SMTP быть доступен с этой сети."),
-            3306: ("MySQL открыт", "Ограничьте доступ к MySQL только доверенными хостами."),
-            5432: ("PostgreSQL открыт", "Ограничьте доступ к PostgreSQL только доверенными хостами."),
-            6379: ("Redis открыт", "Redis не должен быть открыт в локальной сети без строгой фильтрации."),
-            9200: ("Elasticsearch открыт", "Ограничьте доступ к Elasticsearch и проверьте аутентификацию."),
-            11211: ("Memcached открыт", "Memcached не должен быть доступен из сети без фильтрации."),
-        }
+        rules = json.loads(os.environ.get("AUDIT_RULES_JSON", "{}"))
+        dangerous_ports = rules.get("dangerous_ports", [])
+        ssh_rules = rules.get("ssh_rules", {})
+        service_rules = rules.get("service_rules", [])
+        package_rules = rules.get("package_rules", {})
+        filesystem_rules = rules.get("filesystem_rules", {})
 
         def run(command):
             try:
@@ -45,7 +45,7 @@
             except Exception as exc:
                 return None, "", str(exc)
 
-        def finding(id, title, category, risk, status, description, recommendation, evidence="", remediation_id=None):
+        def finding(id, title, category, risk, status, description, recommendation, evidence="", remediation_id=None, affected_files=None):
             return {
                 "id": id,
                 "profileId": profile_id,
@@ -53,18 +53,37 @@
                 "category": category,
                 "risk": risk,
                 "status": status,
-                "source": "custom",
+                "source": "agentless",
                 "description": description,
                 "recommendation": recommendation,
                 "remediationAvailable": bool(remediation_id),
                 "remediationId": remediation_id,
-                "affectedFiles": [],
+                "affectedFiles": affected_files or [],
                 "evidence": evidence,
             }
+
+        def bool_text(value):
+            return "yes" if value else "no"
+
+        def service_active(service):
+            code, output, error = run(["systemctl", "is-active", service])
+            return code == 0 and output == "active", output or error or str(code)
+
+        def package_installed(names):
+            installed = []
+            missing = []
+            for name in names:
+                code, output, _ = run(["bash", "-lc", f"dpkg-query -W -f='${{Status}}' {name} 2>/dev/null || rpm -q {name} 2>/dev/null"])
+                if code == 0 and output:
+                    installed.append(name)
+                else:
+                    missing.append(name)
+            return installed, missing
 
         findings = []
         code, ss_output, ss_error = run(["ss", "-tuln"])
         open_ports = set()
+        open_sockets = []
         if code == 0:
             for line in ss_output.splitlines():
                 parts = line.split()
@@ -74,7 +93,9 @@
                 if ":" not in address:
                     continue
                 try:
-                    open_ports.add(int(address.rsplit(":", 1)[1]))
+                    port = int(address.rsplit(":", 1)[1])
+                    open_ports.add(port)
+                    open_sockets.append({"protocol": parts[0], "address": address, "port": port})
                 except ValueError:
                     continue
         else:
@@ -89,16 +110,17 @@
                 ss_error,
             ))
 
-        for port, (title, recommendation) in dangerous_ports.items():
+        for rule in dangerous_ports:
+            port = int(rule["port"])
             if port in open_ports:
                 findings.append(finding(
                     f"dangerous_port_{port}",
-                    title,
+                    rule["title"],
                     "Сеть",
-                    "high" if port in {21, 23, 6379, 9200, 11211} else "medium",
+                    rule.get("risk", "medium"),
                     "failed",
                     f"На хосте прослушивается потенциально опасный порт {port}.",
-                    recommendation,
+                    rule["recommendation"],
                     f"open_port={port}",
                     "close_dangerous_ports",
             ))
@@ -140,9 +162,10 @@
                 "high",
                 "failed" if root_failed else "passed",
                 "Проверяется параметр PermitRootLogin.",
-                "Установите PermitRootLogin no и проверьте sshd -t.",
+                ssh_rules.get("permit_root_login", {}).get("recommendation", "Установите PermitRootLogin no."),
                 "PermitRootLogin=" + (permit_root or "default"),
-                "disable_ssh_root_login" if root_failed else None,
+                None,
+                ["/etc/ssh/sshd_config"],
             ))
 
             password_auth = ssh_value("PasswordAuthentication")
@@ -154,9 +177,45 @@
                 "high",
                 "failed" if password_failed else "passed",
                 "Проверяется параметр PasswordAuthentication.",
-                "Отключите парольный SSH-вход после проверки доступа по ключам.",
+                ssh_rules.get("password_authentication", {}).get("recommendation", "Отключите парольный SSH-вход."),
                 "PasswordAuthentication=" + (password_auth or "default"),
-                "disable_ssh_password_auth" if password_failed else None,
+                None,
+                ["/etc/ssh/sshd_config"],
+            ))
+
+            empty_passwords = ssh_value("PermitEmptyPasswords")
+            empty_failed = empty_passwords in {None, "yes"}
+            findings.append(finding(
+                "ssh_empty_passwords",
+                "SSH допускает пустые пароли" if empty_failed else "SSH запрещает пустые пароли",
+                "SSH",
+                ssh_rules.get("empty_passwords", {}).get("risk", "high"),
+                "failed" if empty_failed else "passed",
+                "Проверяется параметр PermitEmptyPasswords.",
+                ssh_rules.get("empty_passwords", {}).get("recommendation", "Установите PermitEmptyPasswords no."),
+                "PermitEmptyPasswords=" + (empty_passwords or "default"),
+                None,
+                ["/etc/ssh/sshd_config"],
+            ))
+
+            max_auth_tries_raw = ssh_value("MaxAuthTries")
+            try:
+                max_auth_tries = int(max_auth_tries_raw) if max_auth_tries_raw else 6
+            except ValueError:
+                max_auth_tries = 6
+            max_auth_limit = int(ssh_rules.get("max_auth_tries", {}).get("max", 4))
+            max_auth_failed = max_auth_tries > max_auth_limit
+            findings.append(finding(
+                "ssh_max_auth_tries",
+                "SSH допускает слишком много попыток входа" if max_auth_failed else "SSH ограничивает попытки входа",
+                "SSH",
+                ssh_rules.get("max_auth_tries", {}).get("risk", "medium"),
+                "failed" if max_auth_failed else "passed",
+                "Проверяется параметр MaxAuthTries.",
+                ssh_rules.get("max_auth_tries", {}).get("recommendation", "Установите MaxAuthTries 4 или меньше."),
+                f"MaxAuthTries={max_auth_tries_raw or 'default(6)'}; expected<={max_auth_limit}",
+                None,
+                ["/etc/ssh/sshd_config"],
             ))
 
         if not any(item["id"].startswith("dangerous_port_") for item in findings):
@@ -168,7 +227,7 @@
                 "passed",
                 "Проверены распространенные опасные порты.",
                 "Продолжайте регулярный сетевой аудит.",
-                "checked_ports=" + ",".join(str(port) for port in sorted(dangerous_ports)),
+                "checked_ports=" + ",".join(str(rule["port"]) for rule in dangerous_ports),
             ))
 
         ufw_code, ufw_output, _ = run(["ufw", "status"])
@@ -186,7 +245,51 @@
             "Проверяется наличие активного ufw или firewalld.",
             "Включите и настройте ufw/firewalld на хосте.",
             f"ufw={ufw_output or 'n/a'}; firewalld={firewalld_output or 'n/a'}",
-            None if firewall_active else "enable_firewall",
+        ))
+
+        for rule in service_rules:
+            service = rule["service"]
+            active, evidence = service_active(service)
+            findings.append(finding(
+                f"service_{service}_active",
+                rule["title"] if active else f"{rule['title']} не подтвержден",
+                "Сервисы",
+                rule.get("risk", "medium"),
+                "passed" if active else "failed",
+                f"Проверяется активность systemd-сервиса {service}.",
+                rule["recommendation"],
+                f"{service}={evidence}",
+            ))
+
+        unattended = package_rules.get("unattended_upgrades", {})
+        package_names = unattended.get("packages", [])
+        installed_auto_update, _ = package_installed(package_names)
+        findings.append(finding(
+            "security_auto_updates",
+            "Механизм security-обновлений найден" if installed_auto_update else "Механизм security-обновлений не найден",
+            "Обновления",
+            unattended.get("risk", "low"),
+            "passed" if installed_auto_update else "failed",
+            "Проверяется наличие unattended-upgrades, dnf-automatic или yum-cron.",
+            unattended.get("recommendation", "Настройте автоматическую установку security-обновлений."),
+            "installed=" + (",".join(installed_auto_update) if installed_auto_update else "none"),
+        ))
+
+        updates_code, updates_output, updates_error = run([
+            "bash",
+            "-lc",
+            "apt list --upgradable 2>/dev/null | tail -n +2 | head -n 20 || dnf check-update --security 2>/dev/null | head -n 20 || yum check-update --security 2>/dev/null | head -n 20",
+        ])
+        updates_available = bool(updates_output.strip())
+        findings.append(finding(
+            "package_updates_available",
+            "Есть доступные обновления пакетов" if updates_available else "Доступные обновления пакетов не найдены",
+            "Обновления",
+            "medium" if updates_available else "info",
+            "manual" if updates_available else "passed",
+            "Проверяется наличие обновлений через пакетный менеджер дистрибутива.",
+            "Просмотрите список обновлений и установите security-обновления в окно обслуживания.",
+            updates_output or updates_error or "no upgradable packages detected",
         ))
 
         sudo_code, sudo_output, sudo_error = run(["bash", "-lc", "getent group sudo wheel adm 2>/dev/null"])
@@ -207,6 +310,44 @@
             sudo_evidence,
         ))
 
+        nopasswd_code, nopasswd_output, nopasswd_error = run([
+            "bash",
+            "-lc",
+            "grep -R \"NOPASSWD\" /etc/sudoers /etc/sudoers.d 2>/dev/null | head -n 20",
+        ])
+        nopasswd_found = bool(nopasswd_output.strip())
+        findings.append(finding(
+            "sudo_nopasswd",
+            "Найден sudo без пароля" if nopasswd_found else "sudo без пароля не найден",
+            "Учетные записи",
+            "medium",
+            "failed" if nopasswd_found else "passed",
+            "Проверяются правила sudoers с NOPASSWD.",
+            "Уберите NOPASSWD там, где он не требуется для автоматизации.",
+            nopasswd_output or nopasswd_error or "no NOPASSWD entries",
+            None,
+            ["/etc/sudoers", "/etc/sudoers.d"],
+        ))
+
+        empty_pass_code, empty_pass_output, empty_pass_error = run([
+            "bash",
+            "-lc",
+            "awk -F: '($2 == \"\") {print $1}' /etc/shadow 2>/dev/null | head -n 20",
+        ])
+        empty_pass_found = bool(empty_pass_output.strip())
+        findings.append(finding(
+            "empty_password_accounts",
+            "Найдены учетные записи без пароля" if empty_pass_found else "Учетные записи без пароля не найдены",
+            "Учетные записи",
+            "high",
+            "failed" if empty_pass_found else "passed",
+            "Проверяется /etc/shadow на пустой хеш пароля.",
+            "Заблокируйте такие учетные записи или задайте надежный пароль.",
+            empty_pass_output or empty_pass_error or "no empty password accounts",
+            None,
+            ["/etc/shadow"],
+        ))
+
         failed_log_code, failed_log_output, failed_log_error = run([
             "bash",
             "-lc",
@@ -222,7 +363,6 @@
             "Проверяются последние записи auth.log/secure по неудачным входам.",
             "При множественных попытках включите блокировку источника, fail2ban или правила firewall.",
             failed_log_output or failed_log_error or "no matching log lines",
-            "block_source_ip" if failed_login_detected else None,
         ))
 
         critical_services = ["ssh", "sshd", "nginx", "apache2", "docker"]
@@ -241,20 +381,22 @@
             "; ".join(service_lines),
         ))
 
+        writable_paths = filesystem_rules.get("world_writable_paths", {}).get("paths", ["/tmp", "/var/tmp"])
+        quoted_paths = " ".join(writable_paths)
         writable_code, writable_output, writable_error = run([
             "bash",
             "-lc",
-            "find /tmp /var/tmp -xdev -type d -perm -0002 ! -perm -1000 -print 2>/dev/null | head -n 20",
+            f"find {quoted_paths} -xdev -type d -perm -0002 ! -perm -1000 -print 2>/dev/null | head -n 20",
         ])
         writable_failed = bool(writable_output.strip())
         findings.append(finding(
             "world_writable_dirs",
             "Найдены world-writable директории без sticky bit" if writable_failed else "World-writable директории без sticky bit не найдены",
             "Файловая система",
-            "medium",
+            filesystem_rules.get("world_writable_paths", {}).get("risk", "medium"),
             "failed" if writable_failed else "passed",
-            "Проверяются /tmp и /var/tmp на небезопасные права директорий.",
-            "Добавьте sticky bit или исправьте права директорий.",
+            "Проверяются временные директории на небезопасные права.",
+            filesystem_rules.get("world_writable_paths", {}).get("recommendation", "Добавьте sticky bit или исправьте права директорий."),
             writable_output or writable_error or "no unsafe directories",
         ))
 
@@ -299,10 +441,12 @@
             "profileId": profile_id,
             "mode": "agentless",
             "agentless": {
-                "version": "0.1.0",
+                "version": rules.get("audit_rules_version", "0.2.0"),
                 "control": "ansible",
                 "persistentAgent": False,
+                "rulesFile": os.environ.get("AUDIT_RULES_FILE", "ansible/audit-rules/basic-linux.yml"),
                 "openPorts": sorted(open_ports),
+                "openSockets": open_sockets,
             },
             "summary": summary,
             "findings": findings,
@@ -312,6 +456,15 @@
         executable: /bin/bash
       environment:
         AUDIT_PROFILE: "{{ audit_profile | default('basic_linux') }}"
+        AUDIT_RULES_FILE: "{{ agentless_rules_file }}"
+        AUDIT_RULES_JSON: "{{ {
+          'audit_rules_version': audit_rules_version,
+          'dangerous_ports': dangerous_ports,
+          'ssh_rules': ssh_rules,
+          'service_rules': service_rules,
+          'package_rules': package_rules,
+          'filesystem_rules': filesystem_rules
+        } | to_json }}"
       changed_when: false
       register: agentless_audit
 

@@ -24,8 +24,8 @@ const rules = [
   },
   {
     icon: ShieldCheck,
-    title: "Только разрешенные playbook'и",
-    text: "Веб-интерфейс запускает действия из allowlist, а response-действия требуют limit и подтверждение.",
+    title: "Базовый аудит",
+    text: "SSH-аудит применяет локальные правила конфигурации: SSH, firewall, sudo, сервисы, обновления и опасные порты.",
   },
   {
     icon: Terminal,

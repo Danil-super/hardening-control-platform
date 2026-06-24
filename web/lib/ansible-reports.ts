@@ -70,6 +70,12 @@ function hostFromFileName(fileName: string, profileId: string | null, mode: stri
   if (mode === "events") {
     return fileName.replace(/-events\.json$/i, "");
   }
+  if (mode === "packages") {
+    return fileName.replace(/-packages\.json$/i, "");
+  }
+  if (mode === "vulnerabilities") {
+    return fileName.replace(/-vulnerabilities\.json$/i, "");
+  }
   if (profileId && fileName.endsWith(`-${profileId}.json`)) {
     return fileName.slice(0, -`-${profileId}.json`.length);
   }

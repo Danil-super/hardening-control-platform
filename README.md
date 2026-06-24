@@ -60,7 +60,8 @@ npm run build
 3. Добавьте Linux-хост: alias, IP/hostname, SSH user, port, group и sudo.
 4. Нажмите `Проверить`, чтобы проверить SSH, Python и sudo без сохранения в inventory.
 5. Сохраните хост и запустите Ansible ping, затем SSH-аудит Ansible.
-6. Откройте созданный отчет в `/reports`.
+6. Запустите CVE-аудит пакетов, чтобы собрать package inventory и проверить версии через OSV.dev.
+7. Откройте созданный отчет в `/reports`.
 
 Сканирование локальной сети на `/hosts` является вспомогательным действием: оно ищет SSH-доступные IP и подставляет
 их в форму добавления, но не сохраняет хосты автоматически.
@@ -124,6 +125,7 @@ ansible-playbook -i ansible/inventory.ini ansible/playbooks/agentless-audit.yml 
 ```bash
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-dangerous-ports.yml --limit server1
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-port.yml --limit server1 -e target_port=23 -e target_protocol=tcp
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/update-package.yml --limit server1 -e package_name=openssl
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/block-ip.yml --limit server1 -e block_ip=192.168.1.50
 ansible-playbook -i ansible/inventory.ini ansible/playbooks/stop-service.yml --limit server1 -e service_name=nginx
 ```

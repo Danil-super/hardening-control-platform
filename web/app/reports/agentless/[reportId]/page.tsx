@@ -16,6 +16,22 @@ function formatDate(value: string | null | undefined) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
 }
 
+function targetAliasFromReport(fileName: string, profileId: string | null, mode: string) {
+  if (mode === "events") {
+    return fileName.replace(/-events\.json$/i, "");
+  }
+  if (mode === "packages") {
+    return fileName.replace(/-packages\.json$/i, "");
+  }
+  if (mode === "vulnerabilities") {
+    return fileName.replace(/-vulnerabilities\.json$/i, "");
+  }
+  if (profileId && fileName.endsWith(`-${profileId}.json`)) {
+    return fileName.slice(0, -`-${profileId}.json`.length);
+  }
+  return fileName.replace(/\.json$/i, "");
+}
+
 export default async function AgentlessReportDetailPage({
   params,
 }: {
@@ -27,6 +43,7 @@ export default async function AgentlessReportDetailPage({
   if (!report) {
     notFound();
   }
+  const targetAlias = targetAliasFromReport(report.fileName, report.profileId, report.mode);
 
   return (
     <div className="space-y-6">
@@ -78,7 +95,13 @@ export default async function AgentlessReportDetailPage({
       </div>
 
       {report.findings.length ? (
-        <FindingsExplorer findings={report.findings} profileId={report.profileId ?? "basic_linux"} remediationLinkHref="/hosts" remediationLinkLabel="Открыть управление хостами" />
+        <FindingsExplorer
+          findings={report.findings}
+          profileId={report.profileId ?? "basic_linux"}
+          hostAlias={targetAlias}
+          remediationLinkHref="/hosts"
+          remediationLinkLabel="Открыть управление хостами"
+        />
       ) : null}
 
       {report.events.length ? (

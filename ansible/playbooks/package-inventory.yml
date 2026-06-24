@@ -1,0 +1,129 @@
+---
+- name: Collect package inventory
+  hosts: linux_hosts
+  become: true
+  gather_facts: true
+
+  vars:
+    package_report_dir: "{{ playbook_dir }}/../reports"
+
+  tasks:
+    - name: Ensure local report directory exists
+      ansible.builtin.file:
+        path: "{{ package_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Build package inventory JSON
+      ansible.builtin.shell: |
+        python3 - <<'PY'
+        import json
+        import os
+        import socket
+        import subprocess
+        from datetime import datetime, timezone
+
+        def run(command):
+            try:
+                completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=60)
+                return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
+            except Exception as exc:
+                return None, "", str(exc)
+
+        def read_os_release():
+            data = {}
+            try:
+                with open("/etc/os-release", encoding="utf-8", errors="replace") as handle:
+                    for raw_line in handle:
+                        if "=" not in raw_line:
+                            continue
+                        key, value = raw_line.rstrip("\n").split("=", 1)
+                        data[key] = value.strip().strip('"')
+            except OSError:
+                pass
+            return data
+
+        def debian_packages():
+            code, output, error = run(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\t${Architecture}\n"])
+            packages = []
+            if code != 0:
+                return packages, error
+            for line in output.splitlines():
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                packages.append({
+                    "name": parts[0],
+                    "version": parts[1],
+                    "arch": parts[2] if len(parts) > 2 else "",
+                    "manager": "dpkg",
+                })
+            return packages, ""
+
+        def rpm_packages():
+            code, output, error = run(["rpm", "-qa", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n"])
+            packages = []
+            if code != 0:
+                return packages, error
+            for line in output.splitlines():
+                parts = line.split("\t")
+                if len(parts) < 2:
+                    continue
+                packages.append({
+                    "name": parts[0],
+                    "version": parts[1],
+                    "arch": parts[2] if len(parts) > 2 else "",
+                    "manager": "rpm",
+                })
+            return packages, ""
+
+        os_release = read_os_release()
+        packages, error = debian_packages()
+        if not packages:
+            packages, error = rpm_packages()
+
+        created_at = datetime.now(timezone.utc).isoformat()
+        print(json.dumps({
+            "auditId": "packages_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+            "createdAt": created_at,
+            "hostname": socket.gethostname(),
+            "os": os_release.get("PRETTY_NAME") or os_release.get("NAME") or "Unknown Linux",
+            "profileId": "packages",
+            "mode": "packages",
+            "packageInventory": {
+                "osRelease": os_release,
+                "packageCount": len(packages),
+                "manager": packages[0]["manager"] if packages else None,
+                "error": error,
+            },
+            "summary": {
+                "score": None,
+                "high": 0,
+                "medium": 0,
+                "low": 0,
+                "info": 0,
+                "total": len(packages),
+            },
+            "findings": [],
+            "packages": packages,
+        }, ensure_ascii=False))
+        PY
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: package_inventory
+
+    - name: Save package inventory on control node
+      ansible.builtin.copy:
+        content: "{{ package_inventory.stdout }}"
+        dest: "{{ package_report_dir }}/{{ inventory_hostname }}-packages.json"
+        mode: "0644"
+      delegate_to: localhost
+      become: false
+
+    - name: Show report path
+      ansible.builtin.debug:
+        msg: "Saved {{ package_report_dir }}/{{ inventory_hostname }}-packages.json"

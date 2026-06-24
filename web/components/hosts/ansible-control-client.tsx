@@ -36,6 +36,7 @@ type ManagedHost = {
   alias: string;
   address: string;
   user: string | null;
+  port: number;
   become: boolean | null;
   groups: string[];
   lastReport: {
@@ -95,12 +96,14 @@ const auditActions = [
   { id: "ping", label: "Ping", icon: Server },
   { id: "collectFacts", label: "Факты", icon: FileText },
   { id: "agentlessAudit", label: "Аудит", icon: ShieldCheck },
+  { id: "packageInventory", label: "CVE пакеты", icon: FileText },
   { id: "collectEvents", label: "События", icon: Terminal },
 ] as const;
 
 const responseActions = [
   { id: "closeDangerousPorts", label: "Закрыть опасные", icon: AlertTriangle },
   { id: "closePort", label: "Закрыть порт", icon: Ban },
+  { id: "updatePackage", label: "Обновить пакет", icon: RefreshCw },
   { id: "blockIp", label: "Блок IP", icon: AlertTriangle },
   { id: "stopService", label: "Стоп сервис", icon: Power },
 ] as const;
@@ -149,6 +152,7 @@ export function AnsibleControlClient() {
   const [discovery, setDiscovery] = useState<DiscoveryPayload | null>(null);
   const [targetPort, setTargetPort] = useState("23");
   const [targetProtocol, setTargetProtocol] = useState("tcp");
+  const [packageName, setPackageName] = useState("openssl");
   const [blockIp, setBlockIp] = useState("");
   const [serviceName, setServiceName] = useState("nginx");
 
@@ -210,6 +214,58 @@ export function AnsibleControlClient() {
       if (payload.ok) {
         setSelectedAlias(manualAlias.trim());
         setManualAddress("");
+        await refreshAll();
+      }
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function updateManualHost() {
+    setLoading("updateHost");
+    setRunResult(null);
+    setFreshReportHref("");
+    try {
+      const response = await fetch("/api/ansible/hosts", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          alias: manualAlias,
+          address: manualAddress,
+          user: manualUser,
+          port: manualPort,
+          group: manualGroup,
+          become: manualBecome,
+        }),
+      });
+      const payload = await response.json();
+      setRunResult({ ok: payload.ok, action: "updateHost", message: payload.message });
+      if (payload.ok) {
+        setSelectedAlias(manualAlias.trim());
+        await refreshAll();
+      }
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function deleteSelectedHost() {
+    if (!selectedAlias || !window.confirm(`Удалить хост ${selectedAlias} из inventory?`)) {
+      return;
+    }
+    setLoading("deleteHost");
+    setRunResult(null);
+    setFreshReportHref("");
+    try {
+      const response = await fetch("/api/ansible/hosts", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alias: selectedAlias }),
+      });
+      const payload = await response.json();
+      setRunResult({ ok: payload.ok, action: "deleteHost", message: payload.message });
+      if (payload.ok) {
+        setSelectedAlias("");
         await refreshAll();
       }
     } finally {
@@ -283,9 +339,11 @@ export function AnsibleControlClient() {
         ? { target_port: targetPort, target_protocol: targetProtocol }
         : action === "blockIp"
           ? { block_ip: blockIp }
-          : action === "stopService"
-            ? { service_name: serviceName }
-            : {};
+          : action === "updatePackage"
+            ? { package_name: packageName }
+            : action === "stopService"
+              ? { service_name: serviceName }
+              : {};
 
     setLoading(action);
     setRunResult(null);
@@ -304,7 +362,28 @@ export function AnsibleControlClient() {
       });
       const payload = await response.json();
       setRunResult(payload);
-      const nextHosts = await loadHosts();
+      let nextHosts = await loadHosts();
+      if (payload.ok && action === "packageInventory") {
+        const cveResponse = await fetch("/api/ansible/vulnerabilities/check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ hostAlias: selectedAlias }),
+        });
+        const cvePayload = await cveResponse.json();
+        setRunResult({
+          ok: cvePayload.ok,
+          action,
+          message: cvePayload.ok
+            ? "CVE-аудит пакетов выполнен."
+            : cvePayload.message ?? "Не удалось выполнить CVE-аудит пакетов.",
+          stdout: payload.stdout,
+          stderr: payload.stderr,
+        });
+        nextHosts = await loadHosts();
+        if (cvePayload.ok && cvePayload.reportId) {
+          setFreshReportHref(`/reports/agentless/${encodeURIComponent(cvePayload.reportId)}`);
+        }
+      }
       if (payload.ok && action === "agentlessAudit") {
         const report = nextHosts.hosts?.find((host) => host.alias === selectedAlias)?.lastReport;
         if (report) {
@@ -314,6 +393,16 @@ export function AnsibleControlClient() {
     } finally {
       setLoading("");
     }
+  }
+
+  function fillHostForm(host: ManagedHost) {
+    setSelectedAlias(host.alias);
+    setManualAlias(host.alias);
+    setManualAddress(host.address);
+    setManualUser(host.user ?? "");
+    setManualPort(String(host.port ?? 22));
+    setManualGroup(host.groups[0] ?? "linux_hosts");
+    setManualBecome(Boolean(host.become));
   }
 
   const summary = hosts?.summary;
@@ -329,7 +418,7 @@ export function AnsibleControlClient() {
       </section>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[140px_180px_130px_90px_140px_110px_110px_110px]">
+        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[140px_180px_130px_90px_140px_110px_110px_110px_110px_100px]">
           <Field label="Alias" value={manualAlias} onChange={setManualAlias} placeholder="web-01" />
           <Field label="IP/host" value={manualAddress} onChange={setManualAddress} placeholder="192.168.1.10" />
           <Field label="SSH user" value={manualUser} onChange={setManualUser} placeholder="danil" />
@@ -351,6 +440,12 @@ export function AnsibleControlClient() {
           <Button onClick={addManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="self-end">
             <Plus size={16} aria-hidden="true" />
             Сохранить
+          </Button>
+          <Button variant="secondary" onClick={updateManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="self-end">
+            Изменить
+          </Button>
+          <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || !selectedAlias} className="self-end">
+            Удалить
           </Button>
         </div>
         {preflight ? (
@@ -446,7 +541,7 @@ export function AnsibleControlClient() {
                 {hosts.hosts.map((host) => (
                   <tr key={host.alias} className={selectedAlias === host.alias ? "bg-sky-500/5" : ""}>
                     <td className="px-4 py-4">
-                      <button onClick={() => setSelectedAlias(host.alias)} className="text-left">
+                      <button onClick={() => fillHostForm(host)} className="text-left">
                         <span className="block font-semibold text-white">{host.alias}</span>
                         <span className="mt-1 block text-xs text-slate-500">{host.address}</span>
                       </button>
@@ -477,7 +572,7 @@ export function AnsibleControlClient() {
                     <td className="px-4 py-4 text-slate-300">{formatDate(host.lastReport?.createdAt)}</td>
                     <td className="px-4 py-4">
                       <div className="flex flex-wrap gap-2">
-                        <Button variant="secondary" onClick={() => setSelectedAlias(host.alias)}>
+                        <Button variant="secondary" onClick={() => fillHostForm(host)}>
                           Выбрать
                         </Button>
                         {host.lastReport ? (
@@ -520,7 +615,7 @@ export function AnsibleControlClient() {
           </div>
 
           <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <div className="grid gap-3 md:grid-cols-4">
+            <div className="grid gap-3 md:grid-cols-5">
               <Field label="Порт" value={targetPort} onChange={setTargetPort} placeholder="23" />
               <label className="block">
                 <span className="text-xs font-semibold uppercase text-slate-500">Протокол</span>
@@ -533,6 +628,7 @@ export function AnsibleControlClient() {
                   <option value="udp">udp</option>
                 </select>
               </label>
+              <Field label="Package" value={packageName} onChange={setPackageName} placeholder="openssl" />
               <Field label="IP block" value={blockIp} onChange={setBlockIp} placeholder="192.168.1.50" />
               <Field label="Service" value={serviceName} onChange={setServiceName} placeholder="nginx" />
             </div>

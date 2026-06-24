@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { authCookieName, createEdgeSessionToken, isProtectedPath } from "@/lib/auth-edge";
+import { authCookieName, createEdgeSessionToken, hasTrustedOrigin, isMutatingRequest, isProtectedPath } from "@/lib/auth-edge";
 
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
@@ -10,6 +10,21 @@ export async function proxy(request: NextRequest) {
   const expectedToken = await createEdgeSessionToken();
   const currentToken = request.cookies.get(authCookieName)?.value;
   if (expectedToken && currentToken === expectedToken) {
+    if (
+      pathname.startsWith("/api/ansible") &&
+      !pathname.startsWith("/api/ansible/auth") &&
+      isMutatingRequest(request.method) &&
+      !hasTrustedOrigin(request)
+    ) {
+      return NextResponse.json(
+        {
+          ok: false,
+          error: "bad_origin",
+          message: "Управляющий запрос отклонен: origin не совпадает с адресом панели.",
+        },
+        { status: 403 },
+      );
+    }
     return NextResponse.next();
   }
 

@@ -1,0 +1,89 @@
+---
+audit_rules_version: "0.2.0"
+
+dangerous_ports:
+  - port: 21
+    protocol: tcp
+    title: FTP открыт
+    risk: high
+    recommendation: Закройте FTP или замените его на SFTP/SSH.
+  - port: 23
+    protocol: tcp
+    title: Telnet открыт
+    risk: high
+    recommendation: Закройте Telnet и используйте SSH.
+  - port: 25
+    protocol: tcp
+    title: SMTP открыт
+    risk: medium
+    recommendation: Проверьте, должен ли SMTP быть доступен с этой сети.
+  - port: 3306
+    protocol: tcp
+    title: MySQL открыт
+    risk: medium
+    recommendation: Ограничьте доступ к MySQL только доверенными хостами.
+  - port: 5432
+    protocol: tcp
+    title: PostgreSQL открыт
+    risk: medium
+    recommendation: Ограничьте доступ к PostgreSQL только доверенными хостами.
+  - port: 6379
+    protocol: tcp
+    title: Redis открыт
+    risk: high
+    recommendation: Redis не должен быть открыт в локальной сети без строгой фильтрации.
+  - port: 9200
+    protocol: tcp
+    title: Elasticsearch открыт
+    risk: high
+    recommendation: Ограничьте доступ к Elasticsearch и проверьте аутентификацию.
+  - port: 11211
+    protocol: tcp
+    title: Memcached открыт
+    risk: high
+    recommendation: Memcached не должен быть доступен из сети без фильтрации.
+
+ssh_rules:
+  permit_root_login:
+    expected: "no"
+    risk: high
+    recommendation: Установите PermitRootLogin no и проверьте sshd -t перед перезапуском SSH.
+  password_authentication:
+    expected: "no"
+    risk: high
+    recommendation: Отключите парольный SSH-вход после проверки доступа по ключам.
+  empty_passwords:
+    expected: "no"
+    risk: high
+    recommendation: Установите PermitEmptyPasswords no.
+  max_auth_tries:
+    max: 4
+    risk: medium
+    recommendation: Установите MaxAuthTries 4 или меньше.
+
+service_rules:
+  - service: fail2ban
+    title: Fail2ban активен
+    risk: medium
+    recommendation: Установите и включите fail2ban для защиты SSH от перебора.
+  - service: auditd
+    title: Auditd активен
+    risk: medium
+    recommendation: Установите и включите auditd для системного аудита.
+
+package_rules:
+  unattended_upgrades:
+    packages:
+      - unattended-upgrades
+      - dnf-automatic
+      - yum-cron
+    risk: low
+    recommendation: Включите механизм автоматической установки security-обновлений, подходящий для дистрибутива.
+
+filesystem_rules:
+  world_writable_paths:
+    paths:
+      - /tmp
+      - /var/tmp
+    risk: medium
+    recommendation: Добавьте sticky bit или исправьте права небезопасных директорий.

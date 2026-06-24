@@ -9,6 +9,7 @@ type InventoryHost = {
   alias: string;
   address: string;
   user: string | null;
+  port: number;
   become: boolean | null;
   groups: string[];
   raw: string;
@@ -122,6 +123,7 @@ function readInventoryHosts(inventoryPath: string) {
       alias,
       address,
       user: values.get("ansible_user") ?? null,
+      port: normalizePort(values.get("ansible_port")),
       become: parseBoolean(values.get("ansible_become")),
       groups: [currentGroup],
       raw: line,
@@ -130,6 +132,88 @@ function readInventoryHosts(inventoryPath: string) {
   }
 
   return hosts;
+}
+
+function hostLine({
+  alias,
+  address,
+  port,
+  user,
+  become,
+}: {
+  alias: string;
+  address: string;
+  port: number;
+  user: string;
+  become: boolean;
+}) {
+  return `${alias} ansible_host=${address} ansible_port=${port} ansible_user=${user} ansible_become=${become ? "true" : "false"}`;
+}
+
+function removeHostLine(lines: string[], alias: string) {
+  let currentGroup = "";
+  let removed = false;
+  const next = lines.filter((rawLine) => {
+    const line = rawLine.trim();
+    const groupMatch = line.match(/^\[(.+)]$/);
+    if (groupMatch) {
+      currentGroup = groupMatch[1];
+      return true;
+    }
+    if (!line || line.startsWith("#") || currentGroup.endsWith(":vars") || currentGroup.endsWith(":children")) {
+      return true;
+    }
+    const [currentAlias] = line.split(/\s+/);
+    if (currentAlias === alias) {
+      removed = true;
+      return false;
+    }
+    return true;
+  });
+  return { lines: next, removed };
+}
+
+function insertHostLine(lines: string[], group: string, line: string) {
+  const varsIndex = lines.findIndex((item) => item.trim() === "[linux_hosts:vars]");
+  const groupHeader = `[${group}]`;
+  const hostsIndex = lines.findIndex((item) => item.trim() === groupHeader);
+
+  if (hostsIndex === -1) {
+    const insertIndex = varsIndex === -1 ? lines.length : varsIndex;
+    lines.splice(insertIndex, 0, "", groupHeader, line);
+  } else if (varsIndex !== -1 && varsIndex > hostsIndex) {
+    lines.splice(varsIndex, 0, line);
+  } else {
+    lines.splice(hostsIndex + 1, 0, line);
+  }
+
+  if (group !== "linux_hosts") {
+    const childrenHeaderIndex = lines.findIndex((item) => item.trim() === "[linux_hosts:children]");
+    if (childrenHeaderIndex === -1) {
+      const nextVarsIndex = lines.findIndex((item) => item.trim() === "[linux_hosts:vars]");
+      const insertIndex = nextVarsIndex === -1 ? lines.length : nextVarsIndex;
+      lines.splice(insertIndex, 0, "", "[linux_hosts:children]", group);
+    } else {
+      let index = childrenHeaderIndex + 1;
+      let groupAlreadyListed = false;
+      while (index < lines.length && !lines[index].trim().startsWith("[")) {
+        if (lines[index].trim() === group) {
+          groupAlreadyListed = true;
+          break;
+        }
+        index += 1;
+      }
+      if (!groupAlreadyListed) {
+        lines.splice(childrenHeaderIndex + 1, 0, group);
+      }
+    }
+  }
+
+  return lines;
+}
+
+function normalizeInventoryText(lines: string[]) {
+  return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
 }
 
 function readReport(reportPath: string): HostReport | null {
@@ -258,33 +342,9 @@ export async function POST(request: Request) {
     );
   }
 
-  const newLine = `${alias} ansible_host=${address} ansible_port=${port} ansible_user=${user} ansible_become=${become ? "true" : "false"}`;
+  const newLine = hostLine({ alias, address, port, user, become });
   const lines = current.split("\n");
-  const varsIndex = lines.findIndex((line) => line.trim() === "[linux_hosts:vars]");
-  const groupHeader = `[${group}]`;
-  const hostsIndex = lines.findIndex((line) => line.trim() === groupHeader);
-
-  if (hostsIndex === -1) {
-    const insertIndex = varsIndex === -1 ? lines.length : varsIndex;
-    lines.splice(insertIndex, 0, "", groupHeader, newLine);
-  } else if (varsIndex !== -1 && varsIndex > hostsIndex) {
-    lines.splice(varsIndex, 0, newLine);
-  } else {
-    lines.splice(hostsIndex + 1, 0, newLine);
-  }
-
-  if (group !== "linux_hosts") {
-    const childrenHeaderIndex = lines.findIndex((line) => line.trim() === "[linux_hosts:children]");
-    if (childrenHeaderIndex === -1) {
-      const nextVarsIndex = lines.findIndex((line) => line.trim() === "[linux_hosts:vars]");
-      const insertIndex = nextVarsIndex === -1 ? lines.length : nextVarsIndex;
-      lines.splice(insertIndex, 0, "", "[linux_hosts:children]", group);
-    } else if (!lines.some((line, index) => index > childrenHeaderIndex && line.trim() === group)) {
-      lines.splice(childrenHeaderIndex + 1, 0, group);
-    }
-  }
-
-  writeFileSync(inventoryPath, lines.join("\n").replace(/\n{3,}/g, "\n\n"));
+  writeFileSync(inventoryPath, normalizeInventoryText(insertHostLine(lines, group, newLine)));
 
   return NextResponse.json({
     ok: true,
@@ -299,4 +359,68 @@ export async function POST(request: Request) {
       groups: [group],
     },
   });
+}
+
+export async function PUT(request: Request) {
+  const body = await request.json().catch(() => ({}));
+  const alias = typeof body?.alias === "string" ? body.alias.trim() : "";
+  const address = typeof body?.address === "string" ? body.address.trim() : "";
+  const user = typeof body?.user === "string" ? body.user.trim() : "";
+  const become = typeof body?.become === "boolean" ? body.become : true;
+  const port = normalizePort(body?.port);
+  const group = isSafeGroup(body?.group) ? body.group.trim() : "linux_hosts";
+
+  if (!isSafeAlias(alias) || !isSafeHostAddress(address) || !isSafeSshUser(user)) {
+    return NextResponse.json(
+      { ok: false, message: "Проверьте alias, IP/hostname и SSH-пользователя." },
+      { status: 400 },
+    );
+  }
+
+  const repoRoot = getRepoRoot();
+  const inventoryPath = ensureInventory(repoRoot);
+  const current = readFileSync(inventoryPath, "utf8");
+  const hosts = readInventoryHosts(inventoryPath);
+  const existing = hosts.find((host) => host.alias === alias);
+  if (!existing) {
+    return NextResponse.json({ ok: false, message: "Хост не найден в inventory." }, { status: 404 });
+  }
+  if (hosts.some((host) => host.alias !== alias && host.address === address)) {
+    return NextResponse.json(
+      { ok: false, error: "duplicate_address", message: "Другой хост с таким IP уже есть в inventory." },
+      { status: 409 },
+    );
+  }
+
+  const removed = removeHostLine(current.split("\n"), alias);
+  const nextLines = insertHostLine(
+    removed.lines,
+    group,
+    hostLine({ alias, address, port, user, become }),
+  );
+  writeFileSync(inventoryPath, normalizeInventoryText(nextLines));
+
+  return NextResponse.json({
+    ok: true,
+    message: "Хост обновлен.",
+    host: { alias, address, user, port, become, groups: [group] },
+  });
+}
+
+export async function DELETE(request: Request) {
+  const body = await request.json().catch(() => ({}));
+  const alias = typeof body?.alias === "string" ? body.alias.trim() : "";
+  if (!isSafeAlias(alias)) {
+    return NextResponse.json({ ok: false, message: "Укажите корректный alias." }, { status: 400 });
+  }
+
+  const repoRoot = getRepoRoot();
+  const inventoryPath = ensureInventory(repoRoot);
+  const current = readFileSync(inventoryPath, "utf8");
+  const result = removeHostLine(current.split("\n"), alias);
+  if (!result.removed) {
+    return NextResponse.json({ ok: false, message: "Хост не найден в inventory." }, { status: 404 });
+  }
+  writeFileSync(inventoryPath, normalizeInventoryText(result.lines));
+  return NextResponse.json({ ok: true, message: "Хост удален из inventory." });
 }

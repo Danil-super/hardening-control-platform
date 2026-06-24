@@ -11,9 +11,11 @@ export const playbooks = {
   ping: { file: "ping.yml", timeout: 120_000, kind: "audit" },
   collectFacts: { file: "collect-facts.yml", timeout: 240_000, kind: "audit" },
   agentlessAudit: { file: "agentless-audit.yml", timeout: 600_000, kind: "audit" },
+  packageInventory: { file: "package-inventory.yml", timeout: 600_000, kind: "audit" },
   collectEvents: { file: "collect-security-events.yml", timeout: 360_000, kind: "audit" },
   closeDangerousPorts: { file: "close-dangerous-ports.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   closePort: { file: "close-port.yml", timeout: 240_000, kind: "response", requiresLimit: true },
+  updatePackage: { file: "update-package.yml", timeout: 600_000, kind: "response", requiresLimit: true },
   blockIp: { file: "block-ip.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   stopService: { file: "stop-service.yml", timeout: 240_000, kind: "response", requiresLimit: true },
 } as const;
@@ -46,6 +48,10 @@ export function isSafeLimit(value: unknown): value is string {
 
 export function isSafeServiceName(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9_.@:-]{1,96}$/.test(value);
+}
+
+export function isSafePackageName(value: unknown): value is string {
+  return typeof value === "string" && /^[a-zA-Z0-9_.:+-]{1,160}$/.test(value);
 }
 
 export function isSafeIp(value: unknown): value is string {
@@ -83,6 +89,12 @@ export function validateExtraVars(action: PlaybookAction, extraVars: unknown): E
       return { ok: false as const, message: "Укажите корректный IPv4-адрес для блокировки." };
     }
     return { ok: true, values: { block_ip: values.block_ip } };
+  }
+  if (action === "updatePackage") {
+    if (!isSafePackageName(values.package_name)) {
+      return { ok: false as const, message: "Укажите корректное имя пакета." };
+    }
+    return { ok: true, values: { package_name: values.package_name } };
   }
   if (action === "stopService") {
     if (!isSafeServiceName(values.service_name)) {
