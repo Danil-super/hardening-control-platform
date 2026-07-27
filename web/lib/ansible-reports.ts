@@ -40,6 +40,9 @@ type ReportJson = {
   summary?: Partial<Record<"score" | "high" | "medium" | "low" | "info" | "total", number>> & {
     severity?: string;
   };
+  scanner?: {
+    hardeningIndex?: unknown;
+  };
   findings?: Finding[];
   events?: Array<{
     source?: string;
@@ -52,7 +55,7 @@ export function getRepoRoot() {
 }
 
 export function getReportsDir(repoRoot = getRepoRoot()) {
-  return path.join(repoRoot, "ansible", "reports");
+  return process.env.HCP_REPORTS_DIR ? path.resolve(process.env.HCP_REPORTS_DIR) : path.join(repoRoot, "ansible", "reports");
 }
 
 export function reportIdFromFileName(fileName: string) {
@@ -66,20 +69,34 @@ export function fileNameFromReportId(reportId: string) {
   return reportId.endsWith(".json") ? reportId : `${reportId}.json`;
 }
 
-function hostFromFileName(fileName: string, profileId: string | null, mode: string) {
-  if (mode === "events") {
-    return fileName.replace(/-events\.json$/i, "");
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Report files are named `<inventory-alias>-<type>-<run-id>.json`.
+ * The optional run-id keeps reports generated before report history was added
+ * compatible with the current UI.
+ */
+export function targetAliasFromReportFileName(fileName: string, profileId: string | null, mode: string) {
+  const reportId = reportIdFromFileName(fileName);
+  const reportKinds: Record<string, string> = {
+    facts: "facts",
+    events: "events",
+    packages: "packages",
+    vulnerabilities: "vulnerabilities",
+    "ssh-audit": "ssh-audit",
+    nmap: "nmap",
+    lynis: "lynis",
+  };
+  const kind = reportKinds[mode];
+  if (kind) {
+    return reportId.replace(new RegExp(`-${kind}(?:-[a-zA-Z0-9_.:-]+)?$`, "i"), "");
   }
-  if (mode === "packages") {
-    return fileName.replace(/-packages\.json$/i, "");
+  if (profileId) {
+    return reportId.replace(new RegExp(`-${escapeRegExp(profileId)}(?:-[a-zA-Z0-9_.:-]+)?$`, "i"), "");
   }
-  if (mode === "vulnerabilities") {
-    return fileName.replace(/-vulnerabilities\.json$/i, "");
-  }
-  if (profileId && fileName.endsWith(`-${profileId}.json`)) {
-    return fileName.slice(0, -`-${profileId}.json`.length);
-  }
-  return reportIdFromFileName(fileName);
+  return reportId;
 }
 
 function numberOrZero(value: unknown) {
@@ -88,6 +105,17 @@ function numberOrZero(value: unknown) {
 
 function numberOrNull(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function scoreFromReport(parsed: ReportJson, mode: string) {
+  const summaryScore = numberOrNull(parsed.summary?.score);
+  if (summaryScore !== null) {
+    return summaryScore;
+  }
+  // Reports written before the Lynis score normalization still contain the
+  // original value in scanner.hardeningIndex.  Keep report history useful
+  // without requiring users to rerun those audits.
+  return mode === "lynis" ? numberOrNull(parsed.scanner?.hardeningIndex) : null;
 }
 
 function readReportJson(reportPath: string): ReportJson | null {
@@ -117,10 +145,10 @@ function buildReportSummary(fileName: string, fullPath: string): AnsibleReportSu
     path: fullPath,
     createdAt: parsed.createdAt ?? null,
     modifiedAt: stats.mtime.toISOString(),
-    host: parsed.hostname ?? hostFromFileName(fileName, profileId, mode),
+    host: parsed.hostname ?? targetAliasFromReportFileName(fileName, profileId, mode),
     profileId,
     mode,
-    score: numberOrNull(summary.score),
+    score: scoreFromReport(parsed, mode),
     high: numberOrZero(summary.high),
     medium: numberOrZero(summary.medium),
     low: numberOrZero(summary.low),

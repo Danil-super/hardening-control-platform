@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRegisteredPlaybook, runRegisteredPlaybook } from "@/lib/playbook-registry";
+import { customPlaybooksEnabled, getRegisteredPlaybook, runRegisteredPlaybook } from "@/lib/playbook-registry";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,6 +13,9 @@ export async function POST(
   const playbook = getRegisteredPlaybook(decodeURIComponent(playbookId));
   if (!playbook) {
     return NextResponse.json({ ok: false, message: "Playbook не найден." }, { status: 404 });
+  }
+  if (playbook.source === "custom" && !customPlaybooksEnabled()) {
+    return NextResponse.json({ ok: false, message: "Запуск пользовательских playbook отключен в production режиме." }, { status: 403 });
   }
 
   try {

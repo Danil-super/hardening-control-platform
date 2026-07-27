@@ -1,7 +1,9 @@
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
+import { getReportsDir } from "@/lib/ansible-reports";
 
 const execFileAsync = promisify(execFile);
 
@@ -13,6 +15,9 @@ export const playbooks = {
   agentlessAudit: { file: "agentless-audit.yml", timeout: 600_000, kind: "audit" },
   packageInventory: { file: "package-inventory.yml", timeout: 600_000, kind: "audit" },
   collectEvents: { file: "collect-security-events.yml", timeout: 360_000, kind: "audit" },
+  sshCryptoAudit: { file: "ssh-crypto-audit.yml", timeout: 180_000, kind: "audit", requiresLimit: true },
+  networkPortScan: { file: "nmap-scan.yml", timeout: 300_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
+  lynisTemporaryAudit: { file: "lynis-temporary-audit.yml", timeout: 1_200_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   closeDangerousPorts: { file: "close-dangerous-ports.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   closePort: { file: "close-port.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   updatePackage: { file: "update-package.yml", timeout: 600_000, kind: "response", requiresLimit: true },
@@ -21,6 +26,39 @@ export const playbooks = {
 } as const;
 
 export type PlaybookAction = keyof typeof playbooks;
+
+function newReportRunId() {
+  return `run-${new Date().toISOString().replace(/[-:.]/g, "")}-${randomUUID().slice(0, 8)}`;
+}
+
+/** The deterministic id of a report produced by a single-host audit run. */
+export function reportIdForRun({
+  action,
+  profileId,
+  limit,
+  reportRunId,
+}: {
+  action: PlaybookAction;
+  profileId: string;
+  limit?: string;
+  reportRunId: string | null;
+}) {
+  if (!limit || limit.includes(",") || !reportRunId) {
+    return null;
+  }
+
+  const typeByAction: Partial<Record<PlaybookAction, string>> = {
+    collectFacts: "facts",
+    agentlessAudit: profileId,
+    packageInventory: "packages",
+    collectEvents: "events",
+    sshCryptoAudit: "ssh-audit",
+    networkPortScan: "nmap",
+    lynisTemporaryAudit: "lynis",
+  };
+  const type = typeByAction[action];
+  return type ? `${limit}-${type}-${reportRunId}` : null;
+}
 
 export type IncidentRecord = {
   id: string;
@@ -36,6 +74,10 @@ export type IncidentRecord = {
 
 export function getRepoRoot() {
   return path.resolve(process.cwd(), "..");
+}
+
+export function getStateDir(repoRoot = getRepoRoot()) {
+  return process.env.HCP_STATE_DIR ? path.resolve(process.env.HCP_STATE_DIR) : path.join(repoRoot, "ansible");
 }
 
 export function isPlaybookAction(value: unknown): value is PlaybookAction {
@@ -112,7 +154,7 @@ function ensureDir(dirPath: string) {
 }
 
 function getIncidentPath(repoRoot = getRepoRoot()) {
-  return path.join(repoRoot, "ansible", "incidents.json");
+  return path.join(getStateDir(repoRoot), "incidents.json");
 }
 
 export function readIncidents(repoRoot = getRepoRoot()) {
@@ -129,7 +171,7 @@ export function readIncidents(repoRoot = getRepoRoot()) {
 }
 
 export function appendIncident(record: Omit<IncidentRecord, "id" | "createdAt">, repoRoot = getRepoRoot()) {
-  ensureDir(path.join(repoRoot, "ansible"));
+  ensureDir(getStateDir(repoRoot));
   const incidents = readIncidents(repoRoot);
   const createdAt = new Date().toISOString();
   const next: IncidentRecord = {
@@ -139,6 +181,20 @@ export function appendIncident(record: Omit<IncidentRecord, "id" | "createdAt">,
   };
   writeFileSync(getIncidentPath(repoRoot), JSON.stringify([next, ...incidents].slice(0, 300), null, 2));
   return next;
+}
+
+export function removeIncident(incidentId: unknown, repoRoot = getRepoRoot()) {
+  if (typeof incidentId !== "string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(incidentId)) {
+    return false;
+  }
+  const incidents = readIncidents(repoRoot);
+  const remaining = incidents.filter((incident) => incident.id !== incidentId);
+  if (remaining.length === incidents.length) {
+    return false;
+  }
+  ensureDir(getStateDir(repoRoot));
+  writeFileSync(getIncidentPath(repoRoot), JSON.stringify(remaining, null, 2));
+  return true;
 }
 
 export async function runAnsiblePlaybook({
@@ -163,6 +219,13 @@ export async function runAnsiblePlaybook({
   const selected = playbooks[action];
   const playbookPath = path.join(repoRoot, "ansible", "playbooks", selected.file);
   const args = ["-i", inventoryPath, playbookPath, "-e", `audit_profile=${profileId}`];
+  if (process.env.HCP_REPORTS_DIR) {
+    args.push("-e", `hcp_reports_dir=${getReportsDir(repoRoot)}`);
+  }
+  const reportRunId = selected.kind === "audit" && action !== "ping" ? newReportRunId() : null;
+  if (reportRunId) {
+    args.push("-e", `report_run_id=${reportRunId}`);
+  }
   for (const [key, value] of Object.entries(extraVars)) {
     args.push("-e", `${key}=${value}`);
   }
@@ -178,5 +241,5 @@ export async function runAnsiblePlaybook({
     env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
   });
 
-  return { ...result, command, repoRoot };
+  return { ...result, command, repoRoot, reportRunId };
 }

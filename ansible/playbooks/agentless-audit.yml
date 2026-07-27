@@ -5,8 +5,9 @@
   gather_facts: true
 
   vars:
-    agentless_report_dir: "{{ playbook_dir }}/../reports"
+    agentless_report_dir: "{{ hcp_reports_dir | default(playbook_dir ~ '/../reports') }}"
     agentless_rules_file: "{{ playbook_dir }}/../audit-rules/basic-linux.yml"
+    report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
 
   vars_files:
     - ../audit-rules/basic-linux.yml
@@ -73,7 +74,8 @@
             installed = []
             missing = []
             for name in names:
-                code, output, _ = run(["bash", "-lc", f"dpkg-query -W -f='${{Status}}' {name} 2>/dev/null || rpm -q {name} 2>/dev/null"])
+                command = "dpkg-query -W -f='${Status}' " + name + " 2>/dev/null || rpm -q " + name + " 2>/dev/null"
+                code, output, _ = run(["bash", "-lc", command])
                 if code == 0 and output:
                     installed.append(name)
                 else:
@@ -126,6 +128,13 @@
             ))
 
         ssh_config = ""
+        effective_ssh_values = {}
+        sshd_code, sshd_output, _ = run(["sshd", "-T"])
+        if sshd_code == 0:
+            for raw_line in sshd_output.splitlines():
+                parts = raw_line.split(None, 1)
+                if len(parts) == 2:
+                    effective_ssh_values[parts[0].lower()] = parts[1].strip().lower()
         try:
             with open("/etc/ssh/sshd_config", encoding="utf-8", errors="replace") as handle:
                 ssh_config = handle.read()
@@ -142,6 +151,9 @@
             ))
 
         def ssh_value(name):
+            effective_value = effective_ssh_values.get(name.lower())
+            if effective_value is not None:
+                return effective_value
             value = None
             for raw_line in ssh_config.splitlines():
                 line = raw_line.strip()
@@ -419,8 +431,14 @@
             if item["status"] in {"passed", "fixed"}:
                 continue
             summary[item["risk"]] += 1
-            penalty += weights[item["risk"]]
-        summary["score"] = max(0, min(100, 100 - penalty))
+
+        scoreable_findings = [
+            item for item in findings
+            if item["status"] != "manual" and item["risk"] != "info"
+        ]
+        maximum_penalty = sum(weights[item["risk"]] for item in scoreable_findings)
+        penalty = sum(weights[item["risk"]] for item in scoreable_findings if item["status"] == "failed")
+        summary["score"] = 100 if maximum_penalty == 0 else round(100 * (1 - penalty / maximum_penalty))
 
         os_name = "Unknown Linux"
         try:
@@ -434,6 +452,10 @@
 
         created_at = datetime.now(timezone.utc).isoformat()
         print(json.dumps({
+            "schemaVersion": 1,
+            "action": "agentlessAudit",
+            "runId": os.environ.get("REPORT_RUN_ID"),
+            "inventoryHost": os.environ.get("INVENTORY_HOST"),
             "auditId": "agentless_" + profile_id + "_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
             "createdAt": created_at,
             "hostname": socket.gethostname(),
@@ -456,6 +478,8 @@
         executable: /bin/bash
       environment:
         AUDIT_PROFILE: "{{ audit_profile | default('basic_linux') }}"
+        REPORT_RUN_ID: "{{ report_suffix }}"
+        INVENTORY_HOST: "{{ inventory_hostname }}"
         AUDIT_RULES_FILE: "{{ agentless_rules_file }}"
         AUDIT_RULES_JSON: "{{ {
           'audit_rules_version': audit_rules_version,
@@ -471,11 +495,11 @@
     - name: Save agentless JSON report on control node
       ansible.builtin.copy:
         content: "{{ agentless_audit.stdout }}"
-        dest: "{{ agentless_report_dir }}/{{ inventory_hostname }}-{{ audit_profile | default('basic_linux') }}.json"
+        dest: "{{ agentless_report_dir }}/{{ inventory_hostname }}-{{ audit_profile | default('basic_linux') }}-{{ report_suffix }}.json"
         mode: "0644"
       delegate_to: localhost
       become: false
 
     - name: Show report path
       ansible.builtin.debug:
-        msg: "Saved {{ agentless_report_dir }}/{{ inventory_hostname }}-{{ audit_profile | default('basic_linux') }}.json"
+        msg: "Saved {{ agentless_report_dir }}/{{ inventory_hostname }}-{{ audit_profile | default('basic_linux') }}-{{ report_suffix }}.json"

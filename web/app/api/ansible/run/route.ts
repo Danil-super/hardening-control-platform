@@ -5,6 +5,7 @@ import {
   isSafeLimit,
   normalizeProfileId,
   playbooks,
+  reportIdForRun,
   runAnsiblePlaybook,
   validateExtraVars,
 } from "@/lib/ansible-control";
@@ -18,7 +19,7 @@ export async function POST(request: Request) {
   const profileId = normalizeProfileId(body?.profileId);
   const limit = body?.limit;
   const safeLimit = typeof limit === "string" ? limit : undefined;
-  const confirmResponse = body?.confirmResponse === true;
+  const confirmRun = body?.confirmResponse === true;
 
   if (!isPlaybookAction(action)) {
     return NextResponse.json(
@@ -43,30 +44,34 @@ export async function POST(request: Request) {
   }
 
   const selected = playbooks[action];
-  if (selected.kind === "response" && selected.requiresLimit && !safeLimit) {
+  const requiresLimit = "requiresLimit" in selected && selected.requiresLimit === true;
+  const requiresConfirmation = "requiresConfirmation" in selected && selected.requiresConfirmation === true;
+  if (requiresLimit && !safeLimit) {
     return NextResponse.json(
       {
         ok: false,
         error: "limit_required",
-        message: "Для response-playbook выберите конкретный хост или группу в поле Limit.",
+        message: "Выберите конкретный хост или группу в поле Limit.",
       },
       { status: 400 },
     );
   }
 
-  if (selected.kind === "response" && !confirmResponse) {
+  if ((selected.kind === "response" || requiresConfirmation) && !confirmRun) {
     return NextResponse.json(
       {
         ok: false,
         error: "confirmation_required",
-        message: "Response-playbook требует явного подтверждения администратора.",
+        message: selected.kind === "response"
+          ? "Response-playbook требует явного подтверждения администратора."
+          : "Эта проверка требует явного подтверждения администратора.",
       },
       { status: 400 },
     );
   }
 
   try {
-    const { stdout, stderr, command, repoRoot } = await runAnsiblePlaybook({
+    const { stdout, stderr, command, repoRoot, reportRunId } = await runAnsiblePlaybook({
       action,
       profileId,
       limit: safeLimit,
@@ -87,6 +92,8 @@ export async function POST(request: Request) {
       action,
       profileId,
       limit: safeLimit || null,
+      reportRunId,
+      reportId: reportIdForRun({ action, profileId, limit: safeLimit, reportRunId }),
       command,
       stdout,
       stderr,

@@ -1,0 +1,243 @@
+---
+- name: Run Lynis from a temporary directory without installation
+  hosts: linux_hosts
+  gather_facts: false
+  become: true
+
+  vars:
+    scanner_report_dir: "{{ hcp_reports_dir | default(playbook_dir ~ '/../reports') }}"
+    report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
+    lynis_source_dir: "{{ lookup('env', 'HCP_LYNIS_SOURCE_DIR') | default('/usr/share/lynis', true) }}"
+    lynis_executable: "{{ lookup('env', 'HCP_LYNIS_EXECUTABLE') | default('/usr/sbin/lynis', true) }}"
+    lynis_profile: "{{ lookup('env', 'HCP_LYNIS_PROFILE') | default('/etc/lynis/default.prf', true) }}"
+    lynis_plugin_dir: "{{ lookup('env', 'HCP_LYNIS_PLUGIN_DIR') | default('/etc/lynis/plugins', true) }}"
+    lynis_raw_report: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-lynis-{{ report_suffix }}.report.dat"
+
+  tasks:
+    - name: Ensure local report directory exists
+      ansible.builtin.file:
+        path: "{{ scanner_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Check Lynis data on control node
+      ansible.builtin.stat:
+        path: "{{ lynis_source_dir }}/include/functions"
+      delegate_to: localhost
+      become: false
+      register: lynis_data
+
+    - name: Check Lynis executable on control node
+      ansible.builtin.stat:
+        path: "{{ lynis_executable }}"
+      delegate_to: localhost
+      become: false
+      register: lynis_binary
+
+    - name: Check Lynis profile on control node
+      ansible.builtin.stat:
+        path: "{{ lynis_profile }}"
+      delegate_to: localhost
+      become: false
+      register: lynis_profile_file
+
+    - name: Check Lynis plugin directory on control node
+      ansible.builtin.stat:
+        path: "{{ lynis_plugin_dir }}"
+      delegate_to: localhost
+      become: false
+      register: lynis_plugins
+
+    - name: Determine Lynis availability on control node
+      ansible.builtin.set_fact:
+        lynis_available: "{{ lynis_data.stat.exists and lynis_binary.stat.exists and lynis_profile_file.stat.exists and lynis_plugins.stat.isdir }}"
+      delegate_to: localhost
+      become: false
+
+    - name: Write unavailable Lynis report without touching target
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ playbook_dir }}/../scripts/hcp-controller-scan.py"
+          - lynis-unavailable
+          - --inventory-host
+          - "{{ inventory_hostname }}"
+          - --run-id
+          - "{{ report_suffix }}"
+          - --output
+          - "{{ scanner_report_dir }}/{{ inventory_hostname }}-lynis-{{ report_suffix }}.json"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: not (lynis_available | bool)
+
+    - name: Run temporary Lynis audit and always clean target files
+      block:
+        - name: Create temporary Lynis bundle on control node
+          ansible.builtin.tempfile:
+            state: file
+            suffix: .tar.gz
+          delegate_to: localhost
+          become: false
+          register: lynis_bundle
+
+        - name: Pack Lynis data into one transfer artifact
+          ansible.builtin.command:
+            argv:
+              - /bin/tar
+              - -C
+              - "{{ lynis_source_dir }}"
+              - --owner=0
+              - --group=0
+              - -czf
+              - "{{ lynis_bundle.path }}"
+              - .
+          delegate_to: localhost
+          become: false
+          changed_when: false
+
+        - name: Create temporary Lynis directory on target
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: hcp-lynis-
+          register: lynis_remote_dir
+
+        - name: Create temporary Lynis data directory on target
+          ansible.builtin.file:
+            path: "{{ lynis_remote_dir.path }}/lynis"
+            state: directory
+            mode: "0700"
+
+        - name: Transfer one compressed Lynis bundle without installing it
+          ansible.builtin.copy:
+            src: "{{ lynis_bundle.path }}"
+            dest: "{{ lynis_remote_dir.path }}/lynis.tar.gz"
+            mode: "0600"
+
+        - name: Unpack Lynis only in temporary target directory
+          ansible.builtin.unarchive:
+            src: "{{ lynis_remote_dir.path }}/lynis.tar.gz"
+            dest: "{{ lynis_remote_dir.path }}/lynis"
+            remote_src: true
+
+        - name: Transfer Lynis executable without installing it
+          ansible.builtin.copy:
+            src: "{{ lynis_executable }}"
+            dest: "{{ lynis_remote_dir.path }}/lynis/lynis"
+            mode: "0755"
+
+        - name: Transfer Lynis profile without installing it
+          ansible.builtin.copy:
+            src: "{{ lynis_profile }}"
+            dest: "{{ lynis_remote_dir.path }}/lynis/default.prf"
+            mode: "0644"
+
+        - name: Transfer Lynis plugin directory without installing it
+          ansible.builtin.copy:
+            src: "{{ lynis_plugin_dir }}/"
+            dest: "{{ lynis_remote_dir.path }}/lynis/plugins/"
+            mode: "0644"
+
+        - name: Check that no other Lynis instance is active
+          ansible.builtin.stat:
+            path: /run/lynis.pid
+          register: lynis_pid_before
+
+        - name: Refuse to replace another Lynis run
+          ansible.builtin.assert:
+            that: not lynis_pid_before.stat.exists
+            fail_msg: "На хосте уже существует /run/lynis.pid; временный аудит не запущен, чтобы не затронуть другой процесс Lynis."
+
+        - name: Execute Lynis from temporary directory
+          ansible.builtin.command:
+            argv:
+              - "{{ lynis_remote_dir.path }}/lynis/lynis"
+              - audit
+              - system
+              - --usecwd
+              - --profile
+              - "{{ lynis_remote_dir.path }}/lynis/default.prf"
+              - --no-plugins
+              - --quick
+              - --no-colors
+              - --no-log
+              - --report-file
+              - "{{ lynis_remote_dir.path }}/report.dat"
+          args:
+            chdir: "{{ lynis_remote_dir.path }}/lynis"
+          changed_when: false
+          failed_when: false
+          no_log: true
+          register: lynis_run
+
+        - name: Check temporary Lynis report
+          ansible.builtin.stat:
+            path: "{{ lynis_remote_dir.path }}/report.dat"
+          register: lynis_report_file
+
+        - name: Read temporary Lynis report
+          ansible.builtin.slurp:
+            src: "{{ lynis_remote_dir.path }}/report.dat"
+          when: lynis_report_file.stat.exists
+          no_log: true
+          register: lynis_report_content
+
+        - name: Store transient raw Lynis report on control node
+          ansible.builtin.copy:
+            content: "{{ (lynis_report_content.content | default('')) | b64decode }}"
+            dest: "{{ lynis_raw_report }}"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
+        - name: Normalize Lynis report on control node
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ playbook_dir }}/../scripts/hcp-controller-scan.py"
+              - lynis-report
+              - --input
+              - "{{ lynis_raw_report }}"
+              - --inventory-host
+              - "{{ inventory_hostname }}"
+              - --run-id
+              - "{{ report_suffix }}"
+              - --exit-code
+              - "{{ lynis_run.rc | default(1) | string }}"
+              - --output
+              - "{{ scanner_report_dir }}/{{ inventory_hostname }}-lynis-{{ report_suffix }}.json"
+          delegate_to: localhost
+          become: false
+          changed_when: false
+      always:
+        - name: Remove temporary Lynis directory from target
+          ansible.builtin.file:
+            path: "{{ lynis_remote_dir.path }}"
+            state: absent
+          when: lynis_remote_dir is defined and lynis_remote_dir.path is defined
+
+        - name: Remove PID file created by temporary Lynis run
+          ansible.builtin.file:
+            path: /run/lynis.pid
+            state: absent
+          when: lynis_pid_before is defined and not lynis_pid_before.stat.exists
+
+        - name: Remove transient raw Lynis report from control node
+          ansible.builtin.file:
+            path: "{{ lynis_raw_report }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+
+        - name: Remove temporary Lynis bundle from control node
+          ansible.builtin.file:
+            path: "{{ lynis_bundle.path }}"
+            state: absent
+          when: lynis_bundle is defined and lynis_bundle.path is defined
+          delegate_to: localhost
+          become: false
+      when: lynis_available | bool

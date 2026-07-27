@@ -30,6 +30,8 @@ type RunPayload = {
   message?: string;
   stdout?: string;
   stderr?: string;
+  reportRunId?: string | null;
+  reportId?: string | null;
 };
 
 type ManagedHost = {
@@ -39,6 +41,7 @@ type ManagedHost = {
   port: number;
   become: boolean | null;
   groups: string[];
+  reportCount: number;
   lastReport: {
     fileName: string;
     createdAt: string | null;
@@ -98,6 +101,9 @@ const auditActions = [
   { id: "agentlessAudit", label: "Аудит", icon: ShieldCheck },
   { id: "packageInventory", label: "CVE пакеты", icon: FileText },
   { id: "collectEvents", label: "События", icon: Terminal },
+  { id: "sshCryptoAudit", label: "SSH crypto", icon: ShieldCheck },
+  { id: "networkPortScan", label: "Порты", icon: Search, requiresConfirmation: true },
+  { id: "lynisTemporaryAudit", label: "Lynis временно", icon: ShieldCheck, requiresConfirmation: true },
 ] as const;
 
 const responseActions = [
@@ -330,7 +336,16 @@ export function AnsibleControlClient() {
     }
 
     const isResponse = responseActions.some((item) => item.id === action);
-    if (isResponse && !window.confirm("Запустить response-playbook на выбранном хосте?")) {
+    const actionMeta = auditActions.find((item) => item.id === action);
+    const requiresConfirmation = isResponse || Boolean(
+      actionMeta && "requiresConfirmation" in actionMeta && actionMeta.requiresConfirmation === true,
+    );
+    const confirmationText = action === "lynisTemporaryAudit"
+      ? "Lynis будет временно передан на выбранную ВМ, выполнен с sudo, а его каталог и сырой отчет будут удалены. Продолжить?"
+      : action === "networkPortScan"
+        ? "Nmap выполнит сетевую проверку top-100 TCP-портов выбранного хоста с control node. Продолжить?"
+        : "Запустить response-playbook на выбранном хосте?";
+    if (requiresConfirmation && !window.confirm(confirmationText)) {
       return;
     }
 
@@ -356,18 +371,18 @@ export function AnsibleControlClient() {
           action,
           profileId,
           limit: selectedAlias,
-          confirmResponse: isResponse,
+          confirmResponse: requiresConfirmation,
           extraVars,
         }),
       });
       const payload = await response.json();
       setRunResult(payload);
-      let nextHosts = await loadHosts();
+      await loadHosts();
       if (payload.ok && action === "packageInventory") {
         const cveResponse = await fetch("/api/ansible/vulnerabilities/check", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hostAlias: selectedAlias }),
+          body: JSON.stringify({ hostAlias: selectedAlias, reportId: payload.reportId }),
         });
         const cvePayload = await cveResponse.json();
         setRunResult({
@@ -379,16 +394,13 @@ export function AnsibleControlClient() {
           stdout: payload.stdout,
           stderr: payload.stderr,
         });
-        nextHosts = await loadHosts();
+        await loadHosts();
         if (cvePayload.ok && cvePayload.reportId) {
           setFreshReportHref(`/reports/agentless/${encodeURIComponent(cvePayload.reportId)}`);
         }
       }
-      if (payload.ok && action === "agentlessAudit") {
-        const report = nextHosts.hosts?.find((host) => host.alias === selectedAlias)?.lastReport;
-        if (report) {
-          setFreshReportHref(reportHref(report.fileName));
-        }
+      if (payload.ok && action !== "packageInventory" && payload.reportId) {
+        setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.reportId)}`);
       }
     } finally {
       setLoading("");
@@ -418,13 +430,13 @@ export function AnsibleControlClient() {
       </section>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
-        <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-[140px_180px_130px_90px_140px_110px_110px_110px_110px_100px]">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
           <Field label="Alias" value={manualAlias} onChange={setManualAlias} placeholder="web-01" />
           <Field label="IP/host" value={manualAddress} onChange={setManualAddress} placeholder="192.168.1.10" />
           <Field label="SSH user" value={manualUser} onChange={setManualUser} placeholder="danil" />
           <Field label="Port" value={manualPort} onChange={setManualPort} placeholder="22" />
           <Field label="Group" value={manualGroup} onChange={setManualGroup} placeholder="linux_hosts" />
-          <label className="flex h-10 items-center gap-2 self-end rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-200">
+          <label className="flex h-10 min-w-0 items-center gap-2 self-end rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-200">
             <input
               type="checkbox"
               checked={manualBecome}
@@ -433,18 +445,18 @@ export function AnsibleControlClient() {
             />
             sudo
           </label>
-          <Button variant="secondary" onClick={checkPreflight} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="self-end">
+          <Button variant="secondary" onClick={checkPreflight} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="w-full self-end">
             <CheckCircle2 size={16} className={loading === "preflight" ? "animate-spin" : ""} aria-hidden="true" />
             Проверить
           </Button>
-          <Button onClick={addManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="self-end">
+          <Button onClick={addManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="w-full self-end">
             <Plus size={16} aria-hidden="true" />
             Сохранить
           </Button>
-          <Button variant="secondary" onClick={updateManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="self-end">
+          <Button variant="secondary" onClick={updateManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="w-full self-end">
             Изменить
           </Button>
-          <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || !selectedAlias} className="self-end">
+          <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || !selectedAlias} className="w-full self-end">
             Удалить
           </Button>
         </div>
@@ -577,9 +589,12 @@ export function AnsibleControlClient() {
                         </Button>
                         {host.lastReport ? (
                           <LinkButton href={reportHref(host.lastReport.fileName)} variant="secondary">
-                            Отчет
+                            Последний аудит
                           </LinkButton>
                         ) : null}
+                        <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host.alias)}`} variant="secondary">
+                          История ({host.reportCount})
+                        </LinkButton>
                       </div>
                     </td>
                   </tr>
@@ -592,7 +607,7 @@ export function AnsibleControlClient() {
         )}
       </section>
 
-      <section className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+      <section className="grid gap-5">
         <div id="ansible-actions" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -615,7 +630,7 @@ export function AnsibleControlClient() {
           </div>
 
           <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <div className="grid gap-3 md:grid-cols-5">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
               <Field label="Порт" value={targetPort} onChange={setTargetPort} placeholder="23" />
               <label className="block">
                 <span className="text-xs font-semibold uppercase text-slate-500">Протокол</span>
@@ -661,7 +676,7 @@ export function AnsibleControlClient() {
                   </LinkButton>
                 ) : null}
               </div>
-              <pre className="max-h-64 overflow-auto rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+              <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
 {`${runResult.stdout ?? ""}${runResult.stderr ? `\n\nSTDERR:\n${runResult.stderr}` : ""}`}
               </pre>
             </div>
@@ -726,7 +741,7 @@ function Field({
   placeholder?: string;
 }) {
   return (
-    <label className="block">
+    <label className="block min-w-0">
       <span className="text-xs font-semibold uppercase text-slate-500">{label}</span>
       <input
         value={value}

@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
 import {
   appendIncident,
-  getRepoRoot,
+  getStateDir,
   isPlaybookAction,
   isSafeLimit,
   normalizeProfileId,
@@ -45,7 +45,7 @@ type SchedulerGlobal = typeof globalThis & {
 };
 
 function getSchedulerPath() {
-  return path.join(getRepoRoot(), "ansible", "scheduler.json");
+  return path.join(getStateDir(), "scheduler.json");
 }
 
 function readSavedState() {
@@ -61,6 +61,7 @@ function readSavedState() {
 }
 
 function writeSavedState(state: SchedulerState) {
+  mkdirSync(path.dirname(getSchedulerPath()), { recursive: true });
   writeFileSync(getSchedulerPath(), JSON.stringify(state, null, 2));
 }
 

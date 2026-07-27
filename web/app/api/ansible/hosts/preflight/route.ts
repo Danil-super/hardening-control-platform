@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -64,9 +64,11 @@ export async function POST(request: Request) {
 
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "hcp-inventory-"));
   const inventoryPath = path.join(tmpDir, "inventory.ini");
+  const sshKeyPath = process.env.HCP_SSH_PRIVATE_KEY_PATH ?? path.join(os.homedir(), ".ssh", "hcp-control");
+  const sshKeyOption = existsSync(sshKeyPath) ? ` ansible_ssh_private_key_file=${sshKeyPath}` : "";
   writeFileSync(
     inventoryPath,
-    `[preflight]\n${alias} ansible_host=${address} ansible_port=${port} ansible_user=${user} ansible_become=${become ? "true" : "false"} ansible_python_interpreter=/usr/bin/python3\n`,
+    `[preflight]\n${alias} ansible_host=${address} ansible_port=${port} ansible_user=${user} ansible_become=${become ? "true" : "false"} ansible_python_interpreter=/usr/bin/python3${sshKeyOption}\n`,
   );
 
   try {

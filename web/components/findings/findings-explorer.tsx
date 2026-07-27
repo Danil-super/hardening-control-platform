@@ -17,6 +17,9 @@ const riskFilterLabels: Record<RiskLevel | "all", string> = {
 const sourceLabels: Record<Finding["source"], string> = {
   agentless: "Ansible SSH",
   custom: "Ansible SSH",
+  ssh_audit: "ssh-audit · control node",
+  nmap: "Nmap · control node",
+  lynis: "Lynis · временный запуск",
 };
 
 export function FindingsExplorer({
@@ -142,26 +145,34 @@ export function FindingsExplorer({
 
       <div className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[860px] border-collapse text-left text-sm">
+          <table className="w-full min-w-[820px] table-fixed border-collapse text-left text-sm">
+            <colgroup>
+              <col className="w-[46%]" />
+              <col className="w-[9%]" />
+              <col className="w-[13%]" />
+              <col className="w-[11%]" />
+              <col className="w-[10%]" />
+              <col className="w-[11%]" />
+            </colgroup>
             <thead className="border-b border-slate-800 bg-slate-900/80 text-xs uppercase text-slate-400">
               <tr>
-                <th className="px-4 py-3">Проблема</th>
-                <th className="px-4 py-3">Риск</th>
-                <th className="px-4 py-3">Категория</th>
-                <th className="px-4 py-3">Статус</th>
-                <th className="px-4 py-3">Источник</th>
-                <th className="px-4 py-3">Исправление</th>
+                <th className="px-3 py-3">Проблема</th>
+                <th className="px-3 py-3">Риск</th>
+                <th className="px-3 py-3">Категория</th>
+                <th className="px-3 py-3">Статус</th>
+                <th className="px-3 py-3">Источник</th>
+                <th className="px-3 py-3">Исправление</th>
               </tr>
             </thead>
             <tbody>
               {filteredFindings.length ? filteredFindings.map((finding) => (
                 <tr key={finding.id} className="border-b border-slate-900 align-top last:border-b-0">
-                  <td className="px-4 py-4">
+                  <td className="px-3 py-3">
                     <p className="font-semibold text-white">{finding.title}</p>
                     <p className="mt-1 max-w-xl leading-6 text-slate-400">{finding.description}</p>
                     <p className="mt-2 text-slate-300">{finding.recommendation}</p>
                     {finding.evidence ? (
-                      <pre className="mt-3 max-h-32 overflow-auto rounded-md border border-slate-800 bg-slate-900/80 p-3 text-xs leading-5 text-slate-300">
+                      <pre className="mt-3 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border border-slate-800 bg-slate-900/80 p-3 text-xs leading-5 text-slate-300">
                         {finding.evidence}
                       </pre>
                     ) : null}
@@ -171,11 +182,11 @@ export function FindingsExplorer({
                       </p>
                     ) : null}
                   </td>
-                  <td className="px-4 py-4"><RiskBadge risk={finding.risk} /></td>
-                  <td className="px-4 py-4 text-slate-300">{finding.category}</td>
-                  <td className="px-4 py-4"><StatusBadge status={finding.status} /></td>
-                  <td className="px-4 py-4 text-slate-300">{sourceLabels[finding.source]}</td>
-                  <td className="px-4 py-4 text-slate-300">
+                  <td className="px-3 py-3"><RiskBadge risk={finding.risk} /></td>
+                  <td className="break-words px-3 py-3 text-slate-300">{finding.category}</td>
+                  <td className="px-3 py-3"><StatusBadge status={finding.status} /></td>
+                  <td className="break-words px-3 py-3 text-slate-300">{sourceLabels[finding.source]}</td>
+                  <td className="break-words px-3 py-3 text-slate-300">
                     {remediationRequest(finding) && hostAlias ? (
                       <Button
                         variant="secondary"
@@ -189,7 +200,7 @@ export function FindingsExplorer({
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-slate-400">
+                  <td colSpan={6} className="px-3 py-6 text-center text-slate-400">
                     Для выбранных фильтров находок нет.
                   </td>
                 </tr>

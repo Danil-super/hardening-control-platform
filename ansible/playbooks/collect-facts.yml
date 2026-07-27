@@ -5,7 +5,8 @@
   gather_facts: true
 
   vars:
-    facts_report_dir: "{{ playbook_dir }}/../reports"
+    facts_report_dir: "{{ hcp_reports_dir | default(playbook_dir ~ '/../reports') }}"
+    report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
 
   tasks:
     - name: Ensure local report directory exists
@@ -20,12 +21,17 @@
     - name: Save selected facts on control node
       ansible.builtin.copy:
         content: "{{ fact_payload | to_nice_json }}"
-        dest: "{{ facts_report_dir }}/{{ inventory_hostname }}-facts.json"
+        dest: "{{ facts_report_dir }}/{{ inventory_hostname }}-facts-{{ report_suffix }}.json"
         mode: "0644"
       delegate_to: localhost
       become: false
       vars:
         fact_payload:
+          schemaVersion: 1
+          action: "collectFacts"
+          runId: "{{ report_suffix }}"
+          profileId: "facts"
+          mode: "facts"
           createdAt: "{{ ansible_date_time.iso8601 }}"
           hostname: "{{ ansible_hostname | default(inventory_hostname) }}"
           inventoryHost: "{{ inventory_hostname }}"
@@ -41,4 +47,4 @@
 
     - name: Show facts report path
       ansible.builtin.debug:
-        msg: "Saved {{ facts_report_dir }}/{{ inventory_hostname }}-facts.json"
+        msg: "Saved {{ facts_report_dir }}/{{ inventory_hostname }}-facts-{{ report_suffix }}.json"

@@ -1,0 +1,37 @@
+---
+- name: Run central Nmap service discovery
+  hosts: linux_hosts
+  gather_facts: false
+  become: false
+
+  vars:
+    scanner_report_dir: "{{ hcp_reports_dir | default(playbook_dir ~ '/../reports') }}"
+    report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
+
+  tasks:
+    - name: Ensure local report directory exists
+      ansible.builtin.file:
+        path: "{{ scanner_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Run Nmap from control node against selected host
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ playbook_dir }}/../scripts/hcp-controller-scan.py"
+          - nmap
+          - --host
+          - "{{ ansible_host | default(inventory_hostname) }}"
+          - --inventory-host
+          - "{{ inventory_hostname }}"
+          - --run-id
+          - "{{ report_suffix }}"
+          - --output
+          - "{{ scanner_report_dir }}/{{ inventory_hostname }}-nmap-{{ report_suffix }}.json"
+      delegate_to: localhost
+      become: false
+      changed_when: false

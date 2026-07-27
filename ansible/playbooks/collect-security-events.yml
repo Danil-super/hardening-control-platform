@@ -5,7 +5,8 @@
   gather_facts: false
 
   vars:
-    events_report_dir: "{{ playbook_dir }}/../reports"
+    events_report_dir: "{{ hcp_reports_dir | default(playbook_dir ~ '/../reports') }}"
+    report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
 
   tasks:
     - name: Ensure local report directory exists
@@ -21,6 +22,8 @@
       ansible.builtin.shell: |
         python3 - <<'PY'
         import json
+        import os
+        import socket
         import subprocess
         from datetime import datetime, timezone
 
@@ -41,7 +44,12 @@
 
         severity = "high" if any(event["source"].startswith("suricata") for event in events) else "medium" if events else "info"
         print(json.dumps({
+            "schemaVersion": 1,
+            "action": "collectEvents",
+            "runId": os.environ.get("REPORT_RUN_ID"),
+            "inventoryHost": os.environ.get("INVENTORY_HOST"),
             "createdAt": datetime.now(timezone.utc).isoformat(),
+            "hostname": socket.gethostname(),
             "mode": "events",
             "summary": {
                 "total": len(events),
@@ -53,17 +61,20 @@
         PY
       args:
         executable: /bin/bash
+      environment:
+        REPORT_RUN_ID: "{{ report_suffix }}"
+        INVENTORY_HOST: "{{ inventory_hostname }}"
       changed_when: false
       register: security_events
 
     - name: Save security event report on control node
       ansible.builtin.copy:
         content: "{{ security_events.stdout }}"
-        dest: "{{ events_report_dir }}/{{ inventory_hostname }}-events.json"
+        dest: "{{ events_report_dir }}/{{ inventory_hostname }}-events-{{ report_suffix }}.json"
         mode: "0644"
       delegate_to: localhost
       become: false
 
     - name: Show events report path
       ansible.builtin.debug:
-        msg: "Saved {{ events_report_dir }}/{{ inventory_hostname }}-events.json"
+        msg: "Saved {{ events_report_dir }}/{{ inventory_hostname }}-events-{{ report_suffix }}.json"

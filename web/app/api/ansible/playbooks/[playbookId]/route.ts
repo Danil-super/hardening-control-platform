@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import {
   deleteCustomPlaybook,
+  customPlaybooksEnabled,
   getRegisteredPlaybook,
   readPlaybookContent,
   updateCustomPlaybook,
@@ -19,6 +20,9 @@ export async function GET(
   if (!playbook) {
     return NextResponse.json({ ok: false, message: "Playbook не найден." }, { status: 404 });
   }
+  if (playbook.source === "custom" && !customPlaybooksEnabled()) {
+    return NextResponse.json({ ok: false, message: "Пользовательские playbook отключены в production режиме." }, { status: 403 });
+  }
 
   return NextResponse.json({
     ok: true,
@@ -36,6 +40,9 @@ export async function PUT(
   const playbook = getRegisteredPlaybook(decodeURIComponent(playbookId));
   if (!playbook) {
     return NextResponse.json({ ok: false, message: "Playbook не найден." }, { status: 404 });
+  }
+  if (playbook.source === "custom" && !customPlaybooksEnabled()) {
+    return NextResponse.json({ ok: false, message: "Пользовательские playbook отключены в production режиме." }, { status: 403 });
   }
 
   try {

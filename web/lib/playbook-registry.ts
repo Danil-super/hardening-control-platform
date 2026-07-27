@@ -33,12 +33,20 @@ type PlaybookMeta = Omit<RegisteredPlaybook, "source" | "file" | "timeout"> & {
 
 export const customPlaybookDir = path.join("ansible", "playbooks", "custom");
 
+/** Browser-authored YAML must not be executable on a production control node. */
+export function customPlaybooksEnabled() {
+  return process.env.HCP_PRODUCTION_MODE !== "true";
+}
+
 const builtinTitles: Record<string, string> = {
   ping: "Ping",
   collectFacts: "Сбор фактов",
   agentlessAudit: "SSH-аудит Ansible",
   packageInventory: "Инвентарь пакетов",
   collectEvents: "Сбор событий",
+  sshCryptoAudit: "SSH crypto-аудит (control node)",
+  networkPortScan: "Nmap: top-100 TCP-портов (control node)",
+  lynisTemporaryAudit: "Lynis: временный аудит без установки",
   closeDangerousPorts: "Закрыть опасные порты",
   closePort: "Закрыть порт",
   updatePackage: "Обновить пакет",
@@ -197,6 +205,10 @@ export function listRegisteredPlaybooks(repoRoot = getRepoRoot()): RegisteredPla
     timeout: config.timeout,
     variables: builtinVariables[id] ?? [],
   }));
+
+  if (!customPlaybooksEnabled()) {
+    return builtin;
+  }
 
   const customDir = path.join(repoRoot, customPlaybookDir);
   const custom = existsSync(customDir)

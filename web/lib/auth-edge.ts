@@ -21,14 +21,19 @@ export function hasTrustedOrigin(request: {
   headers: Headers;
   nextUrl: { origin: string };
 }) {
+  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
+  const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const expectedOrigin = host
+    ? `${forwardedProtocol ?? new URL(request.nextUrl.origin).protocol.replace(/:$/, "")}://${host}`
+    : request.nextUrl.origin;
   const origin = request.headers.get("origin");
   const referer = request.headers.get("referer");
   if (origin) {
-    return origin === request.nextUrl.origin;
+    return origin === expectedOrigin;
   }
   if (referer) {
     try {
-      return new URL(referer).origin === request.nextUrl.origin;
+      return new URL(referer).origin === expectedOrigin;
     } catch {
       return false;
     }

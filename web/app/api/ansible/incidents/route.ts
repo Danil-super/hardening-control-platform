@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { readIncidents } from "@/lib/ansible-control";
+import { readIncidents, removeIncident } from "@/lib/ansible-control";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,4 +21,15 @@ export async function GET() {
     incidents,
     summary,
   });
+}
+
+export async function DELETE(request: Request) {
+  const body = await request.json().catch(() => ({}));
+  if (!removeIncident(body?.id)) {
+    return NextResponse.json(
+      { ok: false, error: "incident_not_found", message: "Запись истории не найдена или имеет некорректный идентификатор." },
+      { status: 404 },
+    );
+  }
+  return NextResponse.json({ ok: true });
 }

@@ -2,7 +2,7 @@ export type RiskLevel = "high" | "medium" | "low" | "info";
 
 export type FindingStatus = "failed" | "passed" | "fixed" | "manual";
 
-export type FindingSource = "agentless" | "custom";
+export type FindingSource = "agentless" | "custom" | "ssh_audit" | "nmap" | "lynis";
 
 export type Finding = {
   id: string;

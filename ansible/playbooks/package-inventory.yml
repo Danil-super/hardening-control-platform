@@ -5,7 +5,8 @@
   gather_facts: true
 
   vars:
-    package_report_dir: "{{ playbook_dir }}/../reports"
+    package_report_dir: "{{ hcp_reports_dir | default(playbook_dir ~ '/../reports') }}"
+    report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
 
   tasks:
     - name: Ensure local report directory exists
@@ -47,18 +48,22 @@
             return data
 
         def debian_packages():
-            code, output, error = run(["dpkg-query", "-W", "-f=${binary:Package}\t${Version}\t${Architecture}\n"])
+            code, output, error = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${binary:Package}\t${Version}\t${Architecture}\n"])
             packages = []
             if code != 0:
                 return packages, error
             for line in output.splitlines():
                 parts = line.split("\t")
-                if len(parts) < 2:
+                # Do not report packages that were removed but still have a
+                # residual dpkg record (for example, "rc").  Those packages
+                # are not executable code on the managed host and would
+                # otherwise create false CVE findings.
+                if len(parts) < 3 or not parts[0].startswith("ii"):
                     continue
                 packages.append({
-                    "name": parts[0],
-                    "version": parts[1],
-                    "arch": parts[2] if len(parts) > 2 else "",
+                    "name": parts[1],
+                    "version": parts[2],
+                    "arch": parts[3] if len(parts) > 3 else "",
                     "manager": "dpkg",
                 })
             return packages, ""
@@ -87,6 +92,10 @@
 
         created_at = datetime.now(timezone.utc).isoformat()
         print(json.dumps({
+            "schemaVersion": 1,
+            "action": "packageInventory",
+            "runId": os.environ.get("REPORT_RUN_ID"),
+            "inventoryHost": os.environ.get("INVENTORY_HOST"),
             "auditId": "packages_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
             "createdAt": created_at,
             "hostname": socket.gethostname(),
@@ -113,17 +122,20 @@
         PY
       args:
         executable: /bin/bash
+      environment:
+        REPORT_RUN_ID: "{{ report_suffix }}"
+        INVENTORY_HOST: "{{ inventory_hostname }}"
       changed_when: false
       register: package_inventory
 
     - name: Save package inventory on control node
       ansible.builtin.copy:
         content: "{{ package_inventory.stdout }}"
-        dest: "{{ package_report_dir }}/{{ inventory_hostname }}-packages.json"
+        dest: "{{ package_report_dir }}/{{ inventory_hostname }}-packages-{{ report_suffix }}.json"
         mode: "0644"
       delegate_to: localhost
       become: false
 
     - name: Show report path
       ansible.builtin.debug:
-        msg: "Saved {{ package_report_dir }}/{{ inventory_hostname }}-packages.json"
+        msg: "Saved {{ package_report_dir }}/{{ inventory_hostname }}-packages-{{ report_suffix }}.json"

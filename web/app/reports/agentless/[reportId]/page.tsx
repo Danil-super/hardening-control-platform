@@ -3,7 +3,7 @@ import { AlertTriangle, Download, FileText, ListChecks, Server, ShieldCheck } fr
 import { FindingsExplorer } from "@/components/findings/findings-explorer";
 import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
-import { readAnsibleReport } from "@/lib/ansible-reports";
+import { readAnsibleReport, targetAliasFromReportFileName } from "@/lib/ansible-reports";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,20 +16,23 @@ function formatDate(value: string | null | undefined) {
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
 }
 
-function targetAliasFromReport(fileName: string, profileId: string | null, mode: string) {
-  if (mode === "events") {
-    return fileName.replace(/-events\.json$/i, "");
-  }
-  if (mode === "packages") {
-    return fileName.replace(/-packages\.json$/i, "");
-  }
-  if (mode === "vulnerabilities") {
-    return fileName.replace(/-vulnerabilities\.json$/i, "");
-  }
-  if (profileId && fileName.endsWith(`-${profileId}.json`)) {
-    return fileName.slice(0, -`-${profileId}.json`.length);
-  }
-  return fileName.replace(/\.json$/i, "");
+function reportModeTitle(mode: string) {
+  if (mode === "facts") return "Сведения о хосте Ansible";
+  if (mode === "packages") return "Инвентаризация пакетов";
+  if (mode === "vulnerabilities") return "CVE-аудит пакетов";
+  if (mode === "events") return "Отчет по событиям безопасности";
+  if (mode === "ssh-audit") return "SSH crypto-аудит с control node";
+  if (mode === "nmap") return "Nmap: сетевой аудит с control node";
+  if (mode === "lynis") return "Lynis: временный аудит без установки";
+  return "SSH-аудит Ansible";
+}
+
+function asRecord(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function textValue(value: unknown) {
+  return typeof value === "string" || typeof value === "number" ? String(value) : "нет данных";
 }
 
 export default async function AgentlessReportDetailPage({
@@ -43,7 +46,10 @@ export default async function AgentlessReportDetailPage({
   if (!report) {
     notFound();
   }
-  const targetAlias = targetAliasFromReport(report.fileName, report.profileId, report.mode);
+  const targetAlias = targetAliasFromReportFileName(report.fileName, report.profileId, report.mode);
+  const raw = asRecord(report.raw);
+  const packageInventory = asRecord(raw.packageInventory);
+  const isLynisReport = report.mode === "lynis";
 
   return (
     <div className="space-y-6">
@@ -51,12 +57,12 @@ export default async function AgentlessReportDetailPage({
         <div>
           <h1 className="text-3xl font-semibold text-white">{report.host}</h1>
           <p className="mt-2 max-w-3xl text-slate-400">
-            {report.mode === "events" ? "Отчет по событиям безопасности" : "SSH-аудит Ansible"} ·{" "}
+            {reportModeTitle(report.mode)} ·{" "}
             {formatDate(report.createdAt ?? report.modifiedAt)}
           </p>
         </div>
         <div className="flex flex-wrap gap-3">
-          <LinkButton href="/reports/agentless" variant="secondary">Все отчеты</LinkButton>
+          <LinkButton href={`/reports/agentless?host=${encodeURIComponent(targetAlias)}`} variant="secondary">История хоста</LinkButton>
           <LinkButton href={`/api/ansible/reports/${encodeURIComponent(report.id)}`} variant="secondary">
             <Download size={16} aria-hidden="true" />
             JSON
@@ -87,12 +93,42 @@ export default async function AgentlessReportDetailPage({
       </section>
 
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <SummaryCard label="Оценка" value={report.score === null ? "нет" : `${report.score}%`} detail="По активным рискам" icon={<ShieldCheck size={18} />} />
+        <SummaryCard
+          label={isLynisReport ? "Индекс Lynis" : "Оценка"}
+          value={report.score === null ? "нет" : `${report.score}%`}
+          detail={isLynisReport ? "Hardening index Lynis, не процент соответствия" : "По активным рискам"}
+          icon={<ShieldCheck size={18} />}
+        />
         <SummaryCard label="Высокий" value={report.high} detail="Срочный приоритет" icon={<AlertTriangle size={18} />} />
         <SummaryCard label="Средний" value={report.medium} detail="Плановое действие" icon={<FileText size={18} />} />
         <SummaryCard label="Findings" value={report.findingsCount} detail="Проверки аудита" icon={<Server size={18} />} />
         <SummaryCard label="Events" value={report.eventsCount} detail="События безопасности" icon={<ListChecks size={18} />} />
       </div>
+
+      {report.mode === "facts" ? (
+        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <h2 className="text-xl font-semibold text-white">Собранные сведения</h2>
+          <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+            <div><p className="text-slate-500">Ядро</p><p className="mt-1 text-slate-200">{textValue(raw.kernel)}</p></div>
+            <div><p className="text-slate-500">Архитектура</p><p className="mt-1 text-slate-200">{textValue(raw.architecture)}</p></div>
+            <div><p className="text-slate-500">Память</p><p className="mt-1 text-slate-200">{textValue(raw.memoryMb)} MB</p></div>
+            <div><p className="text-slate-500">vCPU</p><p className="mt-1 text-slate-200">{textValue(raw.processorCount)}</p></div>
+            <div><p className="text-slate-500">Виртуализация</p><p className="mt-1 text-slate-200">{textValue(raw.virtualizationType)}</p></div>
+            <div><p className="text-slate-500">Интерфейсы</p><p className="mt-1 break-words text-slate-200">{Array.isArray(raw.interfaces) ? raw.interfaces.join(", ") : "нет данных"}</p></div>
+          </div>
+        </section>
+      ) : null}
+
+      {report.mode === "packages" ? (
+        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <h2 className="text-xl font-semibold text-white">Инвентарь пакетов</h2>
+          <div className="mt-4 grid gap-4 text-sm sm:grid-cols-3">
+            <div><p className="text-slate-500">Пакетов найдено</p><p className="mt-1 text-2xl font-semibold text-white">{textValue(packageInventory.packageCount)}</p></div>
+            <div><p className="text-slate-500">Менеджер</p><p className="mt-1 text-slate-200">{textValue(packageInventory.manager)}</p></div>
+            <div><p className="text-slate-500">CVE</p><p className="mt-1 text-slate-200">Запустите «CVE пакеты» для проверки через OSV.</p></div>
+          </div>
+        </section>
+      ) : null}
 
       {report.findings.length ? (
         <FindingsExplorer

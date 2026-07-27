@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { NextResponse } from "next/server";
+import { getReportsDir } from "@/lib/ansible-reports";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -14,6 +15,7 @@ type InventoryHost = {
   groups: string[];
   raw: string;
   lastReport: HostReport | null;
+  reportCount: number;
 };
 
 type HostReport = {
@@ -21,6 +23,7 @@ type HostReport = {
   fileName: string;
   createdAt: string | null;
   profileId: string | null;
+  mode: string;
   score: number | null;
   high: number;
   medium: number;
@@ -128,6 +131,7 @@ function readInventoryHosts(inventoryPath: string) {
       groups: [currentGroup],
       raw: line,
       lastReport: null,
+      reportCount: 0,
     });
   }
 
@@ -221,6 +225,7 @@ function readReport(reportPath: string): HostReport | null {
     const content = JSON.parse(readFileSync(reportPath, "utf8")) as {
       createdAt?: string;
       profileId?: string;
+      mode?: string;
       summary?: Partial<Record<"score" | "high" | "medium" | "low" | "info", number>>;
     };
     const summary = content.summary ?? {};
@@ -229,6 +234,7 @@ function readReport(reportPath: string): HostReport | null {
       fileName: path.basename(reportPath),
       createdAt: content.createdAt ?? null,
       profileId: content.profileId ?? null,
+      mode: content.mode ?? "agentless",
       score: typeof summary.score === "number" ? summary.score : null,
       high: typeof summary.high === "number" ? summary.high : 0,
       medium: typeof summary.medium === "number" ? summary.medium : 0,
@@ -254,10 +260,14 @@ function attachReports(hosts: InventoryHost[], reportsPath: string) {
     .sort((left, right) => right.mtimeMs - left.mtimeMs);
 
   return hosts.map((host) => {
-    const reportFile = reportFiles.find((file) => file.fileName.startsWith(`${host.alias}-`));
+    const hostReports = reportFiles.filter((file) => file.fileName.startsWith(`${host.alias}-`));
+    // The host score is a hardening score. Package CVE and event reports have
+    // different semantics and must not replace it merely because they are newer.
+    const reportFile = hostReports.find((file) => readReport(file.fullPath)?.mode === "agentless");
     return {
       ...host,
       lastReport: reportFile ? readReport(reportFile.fullPath) : null,
+      reportCount: hostReports.length,
     };
   });
 }
@@ -265,7 +275,7 @@ function attachReports(hosts: InventoryHost[], reportsPath: string) {
 export async function GET() {
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
-  const reportsPath = path.join(repoRoot, "ansible", "reports");
+  const reportsPath = getReportsDir(repoRoot);
   const hosts = attachReports(readInventoryHosts(inventoryPath), reportsPath);
 
   const withReports = hosts.filter((host) => host.lastReport).length;
