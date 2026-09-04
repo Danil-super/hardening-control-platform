@@ -1,9 +1,9 @@
-import { Activity, AlertTriangle, FileText, ListChecks, Server, ShieldCheck } from "lucide-react";
+import { Activity, AlertTriangle, FileText, Server, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { LinkButton } from "@/components/ui/button";
-import { DeleteRecordButton } from "@/components/reports/delete-record-button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { readIncidents } from "@/lib/ansible-control";
+import { verifyAuditChain } from "@/lib/state-store";
 import { listAnsibleReports, targetAliasFromReportFileName } from "@/lib/ansible-reports";
 
 export const dynamic = "force-dynamic";
@@ -55,6 +55,22 @@ function reportModeLabel(mode: string) {
   return "аудит";
 }
 
+function actionLabel(action: string) {
+  const labels: Record<string, string> = {
+    agentlessAudit: "Аудит",
+    ping: "Проверка связи",
+    collectFacts: "Сбор сведений",
+    packageInventory: "Проверка пакетов",
+    collectEvents: "Сбор событий",
+    sshCryptoAudit: "Проверка SSH",
+    networkPortScan: "Проверка портов",
+    lynisTemporaryAudit: "Проверка Lynis",
+    closePort: "Закрытие порта",
+    blockIp: "Блокировка IP",
+  };
+  return labels[action] ?? action;
+}
+
 function CommandCell({ value }: { value: string }) {
   return (
     <details className="group">
@@ -83,8 +99,8 @@ export default async function AgentlessReportsPage({
     ? reports.filter((report) => targetAliasFromReportFileName(report.fileName, report.profileId, report.mode) === hostFilter)
     : reports;
   const incidents = readIncidents();
+  const auditIntegrity = verifyAuditChain();
   const auditReports = scopedReports.filter((report) => report.mode === "agentless");
-  const eventReports = scopedReports.filter((report) => report.mode === "events");
   const latestAuditsByHost = new Map<string, (typeof auditReports)[number]>();
   for (const report of auditReports) {
     const alias = targetAliasFromReportFileName(report.fileName, report.profileId, report.mode);
@@ -116,11 +132,12 @@ export default async function AgentlessReportsPage({
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold text-white">Реальные Ansible-отчеты</h1>
+          <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">История проверок</p>
+          <h1 className="mt-2 text-3xl font-semibold text-white">Отчёты</h1>
           <p className="mt-2 max-w-3xl text-slate-400">
             {hostFilter
               ? `История всех запусков для хоста ${hostFilter}.`
-              : "История JSON-отчетов из ansible/reports: аудиты, факты, пакеты, CVE и события безопасности."}
+              : "Здесь собраны сохранённые результаты аудита, проверки пакетов и события безопасности."}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -129,10 +146,9 @@ export default async function AgentlessReportsPage({
         </div>
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <SummaryCard label="Всего отчетов" value={scopedReports.length} detail={hostFilter ? "По выбранному хосту" : "Файлы JSON"} icon={<FileText size={18} />} />
-        <SummaryCard label="Аудиты" value={auditReports.length} detail="С findings и score" icon={<ShieldCheck size={18} />} />
-        <SummaryCard label="События" value={eventReports.length} detail="Auth/UFW/Suricata" icon={<ListChecks size={18} />} />
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <SummaryCard label="Всего отчётов" value={scopedReports.length} detail={hostFilter ? "По выбранному хосту" : "Сохранённые результаты"} icon={<FileText size={18} />} />
+        <SummaryCard label="Аудиты" value={auditReports.length} detail="С проблемами и оценкой" icon={<ShieldCheck size={18} />} />
         <SummaryCard label="Средняя оценка" value={averageScore === null ? "нет" : `${averageScore}%`} detail="По последнему аудиту хоста" icon={<Activity size={18} />} />
         <SummaryCard label="Высокие риски" value={latestAudits.reduce((sum, report) => sum + report.high, 0)} detail="В последних аудитах" icon={<AlertTriangle size={18} />} />
       </div>
@@ -141,7 +157,7 @@ export default async function AgentlessReportsPage({
         {hostFilter ? (
           <>
             <div className="border-b border-slate-800 px-4 py-3 text-sm text-slate-400">
-              Все тесты и отчёты хоста <span className="font-semibold text-slate-200">{hostFilter}</span>. Отчёт можно открыть или удалить отдельно.
+              Все проверки и отчёты хоста <span className="font-semibold text-slate-200">{hostFilter}</span>.
             </div>
             {scopedReports.length ? (
           <div className="overflow-x-auto">
@@ -152,9 +168,9 @@ export default async function AgentlessReportsPage({
                   <th className="px-4 py-3">Тип</th>
                   <th className="px-4 py-3">Оценка</th>
                   <th className="px-4 py-3">Риски</th>
-                  <th className="px-4 py-3">Записей</th>
+                  <th className="px-4 py-3">Данные</th>
                   <th className="px-4 py-3">Дата</th>
-                  <th className="px-4 py-3">Действие</th>
+                  <th className="px-4 py-3">Открыть</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -188,24 +204,16 @@ export default async function AgentlessReportsPage({
                           <span className="rounded-md bg-slate-800 px-2 py-1 text-slate-300">I {report.info}</span>
                         </div>
                       ) : (
-                        <span className="text-slate-500">нет findings</span>
+                        <span className="text-slate-500">нет проблем</span>
                       )}
                     </td>
                     <td className="px-4 py-4 text-slate-300">
-                      <p>findings: {report.findingsCount}</p>
-                      <p className="mt-1 text-xs text-slate-500">events: {report.eventsCount}</p>
+                      <p>Проблем: {report.findingsCount}</p>
+                      <p className="mt-1 text-xs text-slate-500">Событий: {report.eventsCount}</p>
                     </td>
                     <td className="px-4 py-4 text-slate-300">{formatDate(report.createdAt ?? report.modifiedAt)}</td>
                     <td className="px-4 py-4">
-                      <div className="flex flex-wrap gap-2">
-                        <LinkButton href={`/reports/agentless/${encodeURIComponent(report.id)}`} variant="secondary">
-                          Открыть
-                        </LinkButton>
-                        <DeleteRecordButton
-                          endpoint={`/api/ansible/reports/${encodeURIComponent(report.id)}`}
-                          confirmation={`Удалить отчёт ${report.fileName}? Это действие нельзя отменить.`}
-                        />
-                      </div>
+                      <LinkButton href={`/reports/agentless/${encodeURIComponent(report.id)}`} variant="secondary">Открыть</LinkButton>
                     </td>
                   </tr>
                 ))}
@@ -280,40 +288,43 @@ export default async function AgentlessReportsPage({
       </section>
 
       <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
-        <div className="border-b border-slate-800 p-4">
-          <h2 className="text-lg font-semibold text-white">История запусков</h2>
-          <p className="mt-1 text-sm text-slate-400">Последние audit и response действия на главном сервере.</p>
+        <div className="flex flex-col gap-2 border-b border-slate-800 p-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-white">Журнал действий</h2>
+            <p className="mt-1 text-sm text-slate-400">Нельзя изменить или удалить через панель.</p>
+          </div>
+          <span className={`inline-flex w-fit rounded-md border px-2 py-1 text-xs font-semibold ${auditIntegrity.valid ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-red-400/30 bg-red-500/10 text-red-100"}`}>
+            {auditIntegrity.valid ? `Цепочка целостна · ${auditIntegrity.entries}` : "Проверка целостности не пройдена"}
+          </span>
         </div>
         {incidents.length ? (
           <div className="max-h-[620px] overflow-y-auto overflow-x-hidden">
             <table className="w-full table-fixed text-left text-sm">
               <colgroup>
-                <col className="w-[12%]" />
-                <col className="w-[14%]" />
+                <col className="w-[16%]" />
+                <col className="w-[16%]" />
                 <col className="w-[8%]" />
                 <col className="w-[12%]" />
                 <col className="w-[10%]" />
-                <col className="w-[33%]" />
-                <col className="w-[11%]" />
+                <col className="w-[38%]" />
               </colgroup>
               <thead className="sticky top-0 z-10 border-b border-slate-800 bg-slate-900 text-xs uppercase text-slate-500">
                 <tr>
                   <th className="px-4 py-3">Дата</th>
-                  <th className="px-4 py-3">Удаление</th>
+                  <th className="px-4 py-3">Операция</th>
                   <th className="px-4 py-3">Тип</th>
                   <th className="px-4 py-3">Хост/группа</th>
                   <th className="px-4 py-3">Статус</th>
                   <th className="px-4 py-3">Команда</th>
-                  <th className="px-4 py-3">Действие</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
                 {incidents.map((incident) => (
                   <tr key={incident.id} className="align-top">
                     <td className="break-words px-4 py-4 text-slate-300">{formatDate(incident.createdAt)}</td>
-                    <td className="break-words px-4 py-4 font-semibold text-white">{incident.action}</td>
+                    <td className="break-words px-4 py-4 font-semibold text-white">{actionLabel(incident.action)}</td>
                     <td className="break-words px-4 py-4 text-slate-300">{incident.kind}</td>
-                    <td className="break-words px-4 py-4 text-slate-300">{incident.limit ?? "all"}</td>
+                    <td className="break-words px-4 py-4 text-slate-300">{incident.limit ?? "Все хосты"}</td>
                     <td className="px-4 py-4">
                       <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${
                         incident.status === "success"
@@ -325,13 +336,6 @@ export default async function AgentlessReportsPage({
                     </td>
                     <td className="px-4 py-4">
                       <CommandCell value={incident.command ?? incident.message} />
-                    </td>
-                    <td className="px-4 py-4">
-                      <DeleteRecordButton
-                        endpoint="/api/ansible/incidents"
-                        body={{ id: incident.id }}
-                        confirmation={`Удалить запись запуска ${incident.action} от ${formatDate(incident.createdAt)}?`}
-                      />
                     </td>
                   </tr>
                 ))}

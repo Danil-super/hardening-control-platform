@@ -17,12 +17,12 @@ function formatDate(value: string | null | undefined) {
 }
 
 function reportModeTitle(mode: string) {
-  if (mode === "facts") return "Сведения о хосте Ansible";
+  if (mode === "facts") return "Сведения о хосте";
   if (mode === "packages") return "Инвентаризация пакетов";
   if (mode === "vulnerabilities") return "CVE-аудит пакетов";
   if (mode === "events") return "Отчет по событиям безопасности";
-  if (mode === "ssh-audit") return "SSH crypto-аудит с control node";
-  if (mode === "nmap") return "Nmap: сетевой аудит с control node";
+  if (mode === "ssh-audit") return "Проверка криптографии SSH";
+  if (mode === "nmap") return "Проверка открытых портов";
   if (mode === "lynis") return "Lynis: временный аудит без установки";
   return "SSH-аудит Ansible";
 }
@@ -77,7 +77,7 @@ export default async function AgentlessReportDetailPage({
             <p className="mt-2 break-all text-sm text-slate-300">{report.fileName}</p>
           </div>
           <div>
-            <p className="text-xs font-semibold uppercase text-slate-500">Hostname / OS</p>
+            <p className="text-xs font-semibold uppercase text-slate-500">Хост и ОС</p>
             <p className="mt-2 text-sm text-slate-300">{report.hostname ?? report.host}</p>
             <p className="mt-1 text-xs text-slate-500">{report.os ?? "ОС не указана"}</p>
           </div>
@@ -87,7 +87,7 @@ export default async function AgentlessReportDetailPage({
           </div>
           <div>
             <p className="text-xs font-semibold uppercase text-slate-500">Источник</p>
-            <p className="mt-2 text-sm text-slate-300">Ansible control node</p>
+            <p className="mt-2 text-sm text-slate-300">Control node Ansible</p>
           </div>
         </div>
       </section>
@@ -101,8 +101,8 @@ export default async function AgentlessReportDetailPage({
         />
         <SummaryCard label="Высокий" value={report.high} detail="Срочный приоритет" icon={<AlertTriangle size={18} />} />
         <SummaryCard label="Средний" value={report.medium} detail="Плановое действие" icon={<FileText size={18} />} />
-        <SummaryCard label="Findings" value={report.findingsCount} detail="Проверки аудита" icon={<Server size={18} />} />
-        <SummaryCard label="Events" value={report.eventsCount} detail="События безопасности" icon={<ListChecks size={18} />} />
+        <SummaryCard label="Проблемы" value={report.findingsCount} detail="Находки аудита" icon={<Server size={18} />} />
+        <SummaryCard label="События" value={report.eventsCount} detail="События безопасности" icon={<ListChecks size={18} />} />
       </div>
 
       {report.mode === "facts" ? (
@@ -159,7 +159,7 @@ export default async function AgentlessReportDetailPage({
 
       {!report.findings.length && !report.events.length ? (
         <section className="rounded-md border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-6 text-amber-100">
-          В этом JSON нет массива `findings` или `events`. Откройте исходный JSON для ручной проверки структуры.
+          В отчёте нет проблем и событий, требующих отдельного просмотра. Исходный JSON можно скачать при необходимости.
         </section>
       ) : null}
     </div>

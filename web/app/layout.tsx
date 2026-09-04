@@ -3,8 +3,8 @@ import { AppShell } from "@/components/layout/app-shell";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Hardening Control Platform",
-  description: "Веб-панель для централизованного Ansible-аудита Linux-хостов по SSH.",
+  title: "Контроль безопасности",
+  description: "Управление аудитом и безопасными изменениями Linux-хостов через Ansible и SSH.",
 };
 
 export default function RootLayout({

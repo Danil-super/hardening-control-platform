@@ -1,15 +1,12 @@
-import { ArrowRight, CheckCircle2, KeyRound, ServerCog, ShieldCheck, Terminal } from "lucide-react";
+import { ArrowRight, CheckCircle2, KeyRound, ServerCog, ShieldCheck } from "lucide-react";
 import { LinkButton } from "@/components/ui/button";
 
 const setupSteps = [
-  "Запустите сайт на главном сервере: cd web && npm run dev:lan.",
-  "Откройте /login и войдите с паролем из web/.env.local.",
-  "На странице /hosts проверьте Ansible control node.",
-  "Добавьте Linux-хост вручную или через автообнаружение локальной сети.",
-  "Настройте SSH-ключи с главного сервера на целевой хост.",
-  "Выберите профиль Linux, SSH, Web или Docker и запустите аудит.",
-  "Для firewall-изменения сначала выполните dry-run, затем подтвердите alias хоста и примените транзакцию.",
-  "Откройте отчет и историю транзакций; при необходимости выполните откат из созданной резервной копии.",
+  "Подготовьте SSH-ключ и убедитесь, что Ansible может подключиться к целевому хосту.",
+  "На странице «Хосты» добавьте хост и нажмите «Проверить подключение».",
+  "Выберите подходящий профиль: базовый Linux, SSH-сервер, веб-сервер или Docker-хост.",
+  "Запустите аудит и откройте отчёт. Сначала исправляйте высокие риски.",
+  "Перед изменением firewall всегда проверьте план, укажите причину и alias хоста. При необходимости используйте откат.",
 ];
 
 const rules = [
@@ -29,9 +26,9 @@ const rules = [
     text: "Выбранный профиль загружается из локального YAML-набора правил: Linux, SSH, web-сервер или Docker-host.",
   },
   {
-    icon: Terminal,
-    title: "Транзакции и отчеты",
-    text: "Отчеты сохраняются локально, а изменения firewall проходят через backup, повторный аудит, SQLite и откат.",
+    icon: ShieldCheck,
+    title: "Проверяемые изменения",
+    text: "Изменения firewall сохраняют резервную копию, запускают повторный аудит и могут быть откачены из панели.",
   },
 ];
 
@@ -40,10 +37,9 @@ export default function GuidePage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <h1 className="text-3xl font-semibold text-white">Инструкция</h1>
-          <p className="mt-2 max-w-3xl text-slate-400">
-            Короткий рабочий сценарий для централизованного управления Linux-хостами через Ansible и SSH.
-          </p>
+          <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">Начало работы</p>
+          <h1 className="mt-2 text-3xl font-semibold text-white">Короткая инструкция</h1>
+          <p className="mt-2 max-w-3xl text-slate-400">Обычный сценарий: подключить хост → проверить → изучить отчёт → выполнить контролируемое изменение при необходимости.</p>
         </div>
         <LinkButton href="/hosts">Открыть управление</LinkButton>
       </div>
@@ -66,7 +62,7 @@ export default function GuidePage() {
         </div>
 
         <aside className="h-fit rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h2 className="text-xl font-semibold text-white">Команды на главном сервере</h2>
+          <h2 className="text-xl font-semibold text-white">Подготовка SSH</h2>
           <div className="mt-4 space-y-3">
             <code className="block rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
               ssh-keygen -t ed25519 -C hcp-control
@@ -101,7 +97,7 @@ export default function GuidePage() {
         <div className="flex items-start gap-3">
           <CheckCircle2 size={22} className="mt-0.5 text-emerald-200" aria-hidden="true" />
           <div>
-            <h2 className="text-lg font-semibold text-white">Коротко</h2>
+          <h2 className="text-lg font-semibold text-white">Важно</h2>
             <p className="mt-2 text-sm leading-6 text-emerald-100">
               Веб-интерфейс не является агентом. Он управляет Ansible на главном сервере, а Ansible подключается к
               Linux-хостам по SSH и сохраняет отчеты локально.

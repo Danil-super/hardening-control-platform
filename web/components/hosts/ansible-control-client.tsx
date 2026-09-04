@@ -104,27 +104,43 @@ type DiscoveryPayload = {
 };
 
 const profileOptions = [
-  { id: "basic_linux", label: "Linux" },
-  { id: "ssh_security", label: "SSH" },
-  { id: "web_server", label: "Web" },
-  { id: "docker_host", label: "Docker" },
+  { id: "basic_linux", label: "Базовый Linux" },
+  { id: "ssh_security", label: "SSH-сервер" },
+  { id: "web_server", label: "Веб-сервер" },
+  { id: "docker_host", label: "Docker-хост" },
 ] as const;
 
 const auditActions = [
-  { id: "ping", label: "Ping", icon: Server },
-  { id: "collectFacts", label: "Факты", icon: FileText },
-  { id: "agentlessAudit", label: "Аудит", icon: ShieldCheck },
-  { id: "packageInventory", label: "CVE пакеты", icon: FileText },
-  { id: "collectEvents", label: "События", icon: Terminal },
-  { id: "sshCryptoAudit", label: "SSH crypto", icon: ShieldCheck },
-  { id: "networkPortScan", label: "Порты", icon: Search, requiresConfirmation: true },
-  { id: "lynisTemporaryAudit", label: "Lynis временно", icon: ShieldCheck, requiresConfirmation: true },
+  { id: "agentlessAudit", label: "Запустить аудит", icon: ShieldCheck },
+  { id: "ping", label: "Проверить связь", icon: Server },
+  { id: "collectFacts", label: "Собрать сведения", icon: FileText, advanced: true },
+  { id: "packageInventory", label: "Проверить пакеты и CVE", icon: FileText, advanced: true },
+  { id: "collectEvents", label: "Собрать события", icon: Terminal, advanced: true },
+  { id: "sshCryptoAudit", label: "Проверить SSH-криптографию", icon: ShieldCheck, advanced: true },
+  { id: "networkPortScan", label: "Проверить открытые порты", icon: Search, requiresConfirmation: true, advanced: true },
+  { id: "lynisTemporaryAudit", label: "Запустить Lynis", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
 ] as const;
 
 const responseActions = [
   { id: "closePort", label: "Закрыть порт", icon: Ban },
   { id: "blockIp", label: "Блок IP", icon: AlertTriangle },
 ] as const;
+
+const primaryAuditActions = auditActions.filter((action) => !("advanced" in action && action.advanced));
+const additionalAuditActions = auditActions.filter((action) => "advanced" in action && action.advanced);
+
+const transactionStatusLabels: Record<RemediationTransaction["status"], string> = {
+  preparing: "подготовка",
+  backed_up: "резервная копия создана",
+  applied: "применено",
+  failed: "ошибка",
+  rolled_back: "откачено",
+};
+
+const transactionActionLabels: Record<string, string> = {
+  closePort: "Закрытие порта",
+  blockIp: "Блокировка IP",
+};
 
 function formatDate(value: string | null | undefined) {
   if (!value) {
@@ -159,9 +175,9 @@ export function AnsibleControlClient() {
   const [loading, setLoading] = useState("");
   const [runResult, setRunResult] = useState<RunPayload | null>(null);
   const [freshReportHref, setFreshReportHref] = useState("");
-  const [manualAlias, setManualAlias] = useState("server1");
+  const [manualAlias, setManualAlias] = useState("");
   const [manualAddress, setManualAddress] = useState("");
-  const [manualUser, setManualUser] = useState("danil");
+  const [manualUser, setManualUser] = useState("");
   const [manualPort, setManualPort] = useState("22");
   const [manualGroup, setManualGroup] = useState("linux_hosts");
   const [manualBecome, setManualBecome] = useState(true);
@@ -172,6 +188,7 @@ export function AnsibleControlClient() {
   const [targetProtocol, setTargetProtocol] = useState("tcp");
   const [blockIp, setBlockIp] = useState("");
   const [changeReason, setChangeReason] = useState("");
+  const [confirmedHost, setConfirmedHost] = useState("");
   const [transactions, setTransactions] = useState<RemediationTransaction[]>([]);
 
   const selectedHost = useMemo(
@@ -374,11 +391,8 @@ export function AnsibleControlClient() {
       setRunResult({ ok: false, action, message: "Укажите причину изменения не короче 10 символов." });
       return;
     }
-    const confirmedHost = isResponse
-      ? window.prompt(`Введите alias ${selectedAlias} для ${mode === "preview" ? "проверки плана" : "применения изменения"}:`)
-      : null;
-    if (isResponse && confirmedHost?.trim() !== selectedAlias) {
-      setRunResult({ ok: false, action, message: "Alias не подтвержден: действие отменено." });
+    if (isResponse && confirmedHost.trim() !== selectedAlias) {
+      setRunResult({ ok: false, action, message: "Введите точный alias выбранного хоста в поле подтверждения." });
       return;
     }
 
@@ -402,7 +416,7 @@ export function AnsibleControlClient() {
           limit: selectedAlias,
           mode,
           reason: changeReason.trim(),
-          confirmedHost: confirmedHost?.trim(),
+          confirmedHost: isResponse ? confirmedHost.trim() : undefined,
           confirmAudit: requiresConfirmation,
           extraVars,
         }),
@@ -477,22 +491,44 @@ export function AnsibleControlClient() {
   const summary = hosts?.summary;
 
   return (
-    <div className="space-y-5">
-      <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-5">
-        <StatusTile label="Ansible" value={health?.ansibleInstalled ? "OK" : "нет"} good={Boolean(health?.ansibleInstalled)} />
-        <StatusTile label="Inventory" value={hosts?.inventoryReady ? "OK" : "нет"} good={Boolean(hosts?.inventoryReady)} />
+    <div className="space-y-6">
+      <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">Управление хостами</p>
+          <h1 className="mt-2 text-3xl font-semibold text-white">Проверка безопасности</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
+            Выберите хост, запустите аудит и просмотрите результат. Изменения firewall выполняются отдельно, с планом и откатом.
+          </p>
+        </div>
+        <Button variant="secondary" onClick={refreshAll} disabled={Boolean(loading)}>
+          <RefreshCw size={16} className={loading === "refresh" ? "animate-spin" : ""} aria-hidden="true" />
+          Обновить данные
+        </Button>
+      </header>
+
+      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Сводка">
+        <StatusTile label="Ansible" value={health?.ansibleInstalled ? "Готов" : "Не готов"} good={health ? Boolean(health.ansibleInstalled) : undefined} />
+        <StatusTile label="Inventory" value={hosts?.inventoryReady ? "Готов" : "Не готов"} good={hosts ? Boolean(hosts.inventoryReady) : undefined} />
         <StatusTile label="Хосты" value={summary?.total ?? 0} />
-        <StatusTile label="С отчетами" value={summary?.withReports ?? 0} />
-        <StatusTile label="Средний score" value={summary?.averageScore === null || summary?.averageScore === undefined ? "нет" : `${summary.averageScore}%`} />
+        <StatusTile label="Последние аудиты" value={summary?.withReports ?? 0} />
       </section>
 
-      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+      <details className="group rounded-md border border-slate-800 bg-slate-950/70" open={!hosts?.hosts?.length}>
+        <summary className="flex cursor-pointer items-center justify-between gap-4 p-4 text-left">
+          <span>
+            <span className="block text-base font-semibold text-white">Добавить или изменить хост</span>
+            <span className="mt-1 block text-sm text-slate-400">Укажите SSH-подключение, проверьте его и сохраните в inventory.</span>
+          </span>
+          <span className="text-sm text-sky-200 group-open:hidden">Открыть</span>
+          <span className="hidden text-sm text-slate-400 group-open:block">Свернуть</span>
+        </summary>
+        <div className="border-t border-slate-800 p-4">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-          <Field label="Alias" value={manualAlias} onChange={setManualAlias} placeholder="web-01" />
-          <Field label="IP/host" value={manualAddress} onChange={setManualAddress} placeholder="192.168.1.10" />
-          <Field label="SSH user" value={manualUser} onChange={setManualUser} placeholder="danil" />
-          <Field label="Port" value={manualPort} onChange={setManualPort} placeholder="22" />
-          <Field label="Group" value={manualGroup} onChange={setManualGroup} placeholder="linux_hosts" />
+          <Field label="Имя хоста" value={manualAlias} onChange={setManualAlias} placeholder="web-01" />
+          <Field label="IP-адрес или домен" value={manualAddress} onChange={setManualAddress} placeholder="192.168.1.10" />
+          <Field label="Пользователь SSH" value={manualUser} onChange={setManualUser} placeholder="admin" />
+          <Field label="Порт SSH" value={manualPort} onChange={setManualPort} placeholder="22" />
+          <Field label="Группа inventory" value={manualGroup} onChange={setManualGroup} placeholder="linux_hosts" />
           <label className="flex h-10 min-w-0 items-center gap-2 self-end rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-200">
             <input
               type="checkbox"
@@ -500,21 +536,21 @@ export function AnsibleControlClient() {
               onChange={(event) => setManualBecome(event.target.checked)}
               className="h-4 w-4 rounded border-slate-600 bg-slate-950"
             />
-            sudo
+            Использовать sudo
           </label>
           <Button variant="secondary" onClick={checkPreflight} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="w-full self-end">
             <CheckCircle2 size={16} className={loading === "preflight" ? "animate-spin" : ""} aria-hidden="true" />
-            Проверить
+            Проверить подключение
           </Button>
           <Button onClick={addManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="w-full self-end">
             <Plus size={16} aria-hidden="true" />
-            Сохранить
+            Добавить в inventory
           </Button>
           <Button variant="secondary" onClick={updateManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="w-full self-end">
-            Изменить
+            Сохранить изменения
           </Button>
           <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || !selectedAlias} className="w-full self-end">
-            Удалить
+            Удалить хост
           </Button>
         </div>
         {preflight ? (
@@ -525,16 +561,18 @@ export function AnsibleControlClient() {
             <CheckBadge label="OS" ok={Boolean(preflight.facts?.os)} text={preflight.facts?.os ?? "не определена"} />
           </div>
         ) : null}
-        <div className="mt-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+        <details className="mt-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-200">Найти хосты в разрешённой подсети</summary>
+          <p className="mt-1 text-xs leading-5 text-slate-400">Проверка ищет только SSH в выбранной приватной подсети и не добавляет хосты автоматически.</p>
           <div className="flex flex-wrap items-end gap-2">
-            <Field label="CIDR scan" value={scanCidr} onChange={setScanCidr} placeholder="192.168.1.0/24" />
+            <Field label="Подсеть CIDR" value={scanCidr} onChange={setScanCidr} placeholder="192.168.1.0/24" />
             <Button variant="secondary" onClick={detectNetwork} disabled={Boolean(loading)}>
               <Search size={16} aria-hidden="true" />
-              Подсеть
+              Подставить подсеть
             </Button>
             <Button variant="secondary" onClick={scanNetwork} disabled={Boolean(loading) || !scanCidr}>
               <Search size={16} className={loading === "scan" ? "animate-pulse" : ""} aria-hidden="true" />
-              Найти SSH
+              Найти SSH-хосты
             </Button>
           </div>
           {discovery?.candidates?.length ? (
@@ -566,12 +604,16 @@ export function AnsibleControlClient() {
               ))}
             </div>
           ) : null}
+        </details>
         </div>
-      </section>
+      </details>
 
       <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
         <div className="flex flex-col gap-3 border-b border-slate-800 p-4 lg:flex-row lg:items-center lg:justify-between">
-          <h2 className="text-lg font-semibold text-white">Хосты</h2>
+          <div>
+            <h2 className="text-lg font-semibold text-white">Управляемые хосты</h2>
+            <p className="mt-1 text-sm text-slate-400">Нажмите «Выбрать», затем выполните аудит в следующем блоке.</p>
+          </div>
           <div className="flex flex-wrap gap-2">
             <select
               value={profileId}
@@ -582,10 +624,6 @@ export function AnsibleControlClient() {
                 <option key={profile.id} value={profile.id}>{profile.label}</option>
               ))}
             </select>
-            <Button variant="secondary" onClick={refreshAll} disabled={Boolean(loading)}>
-              <RefreshCw size={16} className={loading === "refresh" ? "animate-spin" : ""} aria-hidden="true" />
-              Обновить
-            </Button>
             <LinkButton href="/reports" variant="secondary">
               <FileText size={16} aria-hidden="true" />
               Отчеты
@@ -600,9 +638,9 @@ export function AnsibleControlClient() {
                 <tr>
                   <th className="px-4 py-3">Хост</th>
                   <th className="px-4 py-3">SSH</th>
-                  <th className="px-4 py-3">Score</th>
+                  <th className="px-4 py-3">Оценка</th>
                   <th className="px-4 py-3">Риски</th>
-                  <th className="px-4 py-3">Последний отчет</th>
+                  <th className="px-4 py-3">Последний аудит</th>
                   <th className="px-4 py-3">Действия</th>
                 </tr>
               </thead>
@@ -616,9 +654,9 @@ export function AnsibleControlClient() {
                       </button>
                     </td>
                     <td className="px-4 py-4 text-slate-300">
-                      <span>{host.user ?? "user ?"}</span>
+                      <span>{host.user ?? "не указан"}</span>
                       <span className={host.become ? "ml-2 text-emerald-200" : "ml-2 text-slate-500"}>
-                        {host.become ? "sudo" : "no sudo"}
+                        {host.become ? "sudo" : "без sudo"}
                       </span>
                     </td>
                     <td className="px-4 py-4">
@@ -629,10 +667,10 @@ export function AnsibleControlClient() {
                     <td className="px-4 py-4 text-xs">
                       {host.lastReport ? (
                         <div className="grid grid-cols-4 gap-1">
-                          <span className="rounded-md bg-red-500/15 px-2 py-1 text-red-100">H {host.lastReport.high}</span>
-                          <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-100">M {host.lastReport.medium}</span>
-                          <span className="rounded-md bg-sky-500/15 px-2 py-1 text-sky-100">L {host.lastReport.low}</span>
-                          <span className="rounded-md bg-slate-800 px-2 py-1 text-slate-300">I {host.lastReport.info}</span>
+                          <span className="rounded-md bg-red-500/15 px-2 py-1 text-red-100" title="Высокий риск">Выс. {host.lastReport.high}</span>
+                          <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-100" title="Средний риск">Ср. {host.lastReport.medium}</span>
+                          <span className="rounded-md bg-sky-500/15 px-2 py-1 text-sky-100" title="Низкий риск">Низ. {host.lastReport.low}</span>
+                          <span className="rounded-md bg-slate-800 px-2 py-1 text-slate-300" title="Информационная запись">Инф. {host.lastReport.info}</span>
                         </div>
                       ) : (
                         <span className="text-slate-500">нет данных</span>
@@ -642,7 +680,7 @@ export function AnsibleControlClient() {
                     <td className="px-4 py-4">
                       <div className="flex flex-wrap gap-2">
                         <Button variant="secondary" onClick={() => fillHostForm(host)}>
-                          Выбрать
+                          Настроить
                         </Button>
                         {host.lastReport ? (
                           <LinkButton href={reportHref(host.lastReport.fileName)} variant="secondary">
@@ -660,7 +698,7 @@ export function AnsibleControlClient() {
             </table>
           </div>
         ) : (
-          <div className="p-5 text-sm text-slate-400">Добавьте первый хост, затем запустите Ping или Аудит.</div>
+          <div className="p-5 text-sm leading-6 text-slate-400">Добавьте первый хост через форму выше. После проверки подключения он появится здесь.</div>
         )}
       </section>
 
@@ -668,16 +706,28 @@ export function AnsibleControlClient() {
         <div id="ansible-actions" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-white">Действия</h2>
+              <h2 className="text-lg font-semibold text-white">Аудит хоста</h2>
               <p className="mt-1 text-sm text-slate-400">
-                Хост: <span className="text-slate-100">{selectedHost?.alias ?? "не выбран"}</span>
+                Хост: <span className="font-semibold text-slate-100">{selectedHost?.alias ?? "не выбран"}</span>
               </p>
             </div>
             <div className="flex flex-wrap gap-2">
-              {auditActions.map((action) => {
+              <label className="block">
+                <span className="sr-only">Профиль аудита</span>
+                <select
+                  value={profileId}
+                  onChange={(event) => setProfileId(event.target.value)}
+                  className="h-10 rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+                >
+                  {profileOptions.map((profile) => (
+                    <option key={profile.id} value={profile.id}>{profile.label}</option>
+                  ))}
+                </select>
+              </label>
+              {primaryAuditActions.map((action) => {
                 const Icon = action.icon;
                 return (
-                  <Button key={action.id} onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
+                  <Button key={action.id} variant={action.id === "agentlessAudit" ? "primary" : "secondary"} onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
                     <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
                     {action.label}
                   </Button>
@@ -686,52 +736,61 @@ export function AnsibleControlClient() {
             </div>
           </div>
 
-          <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <p className="text-sm font-semibold text-slate-100">Обратимые изменения</p>
-            <p className="mt-1 text-xs leading-5 text-slate-400">
-              Сначала выполните dry-run. При применении платформа сохраняет firewall-конфигурацию на хосте,
-              запускает действие и повторный аудит. Введите alias хоста для каждого изменения.
-            </p>
-            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <Field label="Порт" value={targetPort} onChange={setTargetPort} placeholder="23" />
-              <label className="block">
-                <span className="text-xs font-semibold uppercase text-slate-500">Протокол</span>
-                <select
-                  value={targetProtocol}
-                  onChange={(event) => setTargetProtocol(event.target.value)}
-                  className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100"
-                >
-                  <option value="tcp">tcp</option>
-                  <option value="udp">udp</option>
-                </select>
-              </label>
-              <Field label="IP block" value={blockIp} onChange={setBlockIp} placeholder="192.168.1.50" />
-              <Field label="Причина" value={changeReason} onChange={setChangeReason} placeholder="Например: закрытие Telnet по результату аудита" />
-            </div>
+          <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Дополнительные проверки</summary>
+            <p className="mt-1 text-xs leading-5 text-slate-400">Используйте их, когда обычного аудита недостаточно.</p>
             <div className="mt-3 flex flex-wrap gap-2">
-              {responseActions.map((action) => {
+              {additionalAuditActions.map((action) => {
                 const Icon = action.icon;
                 return (
-                  <div key={action.id} className="flex overflow-hidden rounded-md border border-slate-700">
-                    <Button variant="secondary" onClick={() => runAction(action.id, "preview")} disabled={Boolean(loading) || !selectedHost} className="rounded-none border-0">
-                      План: {action.label}
-                    </Button>
-                    <Button variant="danger" onClick={() => runAction(action.id, "apply")} disabled={Boolean(loading) || !selectedHost} className="rounded-none border-0">
-                      <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
-                      Применить
-                    </Button>
-                  </div>
+                  <Button key={action.id} variant="secondary" onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
+                    <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
+                    {action.label}
+                  </Button>
                 );
               })}
             </div>
-          </div>
+          </details>
+
+          <details className="mt-4 rounded-md border border-amber-400/20 bg-amber-500/5 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-amber-100">Обратимые изменения firewall</summary>
+            <p className="mt-1 text-xs leading-5 text-slate-400">
+              Сначала проверьте план. При применении платформа создаёт резервную копию firewall, выполняет изменение и запускает повторный аудит.
+            </p>
+            <div className="mt-3 grid gap-3 lg:grid-cols-3">
+              <Field label="Причина изменения" value={changeReason} onChange={setChangeReason} placeholder="Например: закрытие Telnet по результату аудита" />
+              <Field label="Подтверждение" value={confirmedHost} onChange={setConfirmedHost} placeholder={selectedHost?.alias ?? "Введите alias хоста"} />
+              <p className="self-end pb-2 text-xs leading-5 text-slate-400">Для плана и применения введите точный alias выбранного хоста.</p>
+            </div>
+            <div className="mt-3 grid gap-3 lg:grid-cols-2">
+              <div className="rounded-md border border-slate-800 bg-slate-950/60 p-3">
+                <p className="font-semibold text-slate-100">Закрыть порт</p>
+                <div className="mt-3 grid grid-cols-2 gap-3">
+                  <Field label="Порт" value={targetPort} onChange={setTargetPort} placeholder="23" />
+                  <label className="block">
+                    <span className="text-xs font-semibold uppercase text-slate-500">Протокол</span>
+                    <select value={targetProtocol} onChange={(event) => setTargetProtocol(event.target.value)} className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100">
+                      <option value="tcp">TCP</option>
+                      <option value="udp">UDP</option>
+                    </select>
+                  </label>
+                </div>
+                <ActionPair action={responseActions[0]} loading={loading} disabled={!selectedHost} onRun={runAction} />
+              </div>
+              <div className="rounded-md border border-slate-800 bg-slate-950/60 p-3">
+                <p className="font-semibold text-slate-100">Заблокировать IP-адрес</p>
+                <div className="mt-3"><Field label="IP-адрес" value={blockIp} onChange={setBlockIp} placeholder="192.168.1.50" /></div>
+                <ActionPair action={responseActions[1]} loading={loading} disabled={!selectedHost} onRun={runAction} />
+              </div>
+            </div>
+          </details>
         </div>
 
         <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold text-white">Транзакции изменений</h2>
-              <p className="mt-1 text-sm text-slate-400">Хранятся в локальной SQLite-базе; откат доступен только для примененных действий.</p>
+              <h2 className="text-lg font-semibold text-white">Последние изменения</h2>
+              <p className="mt-1 text-sm text-slate-400">Откат доступен только для успешно применённых изменений.</p>
             </div>
             <Button variant="secondary" onClick={loadRemediations} disabled={Boolean(loading)}>
               <RefreshCw size={16} aria-hidden="true" />
@@ -740,17 +799,17 @@ export function AnsibleControlClient() {
           </div>
           {transactions.length ? (
             <div className="mt-4 space-y-2">
-              {transactions.map((transaction) => (
+              {transactions.slice(0, 8).map((transaction) => (
                 <div key={transaction.id} className="flex flex-col gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3 lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0 text-sm">
-                    <p className="font-semibold text-slate-100">{transaction.action} · {transaction.hostAlias}</p>
-                    <p className="mt-1 text-xs text-slate-400">{formatDate(transaction.createdAt)} · {transaction.status} · {transaction.reason}</p>
+                    <p className="font-semibold text-slate-100">{transactionActionLabels[transaction.action] ?? transaction.action} · {transaction.hostAlias}</p>
+                    <p className="mt-1 text-xs text-slate-400">{formatDate(transaction.createdAt)} · {transactionStatusLabels[transaction.status]} · {transaction.reason}</p>
                     {transaction.error ? <p className="mt-1 text-xs text-red-200">{transaction.error}</p> : null}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     {transaction.postAuditReportId ? (
                       <LinkButton href={`/reports/agentless/${encodeURIComponent(transaction.postAuditReportId)}`} variant="secondary">
-                        Отчет после
+                        Отчёт после изменения
                       </LinkButton>
                     ) : null}
                     {transaction.status === "applied" ? (
@@ -763,7 +822,7 @@ export function AnsibleControlClient() {
                 </div>
               ))}
             </div>
-          ) : <p className="mt-4 text-sm text-slate-500">Транзакций пока нет.</p>}
+          ) : <p className="mt-4 text-sm text-slate-500">Изменений пока не было.</p>}
         </section>
 
         <aside className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
@@ -781,12 +840,17 @@ export function AnsibleControlClient() {
                   </LinkButton>
                 ) : null}
               </div>
-              <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+              {(runResult.stdout || runResult.stderr) ? (
+                <details className="rounded-md border border-slate-800 bg-slate-900/70 p-3">
+                  <summary className="cursor-pointer text-xs font-semibold text-slate-300">Технический вывод запуска</summary>
+                  <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-slate-200">
 {`${runResult.stdout ?? ""}${runResult.stderr ? `\n\nSTDERR:\n${runResult.stderr}` : ""}`}
-              </pre>
+                  </pre>
+                </details>
+              ) : null}
             </div>
           ) : (
-            <p className="mt-3 text-sm leading-6 text-slate-400">Выберите хост и запустите действие.</p>
+            <p className="mt-3 text-sm leading-6 text-slate-400">Выберите хост и запустите аудит. Здесь появится понятный результат и ссылка на отчёт.</p>
           )}
         </aside>
       </section>
@@ -827,9 +891,34 @@ function CheckBadge({
       ok ? "border-emerald-400/30 bg-emerald-500/10" : "border-red-400/30 bg-red-500/10"
     }`}>
       <p className={ok ? "font-semibold text-emerald-100" : "font-semibold text-red-100"}>
-        {label}: {ok ? "OK" : "ERROR"}
+        {label}: {ok ? "готово" : "ошибка"}
       </p>
-      <p className="mt-1 truncate text-xs text-slate-300" title={text}>{text || "нет данных"}</p>
+      <p className="mt-1 break-words text-xs leading-5 text-slate-300">{text || "нет данных"}</p>
+    </div>
+  );
+}
+
+function ActionPair({
+  action,
+  loading,
+  disabled,
+  onRun,
+}: {
+  action: (typeof responseActions)[number];
+  loading: string;
+  disabled: boolean;
+  onRun: (action: string, mode: "preview" | "apply") => void;
+}) {
+  const Icon = action.icon;
+  return (
+    <div className="mt-3 flex overflow-hidden rounded-md border border-slate-700">
+      <Button variant="secondary" onClick={() => onRun(action.id, "preview")} disabled={Boolean(loading) || disabled} className="flex-1 rounded-none border-0 px-3">
+        Проверить план
+      </Button>
+      <Button variant="danger" onClick={() => onRun(action.id, "apply")} disabled={Boolean(loading) || disabled} className="flex-1 rounded-none border-0 px-3">
+        <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
+        Применить
+      </Button>
     </div>
   );
 }
@@ -847,7 +936,7 @@ function Field({
 }) {
   return (
     <label className="block min-w-0">
-      <span className="text-xs font-semibold uppercase text-slate-500">{label}</span>
+      <span className="text-xs font-semibold text-slate-400">{label}</span>
       <input
         value={value}
         onChange={(event) => onChange(event.target.value)}

@@ -33,3 +33,16 @@ test("the old in-memory scheduler is not part of the application API", () => {
   assert.match(systemdService, /hcp-scheduled-audit/);
   assert.match(timer, /Persistent=true/);
 });
+
+test("operator interface keeps routine work visible and hides destructive log controls", () => {
+  const shell = read(path.join("web", "components", "layout", "app-shell.tsx"));
+  const hosts = read(path.join("web", "components", "hosts", "ansible-control-client.tsx"));
+  const reports = read(path.join("web", "app", "reports", "agentless", "page.tsx"));
+  assert.doesNotMatch(shell, /Playbook'и/);
+  assert.doesNotMatch(shell, /label: "Вход"/);
+  assert.match(hosts, /Дополнительные проверки/);
+  assert.match(hosts, /Обратимые изменения firewall/);
+  assert.match(hosts, /Введите точный alias выбранного хоста/);
+  assert.match(reports, /Журнал действий/);
+  assert.doesNotMatch(reports, /DeleteRecordButton/);
+});

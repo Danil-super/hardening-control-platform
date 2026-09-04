@@ -4,7 +4,7 @@ import { LogOut } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 
-export function LogoutButton() {
+export function LogoutButton({ className = "" }: { className?: string }) {
   const router = useRouter();
 
   async function logout() {
@@ -14,7 +14,7 @@ export function LogoutButton() {
   }
 
   return (
-    <Button type="button" variant="secondary" onClick={logout} className="w-full">
+    <Button type="button" variant="secondary" onClick={logout} className={`w-full ${className}`}>
       <LogOut size={16} aria-hidden="true" />
       Выйти
     </Button>
