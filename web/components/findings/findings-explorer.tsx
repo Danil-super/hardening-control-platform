@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { RiskBadge, StatusBadge } from "@/components/ui/badge";
-import { Button, LinkButton } from "@/components/ui/button";
+import { LinkButton } from "@/components/ui/button";
 import type { Finding, RiskLevel } from "@/types";
 
 const riskFilters: Array<RiskLevel | "all"> = ["all", "high", "medium", "low", "info"];
@@ -37,9 +37,6 @@ export function FindingsExplorer({
 }) {
   const [risk, setRisk] = useState<RiskLevel | "all">("all");
   const [category, setCategory] = useState("all");
-  const [runningFindingId, setRunningFindingId] = useState("");
-  const [message, setMessage] = useState("");
-  const [pendingFinding, setPendingFinding] = useState<Finding | null>(null);
 
   const categories = useMemo(
     () => ["all", ...Array.from(new Set(findings.map((finding) => finding.category)))],
@@ -51,64 +48,6 @@ export function FindingsExplorer({
     const categoryMatch = category === "all" || finding.category === category;
     return riskMatch && categoryMatch;
   });
-
-  function evidenceValue(finding: Finding, key: string) {
-    const parts = finding.evidence?.split(";").map((part) => part.trim()) ?? [];
-    const prefix = `${key}=`;
-    return parts.find((part) => part.startsWith(prefix))?.slice(prefix.length).trim() ?? "";
-  }
-
-  function remediationRequest(finding: Finding) {
-    if (finding.remediationId === "close_dangerous_ports") {
-      return { action: "closeDangerousPorts", extraVars: {} };
-    }
-    if (finding.remediationId === "update_package") {
-      const packageName = evidenceValue(finding, "package");
-      return packageName ? { action: "updatePackage", extraVars: { package_name: packageName } } : null;
-    }
-    return null;
-  }
-
-  function remediationLabel(action: string) {
-    if (action === "closeDangerousPorts") {
-      return "Закрыть распространенные опасные порты через активный firewall.";
-    }
-    if (action === "updatePackage") {
-      return "Обновить выбранный пакет через пакетный менеджер дистрибутива.";
-    }
-    return "Запустить разрешенный response-playbook.";
-  }
-
-  async function runRemediation(finding: Finding) {
-    const request = remediationRequest(finding);
-    if (!request || !hostAlias) {
-      setMessage("Для этой находки нет автоматического действия.");
-      return;
-    }
-
-    setRunningFindingId(finding.id);
-    setMessage("");
-    try {
-      const response = await fetch("/api/ansible/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action: request.action,
-          profileId,
-          limit: hostAlias,
-          confirmResponse: true,
-          extraVars: request.extraVars,
-        }),
-      });
-      const payload = await response.json();
-      setMessage(payload.ok ? "Исправление выполнено. Запустите аудит повторно." : payload.message ?? "Исправление завершилось ошибкой.");
-      if (payload.ok) {
-        setPendingFinding(null);
-      }
-    } finally {
-      setRunningFindingId("");
-    }
-  }
 
   return (
     <section className="space-y-4">
@@ -187,15 +126,9 @@ export function FindingsExplorer({
                   <td className="px-3 py-3"><StatusBadge status={finding.status} /></td>
                   <td className="break-words px-3 py-3 text-slate-300">{sourceLabels[finding.source]}</td>
                   <td className="break-words px-3 py-3 text-slate-300">
-                    {remediationRequest(finding) && hostAlias ? (
-                      <Button
-                        variant="secondary"
-                        onClick={() => setPendingFinding(finding)}
-                        disabled={Boolean(runningFindingId)}
-                      >
-                        Исправить
-                      </Button>
-                    ) : finding.remediationAvailable ? "доступно" : "вручную"}
+                    {finding.remediationAvailable && hostAlias ? (
+                      <LinkButton href={remediationLinkHref ?? "/hosts"} variant="secondary">Открыть транзакцию</LinkButton>
+                    ) : finding.remediationAvailable ? "через управление хостом" : "вручную"}
                   </td>
                 </tr>
               )) : (
@@ -209,47 +142,6 @@ export function FindingsExplorer({
           </table>
         </div>
       </div>
-
-      {message ? (
-        <div className="flex flex-col gap-3 rounded-md border border-slate-800 bg-slate-950/70 p-4 text-sm text-slate-300 md:flex-row md:items-center md:justify-between">
-          <span>{message}</span>
-          {message.startsWith("Исправление выполнено") ? (
-            <LinkButton href="/hosts" variant="secondary">
-              Перепроверить
-            </LinkButton>
-          ) : null}
-        </div>
-      ) : null}
-
-      {pendingFinding ? (() => {
-        const request = remediationRequest(pendingFinding);
-        return request ? (
-          <div className="rounded-md border border-amber-400/30 bg-amber-500/10 p-4">
-            <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <p className="text-sm font-semibold text-amber-100">Подтверждение исправления</p>
-                <h3 className="mt-2 text-lg font-semibold text-white">{pendingFinding.title}</h3>
-                <p className="mt-2 text-sm leading-6 text-amber-100">{remediationLabel(request.action)}</p>
-                <div className="mt-3 grid gap-2 text-xs text-slate-300 md:grid-cols-3">
-                  <code className="rounded-md bg-slate-950/70 p-2">playbook: {request.action}</code>
-                  <code className="rounded-md bg-slate-950/70 p-2">limit: {hostAlias}</code>
-                  <code className="rounded-md bg-slate-950/70 p-2">
-                    vars: {Object.keys(request.extraVars).length ? JSON.stringify(request.extraVars) : "нет"}
-                  </code>
-                </div>
-              </div>
-              <div className="flex shrink-0 gap-2">
-                <Button variant="secondary" onClick={() => setPendingFinding(null)} disabled={Boolean(runningFindingId)}>
-                  Отмена
-                </Button>
-                <Button variant="danger" onClick={() => runRemediation(pendingFinding)} disabled={Boolean(runningFindingId)}>
-                  {runningFindingId === pendingFinding.id ? "Запуск..." : "Запустить"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        ) : null;
-      })() : null}
 
       <div className="flex justify-end">
         <LinkButton href={remediationLinkHref ?? `/remediation?profileId=${profileId}`}>

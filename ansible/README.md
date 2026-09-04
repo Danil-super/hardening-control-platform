@@ -84,7 +84,9 @@ sudo apt install lynis nmap ssh-audit
 
 ## Базовый аудит конфигурации
 
-Основной аудит выполняет `ansible/playbooks/agentless-audit.yml`. Он не использует внешнюю CVE-БД: playbook собирает состояние Linux-хоста и применяет локальные правила из `ansible/audit-rules/basic-linux.yml`.
+Основной аудит выполняет `ansible/playbooks/agentless-audit.yml`. Он не использует внешнюю CVE-БД: playbook собирает состояние Linux-хоста и загружает набор локальных правил, соответствующий `audit_profile`.
+
+Доступные правила: `basic-linux.yml`, `ssh-security.yml`, `web-server.yml` и `docker-host.yml`. Все наборы версионированы и являются реальными Ansible-проверками, а не данными интерфейса.
 
 Сейчас проверяются:
 
@@ -99,23 +101,24 @@ sudo apt install lynis nmap ssh-audit
 - последние неудачные попытки входа;
 - небезопасные world-writable директории.
 
-Чтобы добавить новое правило, начните с `ansible/audit-rules/basic-linux.yml`. Если правило требует нового способа сбора данных, добавьте короткую проверку в `agentless-audit.yml` и сохраните результат как `finding` с evidence и recommendation.
+Чтобы добавить новое правило, начните с подходящего файла в `ansible/audit-rules/`. Если правило требует нового способа сбора данных, добавьте короткую проверку в `agentless-audit.yml` и сохраните результат как `finding` с evidence и recommendation.
 
 OpenSCAP не используется как обязательный механизм аудита, потому что он требует scanner/content на проверяемой системе или отдельного offline-образа. Архитектура платформы остается без установки ПО на целевые хосты: Ansible собирает данные по SSH, а анализ выполняется правилами на главном сервере.
 
 ## Response-playbook
 
-Response-playbook может менять настройки хоста, поэтому запускайте его только с `--limit` и после проверки отчета:
+Панель запускает только обратимые firewall-действия через транзакционный контур: dry-run, backup, применение, audit «после» и rollback. При ручном запуске playbook'ов соблюдайте тот же порядок:
 
 ```bash
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-dangerous-ports.yml --limit server1
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-port.yml --limit server1 -e target_port=23 -e target_protocol=tcp
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/update-package.yml --limit server1 -e package_name=openssl
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/block-ip.yml --limit server1 -e block_ip=192.168.1.50
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/stop-service.yml --limit server1 -e service_name=nginx
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/backup-remediation.yml --limit server1 \
+  -e transaction_id=txn-example-001 -e remediation_action=closePort
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-port.yml --limit server1 \
+  -e target_port=23 -e target_protocol=tcp
+ansible-playbook -i ansible/inventory.ini ansible/playbooks/rollback-remediation.yml --limit server1 \
+  -e transaction_id=txn-example-001 -e remediation_action=closePort
 ```
 
-`close-dangerous-ports.yml` блокирует распространенные опасные порты через активный `ufw` или `firewalld`. Если поддерживаемый firewall не активен, playbook выводит предупреждение и не закрывает порты.
+`backup-remediation.yml` архивирует конфигурации UFW/firewalld на целевом хосте. `rollback-remediation.yml` восстанавливает этот архив и перезагружает firewall. Не запускайте автоматически обновление пакетов и остановку сервисов: общий надежный откат таких действий требует отдельной процедуры.
 
 ## Важно
 

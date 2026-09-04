@@ -1,0 +1,9 @@
+[Unit]
+Description=Hardening Control Platform scheduled Ansible audit
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/hardening-control-platform
+ExecStart=/usr/bin/docker compose exec -T hcp /usr/local/bin/hcp-scheduled-audit

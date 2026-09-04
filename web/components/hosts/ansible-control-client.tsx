@@ -6,8 +6,8 @@ import {
   CheckCircle2,
   FileText,
   Plus,
-  Power,
   RefreshCw,
+  RotateCcw,
   Search,
   Server,
   ShieldCheck,
@@ -32,6 +32,21 @@ type RunPayload = {
   stderr?: string;
   reportRunId?: string | null;
   reportId?: string | null;
+  postAuditReportId?: string | null;
+  transaction?: RemediationTransaction;
+};
+
+type RemediationTransaction = {
+  id: string;
+  createdAt: string;
+  hostAlias: string;
+  action: string;
+  status: "preparing" | "backed_up" | "applied" | "failed" | "rolled_back";
+  reason: string;
+  backupRef: string | null;
+  preAuditReportId: string | null;
+  postAuditReportId: string | null;
+  error: string | null;
 };
 
 type ManagedHost = {
@@ -107,11 +122,8 @@ const auditActions = [
 ] as const;
 
 const responseActions = [
-  { id: "closeDangerousPorts", label: "Закрыть опасные", icon: AlertTriangle },
   { id: "closePort", label: "Закрыть порт", icon: Ban },
-  { id: "updatePackage", label: "Обновить пакет", icon: RefreshCw },
   { id: "blockIp", label: "Блок IP", icon: AlertTriangle },
-  { id: "stopService", label: "Стоп сервис", icon: Power },
 ] as const;
 
 function formatDate(value: string | null | undefined) {
@@ -158,9 +170,9 @@ export function AnsibleControlClient() {
   const [discovery, setDiscovery] = useState<DiscoveryPayload | null>(null);
   const [targetPort, setTargetPort] = useState("23");
   const [targetProtocol, setTargetProtocol] = useState("tcp");
-  const [packageName, setPackageName] = useState("openssl");
   const [blockIp, setBlockIp] = useState("");
-  const [serviceName, setServiceName] = useState("nginx");
+  const [changeReason, setChangeReason] = useState("");
+  const [transactions, setTransactions] = useState<RemediationTransaction[]>([]);
 
   const selectedHost = useMemo(
     () => hosts?.hosts?.find((host) => host.alias === selectedAlias) ?? null,
@@ -174,14 +186,17 @@ export function AnsibleControlClient() {
   async function refreshAll() {
     setLoading("refresh");
     try {
-      const [healthResponse, hostsResponse] = await Promise.all([
+      const [healthResponse, hostsResponse, remediationResponse] = await Promise.all([
         fetch("/api/ansible/health"),
         fetch("/api/ansible/hosts"),
+        fetch("/api/ansible/remediations"),
       ]);
       const nextHealth = await healthResponse.json();
       const nextHosts = await hostsResponse.json();
+      const nextRemediations = await remediationResponse.json();
       setHealth(nextHealth);
       setHosts(nextHosts);
+      setTransactions(nextRemediations.transactions ?? []);
       if (!selectedAlias && nextHosts.hosts?.[0]) {
         setSelectedAlias(nextHosts.hosts[0].alias);
       }
@@ -196,6 +211,12 @@ export function AnsibleControlClient() {
     const payload = await response.json();
     setHosts(payload);
     return payload as HostsPayload;
+  }
+
+  async function loadRemediations() {
+    const response = await fetch("/api/ansible/remediations");
+    const payload = await response.json();
+    setTransactions(payload.transactions ?? []);
   }
 
   async function addManualHost() {
@@ -329,7 +350,7 @@ export function AnsibleControlClient() {
     }
   }
 
-  async function runAction(action: string) {
+  async function runAction(action: string, mode: "preview" | "apply" = "apply") {
     if (!selectedAlias) {
       setRunResult({ ok: false, action, message: "Выберите хост." });
       return;
@@ -337,15 +358,27 @@ export function AnsibleControlClient() {
 
     const isResponse = responseActions.some((item) => item.id === action);
     const actionMeta = auditActions.find((item) => item.id === action);
-    const requiresConfirmation = isResponse || Boolean(
+    const requiresConfirmation = Boolean(
       actionMeta && "requiresConfirmation" in actionMeta && actionMeta.requiresConfirmation === true,
     );
     const confirmationText = action === "lynisTemporaryAudit"
       ? "Lynis будет временно передан на выбранную ВМ, выполнен с sudo, а его каталог и сырой отчет будут удалены. Продолжить?"
       : action === "networkPortScan"
         ? "Nmap выполнит сетевую проверку top-100 TCP-портов выбранного хоста с control node. Продолжить?"
-        : "Запустить response-playbook на выбранном хосте?";
+        : "Запустить проверку?";
     if (requiresConfirmation && !window.confirm(confirmationText)) {
+      return;
+    }
+
+    if (isResponse && changeReason.trim().length < 10) {
+      setRunResult({ ok: false, action, message: "Укажите причину изменения не короче 10 символов." });
+      return;
+    }
+    const confirmedHost = isResponse
+      ? window.prompt(`Введите alias ${selectedAlias} для ${mode === "preview" ? "проверки плана" : "применения изменения"}:`)
+      : null;
+    if (isResponse && confirmedHost?.trim() !== selectedAlias) {
+      setRunResult({ ok: false, action, message: "Alias не подтвержден: действие отменено." });
       return;
     }
 
@@ -354,11 +387,7 @@ export function AnsibleControlClient() {
         ? { target_port: targetPort, target_protocol: targetProtocol }
         : action === "blockIp"
           ? { block_ip: blockIp }
-          : action === "updatePackage"
-            ? { package_name: packageName }
-            : action === "stopService"
-              ? { service_name: serviceName }
-              : {};
+          : {};
 
     setLoading(action);
     setRunResult(null);
@@ -371,13 +400,17 @@ export function AnsibleControlClient() {
           action,
           profileId,
           limit: selectedAlias,
-          confirmResponse: requiresConfirmation,
+          mode,
+          reason: changeReason.trim(),
+          confirmedHost: confirmedHost?.trim(),
+          confirmAudit: requiresConfirmation,
           extraVars,
         }),
       });
       const payload = await response.json();
       setRunResult(payload);
       await loadHosts();
+      await loadRemediations();
       if (payload.ok && action === "packageInventory") {
         const cveResponse = await fetch("/api/ansible/vulnerabilities/check", {
           method: "POST",
@@ -402,6 +435,30 @@ export function AnsibleControlClient() {
       if (payload.ok && action !== "packageInventory" && payload.reportId) {
         setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.reportId)}`);
       }
+      if (payload.ok && payload.postAuditReportId) {
+        setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.postAuditReportId)}`);
+      }
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function rollbackTransaction(transaction: RemediationTransaction) {
+    const confirmedHost = window.prompt(`Введите alias ${transaction.hostAlias} для отката:`);
+    if (confirmedHost?.trim() !== transaction.hostAlias) {
+      return;
+    }
+    setLoading(`rollback-${transaction.id}`);
+    setRunResult(null);
+    try {
+      const response = await fetch(`/api/ansible/remediations/${encodeURIComponent(transaction.id)}/rollback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmedHost: confirmedHost.trim() }),
+      });
+      setRunResult(await response.json());
+      await loadRemediations();
+      await loadHosts();
     } finally {
       setLoading("");
     }
@@ -630,7 +687,12 @@ export function AnsibleControlClient() {
           </div>
 
           <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-5">
+            <p className="text-sm font-semibold text-slate-100">Обратимые изменения</p>
+            <p className="mt-1 text-xs leading-5 text-slate-400">
+              Сначала выполните dry-run. При применении платформа сохраняет firewall-конфигурацию на хосте,
+              запускает действие и повторный аудит. Введите alias хоста для каждого изменения.
+            </p>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
               <Field label="Порт" value={targetPort} onChange={setTargetPort} placeholder="23" />
               <label className="block">
                 <span className="text-xs font-semibold uppercase text-slate-500">Протокол</span>
@@ -643,23 +705,66 @@ export function AnsibleControlClient() {
                   <option value="udp">udp</option>
                 </select>
               </label>
-              <Field label="Package" value={packageName} onChange={setPackageName} placeholder="openssl" />
               <Field label="IP block" value={blockIp} onChange={setBlockIp} placeholder="192.168.1.50" />
-              <Field label="Service" value={serviceName} onChange={setServiceName} placeholder="nginx" />
+              <Field label="Причина" value={changeReason} onChange={setChangeReason} placeholder="Например: закрытие Telnet по результату аудита" />
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               {responseActions.map((action) => {
                 const Icon = action.icon;
                 return (
-                  <Button key={action.id} variant="danger" onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
-                    <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
-                    {action.label}
-                  </Button>
+                  <div key={action.id} className="flex overflow-hidden rounded-md border border-slate-700">
+                    <Button variant="secondary" onClick={() => runAction(action.id, "preview")} disabled={Boolean(loading) || !selectedHost} className="rounded-none border-0">
+                      План: {action.label}
+                    </Button>
+                    <Button variant="danger" onClick={() => runAction(action.id, "apply")} disabled={Boolean(loading) || !selectedHost} className="rounded-none border-0">
+                      <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
+                      Применить
+                    </Button>
+                  </div>
                 );
               })}
             </div>
           </div>
         </div>
+
+        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2 className="text-lg font-semibold text-white">Транзакции изменений</h2>
+              <p className="mt-1 text-sm text-slate-400">Хранятся в локальной SQLite-базе; откат доступен только для примененных действий.</p>
+            </div>
+            <Button variant="secondary" onClick={loadRemediations} disabled={Boolean(loading)}>
+              <RefreshCw size={16} aria-hidden="true" />
+              Обновить
+            </Button>
+          </div>
+          {transactions.length ? (
+            <div className="mt-4 space-y-2">
+              {transactions.map((transaction) => (
+                <div key={transaction.id} className="flex flex-col gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="min-w-0 text-sm">
+                    <p className="font-semibold text-slate-100">{transaction.action} · {transaction.hostAlias}</p>
+                    <p className="mt-1 text-xs text-slate-400">{formatDate(transaction.createdAt)} · {transaction.status} · {transaction.reason}</p>
+                    {transaction.error ? <p className="mt-1 text-xs text-red-200">{transaction.error}</p> : null}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {transaction.postAuditReportId ? (
+                      <LinkButton href={`/reports/agentless/${encodeURIComponent(transaction.postAuditReportId)}`} variant="secondary">
+                        Отчет после
+                      </LinkButton>
+                    ) : null}
+                    {transaction.status === "applied" ? (
+                      <Button variant="danger" onClick={() => rollbackTransaction(transaction)} disabled={Boolean(loading)}>
+                        <RotateCcw size={16} aria-hidden="true" />
+                        Откатить
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : <p className="mt-4 text-sm text-slate-500">Транзакций пока нет.</p>}
+        </section>
 
         <aside className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <h2 className="text-lg font-semibold text-white">Последний запуск</h2>

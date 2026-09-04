@@ -1,17 +1,17 @@
-FROM node:22-bookworm-slim AS dependencies
+FROM node:24-bookworm-slim AS dependencies
 
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 
-FROM node:22-bookworm-slim AS build
+FROM node:24-bookworm-slim AS build
 
 WORKDIR /app
 COPY --from=dependencies /app/web/node_modules ./web/node_modules
 COPY web ./web
 RUN cd web && npm run build
 
-FROM node:22-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ansible ca-certificates lynis nmap openssh-client python3 ssh-audit util-linux \
@@ -30,11 +30,12 @@ COPY --chown=node:node web/public ./web/public
 COPY --chown=node:node ansible ./ansible
 COPY --chown=node:node ansible.cfg ./ansible.cfg
 COPY --chown=node:node deployment/docker-entrypoint.sh /usr/local/bin/hcp-entrypoint
+COPY --chown=node:node deployment/hcp-scheduled-audit /usr/local/bin/hcp-scheduled-audit
 
 RUN mkdir -p /var/lib/hcp/reports /home/node/.ssh \
   && chown -R node:node /var/lib/hcp /home/node/.ssh /app \
   && chmod 700 /home/node/.ssh \
-  && chmod 755 /usr/local/bin/hcp-entrypoint
+  && chmod 755 /usr/local/bin/hcp-entrypoint /usr/local/bin/hcp-scheduled-audit
 
 WORKDIR /app/web
 EXPOSE 3000

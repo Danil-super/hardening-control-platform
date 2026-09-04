@@ -1,0 +1,64 @@
+---
+audit_rules_version: "1.0.0"
+
+dangerous_ports:
+  - port: 21
+    protocol: tcp
+    title: FTP открыт на web-хосте
+    risk: high
+    recommendation: Закройте FTP или замените его на SFTP с ключевой аутентификацией.
+  - port: 6379
+    protocol: tcp
+    title: Redis открыт на web-хосте
+    risk: high
+    recommendation: Ограничьте Redis firewall'ом и не публикуйте его без аутентификации.
+  - port: 3306
+    protocol: tcp
+    title: MySQL открыт на web-хосте
+    risk: medium
+    recommendation: Ограничьте MySQL доверенными адресами и отдельной подсетью.
+  - port: 5432
+    protocol: tcp
+    title: PostgreSQL открыт на web-хосте
+    risk: medium
+    recommendation: Ограничьте PostgreSQL доверенными адресами и отдельной подсетью.
+
+ssh_rules:
+  permit_root_login:
+    expected: "no"
+    risk: high
+    recommendation: Запретите root-вход по SSH.
+  password_authentication:
+    expected: "no"
+    risk: high
+    recommendation: После проверки ключей отключите парольный SSH-вход.
+  empty_passwords:
+    expected: "no"
+    risk: high
+    recommendation: Установите PermitEmptyPasswords no.
+  max_auth_tries:
+    max: 4
+    risk: medium
+    recommendation: Установите MaxAuthTries 4 или меньше.
+
+service_rules:
+  - service: auditd
+    title: Auditd активен
+    risk: medium
+    recommendation: Включите auditd для расследования событий на web-хосте.
+
+package_rules:
+  unattended_upgrades:
+    packages: [unattended-upgrades, dnf-automatic, yum-cron]
+    risk: low
+    recommendation: Настройте контролируемое получение security-обновлений.
+
+filesystem_rules:
+  world_writable_paths:
+    paths: [/tmp, /var/tmp]
+    risk: medium
+    recommendation: Добавьте sticky bit или исправьте права небезопасных директорий.
+
+profile_checks:
+  scope: web
+  services: [nginx, apache2]

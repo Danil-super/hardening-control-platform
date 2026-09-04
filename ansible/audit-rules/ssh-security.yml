@@ -1,0 +1,52 @@
+---
+audit_rules_version: "1.0.0"
+
+dangerous_ports:
+  - port: 23
+    protocol: tcp
+    title: Telnet открыт
+    risk: high
+    recommendation: Закройте Telnet и используйте SSH по ключам.
+
+ssh_rules:
+  permit_root_login:
+    expected: "no"
+    risk: high
+    recommendation: Установите PermitRootLogin no, проверьте sshd -t и только затем примените конфигурацию.
+  password_authentication:
+    expected: "no"
+    risk: high
+    recommendation: Отключите PasswordAuthentication после проверки отдельной SSH-сессии по ключу.
+  empty_passwords:
+    expected: "no"
+    risk: high
+    recommendation: Установите PermitEmptyPasswords no.
+  max_auth_tries:
+    max: 4
+    risk: medium
+    recommendation: Установите MaxAuthTries 4 или меньше.
+
+service_rules:
+  - service: fail2ban
+    title: Fail2ban активен
+    risk: medium
+    recommendation: Установите и включите fail2ban либо примените эквивалентную защиту от перебора.
+  - service: auditd
+    title: Auditd активен
+    risk: medium
+    recommendation: Включите auditd для расследования административных действий.
+
+package_rules:
+  unattended_upgrades:
+    packages: [unattended-upgrades, dnf-automatic, yum-cron]
+    risk: low
+    recommendation: Настройте контролируемую установку security-обновлений.
+
+filesystem_rules:
+  world_writable_paths:
+    paths: [/tmp, /var/tmp]
+    risk: medium
+    recommendation: Добавьте sticky bit или исправьте права небезопасных директорий.
+
+profile_checks:
+  scope: ssh

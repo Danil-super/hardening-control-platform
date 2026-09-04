@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the Hardening Control Platform audit every 15 minutes
+
+[Timer]
+OnBootSec=3m
+OnUnitActiveSec=15m
+Persistent=true
+Unit=hcp-scheduled-audit.service
+
+[Install]
+WantedBy=timers.target

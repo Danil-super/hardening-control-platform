@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { readIncidents, removeIncident } from "@/lib/ansible-control";
+import { readIncidents } from "@/lib/ansible-control";
+import { verifyAuditChain } from "@/lib/state-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,16 +21,17 @@ export async function GET() {
     ok: true,
     incidents,
     summary,
+    integrity: verifyAuditChain(),
   });
 }
 
-export async function DELETE(request: Request) {
-  const body = await request.json().catch(() => ({}));
-  if (!removeIncident(body?.id)) {
-    return NextResponse.json(
-      { ok: false, error: "incident_not_found", message: "Запись истории не найдена или имеет некорректный идентификатор." },
-      { status: 404 },
-    );
-  }
-  return NextResponse.json({ ok: true });
+export async function DELETE() {
+  return NextResponse.json(
+    {
+      ok: false,
+      error: "audit_log_append_only",
+      message: "Журнал аудита неизменяем: записи нельзя удалить через панель.",
+    },
+    { status: 405 },
+  );
 }

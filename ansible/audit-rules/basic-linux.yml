@@ -1,5 +1,5 @@
 ---
-audit_rules_version: "0.2.0"
+audit_rules_version: "1.0.0"
 
 dangerous_ports:
   - port: 21
@@ -87,3 +87,6 @@ filesystem_rules:
       - /var/tmp
     risk: medium
     recommendation: Добавьте sticky bit или исправьте права небезопасных директорий.
+
+profile_checks:
+  scope: basic

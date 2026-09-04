@@ -11,10 +11,12 @@ services:
     environment:
       HCP_ADMIN_PASSWORD: ${HCP_ADMIN_PASSWORD:?Set HCP_ADMIN_PASSWORD in .env}
       HCP_AUTH_SECRET: ${HCP_AUTH_SECRET:?Set HCP_AUTH_SECRET in .env}
+      HCP_AUDIT_HMAC_KEY: ${HCP_AUDIT_HMAC_KEY:?Set HCP_AUDIT_HMAC_KEY in .env}
       HCP_SSH_PRIVATE_KEY_PATH: /home/node/.ssh/hcp-control
       HCP_REPORTS_DIR: /var/lib/hcp/reports
       HCP_STATE_DIR: /var/lib/hcp
       HCP_PRODUCTION_MODE: "true"
+      HCP_CONTROL_IPS: ${HCP_CONTROL_IPS:-}
     volumes:
       - hcp-runtime:/var/lib/hcp
       - ./ansible/inventory.ini:/app/ansible/inventory.ini

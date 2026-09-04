@@ -1,9 +1,14 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { getReportsDir } from "@/lib/ansible-reports";
+import {
+  appendIncident as appendStoredIncident,
+  readIncidents as readStoredIncidents,
+  type IncidentRecord,
+} from "@/lib/state-store";
 
 const execFileAsync = promisify(execFile);
 
@@ -18,11 +23,10 @@ export const playbooks = {
   sshCryptoAudit: { file: "ssh-crypto-audit.yml", timeout: 180_000, kind: "audit", requiresLimit: true },
   networkPortScan: { file: "nmap-scan.yml", timeout: 300_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   lynisTemporaryAudit: { file: "lynis-temporary-audit.yml", timeout: 1_200_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
-  closeDangerousPorts: { file: "close-dangerous-ports.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   closePort: { file: "close-port.yml", timeout: 240_000, kind: "response", requiresLimit: true },
-  updatePackage: { file: "update-package.yml", timeout: 600_000, kind: "response", requiresLimit: true },
   blockIp: { file: "block-ip.yml", timeout: 240_000, kind: "response", requiresLimit: true },
-  stopService: { file: "stop-service.yml", timeout: 240_000, kind: "response", requiresLimit: true },
+  backupRemediation: { file: "backup-remediation.yml", timeout: 240_000, kind: "audit", requiresLimit: true, internal: true },
+  rollbackRemediation: { file: "rollback-remediation.yml", timeout: 240_000, kind: "response", requiresLimit: true, internal: true },
 } as const;
 
 export type PlaybookAction = keyof typeof playbooks;
@@ -60,17 +64,7 @@ export function reportIdForRun({
   return type ? `${limit}-${type}-${reportRunId}` : null;
 }
 
-export type IncidentRecord = {
-  id: string;
-  createdAt: string;
-  action: string;
-  kind: "audit" | "response" | "system";
-  status: "success" | "failed";
-  profileId: string;
-  limit: string | null;
-  message: string;
-  command?: string;
-};
+export type { IncidentRecord } from "@/lib/state-store";
 
 export function getRepoRoot() {
   return path.resolve(process.cwd(), "..");
@@ -104,6 +98,18 @@ export function isSafeIp(value: unknown): value is string {
   return parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255);
 }
 
+export function isBlockableIpv4(value: unknown): value is string {
+  if (!isSafeIp(value)) {
+    return false;
+  }
+  const [first] = value.split(".").map(Number);
+  return !(
+    first === 0
+    || first === 127
+    || first >= 224
+  );
+}
+
 export function isSafePort(value: unknown): value is number {
   const port = typeof value === "string" ? Number(value) : value;
   return typeof port === "number" && Number.isInteger(port) && port > 0 && port <= 65535;
@@ -123,78 +129,58 @@ export function validateExtraVars(action: PlaybookAction, extraVars: unknown): E
     if (!isSafePort(values.target_port)) {
       return { ok: false as const, message: "Укажите корректный порт от 1 до 65535." };
     }
+    if ([22].includes(Number(values.target_port))) {
+      return { ok: false as const, message: "Этот порт защищен от автоматического закрытия. Изменяйте его только вручную по утвержденной процедуре." };
+    }
     const protocol = values.target_protocol === "udp" ? "udp" : "tcp";
     return { ok: true, values: { target_port: String(values.target_port), target_protocol: protocol } };
   }
   if (action === "blockIp") {
-    if (!isSafeIp(values.block_ip)) {
-      return { ok: false as const, message: "Укажите корректный IPv4-адрес для блокировки." };
+    if (!isBlockableIpv4(values.block_ip)) {
+      return { ok: false as const, message: "Укажите допустимый unicast IPv4-адрес для блокировки." };
     }
     return { ok: true, values: { block_ip: values.block_ip } };
-  }
-  if (action === "updatePackage") {
-    if (!isSafePackageName(values.package_name)) {
-      return { ok: false as const, message: "Укажите корректное имя пакета." };
-    }
-    return { ok: true, values: { package_name: values.package_name } };
-  }
-  if (action === "stopService") {
-    if (!isSafeServiceName(values.service_name)) {
-      return { ok: false as const, message: "Укажите корректное имя systemd-сервиса." };
-    }
-    return { ok: true, values: { service_name: values.service_name } };
   }
   return { ok: true, values: {} };
 }
 
-function ensureDir(dirPath: string) {
-  if (!existsSync(dirPath)) {
-    mkdirSync(dirPath, { recursive: true });
-  }
+export function readIncidents() {
+  return readStoredIncidents();
 }
 
-function getIncidentPath(repoRoot = getRepoRoot()) {
-  return path.join(getStateDir(repoRoot), "incidents.json");
+export function appendIncident(record: Omit<IncidentRecord, "id" | "createdAt">) {
+  return appendStoredIncident(record);
 }
 
-export function readIncidents(repoRoot = getRepoRoot()) {
-  const incidentPath = getIncidentPath(repoRoot);
-  if (!existsSync(incidentPath)) {
-    return [] as IncidentRecord[];
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(incidentPath, "utf8"));
-    return Array.isArray(parsed) ? parsed as IncidentRecord[] : [];
-  } catch {
-    return [];
-  }
-}
-
-export function appendIncident(record: Omit<IncidentRecord, "id" | "createdAt">, repoRoot = getRepoRoot()) {
-  ensureDir(getStateDir(repoRoot));
-  const incidents = readIncidents(repoRoot);
-  const createdAt = new Date().toISOString();
-  const next: IncidentRecord = {
-    id: `incident_${createdAt.replace(/[-:.TZ]/g, "")}_${Math.random().toString(16).slice(2, 8)}`,
-    createdAt,
-    ...record,
-  };
-  writeFileSync(getIncidentPath(repoRoot), JSON.stringify([next, ...incidents].slice(0, 300), null, 2));
-  return next;
-}
-
-export function removeIncident(incidentId: unknown, repoRoot = getRepoRoot()) {
-  if (typeof incidentId !== "string" || !/^[a-zA-Z0-9_.:-]{1,160}$/.test(incidentId)) {
+export function inventoryHostExists(alias: string) {
+  const inventoryPath = path.join(getRepoRoot(), "ansible", "inventory.ini");
+  if (!existsSync(inventoryPath)) {
     return false;
   }
-  const incidents = readIncidents(repoRoot);
-  const remaining = incidents.filter((incident) => incident.id !== incidentId);
-  if (remaining.length === incidents.length) {
-    return false;
+  return readFileSync(inventoryPath, "utf8").split("\n").some((rawLine) => {
+    const line = rawLine.trim();
+    return Boolean(line) && !line.startsWith("#") && !line.startsWith("[") && line.split(/\s+/, 1)[0] === alias;
+  });
+}
+
+export function inventoryHostAddress(alias: string) {
+  const inventoryPath = path.join(getRepoRoot(), "ansible", "inventory.ini");
+  if (!existsSync(inventoryPath)) {
+    return null;
   }
-  ensureDir(getStateDir(repoRoot));
-  writeFileSync(getIncidentPath(repoRoot), JSON.stringify(remaining, null, 2));
-  return true;
+  for (const rawLine of readFileSync(inventoryPath, "utf8").split("\n")) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#") || line.startsWith("[")) {
+      continue;
+    }
+    const tokens = line.split(/\s+/);
+    if (tokens[0] !== alias) {
+      continue;
+    }
+    const address = tokens.find((token) => token.startsWith("ansible_host="))?.slice("ansible_host=".length);
+    return address ?? alias;
+  }
+  return null;
 }
 
 export async function runAnsiblePlaybook({
@@ -202,11 +188,13 @@ export async function runAnsiblePlaybook({
   profileId,
   limit,
   extraVars = {},
+  checkMode = false,
 }: {
   action: PlaybookAction;
   profileId: string;
   limit?: string;
   extraVars?: Record<string, string>;
+  checkMode?: boolean;
 }) {
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
@@ -222,7 +210,7 @@ export async function runAnsiblePlaybook({
   if (process.env.HCP_REPORTS_DIR) {
     args.push("-e", `hcp_reports_dir=${getReportsDir(repoRoot)}`);
   }
-  const reportRunId = selected.kind === "audit" && action !== "ping" ? newReportRunId() : null;
+  const reportRunId = selected.kind === "audit" && !("internal" in selected && selected.internal) && action !== "ping" ? newReportRunId() : null;
   if (reportRunId) {
     args.push("-e", `report_run_id=${reportRunId}`);
   }
@@ -231,6 +219,9 @@ export async function runAnsiblePlaybook({
   }
   if (limit) {
     args.push("--limit", limit);
+  }
+  if (checkMode) {
+    args.push("--check", "--diff");
   }
 
   const command = `ansible-playbook ${args.join(" ")}`;

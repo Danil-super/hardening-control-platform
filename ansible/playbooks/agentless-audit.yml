@@ -6,13 +6,26 @@
 
   vars:
     agentless_report_dir: "{{ hcp_reports_dir | default(playbook_dir ~ '/../reports') }}"
-    agentless_rules_file: "{{ playbook_dir }}/../audit-rules/basic-linux.yml"
+    agentless_profile_rules:
+      basic_linux: "{{ playbook_dir }}/../audit-rules/basic-linux.yml"
+      ssh_security: "{{ playbook_dir }}/../audit-rules/ssh-security.yml"
+      web_server: "{{ playbook_dir }}/../audit-rules/web-server.yml"
+      docker_host: "{{ playbook_dir }}/../audit-rules/docker-host.yml"
+    agentless_rules_file: "{{ agentless_profile_rules.get(audit_profile | default('basic_linux'), '') }}"
     report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
 
-  vars_files:
-    - ../audit-rules/basic-linux.yml
-
   tasks:
+    - name: Validate audit profile
+      ansible.builtin.assert:
+        that:
+          - audit_profile | default('basic_linux') in agentless_profile_rules
+          - agentless_rules_file | length > 0
+        fail_msg: "Неизвестный профиль аудита."
+
+    - name: Load selected profile rules
+      ansible.builtin.include_vars:
+        file: "{{ agentless_rules_file }}"
+
     - name: Ensure local report directory exists
       ansible.builtin.file:
         path: "{{ agentless_report_dir }}"
@@ -38,6 +51,7 @@
         service_rules = rules.get("service_rules", [])
         package_rules = rules.get("package_rules", {})
         filesystem_rules = rules.get("filesystem_rules", {})
+        profile_checks = rules.get("profile_checks", {})
 
         def run(command):
             try:
@@ -124,7 +138,7 @@
                     f"На хосте прослушивается потенциально опасный порт {port}.",
                     rule["recommendation"],
                     f"open_port={port}",
-                    "close_dangerous_ports",
+                    "close_port",
             ))
 
         ssh_config = ""
@@ -393,6 +407,123 @@
             "; ".join(service_lines),
         ))
 
+        if profile_id == "web_server":
+            web_services = profile_checks.get("services", ["nginx", "apache2"])
+            active_web_services = []
+            for service in web_services:
+                active, evidence = service_active(service)
+                if active:
+                    active_web_services.append(service)
+                findings.append(finding(
+                    f"web_service_{service}",
+                    f"Web-сервис {service} активен" if active else f"Web-сервис {service} не активен",
+                    "Web-сервер",
+                    "info" if active else "low",
+                    "passed" if active else "manual",
+                    f"Проверяется состояние systemd-сервиса {service}.",
+                    "Отключите неиспользуемый web-сервис или проверьте его конфигурацию.",
+                    f"{service}={evidence}",
+                ))
+
+            nginx_code, nginx_output, nginx_error = run(["bash", "-lc", "nginx -T 2>&1"])
+            if nginx_code == 0:
+                server_tokens_off = "server_tokens off" in nginx_output.lower()
+                findings.append(finding(
+                    "nginx_server_tokens",
+                    "Nginx не раскрывает версию" if server_tokens_off else "Nginx может раскрывать версию",
+                    "Web-сервер",
+                    "low",
+                    "passed" if server_tokens_off else "failed",
+                    "Проверяется параметр server_tokens в итоговой конфигурации nginx.",
+                    "Добавьте server_tokens off; в HTTP-контекст nginx и примените конфигурацию после nginx -t.",
+                    "server_tokens=" + ("off" if server_tokens_off else "not found"),
+                    None,
+                    ["/etc/nginx"],
+                ))
+
+            apache_code, apache_output, apache_error = run(["bash", "-lc", "apache2ctl -t -D DUMP_RUN_CFG 2>&1 || httpd -t -D DUMP_RUN_CFG 2>&1"])
+            if apache_code == 0:
+                apache_hardened = "servertokens: prod" in apache_output.lower() and "serversignature: off" in apache_output.lower()
+                findings.append(finding(
+                    "apache_banner_hardening",
+                    "Apache ограничивает раскрытие версии" if apache_hardened else "Apache banner hardening не подтвержден",
+                    "Web-сервер",
+                    "low",
+                    "passed" if apache_hardened else "failed",
+                    "Проверяются ServerTokens Prod и ServerSignature Off в конфигурации Apache.",
+                    "Установите ServerTokens Prod и ServerSignature Off, затем проверьте apachectl -t.",
+                    apache_output[-500:] or apache_error,
+                    None,
+                    ["/etc/apache2", "/etc/httpd"],
+                ))
+
+            if not active_web_services:
+                findings.append(finding(
+                    "web_profile_not_applicable",
+                    "Web-профиль требует ручной оценки",
+                    "Web-сервер",
+                    "info",
+                    "manual",
+                    "Nginx и Apache не обнаружены как активные systemd-сервисы.",
+                    "Выберите другой профиль или укажите реальный web-сервис на хосте.",
+                    "active_services=none",
+                ))
+
+        if profile_id == "docker_host":
+            docker_code, docker_output, docker_error = run(["bash", "-lc", "docker info 2>&1"])
+            docker_available = docker_code == 0
+            findings.append(finding(
+                "docker_engine_available",
+                "Docker Engine доступен" if docker_available else "Docker Engine недоступен",
+                "Docker",
+                "info" if docker_available else "medium",
+                "passed" if docker_available else "failed",
+                "Проверяется доступность Docker Engine от имени пользователя аудита.",
+                "Установите Docker только если он действительно нужен этому хосту; иначе используйте базовый профиль.",
+                docker_output or docker_error or str(docker_code),
+            ))
+            if docker_available:
+                rootless = "rootless" in docker_output.lower()
+                findings.append(finding(
+                    "docker_rootless",
+                    "Docker rootless mode включен" if rootless else "Docker работает в rootful-режиме",
+                    "Docker",
+                    "medium",
+                    "passed" if rootless else "manual",
+                    "Проверяются Docker SecurityOptions на наличие rootless mode.",
+                    "Оцените возможность rootless Docker или ограничьте доступ к docker.sock.",
+                    docker_output,
+                ))
+                socket_code, socket_output, socket_error = run(["bash", "-lc", "stat -c '%a %U:%G' /var/run/docker.sock 2>/dev/null"])
+                socket_safe = socket_code == 0 and socket_output.startswith("660 ")
+                findings.append(finding(
+                    "docker_socket_permissions",
+                    "Права docker.sock ограничены" if socket_safe else "Права docker.sock требуют проверки",
+                    "Docker",
+                    "high",
+                    "passed" if socket_safe else "failed",
+                    "Проверяются режим и владелец /var/run/docker.sock.",
+                    "Ограничьте членство в группе docker: доступ к сокету фактически равен root-доступу.",
+                    socket_output or socket_error or "socket not found",
+                    None,
+                    ["/var/run/docker.sock"],
+                ))
+                privileged_code, privileged_output, privileged_error = run([
+                    "bash", "-lc",
+                    "for id in $(docker ps -q); do docker inspect \"$id\" 2>/dev/null | grep -q '\"Privileged\": true' && echo privileged=$id; done",
+                ])
+                privileged = "privileged=true" in privileged_output.lower()
+                findings.append(finding(
+                    "docker_privileged_containers",
+                    "Privileged-контейнеры не обнаружены" if not privileged else "Обнаружены privileged-контейнеры",
+                    "Docker",
+                    "high",
+                    "passed" if not privileged else "failed",
+                    "Проверяются запущенные контейнеры Docker на HostConfig.Privileged.",
+                    "Уберите privileged: true либо оформите отдельное обоснование и компенсирующие меры.",
+                    privileged_output or privileged_error or "no running containers",
+                ))
+
         writable_paths = filesystem_rules.get("world_writable_paths", {}).get("paths", ["/tmp", "/var/tmp"])
         quoted_paths = " ".join(writable_paths)
         writable_code, writable_output, writable_error = run([
@@ -487,7 +618,8 @@
           'ssh_rules': ssh_rules,
           'service_rules': service_rules,
           'package_rules': package_rules,
-          'filesystem_rules': filesystem_rules
+          'filesystem_rules': filesystem_rules,
+          'profile_checks': profile_checks | default({})
         } | to_json }}"
       changed_when: false
       register: agentless_audit

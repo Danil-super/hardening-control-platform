@@ -1,0 +1,77 @@
+---
+- name: Create a rollback backup before a firewall remediation
+  hosts: linux_hosts
+  become: true
+  gather_facts: false
+
+  vars:
+    hcp_remote_backup_root: /var/lib/hcp-backups
+
+  tasks:
+    - name: Validate transaction parameters
+      ansible.builtin.assert:
+        that:
+          - transaction_id is defined
+          - transaction_id is match('^[A-Za-z0-9_.:-]{8,160}$')
+          - remediation_action is defined
+          - remediation_action in ['closePort', 'blockIp']
+        fail_msg: "Недопустимые параметры резервной копии remediation."
+
+    - name: Define transaction backup paths
+      ansible.builtin.set_fact:
+        hcp_transaction_backup_dir: "{{ hcp_remote_backup_root }}/{{ transaction_id }}"
+        hcp_transaction_backup_file: "{{ hcp_remote_backup_root }}/{{ transaction_id }}/firewall-state.tar.gz"
+
+    - name: Create protected backup directory
+      ansible.builtin.file:
+        path: "{{ hcp_transaction_backup_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0700"
+
+    - name: Archive existing UFW and firewalld configuration
+      ansible.builtin.shell: |
+        set -eu
+        set --
+        for config_path in /etc/ufw /etc/firewalld; do
+          if [ -e "$config_path" ]; then
+            set -- "$@" "$config_path"
+          fi
+        done
+        [ "$#" -gt 0 ] || { echo "No supported firewall configuration exists." >&2; exit 42; }
+        tar -czf "{{ hcp_transaction_backup_file }}" "$@"
+      args:
+        executable: /bin/sh
+      changed_when: true
+
+    - name: Capture UFW rules before remediation
+      ansible.builtin.command: ufw status numbered
+      changed_when: false
+      failed_when: false
+      register: hcp_ufw_before
+
+    - name: Capture firewalld rules before remediation
+      ansible.builtin.command: firewall-cmd --list-all --permanent
+      changed_when: false
+      failed_when: false
+      register: hcp_firewalld_before
+
+    - name: Save transaction metadata next to backup
+      ansible.builtin.copy:
+        dest: "{{ hcp_transaction_backup_dir }}/metadata.json"
+        owner: root
+        group: root
+        mode: "0600"
+        content: >-
+          {{ {
+            'transactionId': transaction_id,
+            'action': remediation_action,
+            'createdAt': lookup('pipe', 'date -u +%Y-%m-%dT%H:%M:%SZ'),
+            'ufw': hcp_ufw_before.stdout | default(''),
+            'firewalld': hcp_firewalld_before.stdout | default('')
+          } | to_nice_json }}
+
+    - name: Report backup reference
+      ansible.builtin.debug:
+        msg: "backup_ref={{ hcp_transaction_backup_file }}"

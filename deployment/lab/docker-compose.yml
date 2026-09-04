@@ -1,0 +1,39 @@
+name: hcp-lab
+
+services:
+  lab-target:
+    build: ./target
+    environment:
+      HCP_LAB_PUBLIC_KEY: ${HCP_LAB_PUBLIC_KEY:?Run ./deployment/lab/up.sh}
+    ports:
+      - "127.0.0.1:2222:22"
+    cap_add: [NET_ADMIN]
+    networks: [lab]
+
+  hcp:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    depends_on: [lab-target]
+    environment:
+      HCP_ADMIN_PASSWORD: lab-only-password
+      HCP_AUTH_SECRET: lab-only-secret-change-in-production
+      HCP_AUDIT_HMAC_KEY: lab-only-audit-integrity-key-change-in-production
+      HCP_SSH_PRIVATE_KEY_PATH: /home/node/.ssh/hcp-control
+      HCP_REPORTS_DIR: /var/lib/hcp/reports
+      HCP_STATE_DIR: /var/lib/hcp
+      HCP_PRODUCTION_MODE: "true"
+    ports:
+      - "127.0.0.1:3001:3000"
+    volumes:
+      - hcp-lab-state:/var/lib/hcp
+      - ../../ansible/inventory.lab.ini:/app/ansible/inventory.ini:ro
+      - ../../.lab/hcp-lab:/run/secrets/hcp-control:ro
+      - ../../.lab/known_hosts:/run/secrets/known_hosts:ro
+    networks: [lab]
+
+networks:
+  lab:
+
+volumes:
+  hcp-lab-state:

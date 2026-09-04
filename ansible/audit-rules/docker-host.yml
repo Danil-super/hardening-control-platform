@@ -1,0 +1,58 @@
+---
+audit_rules_version: "1.0.0"
+
+dangerous_ports:
+  - port: 2375
+    protocol: tcp
+    title: Docker API без TLS открыт
+    risk: high
+    recommendation: Немедленно закройте TCP 2375; используйте Unix-сокет или TLS с клиентской аутентификацией.
+  - port: 2376
+    protocol: tcp
+    title: Docker API TLS открыт
+    risk: medium
+    recommendation: Убедитесь, что TLS обязателен и разрешены только доверенные клиенты.
+  - port: 2377
+    protocol: tcp
+    title: Docker Swarm manager порт открыт
+    risk: medium
+    recommendation: Ограничьте Docker Swarm management network доверенными адресами.
+
+ssh_rules:
+  permit_root_login:
+    expected: "no"
+    risk: high
+    recommendation: Запретите root-вход по SSH.
+  password_authentication:
+    expected: "no"
+    risk: high
+    recommendation: После проверки ключей отключите парольный SSH-вход.
+  empty_passwords:
+    expected: "no"
+    risk: high
+    recommendation: Установите PermitEmptyPasswords no.
+  max_auth_tries:
+    max: 4
+    risk: medium
+    recommendation: Установите MaxAuthTries 4 или меньше.
+
+service_rules:
+  - service: auditd
+    title: Auditd активен
+    risk: medium
+    recommendation: Включите auditd для расследования действий с контейнерами.
+
+package_rules:
+  unattended_upgrades:
+    packages: [unattended-upgrades, dnf-automatic, yum-cron]
+    risk: low
+    recommendation: Настройте контролируемое получение security-обновлений.
+
+filesystem_rules:
+  world_writable_paths:
+    paths: [/tmp, /var/tmp]
+    risk: medium
+    recommendation: Добавьте sticky bit или исправьте права небезопасных директорий.
+
+profile_checks:
+  scope: docker

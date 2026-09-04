@@ -35,7 +35,7 @@ export const customPlaybookDir = path.join("ansible", "playbooks", "custom");
 
 /** Browser-authored YAML must not be executable on a production control node. */
 export function customPlaybooksEnabled() {
-  return process.env.HCP_PRODUCTION_MODE !== "true";
+  return process.env.HCP_ENABLE_CUSTOM_AUDITS === "true" && process.env.HCP_PRODUCTION_MODE !== "true";
 }
 
 const builtinTitles: Record<string, string> = {
@@ -47,27 +47,9 @@ const builtinTitles: Record<string, string> = {
   sshCryptoAudit: "SSH crypto-аудит (control node)",
   networkPortScan: "Nmap: top-100 TCP-портов (control node)",
   lynisTemporaryAudit: "Lynis: временный аудит без установки",
-  closeDangerousPorts: "Закрыть опасные порты",
-  closePort: "Закрыть порт",
-  updatePackage: "Обновить пакет",
-  blockIp: "Заблокировать IP",
-  stopService: "Остановить сервис",
 };
 
 const builtinVariables: Record<string, PlaybookVariable[]> = {
-  closePort: [
-    { name: "target_port", label: "Порт", type: "number", required: true, defaultValue: "23" },
-    { name: "target_protocol", label: "Протокол", type: "string", required: true, defaultValue: "tcp" },
-  ],
-  blockIp: [
-    { name: "block_ip", label: "IP", type: "string", required: true },
-  ],
-  updatePackage: [
-    { name: "package_name", label: "Пакет", type: "string", required: true, defaultValue: "openssl" },
-  ],
-  stopService: [
-    { name: "service_name", label: "Сервис", type: "string", required: true, defaultValue: "nginx" },
-  ],
 };
 
 export const playbookTemplates = [
@@ -110,64 +92,6 @@ export const playbookTemplates = [
         msg: "{{ deb_package.stdout | default(rpm_package.stdout | default('package not found')) }}"
 `,
   },
-  {
-    id: "update-package",
-    title: "Обновить пакет",
-    description: "Response-действие: обновляет выбранный пакет через apt на Debian/Ubuntu.",
-    kind: "response" as const,
-    variables: [{ name: "package_name", label: "Имя пакета", type: "string" as const, required: true, placeholder: "openssl" }],
-    content: `---
-- name: Update selected package
-  hosts: linux_hosts
-  become: true
-  gather_facts: true
-
-  tasks:
-    - name: Validate package_name
-      ansible.builtin.assert:
-        that:
-          - package_name is defined
-          - package_name | length > 0
-        fail_msg: "Set package_name."
-
-    - name: Update apt cache
-      ansible.builtin.apt:
-        update_cache: true
-      when: ansible_os_family == "Debian"
-
-    - name: Upgrade package on Debian family
-      ansible.builtin.apt:
-        name: "{{ package_name }}"
-        state: latest
-      when: ansible_os_family == "Debian"
-`,
-  },
-  {
-    id: "restart-service",
-    title: "Перезапустить сервис",
-    description: "Response-действие: перезапускает systemd-сервис на выбранных хостах.",
-    kind: "response" as const,
-    variables: [{ name: "service_name", label: "Имя сервиса", type: "string" as const, required: true, placeholder: "nginx" }],
-    content: `---
-- name: Restart selected service
-  hosts: linux_hosts
-  become: true
-  gather_facts: false
-
-  tasks:
-    - name: Validate service_name
-      ansible.builtin.assert:
-        that:
-          - service_name is defined
-          - service_name is match('^[A-Za-z0-9_.@:-]{1,96}$')
-        fail_msg: "Set valid service_name."
-
-    - name: Restart service
-      ansible.builtin.systemd:
-        name: "{{ service_name }}"
-        state: restarted
-`,
-  },
 ];
 
 export function isSafePlaybookId(value: unknown): value is string {
@@ -195,7 +119,9 @@ function readCustomMeta(id: string, repoRoot = getRepoRoot()) {
 }
 
 export function listRegisteredPlaybooks(repoRoot = getRepoRoot()): RegisteredPlaybook[] {
-  const builtin = Object.entries(playbooks).map(([id, config]) => ({
+  const builtin = Object.entries(playbooks)
+    .filter(([, config]) => config.kind === "audit" && !("internal" in config && config.internal))
+    .map(([id, config]) => ({
     id,
     title: builtinTitles[id] ?? id,
     file: path.join("ansible", "playbooks", config.file),
@@ -204,7 +130,7 @@ export function listRegisteredPlaybooks(repoRoot = getRepoRoot()): RegisteredPla
     requiresLimit: Boolean("requiresLimit" in config && config.requiresLimit),
     timeout: config.timeout,
     variables: builtinVariables[id] ?? [],
-  }));
+    }));
 
   if (!customPlaybooksEnabled()) {
     return builtin;
@@ -264,6 +190,9 @@ export function updateCustomPlaybook({
   if (playbook.source !== "custom") {
     throw new Error("Встроенные playbook'и доступны только для чтения.");
   }
+  if (kind !== "audit") {
+    throw new Error("Пользовательские playbook'и могут выполнять только audit-проверки.");
+  }
   if (!content.trim().startsWith("---")) {
     throw new Error("YAML playbook должен начинаться с ---.");
   }
@@ -322,8 +251,8 @@ export function createCustomPlaybook({
   const meta: PlaybookMeta = {
     id,
     title: title.trim() || template.title,
-    kind: template.kind,
-    requiresLimit: template.kind === "response",
+    kind: "audit",
+    requiresLimit: false,
     variables: template.variables,
   };
 
@@ -353,6 +282,9 @@ export async function runRegisteredPlaybook({
   limit?: string;
   variables: Record<string, string>;
 }) {
+  if (playbook.kind !== "audit") {
+    throw new Error("Response-playbook'и запускаются только через транзакционный контур remediation.");
+  }
   if (playbook.requiresLimit && !limit) {
     throw new Error("Для response-playbook выберите host/group limit.");
   }
@@ -396,7 +328,7 @@ export async function runRegisteredPlaybook({
     limit: limit || null,
     message: "Playbook выполнен.",
     command: `ansible-playbook ${args.join(" ")}`,
-  }, repoRoot);
+  });
 
   return { ...result, command: `ansible-playbook ${args.join(" ")}` };
 }

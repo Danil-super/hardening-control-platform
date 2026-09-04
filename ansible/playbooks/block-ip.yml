@@ -38,6 +38,14 @@
       register: firewalld_status
       when: firewalld_binary.rc == 0
 
+    - name: Require an active supported firewall
+      ansible.builtin.assert:
+        that:
+          - >-
+            (ufw_binary.rc == 0 and 'Status: active' in (ufw_status.stdout | default('')))
+            or (firewalld_binary.rc == 0 and (firewalld_status.stdout | default('')) == 'running')
+        fail_msg: "На хосте нет активного ufw/firewalld. Автоматическая блокировка IP остановлена без изменений."
+
     - name: Deny source IP with ufw
       ansible.builtin.command: "ufw deny from {{ block_ip }}"
       when:
@@ -57,10 +65,3 @@
       when:
         - firewalld_binary.rc == 0
         - "(firewalld_status.stdout | default('')) == 'running'"
-
-    - name: Warn when no active supported firewall was found
-      ansible.builtin.debug:
-        msg: "На хосте нет активного ufw/firewalld. IP {{ block_ip }} не заблокирован."
-      when:
-        - not (ufw_binary.rc == 0 and 'Status: active' in (ufw_status.stdout | default('')))
-        - not (firewalld_binary.rc == 0 and (firewalld_status.stdout | default('')) == 'running')

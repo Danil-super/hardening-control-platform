@@ -1,0 +1,23 @@
+#!/bin/sh
+set -eu
+
+HCP_SCHEDULE_PROFILE="${HCP_SCHEDULE_PROFILE:-basic_linux}"
+HCP_SCHEDULE_LIMIT="${HCP_SCHEDULE_LIMIT:-linux_hosts}"
+HCP_SCHEDULE_LOCK="${HCP_SCHEDULE_LOCK:-/var/lib/hcp/scheduled-audit.lock}"
+
+case "$HCP_SCHEDULE_PROFILE" in
+  basic_linux|ssh_security|web_server|docker_host) ;;
+  *) echo "Unsupported HCP_SCHEDULE_PROFILE: $HCP_SCHEDULE_PROFILE" >&2; exit 64 ;;
+esac
+
+case "$HCP_SCHEDULE_LIMIT" in
+  *[!A-Za-z0-9_.:-]*|"") echo "HCP_SCHEDULE_LIMIT must be one inventory host or group." >&2; exit 64 ;;
+esac
+
+REPORT_RUN_ID="schedule-$(date -u +%Y%m%dT%H%M%SZ)"
+exec flock -n "$HCP_SCHEDULE_LOCK" \
+  ansible-playbook -i /app/ansible/inventory.ini /app/ansible/playbooks/agentless-audit.yml \
+  --limit "$HCP_SCHEDULE_LIMIT" \
+  -e "audit_profile=$HCP_SCHEDULE_PROFILE" \
+  -e "hcp_reports_dir=${HCP_REPORTS_DIR:-/var/lib/hcp/reports}" \
+  -e "report_run_id=$REPORT_RUN_ID"

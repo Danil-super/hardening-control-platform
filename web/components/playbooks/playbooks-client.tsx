@@ -45,7 +45,8 @@ export function PlaybooksClient() {
   const [runVariables, setRunVariables] = useState<Record<string, string>>({});
   const [newId, setNewId] = useState("fix-cve");
   const [newTitle, setNewTitle] = useState("Fix CVE");
-  const [templateId, setTemplateId] = useState("update-package");
+  const [templateId, setTemplateId] = useState("audit-package");
+  const [customPlaybooksEnabled, setCustomPlaybooksEnabled] = useState(false);
   const [loading, setLoading] = useState("");
   const [result, setResult] = useState<{ ok?: boolean; message?: string; stdout?: string; stderr?: string; command?: string } | null>(null);
 
@@ -81,6 +82,7 @@ export function PlaybooksClient() {
       const payload = await response.json();
       setPlaybooks(payload.playbooks ?? []);
       setTemplates(payload.templates ?? []);
+      setCustomPlaybooksEnabled(Boolean(payload.customPlaybooksEnabled));
     } finally {
       setLoading("");
     }
@@ -247,7 +249,7 @@ export function PlaybooksClient() {
           </div>
         </section>
 
-        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+        {customPlaybooksEnabled ? <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <h2 className="text-lg font-semibold text-white">Создать playbook</h2>
           <div className="mt-4 space-y-3">
             <Field label="ID файла" value={newId} onChange={setNewId} />
@@ -288,7 +290,7 @@ export function PlaybooksClient() {
               Создать
             </Button>
           </div>
-        </section>
+        </section> : null}
       </aside>
 
       <main className="space-y-4">

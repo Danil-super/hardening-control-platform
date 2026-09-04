@@ -21,7 +21,7 @@ ssh-keyscan -H 192.168.56.101 192.168.56.102 >> secrets/known_hosts
 chmod 600 secrets/known_hosts
 ```
 
-Заполните `.env` уникальными `HCP_ADMIN_PASSWORD` и `HCP_AUTH_SECRET`, затем настройте целевые хосты в `ansible/inventory.ini`.
+Заполните `.env` уникальными `HCP_ADMIN_PASSWORD`, `HCP_AUTH_SECRET` и `HCP_AUDIT_HMAC_KEY`, затем настройте целевые хосты в `ansible/inventory.ini`. Последний ключ защищает hash-chain журнал от незаметного пересчета при изменении SQLite-файла.
 
 ## Запуск
 
@@ -30,7 +30,28 @@ docker compose up -d --build
 docker compose logs -f hcp
 ```
 
-Откройте `http://127.0.0.1:3000` на control node либо используйте SSH-туннель. Отчеты и локальная история запусков сохраняются в именованном volume `hcp-runtime`.
+Откройте `http://127.0.0.1:3000` на control node либо используйте SSH-туннель. Отчеты, SQLite-база транзакций и append-only журнал сохраняются в именованном volume `hcp-runtime`.
+
+## Периодический аудит через systemd
+
+Планировщик не работает внутри памяти веб-процесса. На control node установите units, которые вызывают отдельный Ansible-процесс в контейнере:
+
+```bash
+sudo cp deployment/systemd/hcp-scheduled-audit.service /etc/systemd/system/
+sudo cp deployment/systemd/hcp-scheduled-audit.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hcp-scheduled-audit.timer
+systemctl list-timers hcp-scheduled-audit.timer
+```
+
+По умолчанию timer запускает каждые 15 минут `basic_linux` для группы `linux_hosts`. Чтобы выбрать профиль или группу, добавьте в environment сервиса `hcp` в `docker-compose.yml`:
+
+```yaml
+HCP_SCHEDULE_PROFILE: ssh_security
+HCP_SCHEDULE_LIMIT: production_linux
+```
+
+После изменения выполните `docker compose up -d` и `sudo systemctl restart hcp-scheduled-audit.timer`. Внутренний `flock` блокирует параллельные плановые запуски.
 
 ## Обязательные меры перед эксплуатацией
 
@@ -38,6 +59,6 @@ docker compose logs -f hcp
 - Фиксируйте SSH host keys в `secrets/known_hosts`; в репозитории включена строгая проверка ключей.
 - Ограничьте доступ к панели VPN или reverse proxy с TLS. Не меняйте `HCP_BIND_ADDRESS` на `0.0.0.0` без firewall и TLS.
 - Сохраните резервную копию inventory и Docker volume, настройте ротацию отчетов.
-- Не включайте response-действия для критичных систем, пока не будет согласован план отката и approval workflow.
+- Response-действия панели ограничены обратимыми firewall-операциями. Перед применением обязательно выполните dry-run и проверьте созданную резервную копию; обновления пакетов и управление сервисами выполняйте по отдельной ручной процедуре.
 - Nmap и временный Lynis запускайте только для активов, на проверку которых есть разрешение. Временный Lynis выполняет код на ВМ, но удаляет каталог сразу после получения отчета.
 - OpenSCAP/Trivy для образов ВМ разворачивайте отдельным scanner worker с доступом только к API снимков гипервизора; не добавляйте их в гостевые ОС.

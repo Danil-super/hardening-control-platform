@@ -1,18 +1,28 @@
 # Hardening Control Platform
 
-Веб-платформа для централизованного аудита и безопасного управления Linux-серверами через Ansible и SSH.
+Рабочая локальная платформа для безагентного аудита и контролируемого харденинга Linux-серверов через Ansible и SSH. Control node ведет inventory, запускает разрешенные playbook'и, хранит отчеты и не устанавливает постоянный агент на целевые хосты.
 
-Один главный сервер ведет inventory, обнаруживает SSH-доступные Linux-хосты, запускает Ansible playbook'и по SSH и сохраняет JSON-отчеты локально. Постоянные агенты на управляемые хосты не устанавливаются.
+Платформа предназначена для приватной сети и активов, на проверку и изменение которых есть разрешение. Это не публичный сканер, IDS или SIEM.
+
+## Возможности
+
+- Реальные профили аудита: базовый Linux, SSH, web-сервер, Docker-host.
+- Проверка SSH-доступа, системных фактов, портов, сервисов и логов через Ansible.
+- Инвентарь пакетов и предварительное сопоставление CVE через OSV.dev.
+- История JSON-отчетов по каждому управляемому хосту.
+- Обратимые firewall-изменения: dry-run, typed confirmation, backup, повторный аудит и rollback.
+- SQLite для транзакций и append-only hash-chain журнала действий.
+- Периодический аудит через `systemd timer` и `flock` — без зависимости от памяти Next.js.
+- Docker-стенд для воспроизводимой проверки сценария «до/после».
 
 ## Стек
 
-- Next.js App Router
-- TypeScript
-- Tailwind CSS
-- lucide-react
-- Ansible для централизованного локального управления хостами в сети
+- Next.js App Router, TypeScript, Tailwind CSS
+- Node.js built-in SQLite (`node:sqlite`)
+- Ansible, SSH, Nmap, Lynis, ssh-audit
+- Docker Compose и systemd для локального развертывания
 
-## Запуск сайта
+## Быстрый запуск для разработки
 
 ```bash
 cd web
@@ -21,147 +31,93 @@ cp .env.example .env.local
 npm run dev
 ```
 
-В `web/.env.local` задайте локальный пароль администратора для Ansible-панели:
+В `web/.env.local` задайте:
 
 ```env
 HCP_ADMIN_PASSWORD=your-local-password
-HCP_AUTH_SECRET=your-random-secret
+HCP_AUTH_SECRET=at-least-32-random-characters
+HCP_AUDIT_HMAC_KEY=separate-at-least-32-random-characters
 ```
 
-Пароль защищает `/hosts`, реальные Ansible-отчеты и `/api/ansible/*`.
-
-Для доступа к сайту с других устройств в локальной сети:
+Сборка и проверки:
 
 ```bash
 cd web
-npm run dev:lan
-```
-
-Сборка:
-
-```bash
-cd web
+npm run typecheck
+npm test
 npm run build
 ```
 
-## Основные экраны
+## Работа с реальным хостом
 
-- `/` переход к управлению хостами.
-- `/login` вход администратора.
-- `/hosts` локальная Ansible-панель: добавление хостов, inventory, SSH-аудит и response-playbook'и.
-- `/playbooks` список, создание, syntax-check и запуск Ansible playbook'ов.
-- `/reports` реальные Ansible-отчеты из `ansible/reports`.
-- `/guide` краткая инструкция по работе.
-
-## Краткая инструкция по работе
-
-1. Запустите сайт на главном сервере и войдите через `/login`.
-2. Откройте `/hosts` и проверьте Ansible control node.
-3. Добавьте Linux-хост: alias, IP/hostname, SSH user, port, group и sudo.
-4. Нажмите `Проверить`, чтобы проверить SSH, Python и sudo без сохранения в inventory.
-5. Сохраните хост и запустите Ansible ping, затем SSH-аудит Ansible.
-6. Запустите CVE-аудит пакетов, чтобы собрать package inventory и проверить версии через OSV.dev.
-7. Откройте созданный отчет в `/reports`. Каждый запуск сохраняется отдельно; история конкретной машины доступна по кнопке «История» в таблице хостов.
-
-Для стенда дополнительные проверки выполняются только с control node: `ssh-audit` проверяет криптографию SSH, Nmap — доступные TCP-сервисы, а Lynis передается во временный каталог ВМ и удаляется после аудита. OpenSCAP и Trivy для виртуальных машин предназначены для отдельного offline-worker'а, который сканирует снимки дисков, а не работающие гостевые ОС.
-
-Сканирование локальной сети на `/hosts` является вспомогательным действием: оно ищет SSH-доступные IP и подставляет
-их в форму добавления, но не сохраняет хосты автоматически.
-
-## Создание новых playbook'ов
-
-Откройте `/playbooks`, выберите шаблон и создайте playbook. Пользовательские файлы сохраняются в:
-
-```text
-ansible/playbooks/custom/<id>.yml
-ansible/playbooks/custom/<id>.meta.json
-```
-
-Перед запуском используйте `Syntax-check`. Response-playbook'и запускаются только с явным `Limit`, например `server1`
-или `linux_hosts`.
-
-## Локальная сеть и Ansible
-
-На главном сервере установите Ansible, создайте inventory и проверьте SSH-доступ:
+1. Подготовьте inventory и SSH-ключ:
 
 ```bash
-sudo apt install ansible openssh-client python3
 cp ansible/inventory.example.ini ansible/inventory.ini
-ansible all -i ansible/inventory.ini -m ping
-```
-
-### SSH-доступ
-
-Рекомендуемый способ подключения — SSH-ключи с главного сервера:
-
-```bash
 ssh-keygen -t ed25519 -C hcp-control
-ssh-copy-id danil@192.168.1.10
-ssh danil@192.168.1.10
+ssh-copy-id admin@192.168.1.10
 ansible all -i ansible/inventory.ini -m ping
 ```
 
-На целевом Linux-хосте должен быть включен SSH:
+2. Откройте `/hosts`, выполните preflight, добавьте хост и выберите профиль.
+3. Запустите аудит. Отчеты сохраняются в `ansible/reports/` или `HCP_REPORTS_DIR`.
+4. Для обратимого firewall-изменения сначала выполните «План», затем «Применить». Потребуются причина и точный alias хоста.
 
-```bash
-sudo apt install openssh-server
-sudo systemctl enable --now ssh
-```
+Подробный сценарий — в [docs/site-guide.md](docs/site-guide.md).
 
-Парольный режим возможен для ручной проверки через `ansible --ask-pass --ask-become-pass`, но веб-панель рассчитана на ключевой SSH-доступ.
+## Профили
 
-Собрать факты без установки агентов:
+Правила хранятся в `ansible/audit-rules/` и загружаются по `audit_profile`:
 
-```bash
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/collect-facts.yml
-```
+- `basic-linux.yml` — базовые настройки Linux, firewall, аккаунты и обновления;
+- `ssh-security.yml` — политика SSH и защита от перебора;
+- `web-server.yml` — активные web-сервисы, Nginx/Apache banner hardening и опасные порты;
+- `docker-host.yml` — Docker Engine, `docker.sock`, privileged containers и Docker API-порты.
 
-Запустить безагентный аудит:
+Каждый профиль выполняется на целевом хосте, а не моделируется в браузере.
 
-```bash
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/agentless-audit.yml -e audit_profile=basic_linux
-```
+## Контролируемые изменения и откат
 
-Запустить response-playbook для выбранного хоста:
+В панели доступны только операции с воспроизводимым rollback:
 
-```bash
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-dangerous-ports.yml --limit server1
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/close-port.yml --limit server1 -e target_port=23 -e target_protocol=tcp
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/update-package.yml --limit server1 -e package_name=openssl
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/block-ip.yml --limit server1 -e block_ip=192.168.1.50
-ansible-playbook -i ansible/inventory.ini ansible/playbooks/stop-service.yml --limit server1 -e service_name=nginx
-```
+- закрыть конкретный TCP/UDP-порт через активный UFW/firewalld (порт SSH 22 защищен от автоматического закрытия);
+- заблокировать IPv4-адрес через активный UFW/firewalld.
 
-На сайте откройте `/hosts`, чтобы проверить Ansible control node, выполнить ping, запустить безагентный аудит и выполнить разрешенные response-playbook'и. Реальные отчеты сохраняются в `ansible/reports/` и не отправляются в GitHub.
-
-Журнал инцидентов сохраняется локально в `ansible/incidents.json`, настройки планировщика — в `ansible/scheduler.json`.
-
-На странице `/hosts` также есть автообнаружение хостов: платформа определяет локальную приватную подсеть, сканирует SSH-порт 22 и может добавить найденные IP в `ansible/inventory.ini`. Сканирование ограничено подсетями `/24`-`/30` и предназначено только для вашей локальной сети.
-
-## Термины
-
-- Аудит: проверка системы на небезопасные настройки.
-- Результат проверки: найденная проблема, успешная проверка или пункт для ручного анализа.
-- Исправление: действие для устранения найденной проблемы.
-- Резервная копия: сохранение состояния перед изменением.
-- Откат: возврат изменения к предыдущему состоянию.
-- Профиль: набор правил под сценарий аудита.
-- Главный сервер: компьютер, на котором запущены сайт, Ansible, inventory и отчеты.
-- Безагентный аудит: проверка хостов по SSH без установки постоянного ПО на целевые устройства.
-- Response-playbook: заранее разрешенное действие реагирования, например закрытие опасных портов.
+Перед изменением `backup-remediation.yml` архивирует `/etc/ufw` и `/etc/firewalld` на целевом хосте в `/var/lib/hcp-backups/<transaction-id>/`. `rollback-remediation.yml` восстанавливает архив и перезагружает firewall. Пакетные обновления и остановка сервисов намеренно не автоматизированы: для них нужен отдельный approval workflow и план отката.
 
 ## Контейнерный control node
 
-Платформа не предназначена для Vercel: ей нужен приватный Linux control node с SSH-доступом к управляемым хостам.
-Подготовленный контейнерный вариант описан в [deployment/README.md](deployment/README.md). Он хранит отчеты и журнал запусков в Docker volume, использует SSH-ключ из локального secret-файла и по умолчанию открывает веб-интерфейс только на `127.0.0.1`.
+Подготовка и запуск production-контура описаны в [deployment/README.md](deployment/README.md). Compose хранит SQLite, отчеты и историю в Docker volume, подключает SSH-ключ и `known_hosts` как локальные secret-файлы, а интерфейс по умолчанию слушает только `127.0.0.1`.
 
-## Границы текущего production-режима
+## Периодический аудит
 
-- В Docker Compose отключено создание и запуск пользовательских YAML playbook'ов из браузера; доступны только встроенные проверенные действия.
-- Response-playbook'и действительно изменяют Linux-хосты. Перед их запуском нужны проверка отчета, резервная копия и окно обслуживания.
-- Пока нет многопользовательской авторизации, RBAC, внешнего TLS-прокси, очереди заданий и неизменяемого журнала аудита. Поэтому не размещайте панель в интернете и не подключайте к ней критичные production-серверы до внедрения этих механизмов.
-- Нет постоянных агентов на управляемых хостах: базовая платформа использует SSH и Ansible.
+Скопируйте units из `deployment/systemd/` в `/etc/systemd/system/`, задайте при необходимости `HCP_SCHEDULE_PROFILE` и `HCP_SCHEDULE_LIMIT` в compose environment, затем включите timer:
 
-## Roadmap
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now hcp-scheduled-audit.timer
+systemctl list-timers hcp-scheduled-audit.timer
+```
 
-См. `docs/future-roadmap.md`.
+Timer запускает `/usr/local/bin/hcp-scheduled-audit` внутри контейнера; `flock` не дает двум проверкам одного расписания пересечься.
+
+При использовании операции «Блок IP» укажите IP control node в `HCP_CONTROL_IPS` (через запятую для нескольких). Платформа также защищает IP самого целевого хоста от автоматической блокировки.
+
+## Лабораторный стенд
+
+Стенд поднимает отдельный SSH-хост с намеренно небезопасной конфигурацией и Telnet listener на порту 23:
+
+```bash
+./deployment/lab/up.sh
+```
+
+После запуска откройте `http://127.0.0.1:3001`, войдите с `lab-only-password`, выберите `lab-insecure` и запустите базовый аудит. Лабораторный ключ и `known_hosts` создаются в игнорируемом каталоге `.lab/`.
+
+## Ограничения текущей версии
+
+- Пока используется локальная одноадминистраторская аутентификация; RBAC, отзыв сессий и MFA — следующий этап.
+- Не публикуйте интерфейс в интернет без TLS reverse proxy, VPN и усиленной авторизации.
+- CVE через OSV — предварительная проверка: дистрибутивные backport-исправления нужно сверять по vendor security tracker.
+- Пользовательские audit YAML отключены по умолчанию. В development их можно включить `HCP_ENABLE_CUSTOM_AUDITS=true`; response-playbook'и из браузера не запускаются.
+
+Архитектура: [docs/architecture.md](docs/architecture.md). Дипломное описание: [docs/diploma-description.md](docs/diploma-description.md).
