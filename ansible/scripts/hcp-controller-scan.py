@@ -423,9 +423,216 @@ def lynis_unavailable(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def local_name(element: element_tree.Element) -> str:
+    return element.tag.rsplit("}", 1)[-1]
+
+
+def child_text(element: element_tree.Element, wanted_name: str) -> str:
+    for child in element:
+        if local_name(child) == wanted_name:
+            return (child.text or "").strip()
+    return ""
+
+
+def risk_from_severity(value: str) -> str:
+    normalized = value.strip().lower()
+    if normalized in {"critical", "high"}:
+        return "high"
+    if normalized in {"medium", "moderate"}:
+        return "medium"
+    if normalized in {"low"}:
+        return "low"
+    return "info"
+
+
+def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        root = element_tree.parse(args.input).getroot()
+    except (OSError, element_tree.ParseError) as error:
+        return base_report(
+            args,
+            "openscap",
+            "openscap",
+            [finding(
+                identifier="openscap_arf_unreadable",
+                title="OpenSCAP не сформировал читаемый ARF-отчёт",
+                risk="info",
+                status="manual",
+                source="openscap",
+                description="Соответствие SSG-профилю не подтверждено: результат OpenSCAP нельзя разобрать.",
+                recommendation="Проверьте выбранные datastream и профиль, затем повторите аудит.",
+                evidence=str(error),
+            )],
+            available=True,
+            profile=args.profile,
+            datastream=args.datastream,
+            scannerExitCode=args.exit_code,
+        )
+
+    titles: dict[str, str] = {}
+    severities: dict[str, str] = {}
+    for element in root.iter():
+        if local_name(element) != "Rule":
+            continue
+        identifier = element.get("id", "")
+        if identifier:
+            titles[identifier] = child_text(element, "title") or identifier
+            severities[identifier] = element.get("severity", "")
+
+    findings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for element in root.iter():
+        if local_name(element) != "rule-result":
+            continue
+        identifier = element.get("idref", "")
+        result = child_text(element, "result").lower()
+        if not identifier or identifier in seen or result in {"notapplicable", "notselected", "informational"}:
+            continue
+        seen.add(identifier)
+        status = "passed" if result == "pass" else ("failed" if result == "fail" else "manual")
+        severity = severities.get(identifier, "")
+        findings.append(finding(
+            identifier=f"openscap_{identifier}"[:160],
+            title=titles.get(identifier, identifier),
+            risk=risk_from_severity(severity) if status == "failed" else "info",
+            status=status,
+            source="openscap",
+            description=(
+                "Правило SSG не выполнено на момент проверки."
+                if status == "failed"
+                else "OpenSCAP подтвердил выполнение правила."
+                if status == "passed"
+                else "OpenSCAP не смог однозначно оценить правило; результат требует ручной проверки."
+            ),
+            recommendation=(
+                "Откройте описание правила в SSG, оцените влияние на роль сервера и внесите изменение отдельным approval-playbook."
+                if status != "passed"
+                else "Повторяйте проверку после изменения ОС или базовой конфигурации."
+            ),
+            evidence=f"rule={identifier}; result={result or 'unknown'}; severity={severity or 'unknown'}",
+        ))
+
+    if not findings:
+        findings.append(finding(
+            identifier="openscap_no_rule_results",
+            title="OpenSCAP не вернул оцениваемые правила",
+            risk="info",
+            status="manual",
+            source="openscap",
+            description="Пустой результат не означает соответствие: выбранный профиль или ARF нужно проверить вручную.",
+            recommendation="Проверьте идентификатор профиля командой oscap info и повторите проверку.",
+            evidence=f"exit={args.exit_code}",
+        ))
+
+    return base_report(
+        args,
+        "openscap",
+        "openscap",
+        findings[:800],
+        available=True,
+        profile=args.profile,
+        datastream=args.datastream,
+        scannerExitCode=args.exit_code,
+    )
+
+
+def openscap_unavailable(args: argparse.Namespace) -> dict[str, Any]:
+    return base_report(
+        args,
+        "openscap",
+        "openscap",
+        [finding(
+            identifier="openscap_prerequisite_missing",
+            title="OpenSCAP-проверка не запускалась",
+            risk="info",
+            status="manual",
+            source="openscap",
+            description=args.reason or "На хосте или control node не выполнены условия для точной SCAP-проверки.",
+            recommendation="Подготовьте oscap и SSG datastream на целевой ВМ, явно задайте HCP_OPENSCAP_DATASTREAM и HCP_OPENSCAP_PROFILE, затем повторите аудит.",
+        )],
+        available=False,
+        reason=args.reason or None,
+    )
+
+
+def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
+    try:
+        root = element_tree.parse(args.input).getroot()
+    except (OSError, element_tree.ParseError) as error:
+        return base_report(
+            args,
+            "greenbone",
+            "greenbone",
+            [finding(
+                identifier="greenbone_xml_unreadable",
+                title="Не удалось прочитать XML-отчёт Greenbone",
+                risk="info",
+                status="manual",
+                source="greenbone",
+                description="Импорт не подтверждает отсутствие уязвимостей: файл не соответствует ожидаемому формату отчёта.",
+                recommendation="Экспортируйте результат задачи Greenbone в XML и загрузите файл повторно.",
+                evidence=str(error),
+            )],
+            imported=False,
+        )
+
+    findings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for element in root.iter():
+        if local_name(element) != "result":
+            continue
+        identifier = child_text(element, "id") or element.get("id", "")
+        host = child_text(element, "host")
+        port = child_text(element, "port")
+        nvt = next((child for child in element if local_name(child) == "nvt"), None)
+        oid = nvt.get("oid", "") if nvt is not None else ""
+        name = child_text(nvt, "name") if nvt is not None else ""
+        severity_text = child_text(element, "severity")
+        threat = child_text(element, "threat")
+        try:
+            severity_score = float(severity_text)
+        except ValueError:
+            severity_score = 0.0
+        normalized_threat = threat.lower()
+        status = "failed"
+        if normalized_threat in {"log", "false positive", "false_positive"}:
+            status = "manual"
+        risk = "high" if severity_score >= 7 else "medium" if severity_score >= 4 else "low" if severity_score > 0 else "info"
+        key = (oid or identifier or name or "greenbone-result") + "-" + host + "-" + port
+        if key in seen:
+            continue
+        seen.add(key)
+        description = child_text(element, "description")
+        solution = child_text(element, "solution")
+        cves = child_text(nvt, "cve") if nvt is not None else ""
+        findings.append(finding(
+            identifier=("greenbone_" + key).replace(" ", "_")[:160],
+            title=name or "Находка Greenbone/OpenVAS",
+            risk=risk,
+            status=status,
+            source="greenbone",
+            description=(description or "Greenbone сообщил о сетевой уязвимости.")[:1200],
+            recommendation=(solution or "Проверьте рекомендации производителя и примените исправление по утверждённой процедуре.")[:1200],
+            evidence=f"result={identifier}; oid={oid or 'unknown'}; host={host or 'unknown'}; port={port or 'unknown'}; threat={threat or 'unknown'}; severity={severity_text or 'unknown'}; cve={cves or 'none'}",
+        ))
+
+    if not findings:
+        findings.append(finding(
+            identifier="greenbone_no_results",
+            title="В XML-отчёте Greenbone нет результатов",
+            risk="info",
+            status="manual",
+            source="greenbone",
+            description="Пустой импорт не подтверждает безопасность: проверьте статус задачи, цель и актуальность VT-feeds в Greenbone.",
+            recommendation="Убедитесь, что задача завершена и экспортирован именно report XML.",
+        ))
+
+    return base_report(args, "greenbone", "greenbone", findings[:1000], imported=True, importedFrom="Greenbone XML")
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
-    parser.add_argument("mode", choices=("ssh-audit", "nmap", "lynis-report", "lynis-unavailable"))
+    parser.add_argument("mode", choices=("ssh-audit", "nmap", "lynis-report", "lynis-unavailable", "openscap-arf", "openscap-unavailable", "greenbone-report"))
     parser.add_argument("--host")
     parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--inventory-host", required=True)
@@ -433,11 +640,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output", required=True)
     parser.add_argument("--input")
     parser.add_argument("--exit-code", type=int, default=0)
+    parser.add_argument("--profile")
+    parser.add_argument("--datastream")
+    parser.add_argument("--reason")
     args = parser.parse_args()
     if args.mode in {"ssh-audit", "nmap"} and not args.host:
         parser.error("--host is required for network scanner modes")
-    if args.mode == "lynis-report" and not args.input:
-        parser.error("--input is required for lynis-report")
+    if args.mode in {"lynis-report", "openscap-arf", "greenbone-report"} and not args.input:
+        parser.error(f"--input is required for {args.mode}")
     return args
 
 
@@ -448,6 +658,9 @@ def main() -> int:
         "nmap": nmap,
         "lynis-report": lynis_report,
         "lynis-unavailable": lynis_unavailable,
+        "openscap-arf": openscap_arf,
+        "openscap-unavailable": openscap_unavailable,
+        "greenbone-report": greenbone_report,
     }[args.mode](args)
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)

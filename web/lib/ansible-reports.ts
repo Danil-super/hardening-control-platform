@@ -88,6 +88,9 @@ export function targetAliasFromReportFileName(fileName: string, profileId: strin
     "ssh-audit": "ssh-audit",
     nmap: "nmap",
     lynis: "lynis",
+    openscap: "openscap",
+    greenbone: "greenbone",
+    "dependency-track": "dependency-track",
   };
   const kind = reportKinds[mode];
   if (kind) {

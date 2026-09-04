@@ -47,6 +47,7 @@ const builtinTitles: Record<string, string> = {
   sshCryptoAudit: "SSH crypto-аудит (control node)",
   networkPortScan: "Nmap: top-100 TCP-портов (control node)",
   lynisTemporaryAudit: "Lynis: временный аудит без установки",
+  openScapAudit: "OpenSCAP: проверка заранее установленного SSG-профиля",
 };
 
 const builtinVariables: Record<string, PlaybookVariable[]> = {

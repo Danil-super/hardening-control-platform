@@ -8,7 +8,8 @@
 
 - Реальные профили аудита: базовый Linux, SSH, web-сервер, Docker-host.
 - Проверка SSH-доступа, системных фактов, портов, сервисов и логов через Ansible.
-- Инвентарь пакетов и предварительное сопоставление CVE через OSV.dev или внутренний OSV-совместимый API.
+- Инвентарь пакетов, CycloneDX SBOM и CVE-сопоставление через Trivy; OSV остаётся резервным online-адаптером.
+- OpenSCAP/SSG-проверка подготовленного хоста, импорт сетевых отчётов Greenbone и отправка SBOM в Dependency-Track.
 - История JSON-отчетов по каждому управляемому хосту.
 - Обратимые firewall-изменения: dry-run, typed confirmation, backup, повторный аудит и rollback.
 - SQLite для транзакций и append-only hash-chain журнала действий.
@@ -19,7 +20,7 @@
 
 - Next.js App Router, TypeScript, Tailwind CSS
 - Node.js built-in SQLite (`node:sqlite`)
-- Ansible, SSH, Nmap, Lynis, ssh-audit
+- Ansible, SSH, Nmap, Lynis, ssh-audit, OpenSCAP, Trivy
 - Docker Compose и systemd для локального развертывания
 
 ## Быстрый запуск для разработки
@@ -91,11 +92,12 @@ ssh-keygen -t ed25519 -C hcp-control
 
 ## CVE-аудит в локальной и изолированной сети
 
-Без интернета полностью работают SSH-подключение, Ansible-аудиты, отчеты и controlled remediation. Внешнее соединение требуется только для online-сопоставления пакетов с OSV.
+Без интернета полностью работают SSH-подключение, Ansible-аудиты, отчеты и controlled remediation. Основной CVE-контур — Trivy и сохранённый CycloneDX SBOM; он работает без выхода в интернет при заранее импортированной локальной базе.
 
 - Для сети с контролируемым выходом оставьте `HCP_OSV_MODE=online` и разрешите узлу управления только HTTPS к `api.osv.dev`, либо укажите доверенный внутренний OSV-совместимый прокси в `HCP_OSV_BASE_URL`.
 - Для изолированной сети укажите `HCP_OSV_MODE=offline`. Платформа не делает сетевой запрос, формирует отчёт об инвентаре и явно помечает, что CVE не сопоставлены — это не «чистый» результат.
-- Для полноценного air-gap CVE-аудита добавьте отдельный внутренний scanner worker с периодически импортируемой базой Trivy или Grype. Он должен принимать только inventory/SBOM и возвращать нормализованный JSON-отчёт, а не получать SSH-ключ узла управления.
+- Для полноценного air-gap CVE-аудита установите `HCP_CVE_PROVIDER=trivy`, `HCP_TRIVY_MODE=offline` и укажите внутренние OCI-зеркала баз Trivy. При отсутствии базы платформа явно пометит отчёт как неполный.
+- Полная установка и правила интерпретации четырёх источников — в [docs/audit-integrations.md](docs/audit-integrations.md).
 
 ## Периодический аудит
 

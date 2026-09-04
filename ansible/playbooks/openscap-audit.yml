@@ -1,0 +1,155 @@
+---
+- name: Evaluate a pre-installed OpenSCAP and SSG profile
+  hosts: linux_hosts
+  gather_facts: false
+  become: true
+
+  vars:
+    scanner_report_dir: "{{ hcp_reports_dir | default(playbook_dir ~ '/../reports') }}"
+    report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
+    # The content and profile are deliberately explicit. Selecting a random
+    # datastream from a host can produce a misleading compliance result.
+    openscap_datastream: "{{ lookup('env', 'HCP_OPENSCAP_DATASTREAM') | default('', true) }}"
+    openscap_profile: "{{ lookup('env', 'HCP_OPENSCAP_PROFILE') | default('', true) }}"
+    openscap_raw_report: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-openscap-{{ report_suffix }}.xml"
+
+  tasks:
+    - name: Ensure local report directory exists
+      ansible.builtin.file:
+        path: "{{ scanner_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Explain missing OpenSCAP configuration without touching target
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ playbook_dir }}/../scripts/hcp-controller-scan.py"
+          - openscap-unavailable
+          - --inventory-host
+          - "{{ inventory_hostname }}"
+          - --run-id
+          - "{{ report_suffix }}"
+          - --reason
+          - "Не заданы HCP_OPENSCAP_DATASTREAM и HCP_OPENSCAP_PROFILE."
+          - --output
+          - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when: not openscap_datastream or not openscap_profile
+
+    - name: Check OpenSCAP executable on target
+      ansible.builtin.command:
+        argv: ["/usr/bin/env", "sh", "-c", "command -v oscap"]
+      changed_when: false
+      failed_when: false
+      register: openscap_binary
+      when: openscap_datastream and openscap_profile
+
+    - name: Check selected SSG datastream on target
+      ansible.builtin.stat:
+        path: "{{ openscap_datastream }}"
+      register: openscap_content
+      when: openscap_datastream and openscap_profile
+
+    - name: Explain unavailable OpenSCAP prerequisites
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/python3
+          - "{{ playbook_dir }}/../scripts/hcp-controller-scan.py"
+          - openscap-unavailable
+          - --inventory-host
+          - "{{ inventory_hostname }}"
+          - --run-id
+          - "{{ report_suffix }}"
+          - --reason
+          - "{{ 'oscap не установлен на целевом хосте.' if (openscap_binary.rc | default(1)) != 0 else 'Не найден указанный SSG datastream: ' ~ openscap_datastream }}"
+          - --output
+          - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
+      delegate_to: localhost
+      become: false
+      changed_when: false
+      when:
+        - openscap_datastream and openscap_profile
+        - (openscap_binary.rc | default(1)) != 0 or not (openscap_content.stat.exists | default(false))
+
+    - name: Run OpenSCAP and always remove temporary target files
+      block:
+        - name: Create temporary OpenSCAP directory on target
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: hcp-openscap-
+          register: openscap_remote_dir
+
+        - name: Evaluate selected SSG profile
+          ansible.builtin.command:
+            argv:
+              - oscap
+              - xccdf
+              - eval
+              - --profile
+              - "{{ openscap_profile }}"
+              - --results-arf
+              - "{{ openscap_remote_dir.path }}/results.arf.xml"
+              - "{{ openscap_datastream }}"
+          changed_when: false
+          failed_when: false
+          register: openscap_run
+
+        - name: Check OpenSCAP ARF result
+          ansible.builtin.stat:
+            path: "{{ openscap_remote_dir.path }}/results.arf.xml"
+          register: openscap_arf
+
+        - name: Retrieve OpenSCAP ARF only when it was created
+          ansible.builtin.fetch:
+            src: "{{ openscap_remote_dir.path }}/results.arf.xml"
+            dest: "{{ openscap_raw_report }}"
+            flat: true
+          when: openscap_arf.stat.exists
+          no_log: true
+
+        - name: Normalize OpenSCAP ARF on control node
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ playbook_dir }}/../scripts/hcp-controller-scan.py"
+              - openscap-arf
+              - --input
+              - "{{ openscap_raw_report }}"
+              - --inventory-host
+              - "{{ inventory_hostname }}"
+              - --run-id
+              - "{{ report_suffix }}"
+              - --exit-code
+              - "{{ openscap_run.rc | default(1) | string }}"
+              - --profile
+              - "{{ openscap_profile }}"
+              - --datastream
+              - "{{ openscap_datastream }}"
+              - --output
+              - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
+          delegate_to: localhost
+          become: false
+          changed_when: false
+      always:
+        - name: Remove temporary OpenSCAP directory from target
+          ansible.builtin.file:
+            path: "{{ openscap_remote_dir.path }}"
+            state: absent
+          when: openscap_remote_dir is defined and openscap_remote_dir.path is defined
+
+        - name: Remove transient ARF from control node
+          ansible.builtin.file:
+            path: "{{ openscap_raw_report }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+      when:
+        - openscap_datastream and openscap_profile
+        - (openscap_binary.rc | default(1)) == 0
+        - openscap_content.stat.exists | default(false)

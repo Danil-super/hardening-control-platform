@@ -20,6 +20,10 @@ const sourceLabels: Record<Finding["source"], string> = {
   ssh_audit: "ssh-audit с control node",
   nmap: "Nmap с control node",
   lynis: "Временный запуск Lynis",
+  openscap: "OpenSCAP / SCAP Security Guide",
+  trivy: "Trivy",
+  greenbone: "Greenbone / OpenVAS",
+  dependency_track: "OWASP Dependency-Track",
 };
 
 function categoryLabel(category: string) {

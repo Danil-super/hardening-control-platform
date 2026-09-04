@@ -19,6 +19,15 @@ services:
       HCP_STATE_DIR: /var/lib/hcp
       HCP_OSV_MODE: ${HCP_OSV_MODE:-online}
       HCP_OSV_BASE_URL: ${HCP_OSV_BASE_URL:-https://api.osv.dev/v1}
+      HCP_CVE_PROVIDER: ${HCP_CVE_PROVIDER:-trivy}
+      HCP_TRIVY_MODE: ${HCP_TRIVY_MODE:-online}
+      HCP_TRIVY_CACHE_DIR: /var/lib/hcp/trivy-cache
+      HCP_TRIVY_DB_REPOSITORY: ${HCP_TRIVY_DB_REPOSITORY:-}
+      HCP_TRIVY_JAVA_DB_REPOSITORY: ${HCP_TRIVY_JAVA_DB_REPOSITORY:-}
+      HCP_OPENSCAP_DATASTREAM: ${HCP_OPENSCAP_DATASTREAM:-}
+      HCP_OPENSCAP_PROFILE: ${HCP_OPENSCAP_PROFILE:-}
+      HCP_DEPENDENCY_TRACK_URL: ${HCP_DEPENDENCY_TRACK_URL:-}
+      HCP_DEPENDENCY_TRACK_API_KEY: ${HCP_DEPENDENCY_TRACK_API_KEY:-}
       HCP_PRODUCTION_MODE: "true"
       HCP_CONTROL_IPS: ${HCP_CONTROL_IPS:-}
     volumes:
@@ -27,5 +36,52 @@ services:
       - ./secrets/hcp-control:/run/secrets/hcp-control:ro
       - ./secrets/known_hosts:/run/secrets/known_hosts:ro
 
+  # Dependency-Track runs only with the explicit profile, so the usual HCP
+  # installation keeps its smallest attack surface and resource footprint.
+  # Pin these images to reviewed digests before production deployment.
+  dependency-track-postgres:
+    image: postgres:16-alpine
+    profiles: ["dependency-track"]
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: dtrack
+      POSTGRES_USER: dtrack
+      POSTGRES_PASSWORD: ${HCP_DEPENDENCY_TRACK_DB_PASSWORD:?Set HCP_DEPENDENCY_TRACK_DB_PASSWORD in .env}
+    volumes:
+      - dependency-track-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dtrack -d dtrack"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  dependency-track-api:
+    image: dependencytrack/apiserver:latest
+    profiles: ["dependency-track"]
+    restart: unless-stopped
+    depends_on:
+      dependency-track-postgres:
+        condition: service_healthy
+    environment:
+      ALPINE_DATABASE_MODE: external
+      ALPINE_DATABASE_URL: jdbc:postgresql://dependency-track-postgres:5432/dtrack
+      ALPINE_DATABASE_DRIVER: org.postgresql.Driver
+      ALPINE_DATABASE_USERNAME: dtrack
+      ALPINE_DATABASE_PASSWORD: ${HCP_DEPENDENCY_TRACK_DB_PASSWORD:?Set HCP_DEPENDENCY_TRACK_DB_PASSWORD in .env}
+    ports:
+      - "${HCP_DEPENDENCY_TRACK_API_BIND_ADDRESS:-127.0.0.1}:${HCP_DEPENDENCY_TRACK_API_PORT:-8081}:8080"
+
+  dependency-track-frontend:
+    image: dependencytrack/frontend:latest
+    profiles: ["dependency-track"]
+    restart: unless-stopped
+    depends_on:
+      - dependency-track-api
+    environment:
+      API_BASE_URL: http://localhost:${HCP_DEPENDENCY_TRACK_API_PORT:-8081}
+    ports:
+      - "${HCP_DEPENDENCY_TRACK_BIND_ADDRESS:-127.0.0.1}:${HCP_DEPENDENCY_TRACK_PORT:-8080}:8080"
+
 volumes:
   hcp-runtime:
+  dependency-track-postgres:
