@@ -46,3 +46,24 @@ test("operator interface keeps routine work visible and hides destructive log co
   assert.match(reports, /Журнал действий/);
   assert.doesNotMatch(reports, /DeleteRecordButton/);
 });
+
+test("host onboarding uses verified SSH host keys and persists them", () => {
+  const accessRoute = read(path.join("web", "app", "api", "ansible", "access", "route.ts"));
+  const access = read(path.join("web", "lib", "ssh-access.ts"));
+  const hosts = read(path.join("web", "components", "hosts", "ansible-control-client.tsx"));
+  const compose = read("docker-compose.yml");
+  assert.match(accessRoute, /operation === "trust"/);
+  assert.match(access, /host_key_mismatch/);
+  assert.match(access, /StrictHostKeyChecking=yes/);
+  assert.match(hosts, /Мастер первого SSH-подключения/);
+  assert.match(hosts, /Сначала успешно проверьте это SSH-подключение/);
+  assert.match(compose, /HCP_KNOWN_HOSTS_PATH: \/var\/lib\/hcp\/known_hosts/);
+});
+
+test("CVE checking has an explicit isolated-network mode", () => {
+  const scan = read(path.join("web", "lib", "vulnerability-scan.ts"));
+  const compose = read("docker-compose.yml");
+  assert.match(scan, /HCP_OSV_MODE/);
+  assert.match(scan, /CVE-сопоставление отключено для изолированной сети/);
+  assert.match(compose, /HCP_OSV_BASE_URL/);
+});

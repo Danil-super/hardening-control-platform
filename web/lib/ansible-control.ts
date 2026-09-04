@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { getReportsDir } from "@/lib/ansible-reports";
+import { ansibleSshArgs } from "@/lib/ssh-access";
 import {
   appendIncident as appendStoredIncident,
   readIncidents as readStoredIncidents,
@@ -229,7 +230,7 @@ export async function runAnsiblePlaybook({
     cwd: repoRoot,
     timeout: selected.timeout,
     maxBuffer: 1024 * 1024 * 8,
-    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_SSH_ARGS: ansibleSshArgs() },
   });
 
   return { ...result, command, repoRoot, reportRunId };

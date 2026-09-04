@@ -25,7 +25,16 @@ install_key() {
 }
 
 install_key "/run/secrets/hcp-control" "$runtime_ssh_dir/hcp-control" "600"
-install_key "/run/secrets/known_hosts" "$runtime_ssh_dir/known_hosts" "644"
+
+known_hosts_path="${HCP_KNOWN_HOSTS_PATH:-$runtime_ssh_dir/known_hosts}"
+mkdir -p "$(dirname "$known_hosts_path")"
+if [ ! -s "$known_hosts_path" ] && [ -r "/run/secrets/known_hosts" ]; then
+  install_key "/run/secrets/known_hosts" "$known_hosts_path" "600"
+fi
+if [ "$known_hosts_path" != "$runtime_ssh_dir/known_hosts" ]; then
+  rm -f "$runtime_ssh_dir/known_hosts"
+  ln -s "$known_hosts_path" "$runtime_ssh_dir/known_hosts"
+fi
 
 if [ "$is_root" = "true" ]; then
   exec setpriv --reuid=node --regid=node --init-groups "$@"

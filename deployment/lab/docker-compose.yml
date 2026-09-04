@@ -20,8 +20,12 @@ services:
       HCP_AUTH_SECRET: lab-only-secret-change-in-production
       HCP_AUDIT_HMAC_KEY: lab-only-audit-integrity-key-change-in-production
       HCP_SSH_PRIVATE_KEY_PATH: /home/node/.ssh/hcp-control
+      HCP_KNOWN_HOSTS_PATH: /var/lib/hcp/known_hosts
+      ANSIBLE_SSH_ARGS: -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/hcp/known_hosts
       HCP_REPORTS_DIR: /var/lib/hcp/reports
       HCP_STATE_DIR: /var/lib/hcp
+      HCP_OSV_MODE: ${HCP_OSV_MODE:-online}
+      HCP_OSV_BASE_URL: ${HCP_OSV_BASE_URL:-https://api.osv.dev/v1}
       HCP_PRODUCTION_MODE: "true"
     ports:
       - "127.0.0.1:3001:3000"

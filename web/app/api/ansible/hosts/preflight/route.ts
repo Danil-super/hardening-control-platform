@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server";
 import { getRepoRoot } from "@/lib/ansible-control";
+import { ansibleSshArgs } from "@/lib/ssh-access";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -34,7 +35,7 @@ async function runAnsible(args: string[], inventoryPath: string) {
       cwd: getRepoRoot(),
       timeout: 45_000,
       maxBuffer: 1024 * 1024 * 4,
-      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_SSH_ARGS: ansibleSshArgs() },
     });
     return { ok: true, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {

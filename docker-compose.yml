@@ -13,8 +13,12 @@ services:
       HCP_AUTH_SECRET: ${HCP_AUTH_SECRET:?Set HCP_AUTH_SECRET in .env}
       HCP_AUDIT_HMAC_KEY: ${HCP_AUDIT_HMAC_KEY:?Set HCP_AUDIT_HMAC_KEY in .env}
       HCP_SSH_PRIVATE_KEY_PATH: /home/node/.ssh/hcp-control
+      HCP_KNOWN_HOSTS_PATH: /var/lib/hcp/known_hosts
+      ANSIBLE_SSH_ARGS: -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/hcp/known_hosts
       HCP_REPORTS_DIR: /var/lib/hcp/reports
       HCP_STATE_DIR: /var/lib/hcp
+      HCP_OSV_MODE: ${HCP_OSV_MODE:-online}
+      HCP_OSV_BASE_URL: ${HCP_OSV_BASE_URL:-https://api.osv.dev/v1}
       HCP_PRODUCTION_MODE: "true"
       HCP_CONTROL_IPS: ${HCP_CONTROL_IPS:-}
     volumes:
