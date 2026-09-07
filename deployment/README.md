@@ -42,9 +42,10 @@ docker compose logs -f hcp
 HCP_TRIVY_MODE=offline
 HCP_TRIVY_DB_REPOSITORY=registry.security.intra/trivy-db
 HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db
+HCP_TRIVY_MAX_DB_AGE_HOURS=168
 ```
 
-В offline-режиме Trivy не обновляет базы и не делает исходящий запрос. Если готовой локальной базы нет или её нельзя прочитать, HCP создаёт отчёт `manual`, а не сообщает об отсутствии CVE.
+В offline-режиме Trivy не обновляет базы и не делает исходящий запрос. Если готовой локальной базы нет или её нельзя прочитать, HCP создаёт отчёт `manual`, а не сообщает об отсутствии CVE. Возраст базы контролируется по `HCP_TRIVY_MAX_DB_AGE_HOURS`; при превышении лимита отчёт тоже помечается частичным.
 
 Dependency-Track не запускается по умолчанию. После заполнения его пароля БД включите отдельный профиль: `docker compose --profile dependency-track up -d --build`. Подробные инструкции для OpenSCAP, Trivy, Greenbone и Dependency-Track — в [docs/audit-integrations.md](../docs/audit-integrations.md).
 

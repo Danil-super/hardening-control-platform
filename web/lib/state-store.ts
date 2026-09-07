@@ -49,6 +49,24 @@ export type VulnerabilityDatabaseSettings = {
   updatedAt: string | null;
 };
 
+export type OpenScapPolicy = {
+  groupName: string;
+  datastream: string;
+  profile: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type OpenScapException = {
+  id: string;
+  groupName: string;
+  ruleId: string;
+  reason: string;
+  expiresAt: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
 function getStateDirectory() {
   const repoRoot = path.resolve(process.cwd(), "..");
   return process.env.HCP_STATE_DIR ? path.resolve(process.env.HCP_STATE_DIR) : path.join(repoRoot, "ansible");
@@ -110,6 +128,27 @@ function getDatabase() {
       setting_value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS openscap_policies (
+      group_name TEXT PRIMARY KEY,
+      datastream TEXT NOT NULL,
+      profile TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS openscap_exceptions (
+      id TEXT PRIMARY KEY,
+      group_name TEXT NOT NULL,
+      rule_id TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      expires_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(group_name, rule_id)
+    );
+    CREATE INDEX IF NOT EXISTS openscap_exceptions_group_expiry
+      ON openscap_exceptions(group_name, expires_at);
   `);
   globalRef.hcpDatabase = database;
   globalRef.hcpDatabasePath = databasePath;
@@ -153,6 +192,146 @@ export function setVulnerabilityDatabaseMode(mode: VulnerabilityDatabaseMode) {
   `).run("vulnerability_database_mode", mode, updatedAt);
   appendAuditEvent("vulnerability_database_mode_changed", "vulnerability_database_mode", { mode });
   return { mode, source: "interface" as const, updatedAt };
+}
+
+function isSafePolicyIdentifier(value: string) {
+  return /^[A-Za-z0-9_.:-]{1,120}$/.test(value);
+}
+
+function assertOpenScapGroupName(value: string) {
+  if (!isSafePolicyIdentifier(value)) {
+    throw new Error("Имя группы может содержать только буквы, цифры, _, -, . и :.");
+  }
+}
+
+function assertOpenScapRuleId(value: string) {
+  if (!isSafePolicyIdentifier(value)) {
+    throw new Error("Идентификатор правила OpenSCAP имеет недопустимый формат.");
+  }
+}
+
+function assertOpenScapDatastream(value: string) {
+  if (!value.startsWith("/") || value.length > 512 || value.includes("\0") || value.split("/").includes("..")) {
+    throw new Error("Укажите абсолютный путь к SSG datastream без переходов .. .");
+  }
+}
+
+function assertOpenScapException(reason: string, expiresAt: string) {
+  if (reason.trim().length < 10 || reason.trim().length > 500) {
+    throw new Error("Причина исключения должна содержать от 10 до 500 символов.");
+  }
+  const expiresAtMs = Date.parse(expiresAt);
+  if (!Number.isFinite(expiresAtMs) || expiresAtMs <= Date.now()) {
+    throw new Error("Дата окончания исключения должна быть в будущем.");
+  }
+  if (expiresAtMs > Date.now() + 1000 * 60 * 60 * 24 * 366 * 2) {
+    throw new Error("Исключение нельзя выдать более чем на два года.");
+  }
+}
+
+function rowToOpenScapPolicy(row: Record<string, unknown>): OpenScapPolicy {
+  return {
+    groupName: String(row.group_name),
+    datastream: String(row.datastream),
+    profile: String(row.profile),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+function rowToOpenScapException(row: Record<string, unknown>): OpenScapException {
+  return {
+    id: String(row.id),
+    groupName: String(row.group_name),
+    ruleId: String(row.rule_id),
+    reason: String(row.reason),
+    expiresAt: String(row.expires_at),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
+}
+
+export function listOpenScapPolicies() {
+  return getDatabase()
+    .prepare("SELECT * FROM openscap_policies ORDER BY group_name COLLATE NOCASE ASC")
+    .all()
+    .map((row) => rowToOpenScapPolicy(row as Record<string, unknown>));
+}
+
+export function upsertOpenScapPolicy(input: Pick<OpenScapPolicy, "groupName" | "datastream" | "profile">) {
+  const groupName = input.groupName.trim();
+  const datastream = input.datastream.trim();
+  const profile = input.profile.trim();
+  assertOpenScapGroupName(groupName);
+  assertOpenScapDatastream(datastream);
+  assertOpenScapRuleId(profile);
+  const now = new Date().toISOString();
+  getDatabase().prepare(`
+    INSERT INTO openscap_policies (group_name, datastream, profile, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(group_name) DO UPDATE SET
+      datastream = excluded.datastream,
+      profile = excluded.profile,
+      updated_at = excluded.updated_at
+  `).run(groupName, datastream, profile, now, now);
+  appendAuditEvent("openscap_policy_upserted", groupName, { groupName, datastream, profile });
+  return listOpenScapPolicies().find((policy) => policy.groupName === groupName) ?? null;
+}
+
+export function deleteOpenScapPolicy(groupNameInput: string) {
+  const groupName = groupNameInput.trim();
+  assertOpenScapGroupName(groupName);
+  const result = getDatabase().prepare("DELETE FROM openscap_policies WHERE group_name = ?").run(groupName);
+  if (result.changes > 0) {
+    appendAuditEvent("openscap_policy_deleted", groupName, { groupName });
+  }
+  return result.changes > 0;
+}
+
+export function listOpenScapExceptions() {
+  return getDatabase()
+    .prepare("SELECT * FROM openscap_exceptions ORDER BY expires_at ASC, group_name COLLATE NOCASE ASC, rule_id COLLATE NOCASE ASC")
+    .all()
+    .map((row) => rowToOpenScapException(row as Record<string, unknown>));
+}
+
+export function upsertOpenScapException(input: Pick<OpenScapException, "groupName" | "ruleId" | "reason" | "expiresAt">) {
+  const groupName = input.groupName.trim();
+  const ruleId = input.ruleId.trim();
+  const reason = input.reason.trim();
+  const expiresAtMs = Date.parse(input.expiresAt);
+  if (!Number.isFinite(expiresAtMs)) {
+    throw new Error("Укажите корректную дату окончания исключения.");
+  }
+  const expiresAt = new Date(expiresAtMs).toISOString();
+  assertOpenScapGroupName(groupName);
+  assertOpenScapRuleId(ruleId);
+  assertOpenScapException(reason, expiresAt);
+  const current = getDatabase().prepare("SELECT id, created_at FROM openscap_exceptions WHERE group_name = ? AND rule_id = ?").get(groupName, ruleId) as { id?: unknown; created_at?: unknown } | undefined;
+  const id = typeof current?.id === "string" ? current.id : `openscap_exception_${randomUUID()}`;
+  const createdAt = typeof current?.created_at === "string" ? current.created_at : new Date().toISOString();
+  const updatedAt = new Date().toISOString();
+  getDatabase().prepare(`
+    INSERT INTO openscap_exceptions (id, group_name, rule_id, reason, expires_at, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(group_name, rule_id) DO UPDATE SET
+      reason = excluded.reason,
+      expires_at = excluded.expires_at,
+      updated_at = excluded.updated_at
+  `).run(id, groupName, ruleId, reason, expiresAt, createdAt, updatedAt);
+  appendAuditEvent("openscap_exception_upserted", id, { groupName, ruleId, reason, expiresAt });
+  return listOpenScapExceptions().find((exception) => exception.id === id) ?? null;
+}
+
+export function deleteOpenScapException(id: string) {
+  if (!/^openscap_exception_[a-f0-9-]{36}$/.test(id)) {
+    throw new Error("Идентификатор исключения имеет недопустимый формат.");
+  }
+  const result = getDatabase().prepare("DELETE FROM openscap_exceptions WHERE id = ?").run(id);
+  if (result.changes > 0) {
+    appendAuditEvent("openscap_exception_deleted", id, { id });
+  }
+  return result.changes > 0;
 }
 
 function computeEntryHash(value: Record<string, unknown>) {

@@ -102,6 +102,25 @@ test("operator can select an online or local Trivy database in the interface", (
   assert.match(proxy, /api\/settings/);
 });
 
+test("freshness, group profiles and expiring OpenSCAP exceptions are explicit", () => {
+  const scan = read(path.join("web", "lib", "vulnerability-scan.ts"));
+  const store = read(path.join("web", "lib", "state-store.ts"));
+  const policies = read(path.join("web", "lib", "openscap-policy.ts"));
+  const route = read(path.join("web", "app", "api", "ansible", "run", "route.ts"));
+  const policyScreen = read(path.join("web", "components", "settings", "openscap-policies-client.tsx"));
+  const playbook = read(path.join("ansible", "playbooks", "openscap-audit.yml"));
+  assert.match(scan, /HCP_TRIVY_MAX_DB_AGE_HOURS/);
+  assert.match(scan, /function freshnessFinding/);
+  assert.match(store, /openscap_policies/);
+  assert.match(store, /openscap_exceptions/);
+  assert.match(policies, /exceptionsApplied/);
+  assert.match(route, /resolveOpenScapPolicyForHost/);
+  assert.match(route, /applyOpenScapExceptions/);
+  assert.match(policyScreen, /Согласованное исключение/);
+  assert.match(playbook, /hcp_openscap_datastream/);
+  assert.match(playbook, /datastream-checksum/);
+});
+
 test("OpenSCAP and Greenbone XML are normalized as distinct sources", () => {
   const temporaryDir = mkdtempSync(path.join(tmpdir(), "hcp-parser-test-"));
   const script = path.join(repoRoot, "ansible", "scripts", "hcp-controller-scan.py");
@@ -113,12 +132,14 @@ test("OpenSCAP and Greenbone XML are normalized as distinct sources", () => {
         <Rule id="xccdf_rule_disable_root" severity="high"><title>Disable SSH root login</title></Rule>
         <xccdf:rule-result idref="xccdf_rule_disable_root"><xccdf:result>fail</xccdf:result></xccdf:rule-result>
       </root>`);
-    execFileSync("python3", [script, "openscap-arf", "--input", openscapInput, "--inventory-host", "host-1", "--run-id", "run-test", "--profile", "profile", "--datastream", "/ssg.xml", "--output", openscapOutput]);
+    execFileSync("python3", [script, "openscap-arf", "--input", openscapInput, "--inventory-host", "host-1", "--run-id", "run-test", "--profile", "profile", "--datastream", "/ssg.xml", "--policy-group", "scap_hosts", "--datastream-checksum", "sha256:test", "--output", openscapOutput]);
     const openscap = JSON.parse(readFileSync(openscapOutput, "utf8"));
     assert.equal(openscap.mode, "openscap");
     assert.equal(openscap.findings[0].source, "openscap");
     assert.equal(openscap.findings[0].status, "failed");
     assert.equal(openscap.findings[0].risk, "high");
+    assert.equal(openscap.scanner.policyGroup, "scap_hosts");
+    assert.equal(openscap.scanner.datastreamChecksum, "sha256:test");
 
     const greenboneInput = path.join(temporaryDir, "greenbone.xml");
     const greenboneOutput = path.join(temporaryDir, "greenbone.json");

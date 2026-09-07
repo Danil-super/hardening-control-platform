@@ -51,5 +51,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/hosts", "/data-sources", "/playbooks", "/reports/agentless/:path*", "/reports/correlation/:path*", "/api/ansible/:path*", "/api/settings/:path*"],
+  matcher: ["/hosts", "/data-sources", "/policies", "/playbooks", "/reports/agentless/:path*", "/reports/correlation/:path*", "/api/ansible/:path*", "/api/settings/:path*"],
 };

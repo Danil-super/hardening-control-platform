@@ -9,6 +9,7 @@ import {
   runAnsiblePlaybook,
   validateExtraVars,
 } from "@/lib/ansible-control";
+import { applyOpenScapExceptions, resolveOpenScapPolicyForHost } from "@/lib/openscap-policy";
 import {
   applyRemediation,
   isReversibleRemediationAction,
@@ -159,20 +160,54 @@ export async function POST(request: Request) {
     );
   }
 
+  let runnerExtraVars = extraVars.values;
+  let openScapPolicy: ReturnType<typeof resolveOpenScapPolicyForHost> | null = null;
+  if (action === "openScapAudit" && limit) {
+    try {
+      openScapPolicy = resolveOpenScapPolicyForHost(limit);
+      if (openScapPolicy.policy) {
+        runnerExtraVars = {
+          ...runnerExtraVars,
+          hcp_openscap_datastream: openScapPolicy.policy.datastream,
+          hcp_openscap_profile: openScapPolicy.policy.profile,
+          hcp_openscap_policy_group: openScapPolicy.policy.groupName,
+        };
+      }
+    } catch (error) {
+      return NextResponse.json(
+        { ok: false, error: "openscap_policy_ambiguous", message: error instanceof Error ? error.message : "Не удалось выбрать OpenSCAP-профиль." },
+        { status: 400 },
+      );
+    }
+  }
+
   try {
     const { stdout, stderr, command, reportRunId } = await runAnsiblePlaybook({
       action,
       profileId,
       limit: limit || undefined,
-      extraVars: extraVars.values,
+      extraVars: runnerExtraVars,
     });
+    const reportId = reportIdForRun({ action, profileId, limit, reportRunId });
+    let exceptionsApplied = 0;
+    if (action === "openScapAudit" && limit && reportId) {
+      try {
+        exceptionsApplied = applyOpenScapExceptions({ hostAlias: limit, reportId }).applied;
+      } catch {
+        // The scanner output is still valid even if a policy annotation could
+        // not be saved. The raw report must remain available to the operator.
+      }
+    }
+    const auditMessage = action === "openScapAudit"
+      ? `${openScapPolicy?.policy ? `OpenSCAP: профиль группы ${openScapPolicy.policy.groupName}.` : "OpenSCAP: использована конфигурация окружения."}${exceptionsApplied ? ` Применено исключений: ${exceptionsApplied}.` : ""}`
+      : "Проверка выполнена.";
     appendIncident({
       action,
       kind: "audit",
       status: "success",
       profileId,
       limit: limit || null,
-      message: "Проверка выполнена.",
+      message: auditMessage,
       command,
     });
 
@@ -182,7 +217,13 @@ export async function POST(request: Request) {
       profileId,
       limit: limit || null,
       reportRunId,
-      reportId: reportIdForRun({ action, profileId, limit, reportRunId }),
+      reportId,
+      openScapPolicy: openScapPolicy?.policy ? {
+        groupName: openScapPolicy.policy.groupName,
+        datastream: openScapPolicy.policy.datastream,
+        profile: openScapPolicy.policy.profile,
+      } : null,
+      exceptionsApplied,
       command,
       stdout,
       stderr,

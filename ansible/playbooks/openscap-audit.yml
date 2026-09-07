@@ -9,8 +9,9 @@
     report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
     # The content and profile are deliberately explicit. Selecting a random
     # datastream from a host can produce a misleading compliance result.
-    openscap_datastream: "{{ lookup('env', 'HCP_OPENSCAP_DATASTREAM') | default('', true) }}"
-    openscap_profile: "{{ lookup('env', 'HCP_OPENSCAP_PROFILE') | default('', true) }}"
+    openscap_datastream: "{{ hcp_openscap_datastream | default(lookup('env', 'HCP_OPENSCAP_DATASTREAM'), true) }}"
+    openscap_profile: "{{ hcp_openscap_profile | default(lookup('env', 'HCP_OPENSCAP_PROFILE'), true) }}"
+    openscap_policy_group: "{{ hcp_openscap_policy_group | default('environment', true) }}"
     openscap_raw_report: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-openscap-{{ report_suffix }}.xml"
 
   tasks:
@@ -35,6 +36,8 @@
           - "{{ report_suffix }}"
           - --reason
           - "Не заданы HCP_OPENSCAP_DATASTREAM и HCP_OPENSCAP_PROFILE."
+          - --policy-group
+          - "{{ openscap_policy_group }}"
           - --output
           - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
       delegate_to: localhost
@@ -68,6 +71,12 @@
           - "{{ report_suffix }}"
           - --reason
           - "{{ 'oscap не установлен на целевом хосте.' if (openscap_binary.rc | default(1)) != 0 else 'Не найден указанный SSG datastream: ' ~ openscap_datastream }}"
+          - --profile
+          - "{{ openscap_profile }}"
+          - --datastream
+          - "{{ openscap_datastream }}"
+          - --policy-group
+          - "{{ openscap_policy_group }}"
           - --output
           - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
       delegate_to: localhost
@@ -131,6 +140,12 @@
               - "{{ openscap_profile }}"
               - --datastream
               - "{{ openscap_datastream }}"
+              - --policy-group
+              - "{{ openscap_policy_group }}"
+              - --datastream-mtime
+              - "{{ openscap_content.stat.mtime | default('') | string }}"
+              - --datastream-checksum
+              - "{{ openscap_content.stat.checksum | default('') }}"
               - --output
               - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
           delegate_to: localhost

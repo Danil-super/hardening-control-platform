@@ -8,6 +8,7 @@ export function isProtectedPath(pathname: string) {
   return (
     pathname === "/hosts" ||
     pathname === "/data-sources" ||
+    pathname === "/policies" ||
     pathname === "/playbooks" ||
     pathname.startsWith("/reports/agentless") ||
     (pathname.startsWith("/api/ansible") && !pathname.startsWith("/api/ansible/auth")) ||

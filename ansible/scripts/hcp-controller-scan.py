@@ -466,6 +466,9 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
             available=True,
             profile=args.profile,
             datastream=args.datastream,
+            policyGroup=args.policy_group or "environment",
+            datastreamLastModified=args.datastream_mtime or None,
+            datastreamChecksum=args.datastream_checksum or None,
             scannerExitCode=args.exit_code,
         )
 
@@ -532,6 +535,9 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
         available=True,
         profile=args.profile,
         datastream=args.datastream,
+        policyGroup=args.policy_group or "environment",
+        datastreamLastModified=args.datastream_mtime or None,
+        datastreamChecksum=args.datastream_checksum or None,
         scannerExitCode=args.exit_code,
     )
 
@@ -551,6 +557,9 @@ def openscap_unavailable(args: argparse.Namespace) -> dict[str, Any]:
             recommendation="Подготовьте oscap и SSG datastream на целевой ВМ, явно задайте HCP_OPENSCAP_DATASTREAM и HCP_OPENSCAP_PROFILE, затем повторите аудит.",
         )],
         available=False,
+        profile=args.profile,
+        datastream=args.datastream,
+        policyGroup=args.policy_group or "environment",
         reason=args.reason or None,
     )
 
@@ -642,6 +651,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--exit-code", type=int, default=0)
     parser.add_argument("--profile")
     parser.add_argument("--datastream")
+    parser.add_argument("--policy-group")
+    parser.add_argument("--datastream-mtime")
+    parser.add_argument("--datastream-checksum")
     parser.add_argument("--reason")
     args = parser.parse_args()
     if args.mode in {"ssh-audit", "nmap"} and not args.host:

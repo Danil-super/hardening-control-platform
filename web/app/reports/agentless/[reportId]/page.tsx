@@ -53,11 +53,15 @@ export default async function AgentlessReportDetailPage({
   const raw = asRecord(report.raw);
   const packageInventory = asRecord(raw.packageInventory);
   const vulnerabilityScan = asRecord(raw.vulnerabilityScan);
+  const trivyFreshness = asRecord(vulnerabilityScan.databaseFreshness);
+  const scanner = asRecord(raw.scanner);
   const vendorAssessment = asRecord(vulnerabilityScan.vendorAssessment);
   const vendorStatuses = Object.entries(asRecord(vendorAssessment.statuses))
     .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
     .map(([status, count]) => `${status}: ${count}`);
   const isLynisReport = report.mode === "lynis";
+  const isOpenScapReport = report.mode === "openscap";
+  const exceptionsApplied = Array.isArray(scanner.exceptionsApplied) ? scanner.exceptionsApplied : [];
 
   return (
     <div className="space-y-6">
@@ -149,6 +153,21 @@ export default async function AgentlessReportDetailPage({
             <div><p className="text-slate-500">Статус в базе</p><p className="mt-1 text-slate-200">{vendorAssessment.verified === true ? "получен" : "не получен — требуется advisory поставщика"}</p></div>
             <div><p className="text-slate-500">Состояния</p><p className="mt-1 break-words text-slate-200">{vendorStatuses.length ? vendorStatuses.join(", ") : "нет CVE или статусов"}</p></div>
           </div>
+          {Object.keys(trivyFreshness).length ? <p className={`mt-4 rounded-md border px-3 py-2 text-sm leading-6 ${trivyFreshness.status === "fresh" ? "border-emerald-400/25 bg-emerald-500/5 text-emerald-100" : "border-amber-400/25 bg-amber-500/5 text-amber-100"}`}>База Trivy: {textValue(trivyFreshness.status)} · дата: {formatDate(typeof trivyFreshness.updatedAt === "string" ? trivyFreshness.updatedAt : null)} · возраст: {textValue(trivyFreshness.ageHours)} ч · лимит: {textValue(trivyFreshness.maxAgeHours)} ч.</p> : null}
+        </section>
+      ) : null}
+
+      {isOpenScapReport ? (
+        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <h2 className="text-xl font-semibold text-white">Параметры OpenSCAP</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Профиль и datastream фиксируются в отчёте, чтобы результат можно было воспроизвести и сопоставить после обновления SSG.</p>
+          <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+            <div><p className="text-slate-500">Группа политики</p><p className="mt-1 break-words text-slate-200">{textValue(scanner.policyGroup)}</p></div>
+            <div><p className="text-slate-500">SSG-профиль</p><p className="mt-1 break-all text-slate-200">{textValue(scanner.profile)}</p></div>
+            <div><p className="text-slate-500">Datastream</p><p className="mt-1 break-all text-slate-200">{textValue(scanner.datastream)}</p></div>
+            <div><p className="text-slate-500">Версия datastream</p><p className="mt-1 break-all text-slate-200">{textValue(scanner.datastreamChecksum)}</p><p className="mt-1 text-xs text-slate-500">mtime: {textValue(scanner.datastreamLastModified)}</p></div>
+          </div>
+          {exceptionsApplied.length ? <p className="mt-4 rounded-md border border-amber-400/25 bg-amber-500/5 px-3 py-2 text-sm leading-6 text-amber-100">В этом отчёте применено согласованных исключений: {exceptionsApplied.length}. Они отмечены как «ручная проверка» и не удалены из списка находок.</p> : null}
         </section>
       ) : null}
 
