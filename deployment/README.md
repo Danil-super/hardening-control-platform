@@ -4,7 +4,7 @@
 
 ## Подготовка
 
-Образ control node уже содержит Ansible, Lynis, Nmap, `ssh-audit`, OpenSCAP и Trivy. OpenSCAP не устанавливается на управляемые ВМ автоматически: для точной SCAP-проверки его и SSG content заранее готовят только на тех хостах, где это одобрено.
+Образ control node уже содержит Ansible, Lynis, Nmap и `ssh-audit`. Они выполняются внутри контейнера HCP; на управляемые ВМ эти пакеты не устанавливаются.
 
 ```bash
 cp .env.production.example .env
@@ -48,17 +48,6 @@ HCP_OSV_MODE=offline
 HCP_OSV_MODE=online
 HCP_OSV_BASE_URL=https://osv-proxy.security.intra/v1
 ```
-
-Для полноценного локального CVE-аудита используйте Trivy как основной провайдер. В offline-режиме он не обновляет базы и не делает исходящий запрос; предварительно зеркалируйте базы в закрытый OCI-registry:
-
-```env
-HCP_CVE_PROVIDER=trivy
-HCP_TRIVY_MODE=offline
-HCP_TRIVY_DB_REPOSITORY=registry.security.intra/trivy-db
-HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db
-```
-
-Dependency-Track не запускается по умолчанию. После заполнения его пароля БД включите отдельный профиль: `docker compose --profile dependency-track up -d --build`. Подробные инструкции для OpenSCAP, Trivy, Greenbone и Dependency-Track — в [docs/audit-integrations.md](../docs/audit-integrations.md).
 
 ## Периодический аудит через systemd
 

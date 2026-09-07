@@ -14,7 +14,6 @@ import {
   Server,
   ShieldCheck,
   Terminal,
-  Upload,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button, LinkButton } from "@/components/ui/button";
@@ -135,7 +134,6 @@ const auditActions = [
   { id: "sshCryptoAudit", label: "Проверить SSH-криптографию", icon: ShieldCheck, advanced: true },
   { id: "networkPortScan", label: "Проверить открытые порты", icon: Search, requiresConfirmation: true, advanced: true },
   { id: "lynisTemporaryAudit", label: "Запустить Lynis", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
-  { id: "openScapAudit", label: "Проверить SSG-профиль OpenSCAP", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
 ] as const;
 
 const responseActions = [
@@ -214,8 +212,6 @@ export function AnsibleControlClient() {
   const [accessLoading, setAccessLoading] = useState("");
   const [accessMessage, setAccessMessage] = useState("");
   const [copied, setCopied] = useState("");
-  const [greenboneFile, setGreenboneFile] = useState<File | null>(null);
-  const [greenboneMessage, setGreenboneMessage] = useState("");
 
   const selectedHost = useMemo(
     () => hosts?.hosts?.find((host) => host.alias === selectedAlias) ?? null,
@@ -508,8 +504,6 @@ export function AnsibleControlClient() {
     );
     const confirmationText = action === "lynisTemporaryAudit"
       ? "Lynis будет временно передан на выбранную ВМ, выполнен с sudo, а его каталог и сырой отчет будут удалены. Продолжить?"
-      : action === "openScapAudit"
-        ? "OpenSCAP выполнится на выбранной ВМ с заранее установленным SSG datastream. Запуск не меняет настройки, но может занять до 30 минут. Продолжить?"
       : action === "networkPortScan"
         ? "Nmap выполнит сетевую проверку top-100 TCP-портов выбранного хоста с control node. Продолжить?"
         : "Запустить проверку?";
@@ -562,22 +556,10 @@ export function AnsibleControlClient() {
           body: JSON.stringify({ hostAlias: selectedAlias, reportId: payload.reportId }),
         });
         const cvePayload = await cveResponse.json();
-        let dependencyTrackMessage = "";
-        if (cvePayload.ok && cvePayload.reportId && cvePayload.report?.vulnerabilityScan?.sbomFile) {
-          const dependencyTrackResponse = await fetch("/api/ansible/dependency-track/sync", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ hostAlias: selectedAlias, vulnerabilityReportId: cvePayload.reportId }),
-          });
-          const dependencyTrackPayload = await dependencyTrackResponse.json();
-          dependencyTrackMessage = dependencyTrackPayload.message
-            ? ` ${dependencyTrackPayload.message}`
-            : "";
-        }
         setRunResult({
           ok: cvePayload.ok,
           action,
-          message: `${cvePayload.message ?? (cvePayload.ok ? "CVE-аудит пакетов выполнен." : "Не удалось выполнить CVE-аудит пакетов.")}${dependencyTrackMessage}`,
+          message: cvePayload.message ?? (cvePayload.ok ? "CVE-аудит пакетов выполнен." : "Не удалось выполнить CVE-аудит пакетов."),
           stdout: payload.stdout,
           stderr: payload.stderr,
         });
@@ -591,32 +573,6 @@ export function AnsibleControlClient() {
       }
       if (payload.ok && payload.postAuditReportId) {
         setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.postAuditReportId)}`);
-      }
-    } finally {
-      setLoading("");
-    }
-  }
-
-  async function importGreenboneReport() {
-    if (!selectedAlias || !greenboneFile) {
-      setGreenboneMessage("Выберите хост и XML-файл отчёта Greenbone.");
-      return;
-    }
-    setLoading("greenboneImport");
-    setGreenboneMessage("");
-    setFreshReportHref("");
-    try {
-      const form = new FormData();
-      form.set("hostAlias", selectedAlias);
-      form.set("report", greenboneFile);
-      const response = await fetch("/api/ansible/greenbone/import", { method: "POST", body: form });
-      const payload = await response.json();
-      setGreenboneMessage(payload.message ?? "Не удалось импортировать отчёт Greenbone.");
-      setRunResult({ ok: payload.ok, action: "greenboneImport", message: payload.message });
-      if (payload.ok && payload.reportId) {
-        setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.reportId)}`);
-        setGreenboneFile(null);
-        await loadHosts();
       }
     } finally {
       setLoading("");
@@ -999,29 +955,6 @@ export function AnsibleControlClient() {
                 );
               })}
             </div>
-          </details>
-
-          <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Импорт сетевого отчёта Greenbone / OpenVAS</summary>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
-              Greenbone запускается отдельным сканером сети. Экспортируйте завершённый report в XML и привяжите его к выбранному хосту: результаты не смешиваются с SSH и CVE-аудитом.
-            </p>
-            <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
-              <label className="block min-w-0 flex-1">
-                <span className="text-xs font-semibold text-slate-400">XML-отчёт Greenbone (до 20 МБ)</span>
-                <input
-                  type="file"
-                  accept=".xml,application/xml,text/xml"
-                  onChange={(event) => setGreenboneFile(event.target.files?.[0] ?? null)}
-                  className="mt-2 block w-full text-sm text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:text-slate-100"
-                />
-              </label>
-              <Button variant="secondary" onClick={importGreenboneReport} disabled={Boolean(loading) || !selectedHost || !greenboneFile}>
-                <Upload size={16} className={loading === "greenboneImport" ? "animate-pulse" : ""} aria-hidden="true" />
-                Импортировать XML
-              </Button>
-            </div>
-            {greenboneMessage ? <p className="mt-3 text-xs leading-5 text-slate-300" role="status">{greenboneMessage}</p> : null}
           </details>
 
           <details className="mt-4 rounded-md border border-amber-400/20 bg-amber-500/5 p-3">
