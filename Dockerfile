@@ -24,7 +24,6 @@ ENV NODE_ENV=production \
   PORT=3000 \
   HCP_REPORTS_DIR=/var/lib/hcp/reports \
   HCP_STATE_DIR=/var/lib/hcp \
-  HCP_CVE_PROVIDER=trivy \
   HCP_TRIVY_MODE=online
 
 WORKDIR /app

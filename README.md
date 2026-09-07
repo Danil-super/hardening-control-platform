@@ -8,7 +8,7 @@
 
 - SSH-мастер: отдельный ключ control node, независимая проверка SSH fingerprint, persistent `known_hosts`.
 - Профили Ansible: базовый Linux, SSH, web-сервер, Docker-host.
-- Инвентарь пакетов, CycloneDX SBOM и CVE-аудит Trivy; при необходимости — OSV-совместимый API.
+- Инвентарь пакетов, CycloneDX SBOM и CVE-аудит Trivy с vendor-aware статусами пакетов.
 - Учет статуса поставщика пакета (`affected`, `not affected`, `fixed`, `will not fix`, `end of life`) и RPM epoch, чтобы не путать upstream-CVE с дистрибутивным backport-исправлением.
 - OpenSCAP/SSG для подготовленных хостов, временный Lynis, Nmap и `ssh-audit`.
 - Импорт XML-отчёта Greenbone/OpenVAS и отправка SBOM в OWASP Dependency-Track.
@@ -133,7 +133,6 @@ ssh -L 3000:127.0.0.1:3000 user@control-node-ip
 Основной вариант в `.env` уже установлен:
 
 ```env
-HCP_CVE_PROVIDER=trivy
 HCP_TRIVY_MODE=online
 ```
 
@@ -142,7 +141,6 @@ HCP_TRIVY_MODE=online
 Для изолированной сети заранее зеркалируйте базы Trivy во внутренний OCI registry, затем включите offline-режим:
 
 ```env
-HCP_CVE_PROVIDER=trivy
 HCP_TRIVY_MODE=offline
 HCP_TRIVY_DB_REPOSITORY=registry.security.intra/trivy-db
 HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db

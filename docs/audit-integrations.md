@@ -13,17 +13,15 @@
 
 Контейнер HCP содержит закреплённый Trivy. После кнопки «Проверить пакеты и CVE» платформа создаёт CycloneDX 1.5 SBOM из фактического инвентаря пакетов, запускает `trivy sbom` и сохраняет и CVE-отчёт, и SBOM в persistent volume.
 
-Для сети с выходом оставьте:
+Для сети с выходом оставьте Trivy в online-режиме:
 
 ```env
-HCP_CVE_PROVIDER=trivy
 HCP_TRIVY_MODE=online
 ```
 
 Для изолированной сети сначала регулярно импортируйте базы Trivy в доступный только внутри сети OCI-registry. Затем задайте зеркала и включите offline-режим:
 
 ```env
-HCP_CVE_PROVIDER=trivy
 HCP_TRIVY_MODE=offline
 HCP_TRIVY_DB_REPOSITORY=registry.security.intra/trivy-db
 HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db

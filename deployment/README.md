@@ -36,27 +36,15 @@ docker compose logs -f hcp
 
 ## Изолированная сеть и CVE
 
-По умолчанию `HCP_OSV_MODE=online` обращается к `https://api.osv.dev/v1` только при запуске проверки пакетов и CVE. Остальные функции не требуют интернета. Для изолированного контура задайте в `.env`:
+Единственный CVE-провайдер платформы — Trivy. В online-режиме он обновляет свою базу уязвимостей; для изолированного контура заранее зеркалируйте базы во внутренний OCI-registry и включите offline-режим:
 
 ```env
-HCP_OSV_MODE=offline
-```
-
-Тогда платформа не выполняет исходящее соединение и создаёт отчёт «инвентарь есть, CVE не сопоставлены». Если в сети есть доверенный API-proxy, совместимый с OSV `/v1/querybatch` и `/v1/vulns/{id}`, оставьте `online` и укажите его базовый URL:
-
-```env
-HCP_OSV_MODE=online
-HCP_OSV_BASE_URL=https://osv-proxy.security.intra/v1
-```
-
-Для полноценного локального CVE-аудита используйте Trivy как основной провайдер. В offline-режиме он не обновляет базы и не делает исходящий запрос; предварительно зеркалируйте базы в закрытый OCI-registry:
-
-```env
-HCP_CVE_PROVIDER=trivy
 HCP_TRIVY_MODE=offline
 HCP_TRIVY_DB_REPOSITORY=registry.security.intra/trivy-db
 HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db
 ```
+
+В offline-режиме Trivy не обновляет базы и не делает исходящий запрос. Если готовой локальной базы нет или её нельзя прочитать, HCP создаёт отчёт `manual`, а не сообщает об отсутствии CVE.
 
 Dependency-Track не запускается по умолчанию. После заполнения его пароля БД включите отдельный профиль: `docker compose --profile dependency-track up -d --build`. Подробные инструкции для OpenSCAP, Trivy, Greenbone и Dependency-Track — в [docs/audit-integrations.md](../docs/audit-integrations.md).
 

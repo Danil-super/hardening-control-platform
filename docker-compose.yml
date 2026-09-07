@@ -17,9 +17,6 @@ services:
       ANSIBLE_SSH_ARGS: -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/hcp/known_hosts
       HCP_REPORTS_DIR: /var/lib/hcp/reports
       HCP_STATE_DIR: /var/lib/hcp
-      HCP_OSV_MODE: ${HCP_OSV_MODE:-online}
-      HCP_OSV_BASE_URL: ${HCP_OSV_BASE_URL:-https://api.osv.dev/v1}
-      HCP_CVE_PROVIDER: ${HCP_CVE_PROVIDER:-trivy}
       HCP_TRIVY_MODE: ${HCP_TRIVY_MODE:-online}
       HCP_TRIVY_CACHE_DIR: /var/lib/hcp/trivy-cache
       HCP_TRIVY_DB_REPOSITORY: ${HCP_TRIVY_DB_REPOSITORY:-}

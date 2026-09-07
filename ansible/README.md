@@ -76,7 +76,7 @@ sudo apt install lynis nmap ssh-audit
 
 `Проверить SSG-профиль OpenSCAP` доступна из панели как отдельный audit. Для корректного результата на ВМ заранее должны быть подготовлены `oscap`, SSG datastream и согласованный профиль. HCP не устанавливает их автоматически и не угадывает datastream: задайте `HCP_OPENSCAP_DATASTREAM` и `HCP_OPENSCAP_PROFILE` на control node. Во время запуска создаётся только временный ARF, который затем удаляется с ВМ.
 
-Проверка пакетов создаёт CycloneDX SBOM и запускает Trivy на control node. В изолированной сети используйте `HCP_CVE_PROVIDER=trivy`, `HCP_TRIVY_MODE=offline` и внутреннее зеркало его баз. Без готовой базы отчёт помечается неполным, а не безопасным. Полная процедура — в `docs/audit-integrations.md`.
+Проверка пакетов создаёт CycloneDX SBOM и запускает Trivy на control node. В изолированной сети используйте `HCP_TRIVY_MODE=offline` и внутреннее зеркало его баз. Без готовой базы отчёт помечается неполным, а не безопасным. Полная процедура — в `docs/audit-integrations.md`.
 
 ## Базовый аудит конфигурации
 

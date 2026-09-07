@@ -62,12 +62,13 @@ test("host onboarding uses verified SSH host keys and persists them", () => {
   assert.match(compose, /HCP_KNOWN_HOSTS_PATH: \/var\/lib\/hcp\/known_hosts/);
 });
 
-test("CVE checking has an explicit isolated-network mode", () => {
+test("CVE checking has an explicit Trivy-only isolated-network mode", () => {
   const scan = read(path.join("web", "lib", "vulnerability-scan.ts"));
   const compose = read("docker-compose.yml");
-  assert.match(scan, /HCP_OSV_MODE/);
-  assert.match(scan, /CVE-сопоставление отключено для изолированной сети/);
-  assert.match(compose, /HCP_OSV_BASE_URL/);
+  assert.match(scan, /HCP_TRIVY_MODE/);
+  assert.match(scan, /--offline-scan/);
+  assert.doesNotMatch(scan, /OSV/);
+  assert.doesNotMatch(compose, /HCP_OSV/);
 });
 
 test("advanced audit integrations preserve source and incomplete-state evidence", () => {

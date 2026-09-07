@@ -134,7 +134,7 @@ export default async function AgentlessReportDetailPage({
           <div className="mt-4 grid gap-4 text-sm sm:grid-cols-3">
             <div><p className="text-slate-500">Пакетов найдено</p><p className="mt-1 text-2xl font-semibold text-white">{textValue(packageInventory.packageCount)}</p></div>
             <div><p className="text-slate-500">Менеджер</p><p className="mt-1 text-slate-200">{textValue(packageInventory.manager)}</p></div>
-            <div><p className="text-slate-500">CVE</p><p className="mt-1 text-slate-200">Запустите проверку пакетов и CVE для Trivy/OSV-сопоставления.</p></div>
+            <div><p className="text-slate-500">CVE</p><p className="mt-1 text-slate-200">Запустите проверку пакетов и CVE через Trivy.</p></div>
           </div>
         </section>
       ) : null}
