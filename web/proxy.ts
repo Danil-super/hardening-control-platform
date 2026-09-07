@@ -3,6 +3,10 @@ import { authCookieName, createEdgeSessionToken, hasTrustedOrigin, isMutatingReq
 
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
+  const isProtectedApi = (
+    (pathname.startsWith("/api/ansible") && !pathname.startsWith("/api/ansible/auth"))
+    || pathname.startsWith("/api/settings")
+  );
   if (!isProtectedPath(pathname)) {
     return NextResponse.next();
   }
@@ -11,8 +15,7 @@ export async function proxy(request: NextRequest) {
   const currentToken = request.cookies.get(authCookieName)?.value;
   if (expectedToken && currentToken === expectedToken) {
     if (
-      pathname.startsWith("/api/ansible") &&
-      !pathname.startsWith("/api/ansible/auth") &&
+      isProtectedApi &&
       isMutatingRequest(request.method) &&
       !hasTrustedOrigin(request)
     ) {
@@ -28,7 +31,7 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  if (pathname.startsWith("/api/ansible")) {
+  if (isProtectedApi) {
     return NextResponse.json(
       {
         ok: false,
@@ -48,5 +51,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/hosts", "/playbooks", "/reports/agentless/:path*", "/reports/correlation/:path*", "/api/ansible/:path*"],
+  matcher: ["/hosts", "/data-sources", "/playbooks", "/reports/agentless/:path*", "/reports/correlation/:path*", "/api/ansible/:path*", "/api/settings/:path*"],
 };

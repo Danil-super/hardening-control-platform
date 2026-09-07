@@ -37,6 +37,18 @@ export type RemediationTransaction = {
   error: string | null;
 };
 
+export type VulnerabilityDatabaseMode = "online" | "offline";
+
+export type VulnerabilityDatabaseSettings = {
+  /**
+   * online — Trivy may update its vulnerability database through the network.
+   * offline — Trivy uses only the cache already present on the control node.
+   */
+  mode: VulnerabilityDatabaseMode;
+  source: "interface" | "environment";
+  updatedAt: string | null;
+};
+
 function getStateDirectory() {
   const repoRoot = path.resolve(process.cwd(), "..");
   return process.env.HCP_STATE_DIR ? path.resolve(process.env.HCP_STATE_DIR) : path.join(repoRoot, "ansible");
@@ -92,6 +104,12 @@ function getDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS remediation_transactions_active_host
       ON remediation_transactions(host_alias)
       WHERE status IN ('preparing', 'backed_up');
+
+    CREATE TABLE IF NOT EXISTS runtime_settings (
+      setting_key TEXT PRIMARY KEY,
+      setting_value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
   globalRef.hcpDatabase = database;
   globalRef.hcpDatabasePath = databasePath;
@@ -104,6 +122,37 @@ function canonicalJson(value: unknown) {
 
 function auditIntegrityKey() {
   return process.env.HCP_AUDIT_HMAC_KEY || process.env.HCP_AUTH_SECRET || process.env.HCP_ADMIN_PASSWORD || "hcp-development-only-key";
+}
+
+function modeFromEnvironment(): VulnerabilityDatabaseMode {
+  return process.env.HCP_TRIVY_MODE?.trim().toLowerCase() === "offline" ? "offline" : "online";
+}
+
+export function getVulnerabilityDatabaseSettings(): VulnerabilityDatabaseSettings {
+  const row = getDatabase()
+    .prepare("SELECT setting_value, updated_at FROM runtime_settings WHERE setting_key = ?")
+    .get("vulnerability_database_mode") as { setting_value?: unknown; updated_at?: unknown } | undefined;
+
+  if (row?.setting_value === "online" || row?.setting_value === "offline") {
+    return {
+      mode: row.setting_value,
+      source: "interface",
+      updatedAt: typeof row.updated_at === "string" ? row.updated_at : null,
+    };
+  }
+
+  return { mode: modeFromEnvironment(), source: "environment", updatedAt: null };
+}
+
+export function setVulnerabilityDatabaseMode(mode: VulnerabilityDatabaseMode) {
+  const updatedAt = new Date().toISOString();
+  getDatabase().prepare(`
+    INSERT INTO runtime_settings (setting_key, setting_value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(setting_key) DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at
+  `).run("vulnerability_database_mode", mode, updatedAt);
+  appendAuditEvent("vulnerability_database_mode_changed", "vulnerability_database_mode", { mode });
+  return { mode, source: "interface" as const, updatedAt };
 }
 
 function computeEntryHash(value: Record<string, unknown>) {

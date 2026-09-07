@@ -64,8 +64,11 @@ test("host onboarding uses verified SSH host keys and persists them", () => {
 
 test("CVE checking has an explicit Trivy-only isolated-network mode", () => {
   const scan = read(path.join("web", "lib", "vulnerability-scan.ts"));
+  const stateStore = read(path.join("web", "lib", "state-store.ts"));
   const compose = read("docker-compose.yml");
-  assert.match(scan, /HCP_TRIVY_MODE/);
+  assert.match(scan, /getVulnerabilityDatabaseSettings/);
+  assert.match(stateStore, /HCP_TRIVY_MODE/);
+  assert.match(stateStore, /runtime_settings/);
   assert.match(scan, /--offline-scan/);
   assert.doesNotMatch(scan, /OSV/);
   assert.doesNotMatch(compose, /HCP_OSV/);
@@ -73,15 +76,30 @@ test("CVE checking has an explicit Trivy-only isolated-network mode", () => {
 
 test("advanced audit integrations preserve source and incomplete-state evidence", () => {
   const scan = read(path.join("web", "lib", "vulnerability-scan.ts"));
+  const stateStore = read(path.join("web", "lib", "state-store.ts"));
   const compose = read("docker-compose.yml");
   const playbook = read(path.join("ansible", "playbooks", "openscap-audit.yml"));
   const greenbone = read(path.join("web", "app", "api", "ansible", "greenbone", "import", "route.ts"));
-  assert.match(scan, /HCP_TRIVY_MODE/);
+  assert.match(scan, /getVulnerabilityDatabaseSettings/);
+  assert.match(stateStore, /HCP_TRIVY_MODE/);
   assert.match(scan, /Trivy не выполнил CVE-сопоставление/);
   assert.match(compose, /profiles: \["dependency-track"\]/);
   assert.match(playbook, /HCP_OPENSCAP_DATASTREAM/);
   assert.match(playbook, /state: absent/);
   assert.match(greenbone, /maxXmlBytes/);
+});
+
+test("operator can select an online or local Trivy database in the interface", () => {
+  const route = read(path.join("web", "app", "api", "settings", "vulnerability-data", "route.ts"));
+  const screen = read(path.join("web", "components", "settings", "vulnerability-data-client.tsx"));
+  const shell = read(path.join("web", "components", "layout", "app-shell.tsx"));
+  const proxy = read(path.join("web", "proxy.ts"));
+  assert.match(route, /setVulnerabilityDatabaseMode/);
+  assert.match(route, /Greenbone \/ OpenVAS/);
+  assert.match(screen, /Локальная база/);
+  assert.match(screen, /Сетевая база/);
+  assert.match(shell, /data-sources/);
+  assert.match(proxy, /api\/settings/);
 });
 
 test("OpenSCAP and Greenbone XML are normalized as distinct sources", () => {

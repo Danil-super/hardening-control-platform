@@ -1,4 +1,4 @@
-import { BookOpen, FileText, Server, Shield } from "lucide-react";
+import { BookOpen, Database, FileText, Server, Shield } from "lucide-react";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { LogoutButton } from "@/components/auth/logout-button";
@@ -6,6 +6,7 @@ import { LogoutButton } from "@/components/auth/logout-button";
 const navItems = [
   { href: "/hosts", label: "Хосты", icon: Server },
   { href: "/reports", label: "Отчеты", icon: FileText },
+  { href: "/data-sources", label: "Источники", icon: Database },
   { href: "/guide", label: "Инструкция", icon: BookOpen },
 ];
 
@@ -54,7 +55,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </Link>
             <LogoutButton className="h-9 px-3 text-xs" />
           </div>
-          <nav className="mt-3 grid grid-cols-3 gap-2" aria-label="Основная навигация">
+          <nav className="mt-3 grid grid-cols-4 gap-2" aria-label="Основная навигация">
             {navItems.map((item) => (
               <Link
                 key={item.href}
