@@ -52,6 +52,15 @@ function reportModeLabel(mode: string) {
   if (mode === "lynis") {
     return "Lynis";
   }
+  if (mode === "openscap") {
+    return "OpenSCAP";
+  }
+  if (mode === "greenbone") {
+    return "Greenbone";
+  }
+  if (mode === "dependency-track") {
+    return "Dependency-Track";
+  }
   return "аудит";
 }
 
@@ -65,6 +74,7 @@ function actionLabel(action: string) {
     sshCryptoAudit: "Проверка SSH",
     networkPortScan: "Проверка портов",
     lynisTemporaryAudit: "Проверка Lynis",
+    openScapAudit: "Проверка OpenSCAP",
     closePort: "Закрытие порта",
     blockIp: "Блокировка IP",
   };
@@ -142,6 +152,7 @@ export default async function AgentlessReportsPage({
         </div>
         <div className="flex flex-wrap gap-2">
           {hostFilter ? <LinkButton href="/reports/agentless" variant="secondary">Все хосты</LinkButton> : null}
+          {hostFilter ? <LinkButton href={`/reports/correlation/${encodeURIComponent(hostFilter)}`} variant="secondary">Единая сводка</LinkButton> : null}
           <LinkButton href="/hosts" variant="secondary">Открыть хосты</LinkButton>
         </div>
       </div>
@@ -270,9 +281,10 @@ export default async function AgentlessReportsPage({
                       </td>
                       <td className="px-4 py-4 text-slate-300">{hostReports.length}</td>
                       <td className="px-4 py-4">
-                        <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host)}`} variant="secondary">
-                          Все тесты ({hostReports.length})
-                        </LinkButton>
+                        <div className="flex flex-wrap gap-2">
+                          <LinkButton href={`/reports/correlation/${encodeURIComponent(host)}`} variant="secondary">Сводка</LinkButton>
+                          <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host)}`} variant="secondary">Все тесты ({hostReports.length})</LinkButton>
+                        </div>
                       </td>
                     </tr>
                   ))}

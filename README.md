@@ -1,131 +1,315 @@
 # Hardening Control Platform
 
-Рабочая локальная платформа для безагентного аудита и контролируемого харденинга Linux-серверов через Ansible и SSH. Control node ведет inventory, запускает разрешенные playbook'и, хранит отчеты и не устанавливает постоянный агент на целевые хосты.
+Локальная веб-платформа для безагентного аудита и контролируемого харденинга Linux-хостов. Она устанавливается на один выделенный **control node** в вашей сети, подключается к серверам по SSH через Ansible и не устанавливает постоянных агентов на целевые ВМ.
 
-Платформа предназначена для приватной сети и активов, на проверку и изменение которых есть разрешение. Это не публичный сканер, IDS или SIEM.
+Платформа предназначена только для активов, на проверку и изменение которых есть разрешение. Это не публичный сканер, SIEM или IDS.
 
-## Возможности
+## Что уже работает
 
-- Реальные профили аудита: базовый Linux, SSH, web-сервер, Docker-host.
-- Проверка SSH-доступа, системных фактов, портов, сервисов и логов через Ansible.
-- Инвентарь пакетов и предварительное сопоставление CVE через OSV.dev или внутренний OSV-совместимый API.
-- История JSON-отчетов по каждому управляемому хосту.
-- Обратимые firewall-изменения: dry-run, typed confirmation, backup, повторный аудит и rollback.
-- SQLite для транзакций и append-only hash-chain журнала действий.
-- Периодический аудит через `systemd timer` и `flock` — без зависимости от памяти Next.js.
-- Docker-стенд для воспроизводимой проверки сценария «до/после».
+- SSH-мастер: отдельный ключ control node, независимая проверка SSH fingerprint, persistent `known_hosts`.
+- Профили Ansible: базовый Linux, SSH, web-сервер, Docker-host.
+- Инвентарь пакетов, CycloneDX SBOM и CVE-аудит Trivy; при необходимости — OSV-совместимый API.
+- Учет статуса поставщика пакета (`affected`, `not affected`, `fixed`, `will not fix`, `end of life`) и RPM epoch, чтобы не путать upstream-CVE с дистрибутивным backport-исправлением.
+- OpenSCAP/SSG для подготовленных хостов, временный Lynis, Nmap и `ssh-audit`.
+- Импорт XML-отчёта Greenbone/OpenVAS и отправка SBOM в OWASP Dependency-Track.
+- Единая сводка по хосту: показывает совпадающие CVE/сетевые признаки из независимых источников, свежесть доказательств и не складывает CVSS в произвольный балл.
+- Обратимые firewall-изменения: dry-run, причина, typed confirmation, backup и rollback.
+- SQLite с hash-chain журналом, история JSON-отчётов и systemd-расписание.
 
-## Стек
+## Архитектура
 
-- Next.js App Router, TypeScript, Tailwind CSS
-- Node.js built-in SQLite (`node:sqlite`)
-- Ansible, SSH, Nmap, Lynis, ssh-audit
-- Docker Compose и systemd для локального развертывания
-
-## Быстрый запуск для разработки
-
-```bash
-cd web
-npm ci
-cp .env.example .env.local
-npm run dev
+```mermaid
+flowchart TB
+  Admin["Администратор"] --> HCP["HCP: Next.js + Ansible"]
+  HCP --> SSH["Linux-хосты по SSH"]
+  HCP --> Trivy["Trivy + CycloneDX"]
+  HCP --> DTrack["Dependency-Track"]
+  Greenbone["Greenbone / OpenVAS"] --> HCP
+  HCP --> Reports["Локальные JSON-отчёты"]
 ```
 
-В `web/.env.local` задайте:
+## 1. Требования
+
+Рекомендуемый вариант — отдельный компьютер или VM с **Ubuntu/Debian** в той же сети, что и проверяемые серверы.
+
+| Компонент | Минимум | Рекомендация |
+| --- | --- | --- |
+| ОС control node | 64-bit Linux | Ubuntu 24.04 LTS / Debian 12 |
+| CPU / RAM | 2 vCPU / 4 GB | 4 vCPU / 8 GB |
+| Диск | 20 GB | 60+ GB, если запускается Dependency-Track |
+| ПО | Git, Docker Engine, Docker Compose v2, OpenSSH client | также VPN/бастион для изолированной сети |
+| Сеть | SSH к управляемым хостам | HCP доступен только администраторам через LAN/VPN |
+
+Windows и macOS подходят для локального демо через Docker Desktop, но для постоянного аудита хостов в LAN используйте Linux control node. Systemd-планировщик работает именно на Linux.
+
+Проверьте Docker:
+
+```bash
+docker --version
+docker compose version
+```
+
+Если Docker ещё не установлен, поставьте Docker Engine и Compose v2 по инструкции для вашей ОС. На Ubuntu дополнительно потребуются Git и SSH-клиент:
+
+```bash
+sudo apt update
+sudo apt install -y git openssh-client
+```
+
+## 2. Установка на свой компьютер
+
+### Клонирование и начальная структура
+
+```bash
+git clone https://github.com/Danil-super/hardening-control-platform.git
+cd hardening-control-platform
+
+cp .env.production.example .env
+cp ansible/inventory.example.ini ansible/inventory.ini
+mkdir -p secrets
+```
+
+Создайте отдельный SSH-ключ платформы. Не используйте личный ключ администратора.
+
+```bash
+ssh-keygen -t ed25519 -f secrets/hcp-control -C hcp-control
+install -m 600 /dev/null secrets/known_hosts
+```
+
+### Настройка `.env`
+
+Откройте `.env` и замените все значения `replace-with-…` на уникальные секреты. Для каждого значения можно сгенерировать строку:
+
+```bash
+openssl rand -base64 48
+```
+
+Обязательные параметры:
 
 ```env
-HCP_ADMIN_PASSWORD=your-local-password
-HCP_AUTH_SECRET=at-least-32-random-characters
-HCP_AUDIT_HMAC_KEY=separate-at-least-32-random-characters
+HCP_ADMIN_PASSWORD=длинный-уникальный-пароль-входа
+HCP_AUTH_SECRET=случайная-строка-не-короче-32-символов
+HCP_AUDIT_HMAC_KEY=отдельная-случайная-строка-не-короче-32-символов
+HCP_SCHEDULE_API_KEY=ещё-один-отдельный-случайный-ключ-не-короче-32-символов
+HCP_BIND_ADDRESS=127.0.0.1
+HCP_PORT=3000
 ```
 
-Сборка и проверки:
+`HCP_BIND_ADDRESS=127.0.0.1` означает, что панель открывается только на самом control node. Для удалённого доступа используйте SSH-туннель, VPN или TLS reverse proxy, а не прямое открытие порта в интернет.
+
+### Первый запуск
+
+Проверьте конфигурацию и соберите контейнер:
 
 ```bash
-cd web
-npm run typecheck
-npm test
-npm run build
+docker compose config
+docker compose up -d --build
+docker compose ps
+docker compose logs -f hcp
 ```
 
-## Работа с реальным хостом
+Откройте `http://127.0.0.1:3000`, войдите с `HCP_ADMIN_PASSWORD` и перейдите в «Хосты».
 
-1. Подготовьте inventory и отдельный SSH-ключ узла управления:
+Если панель запущена на удалённой VM, откройте туннель на своём компьютере:
 
 ```bash
-cp ansible/inventory.example.ini ansible/inventory.ini
-ssh-keygen -t ed25519 -C hcp-control
+ssh -L 3000:127.0.0.1:3000 user@control-node-ip
 ```
 
-2. Откройте `/hosts` и пройдите «Мастер первого SSH-подключения»: он выдаст публичный ключ узла управления и команду для добавления через консоль ВМ или уже существующий временный доступ. Пароль в платформу не передаётся.
-3. Сверьте fingerprint SSH-сервера через консоль гипервизора, панель провайдера или утверждённый реестр. Вставьте его в мастер; ключ попадёт в persistent `known_hosts` только после повторного совпадения.
-4. Выполните preflight. Только успешное подключение можно добавить в inventory, затем выберите профиль.
-5. Запустите аудит. Отчеты сохраняются в `ansible/reports/` или `HCP_REPORTS_DIR`.
-6. Для обратимого firewall-изменения сначала выполните «План», затем «Применить». Потребуются причина и точный alias хоста.
+После этого используйте тот же адрес `http://127.0.0.1:3000` в браузере.
 
-Подробный сценарий — в [docs/site-guide.md](docs/site-guide.md).
+## 3. Подключение первого Linux-хоста
 
-## Профили
+1. В панели откройте «Хосты» → «Мастер первого SSH-подключения».
+2. Скопируйте публичный ключ control node и добавьте его на целевую VM через её консоль, временный утверждённый доступ или систему управления конфигурацией.
+3. Сверьте fingerprint SSH-сервера **по независимому каналу**: консоль гипервизора, панель провайдера или утверждённый реестр ключей.
+4. Вставьте подтверждённый fingerprint в мастер, выполните preflight и только затем сохраните хост в inventory.
+5. Выберите профиль и запустите базовый аудит.
 
-Правила хранятся в `ansible/audit-rules/` и загружаются по `audit_profile`:
+Пароль SSH в HCP не вводится и не сохраняется. Не используйте `ssh-keyscan` как единственный способ доверия ключу: он не защищает от атаки «человек посередине».
 
-- `basic-linux.yml` — базовые настройки Linux, firewall, аккаунты и обновления;
-- `ssh-security.yml` — политика SSH и защита от перебора;
-- `web-server.yml` — активные web-сервисы, Nginx/Apache banner hardening и опасные порты;
-- `docker-host.yml` — Docker Engine, `docker.sock`, privileged containers и Docker API-порты.
+## 4. CVE, Trivy и vendor-aware оценка
 
-Каждый профиль выполняется на целевом хосте, а не моделируется в браузере.
+Основной вариант в `.env` уже установлен:
 
-## Контролируемые изменения и откат
+```env
+HCP_CVE_PROVIDER=trivy
+HCP_TRIVY_MODE=online
+```
 
-В панели доступны только операции с воспроизводимым rollback:
+После «Проверить пакеты и CVE» HCP сохраняет инвентарь, формирует CycloneDX SBOM, запускает Trivy и показывает установленную/фиксированную версию, статус поставщика и источник данных.
 
-- закрыть конкретный TCP/UDP-порт через активный UFW/firewalld (порт SSH 22 защищен от автоматического закрытия);
-- заблокировать IPv4-адрес через активный UFW/firewalld.
+Для изолированной сети заранее зеркалируйте базы Trivy во внутренний OCI registry, затем включите offline-режим:
 
-Перед изменением `backup-remediation.yml` архивирует `/etc/ufw` и `/etc/firewalld` на целевом хосте в `/var/lib/hcp-backups/<transaction-id>/`. `rollback-remediation.yml` восстанавливает архив и перезагружает firewall. Пакетные обновления и остановка сервисов намеренно не автоматизированы: для них нужен отдельный approval workflow и план отката.
+```env
+HCP_CVE_PROVIDER=trivy
+HCP_TRIVY_MODE=offline
+HCP_TRIVY_DB_REPOSITORY=registry.security.intra/trivy-db
+HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db
+```
 
-## Контейнерный control node
+Без актуальной локальной базы Trivy платформа создаст неполный отчёт `manual`, а не сообщит, что уязвимостей нет. Для Debian/RHEL всегда проверяйте advisory поставщика перед исправлением: backport может устранять CVE без видимой смены upstream-версии.
 
-Подготовка и запуск production-контура описаны в [deployment/README.md](deployment/README.md). Compose хранит SQLite, отчеты, историю и подтверждённые SSH host keys в Docker volume; private key подключается как локальный secret-файл, а интерфейс по умолчанию слушает только `127.0.0.1`.
+## 5. OpenSCAP, Greenbone и Dependency-Track
 
-## CVE-аудит в локальной и изолированной сети
+### OpenSCAP / SSG
 
-Без интернета полностью работают SSH-подключение, Ansible-аудиты, отчеты и controlled remediation. Внешнее соединение требуется только для online-сопоставления пакетов с OSV.
+OpenSCAP запускается только на хостах, которые заранее подготовлены администратором. HCP не устанавливает scanner автоматически и не угадывает профиль.
 
-- Для сети с контролируемым выходом оставьте `HCP_OSV_MODE=online` и разрешите узлу управления только HTTPS к `api.osv.dev`, либо укажите доверенный внутренний OSV-совместимый прокси в `HCP_OSV_BASE_URL`.
-- Для изолированной сети укажите `HCP_OSV_MODE=offline`. Платформа не делает сетевой запрос, формирует отчёт об инвентаре и явно помечает, что CVE не сопоставлены — это не «чистый» результат.
-- Для полноценного air-gap CVE-аудита добавьте отдельный внутренний scanner worker с периодически импортируемой базой Trivy или Grype. Он должен принимать только inventory/SBOM и возвращать нормализованный JSON-отчёт, а не получать SSH-ключ узла управления.
+Пример для Debian-подобной VM:
 
-## Периодический аудит
+```bash
+sudo apt update
+sudo apt install openscap-scanner ssg-debderived
+oscap info /usr/share/xml/scap/ssg/content/ssg-debian12-ds.xml
+```
 
-Скопируйте units из `deployment/systemd/` в `/etc/systemd/system/`, задайте при необходимости `HCP_SCHEDULE_PROFILE` и `HCP_SCHEDULE_LIMIT` в compose environment, затем включите timer:
+Укажите проверенный datastream и точный профиль в `.env`, затем перезапустите HCP:
+
+```env
+HCP_OPENSCAP_DATASTREAM=/usr/share/xml/scap/ssg/content/ssg-debian12-ds.xml
+HCP_OPENSCAP_PROFILE=xccdf_org.ssgproject.content_profile_cis_server_l1
+```
+
+```bash
+docker compose up -d
+```
+
+Для OpenSCAP создайте отдельную inventory-группу, например `scap_hosts`, чтобы не применять один CIS/STIG-профиль к неподходящим ролям.
+
+### Greenbone / OpenVAS
+
+Разверните Greenbone отдельной VM/сервисом по официальной документации и не передавайте ему SSH-ключ HCP. Ограничьте цели сканирования разрешёнными подсетями, настройте обновление VT-feeds, затем экспортируйте завершённый report в XML. В HCP выберите хост → «Импорт сетевого отчёта Greenbone / OpenVAS» → загрузите XML.
+
+Исходный XML удаляется после обработки; HCP сохраняет нормализованные OID, CVE, порт, severity, доказательство и рекомендацию.
+
+### OWASP Dependency-Track
+
+Заполните `HCP_DEPENDENCY_TRACK_DB_PASSWORD` в `.env`, затем включите отдельный профиль:
+
+```bash
+docker compose --profile dependency-track up -d --build
+```
+
+Интерфейс будет на `http://127.0.0.1:8080`. После начальной безопасной настройки создайте API key с правом загружать BOM и добавьте в `.env`:
+
+```env
+HCP_DEPENDENCY_TRACK_URL=http://dependency-track-api:8080
+HCP_DEPENDENCY_TRACK_API_KEY=ключ-с-правом-загрузки-bom
+```
+
+Перезапустите HCP. Следующий Trivy-аудит отправит SBOM в проект с именем inventory alias. Dependency-Track обрабатывает BOM асинхронно: его verdict не подменяет Trivy, а служит независимым источником.
+
+Перед production закрепите внешние Docker-образы проверенными digest вместо mutable `latest`.
+
+## 6. Единый отчёт по хосту
+
+В «Отчётах» нажмите «Сводка» для хоста. Она объединяет только совпадающие технические признаки из последних отчётов:
+
+- одинаковый CVE из Trivy и Greenbone;
+- одинаковый сетевой порт;
+- идентификатор OpenSCAP-правила или OID Greenbone.
+
+Сводка показывает источник, ссылку на исходный отчёт, доказательство и статус уверенности:
+
+- **подтверждено** — совпало минимум в двух независимых источниках;
+- **один источник** — нужна проверка в контексте роли сервера;
+- **ручная оценка** — источник сообщил неполный или неоднозначный результат.
+
+Отчёты старше `HCP_CORRELATION_MAX_AGE_HOURS` (по умолчанию 168 часов) не участвуют в сводке и помечаются как устаревшие.
+
+## 7. Регулярный аудит
+
+Есть два независимых systemd timer.
+
+- `hcp-scheduled-audit.timer` — обычный Ansible-аудит каждые 15 минут.
+- `hcp-deep-audit.timer` — ежедневная проверка пакетов + Trivy в 02:30; при настроенном ключе также передаёт SBOM в Dependency-Track.
+
+Установите units:
+
+```bash
+sudo cp deployment/systemd/hcp-scheduled-audit.service /etc/systemd/system/
+sudo cp deployment/systemd/hcp-scheduled-audit.timer /etc/systemd/system/
+sudo cp deployment/systemd/hcp-deep-audit.service /etc/systemd/system/
+sudo cp deployment/systemd/hcp-deep-audit.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hcp-scheduled-audit.timer hcp-deep-audit.timer
+systemctl list-timers 'hcp-*audit.timer'
+```
+
+Для OpenSCAP в ежедневной глубокой проверке сначала настройте `HCP_OPENSCAP_*` и отдельную группу `scap_hosts`, задайте в `.env` `HCP_SCHEDULE_DEEP_LIMIT=scap_hosts`, выполните `docker compose up -d`, затем создайте override:
+
+```bash
+sudo systemctl edit hcp-deep-audit.service
+```
+
+В открывшийся файл добавьте:
+
+```ini
+[Service]
+Environment=HCP_DEEP_SCHEDULE_TASKS=packages,openscap
+```
+
+После этого:
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl enable --now hcp-scheduled-audit.timer
-systemctl list-timers hcp-scheduled-audit.timer
+sudo systemctl restart hcp-deep-audit.timer
 ```
 
-Timer запускает `/usr/local/bin/hcp-scheduled-audit` внутри контейнера; `flock` не дает двум проверкам одного расписания пересечься.
-
-При использовании операции «Блок IP» укажите IP control node в `HCP_CONTROL_IPS` (через запятую для нескольких). Платформа также защищает IP самого целевого хоста от автоматической блокировки.
-
-## Лабораторный стенд
-
-Стенд поднимает отдельный SSH-хост с намеренно небезопасной конфигурацией и Telnet listener на порту 23:
+Логи плановых запусков:
 
 ```bash
-./deployment/lab/up.sh
+journalctl -u hcp-scheduled-audit.service -n 100 --no-pager
+journalctl -u hcp-deep-audit.service -n 100 --no-pager
 ```
 
-После запуска откройте `http://127.0.0.1:3001`, войдите с `lab-only-password`, выберите `lab-insecure` и запустите базовый аудит. Лабораторный ключ и `known_hosts` создаются в игнорируемом каталоге `.lab/`.
+## 8. Резервное копирование, обновление и остановка
 
-## Ограничения текущей версии
+Регулярно сохраняйте вне control node:
 
-- Пока используется локальная одноадминистраторская аутентификация; RBAC, отзыв сессий и MFA — следующий этап.
-- Не публикуйте интерфейс в интернет без TLS reverse proxy, VPN и усиленной авторизации.
-- CVE через OSV — предварительная проверка: дистрибутивные backport-исправления нужно сверять по vendor security tracker. В `HCP_OSV_MODE=offline` CVE вообще не сопоставляются — отчёт явно помечается как неполный.
-- Пользовательские audit YAML отключены по умолчанию. В development их можно включить `HCP_ENABLE_CUSTOM_AUDITS=true`; response-playbook'и из браузера не запускаются.
+- `ansible/inventory.ini`;
+- `.env` и `secrets/` в защищённом хранилище;
+- Docker volume `hcp-runtime` (SQLite, отчёты, SBOM, trusted host keys);
+- volume Dependency-Track PostgreSQL, если профиль включён.
 
-Архитектура: [docs/architecture.md](docs/architecture.md). Дипломное описание: [docs/diploma-description.md](docs/diploma-description.md).
+Для обновления:
+
+```bash
+git pull --ff-only
+docker compose up -d --build
+```
+
+Если включён Dependency-Track:
+
+```bash
+docker compose --profile dependency-track up -d --build
+```
+
+Остановить сервисы, сохранив данные:
+
+```bash
+docker compose down
+```
+
+Не добавляйте `-v`, если не хотите удалить все сохранённые отчёты и базу.
+
+## 9. Быстрая диагностика
+
+```bash
+docker compose ps
+docker compose logs --tail=200 hcp
+docker compose exec hcp ansible-playbook --version
+docker compose exec hcp trivy --version
+docker compose exec hcp /usr/local/bin/hcp-scheduled-audit
+```
+
+Если CVE-отчёт `manual`, сначала проверьте доступность/свежесть базы Trivy и точность PURL в SBOM. Если OpenSCAP `manual`, проверьте наличие `oscap`, datastream и profile на самом целевом хосте. Если Greenbone-импорт пустой, проверьте, что экспортирован завершённый **report XML**, а не конфигурация задачи.
+
+## Дополнительная документация
+
+- [Интеграции аудита](docs/audit-integrations.md)
+- [Архитектура](docs/architecture.md)
+- [Инструкция интерфейса](docs/site-guide.md)
+- [Развёртывание](deployment/README.md)
+- [Описание дипломного проекта](docs/diploma-description.md)

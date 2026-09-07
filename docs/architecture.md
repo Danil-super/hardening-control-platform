@@ -9,6 +9,7 @@ flowchart TB
   Ansible --> Hosts["Linux-хосты по SSH"]
   Timer["systemd timer"] --> Ansible
   Ansible --> Reports["JSON-отчеты"]
+  Reports --> Correlation["Сводка доказательств"]
 ```
 
 ## Компоненты
@@ -18,6 +19,7 @@ flowchart TB
 - **Профили аудита** лежат в `ansible/audit-rules/` как версионированные YAML-файлы. `agentless-audit.yml` загружает именно выбранный профиль и выполняет соответствующие SSH, web- или Docker-проверки на целевой ВМ.
 - **SQLite** (`HCP_STATE_DIR/hcp.sqlite`) хранит транзакции remediation и append-only журнал. У каждой записи есть HMAC предыдущей записи; `/api/ansible/incidents` проверяет целостность цепочки.
 - **JSON-отчеты** остаются отдельными артефактами аудита в `HCP_REPORTS_DIR`; база хранит ссылки на отчеты до и после изменения.
+- **Сводка доказательств** выбирает последние свежие отчёты по хосту, группирует только совпадающие CVE, сетевые порты, OpenSCAP rules и Greenbone OID. Она показывает источник и уверенность, но не складывает CVSS разных scanner'ов.
 - **systemd timer** запускает отдельный CLI-аудит с `flock`, исключая параллельные запуски и зависимость от памяти веб-процесса.
 
 ## Транзакция remediation

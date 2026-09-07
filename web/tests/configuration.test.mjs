@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
@@ -45,4 +47,98 @@ test("operator interface keeps routine work visible and hides destructive log co
   assert.match(hosts, /Введите точный alias выбранного хоста/);
   assert.match(reports, /Журнал действий/);
   assert.doesNotMatch(reports, /DeleteRecordButton/);
+});
+
+test("host onboarding uses verified SSH host keys and persists them", () => {
+  const accessRoute = read(path.join("web", "app", "api", "ansible", "access", "route.ts"));
+  const access = read(path.join("web", "lib", "ssh-access.ts"));
+  const hosts = read(path.join("web", "components", "hosts", "ansible-control-client.tsx"));
+  const compose = read("docker-compose.yml");
+  assert.match(accessRoute, /operation === "trust"/);
+  assert.match(access, /host_key_mismatch/);
+  assert.match(access, /StrictHostKeyChecking=yes/);
+  assert.match(hosts, /Мастер первого SSH-подключения/);
+  assert.match(hosts, /Сначала успешно проверьте это SSH-подключение/);
+  assert.match(compose, /HCP_KNOWN_HOSTS_PATH: \/var\/lib\/hcp\/known_hosts/);
+});
+
+test("CVE checking has an explicit isolated-network mode", () => {
+  const scan = read(path.join("web", "lib", "vulnerability-scan.ts"));
+  const compose = read("docker-compose.yml");
+  assert.match(scan, /HCP_OSV_MODE/);
+  assert.match(scan, /CVE-сопоставление отключено для изолированной сети/);
+  assert.match(compose, /HCP_OSV_BASE_URL/);
+});
+
+test("advanced audit integrations preserve source and incomplete-state evidence", () => {
+  const scan = read(path.join("web", "lib", "vulnerability-scan.ts"));
+  const compose = read("docker-compose.yml");
+  const playbook = read(path.join("ansible", "playbooks", "openscap-audit.yml"));
+  const greenbone = read(path.join("web", "app", "api", "ansible", "greenbone", "import", "route.ts"));
+  assert.match(scan, /HCP_TRIVY_MODE/);
+  assert.match(scan, /Trivy не выполнил CVE-сопоставление/);
+  assert.match(compose, /profiles: \["dependency-track"\]/);
+  assert.match(playbook, /HCP_OPENSCAP_DATASTREAM/);
+  assert.match(playbook, /state: absent/);
+  assert.match(greenbone, /maxXmlBytes/);
+});
+
+test("OpenSCAP and Greenbone XML are normalized as distinct sources", () => {
+  const temporaryDir = mkdtempSync(path.join(tmpdir(), "hcp-parser-test-"));
+  const script = path.join(repoRoot, "ansible", "scripts", "hcp-controller-scan.py");
+  try {
+    const openscapInput = path.join(temporaryDir, "openscap.xml");
+    const openscapOutput = path.join(temporaryDir, "openscap.json");
+    writeFileSync(openscapInput, `<?xml version="1.0"?>
+      <root xmlns:xccdf="http://checklists.nist.gov/xccdf/1.2">
+        <Rule id="xccdf_rule_disable_root" severity="high"><title>Disable SSH root login</title></Rule>
+        <xccdf:rule-result idref="xccdf_rule_disable_root"><xccdf:result>fail</xccdf:result></xccdf:rule-result>
+      </root>`);
+    execFileSync("python3", [script, "openscap-arf", "--input", openscapInput, "--inventory-host", "host-1", "--run-id", "run-test", "--profile", "profile", "--datastream", "/ssg.xml", "--output", openscapOutput]);
+    const openscap = JSON.parse(readFileSync(openscapOutput, "utf8"));
+    assert.equal(openscap.mode, "openscap");
+    assert.equal(openscap.findings[0].source, "openscap");
+    assert.equal(openscap.findings[0].status, "failed");
+    assert.equal(openscap.findings[0].risk, "high");
+
+    const greenboneInput = path.join(temporaryDir, "greenbone.xml");
+    const greenboneOutput = path.join(temporaryDir, "greenbone.json");
+    writeFileSync(greenboneInput, `<?xml version="1.0"?>
+      <report><results><result id="result-1"><host>10.0.0.10</host><port>443/tcp</port><threat>High</threat><severity>8.8</severity><description>Test finding</description><solution>Patch package</solution><nvt oid="1.3.6.1.4.1"><name>TLS issue</name><cve>CVE-2026-0001</cve></nvt></result></results></report>`);
+    execFileSync("python3", [script, "greenbone-report", "--input", greenboneInput, "--inventory-host", "host-1", "--run-id", "run-test", "--output", greenboneOutput]);
+    const greenbone = JSON.parse(readFileSync(greenboneOutput, "utf8"));
+    assert.equal(greenbone.mode, "greenbone");
+    assert.equal(greenbone.findings[0].source, "greenbone");
+    assert.equal(greenbone.findings[0].status, "failed");
+    assert.match(greenbone.findings[0].evidence, /port=443\/tcp/);
+  } finally {
+    rmSync(temporaryDir, { recursive: true, force: true });
+  }
+});
+
+test("deep audit scheduling keeps package scanning authenticated and OpenSCAP opt-in", () => {
+  const scheduler = read(path.join("deployment", "hcp-scheduled-audit"));
+  const deepService = read(path.join("deployment", "systemd", "hcp-deep-audit.service"));
+  const deepTimer = read(path.join("deployment", "systemd", "hcp-deep-audit.timer"));
+  const route = read(path.join("web", "app", "api", "internal", "scheduled", "package-vulnerabilities", "route.ts"));
+  assert.match(scheduler, /HCP_SCHEDULE_TASKS/);
+  assert.match(scheduler, /HCP_SCHEDULE_API_KEY/);
+  assert.match(scheduler, /run_openscap/);
+  assert.match(deepService, /HCP_DEEP_SCHEDULE_TASKS=packages/);
+  assert.match(deepTimer, /OnCalendar=\*-\*-\* 02:30:00/);
+  assert.match(route, /timingSafeEqual/);
+  assert.match(route, /syncDependencyTrack/);
+});
+
+test("correlation and vendor-aware package evidence are available in reports", () => {
+  const correlation = read(path.join("web", "lib", "audit-correlation.ts"));
+  const reportPage = read(path.join("web", "app", "reports", "correlation", "[hostAlias]", "page.tsx"));
+  const vulnerabilities = read(path.join("web", "lib", "vulnerability-scan.ts"));
+  const inventory = read(path.join("ansible", "playbooks", "package-inventory.yml"));
+  assert.match(correlation, /CVE-\\d\{4\}/);
+  assert.match(correlation, /HCP_CORRELATION_MAX_AGE_HOURS/);
+  assert.match(reportPage, /подтверждено/);
+  assert.match(vulnerabilities, /vendor_status=/);
+  assert.match(vulnerabilities, /will_not_fix/);
+  assert.match(inventory, /EPOCHNUM/);
 });

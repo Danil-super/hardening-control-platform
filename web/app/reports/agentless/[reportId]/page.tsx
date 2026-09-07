@@ -24,6 +24,9 @@ function reportModeTitle(mode: string) {
   if (mode === "ssh-audit") return "Проверка криптографии SSH";
   if (mode === "nmap") return "Проверка открытых портов";
   if (mode === "lynis") return "Lynis: временный аудит без установки";
+  if (mode === "openscap") return "OpenSCAP: соответствие заданному SSG-профилю";
+  if (mode === "greenbone") return "Greenbone / OpenVAS: импорт сетевого отчёта";
+  if (mode === "dependency-track") return "OWASP Dependency-Track: передача SBOM";
   return "SSH-аудит Ansible";
 }
 
@@ -49,6 +52,11 @@ export default async function AgentlessReportDetailPage({
   const targetAlias = targetAliasFromReportFileName(report.fileName, report.profileId, report.mode);
   const raw = asRecord(report.raw);
   const packageInventory = asRecord(raw.packageInventory);
+  const vulnerabilityScan = asRecord(raw.vulnerabilityScan);
+  const vendorAssessment = asRecord(vulnerabilityScan.vendorAssessment);
+  const vendorStatuses = Object.entries(asRecord(vendorAssessment.statuses))
+    .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
+    .map(([status, count]) => `${status}: ${count}`);
   const isLynisReport = report.mode === "lynis";
 
   return (
@@ -63,6 +71,7 @@ export default async function AgentlessReportDetailPage({
         </div>
         <div className="flex flex-wrap gap-3">
           <LinkButton href={`/reports/agentless?host=${encodeURIComponent(targetAlias)}`} variant="secondary">История хоста</LinkButton>
+          <LinkButton href={`/reports/correlation/${encodeURIComponent(targetAlias)}`} variant="secondary">Единая сводка</LinkButton>
           <LinkButton href={`/api/ansible/reports/${encodeURIComponent(report.id)}`} variant="secondary">
             <Download size={16} aria-hidden="true" />
             JSON
@@ -125,7 +134,20 @@ export default async function AgentlessReportDetailPage({
           <div className="mt-4 grid gap-4 text-sm sm:grid-cols-3">
             <div><p className="text-slate-500">Пакетов найдено</p><p className="mt-1 text-2xl font-semibold text-white">{textValue(packageInventory.packageCount)}</p></div>
             <div><p className="text-slate-500">Менеджер</p><p className="mt-1 text-slate-200">{textValue(packageInventory.manager)}</p></div>
-            <div><p className="text-slate-500">CVE</p><p className="mt-1 text-slate-200">Запустите «CVE пакеты» для проверки через OSV.</p></div>
+            <div><p className="text-slate-500">CVE</p><p className="mt-1 text-slate-200">Запустите проверку пакетов и CVE для Trivy/OSV-сопоставления.</p></div>
+          </div>
+        </section>
+      ) : null}
+
+      {report.mode === "vulnerabilities" ? (
+        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <h2 className="text-xl font-semibold text-white">Статус поставщика пакетов</h2>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">{textValue(vendorAssessment.note)}</p>
+          <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+            <div><p className="text-slate-500">Провайдер</p><p className="mt-1 text-slate-200">{textValue(vulnerabilityScan.provider)}</p></div>
+            <div><p className="text-slate-500">Метод оценки</p><p className="mt-1 text-slate-200">{textValue(vendorAssessment.method)}</p></div>
+            <div><p className="text-slate-500">Статус в базе</p><p className="mt-1 text-slate-200">{vendorAssessment.verified === true ? "получен" : "не получен — требуется advisory поставщика"}</p></div>
+            <div><p className="text-slate-500">Состояния</p><p className="mt-1 break-words text-slate-200">{vendorStatuses.length ? vendorStatuses.join(", ") : "нет CVE или статусов"}</p></div>
           </div>
         </section>
       ) : null}

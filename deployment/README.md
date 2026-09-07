@@ -4,7 +4,7 @@
 
 ## Подготовка
 
-Образ control node уже содержит Ansible, Lynis, Nmap и `ssh-audit`. Они выполняются внутри контейнера HCP; на управляемые ВМ эти пакеты не устанавливаются.
+Образ control node уже содержит Ansible, Lynis, Nmap, `ssh-audit`, OpenSCAP и Trivy. OpenSCAP не устанавливается на управляемые ВМ автоматически: для точной SCAP-проверки его и SSG content заранее готовят только на тех хостах, где это одобрено.
 
 ```bash
 cp .env.production.example .env
@@ -23,7 +23,7 @@ chmod 600 secrets/known_hosts
 
 После запуска этот начальный файл переносится в постоянный volume. Для новых хостов используйте «Мастер первого SSH-подключения» в `/hosts`: он показывает публичный ключ узла управления, сохраняет только независимо подтверждённый ключ сервера и не принимает пароль от SSH. Не редактируйте `known_hosts` внутри контейнера вручную.
 
-Заполните `.env` уникальными `HCP_ADMIN_PASSWORD`, `HCP_AUTH_SECRET` и `HCP_AUDIT_HMAC_KEY`, затем настройте целевые хосты в `ansible/inventory.ini`. Последний ключ защищает hash-chain журнал от незаметного пересчета при изменении SQLite-файла.
+Заполните `.env` уникальными `HCP_ADMIN_PASSWORD`, `HCP_AUTH_SECRET`, `HCP_AUDIT_HMAC_KEY` и `HCP_SCHEDULE_API_KEY`, затем настройте целевые хосты в `ansible/inventory.ini`. Последний ключ защищает hash-chain журнал от незаметного пересчета при изменении SQLite-файла; ключ планировщика разрешает локальной job сохранять результаты Trivy в приложение.
 
 ## Запуск
 
@@ -49,6 +49,17 @@ HCP_OSV_MODE=online
 HCP_OSV_BASE_URL=https://osv-proxy.security.intra/v1
 ```
 
+Для полноценного локального CVE-аудита используйте Trivy как основной провайдер. В offline-режиме он не обновляет базы и не делает исходящий запрос; предварительно зеркалируйте базы в закрытый OCI-registry:
+
+```env
+HCP_CVE_PROVIDER=trivy
+HCP_TRIVY_MODE=offline
+HCP_TRIVY_DB_REPOSITORY=registry.security.intra/trivy-db
+HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db
+```
+
+Dependency-Track не запускается по умолчанию. После заполнения его пароля БД включите отдельный профиль: `docker compose --profile dependency-track up -d --build`. Подробные инструкции для OpenSCAP, Trivy, Greenbone и Dependency-Track — в [docs/audit-integrations.md](../docs/audit-integrations.md).
+
 ## Периодический аудит через systemd
 
 Планировщик не работает внутри памяти веб-процесса. На control node установите units, которые вызывают отдельный Ansible-процесс в контейнере:
@@ -56,19 +67,33 @@ HCP_OSV_BASE_URL=https://osv-proxy.security.intra/v1
 ```bash
 sudo cp deployment/systemd/hcp-scheduled-audit.service /etc/systemd/system/
 sudo cp deployment/systemd/hcp-scheduled-audit.timer /etc/systemd/system/
+sudo cp deployment/systemd/hcp-deep-audit.service /etc/systemd/system/
+sudo cp deployment/systemd/hcp-deep-audit.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now hcp-scheduled-audit.timer
-systemctl list-timers hcp-scheduled-audit.timer
+sudo systemctl enable --now hcp-scheduled-audit.timer hcp-deep-audit.timer
+systemctl list-timers 'hcp-*audit.timer'
 ```
 
-По умолчанию timer запускает каждые 15 минут `basic_linux` для группы `linux_hosts`. Чтобы выбрать профиль или группу, добавьте в environment сервиса `hcp` в `docker-compose.yml`:
+`hcp-scheduled-audit.timer` запускает `basic_linux` для группы `linux_hosts` каждые 15 минут. `hcp-deep-audit.timer` запускает инвентарь пакетов и Trivy ежедневно в 02:30. OpenSCAP не включён в него по умолчанию: для него нужно сначала подготовить подходящие хосты и отдельную inventory-группу.
+
+Чтобы выбрать профиль или группы, добавьте в environment сервиса `hcp` в `docker-compose.yml`:
 
 ```yaml
 HCP_SCHEDULE_PROFILE: ssh_security
 HCP_SCHEDULE_LIMIT: production_linux
+HCP_SCHEDULE_DEEP_LIMIT: package_audit_hosts
 ```
 
-После изменения выполните `docker compose up -d` и `sudo systemctl restart hcp-scheduled-audit.timer`. Внутренний `flock` блокирует параллельные плановые запуски.
+После изменения выполните `docker compose up -d` и перезапустите оба timer. Внутренний `flock` блокирует параллельные плановые запуски.
+
+Чтобы добавить OpenSCAP к глубокому запуску, создайте override `sudo systemctl edit hcp-deep-audit.service`:
+
+```ini
+[Service]
+Environment=HCP_DEEP_SCHEDULE_TASKS=packages,openscap
+```
+
+Затем выполните `sudo systemctl daemon-reload && sudo systemctl restart hcp-deep-audit.timer`. Не включайте OpenSCAP для общей группы разнородных серверов: datastream и профиль должны соответствовать ОС и роли хоста.
 
 ## Обязательные меры перед эксплуатацией
 

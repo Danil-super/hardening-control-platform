@@ -5,7 +5,7 @@
 | Контур | Что подтверждает | Где выполняется | Результат в HCP |
 | --- | --- | --- | --- |
 | OpenSCAP + SSG | Соответствие конкретному базовому профилю | На подготовленной целевой ВМ | Правила profile: pass/fail/manual |
-| Trivy | CVE по инвентарю пакетов и CycloneDX SBOM | В контейнере control node | CVE, версия пакета, фиксированная версия |
+| Trivy | CVE по инвентарю пакетов и CycloneDX SBOM | В контейнере control node | CVE, версия пакета, фиксированная версия и статус поставщика |
 | Greenbone / OpenVAS | Сетевая поверхность и уязвимости сервисов | На отдельном сетевом scanner | Импорт XML-отчёта по одному хосту |
 | OWASP Dependency-Track | Независимый анализ компонентов, SBOM и VEX | В отдельном Docker profile | Подтверждение передачи SBOM; verdict — в D-Track |
 
@@ -30,6 +30,8 @@ HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db
 ```
 
 `offline` запрещает обновление базы и сетевой запрос. Если локальной базы нет или она устарела, HCP создаёт запись `manual` «Trivy не выполнил CVE-сопоставление». Отсутствие CVE тогда не считается результатом проверки.
+
+Для каждой находки HCP сохраняет `vendor_status`, `vendor_severity` и источник данных Trivy. Статусы `not affected` и `fixed` отображаются как пройденные с сохранённым evidence, а `will not fix`, `end of life` и неизвестный статус требуют ручной оценки. Это учитывает дистрибутивные backport-исправления; RPM epoch также сохраняется в инвентаре и SBOM.
 
 ## 2. OpenSCAP и SCAP Security Guide
 
@@ -88,5 +90,11 @@ HCP_DEPENDENCY_TRACK_API_KEY=replace-with-upload-only-api-key
 3. Подтверждайте сетевые находки Greenbone с владельцем сервиса и Nmap/фактической конфигурацией firewall.
 4. По OpenSCAP фиксируйте профиль, версию SSG и допустимые исключения.
 5. Приоритет исправления давайте по подтверждённой комбинации: эксплуатируемость, доступность из сети, роль сервера и наличие исправления, а не только по CVSS.
+
+## Регулярный запуск и корреляция
+
+`hcp-scheduled-audit.timer` выполняет лёгкий Ansible-аудит каждые 15 минут. `hcp-deep-audit.timer` ежедневно запускает инвентаризацию пакетов и Trivy; для этого в `.env` нужен отдельный `HCP_SCHEDULE_API_KEY`. OpenSCAP включается в глубокий запуск только через systemd override после подготовки SSG и отдельной inventory-группы.
+
+В «Сводке» HCP берёт только последние свежие отчёты по хосту, сопоставляет точные CVE, сетевые порты, OpenSCAP rules и Greenbone OID. Совпадение двух разных источников повышает уверенность, но CVSS не суммируются. Срок свежести задаёт `HCP_CORRELATION_MAX_AGE_HOURS` (по умолчанию 168).
 
 Исходные спецификации: [Trivy air-gap](https://trivy.dev/docs/latest/advanced/air-gap/), [SCAP Security Guide](https://www.open-scap.org/security-policies/scap-security-guide/), [Greenbone Community Containers](https://greenbone.github.io/docs/latest/22.4/container/index.html), [Dependency-Track](https://docs.dependencytrack.org/).

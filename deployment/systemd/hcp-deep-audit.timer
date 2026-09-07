@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Hardening Control Platform deep audit every night
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+Unit=hcp-deep-audit.service
+
+[Install]
+WantedBy=timers.target
