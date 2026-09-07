@@ -52,15 +52,6 @@ function reportModeLabel(mode: string) {
   if (mode === "lynis") {
     return "Lynis";
   }
-  if (mode === "openscap") {
-    return "OpenSCAP";
-  }
-  if (mode === "greenbone") {
-    return "Greenbone";
-  }
-  if (mode === "dependency-track") {
-    return "Dependency-Track";
-  }
   return "аудит";
 }
 
@@ -74,7 +65,6 @@ function actionLabel(action: string) {
     sshCryptoAudit: "Проверка SSH",
     networkPortScan: "Проверка портов",
     lynisTemporaryAudit: "Проверка Lynis",
-    openScapAudit: "Проверка OpenSCAP",
     closePort: "Закрытие порта",
     blockIp: "Блокировка IP",
   };

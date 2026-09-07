@@ -24,9 +24,6 @@ function reportModeTitle(mode: string) {
   if (mode === "ssh-audit") return "Проверка криптографии SSH";
   if (mode === "nmap") return "Проверка открытых портов";
   if (mode === "lynis") return "Lynis: временный аудит без установки";
-  if (mode === "openscap") return "OpenSCAP: соответствие заданному SSG-профилю";
-  if (mode === "greenbone") return "Greenbone / OpenVAS: импорт сетевого отчёта";
-  if (mode === "dependency-track") return "OWASP Dependency-Track: передача SBOM";
   return "SSH-аудит Ansible";
 }
 
