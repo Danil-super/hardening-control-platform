@@ -56,6 +56,8 @@ HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db
 
 Основной поддерживаемый сценарий этого сборщика — пакеты ОС Debian/Ubuntu из dpkg. Результаты RPM помечаются частичными: сбор не подтверждает все сведения о source epoch, modularity и репозиториях. Библиотеки приложений и контейнерные образы требуют отдельного сбора SBOM и этим инвентарём не покрываются.
 
+Для Astra Linux сохраняется также точный выпуск из `/etc/astra_version` в инвентаре и свойстве SBOM `hcp:astra-version`. `ID_LIKE=debian` не подменяет экосистему Astra экосистемой Debian. Полнота CVE-аудита Astra остаётся неподтверждённой до проверки применимых данных производителя. Подготовка описана в [инструкции Astra](astra-lab.md).
+
 ## 2. OpenSCAP и SCAP Security Guide
 
 OpenSCAP даёт сильное доказательство только при точном соответствии ОС, datastream и профиля. Поэтому HCP не выбирает «похожий» файл автоматически и не устанавливает scanner на рабочую ВМ.
@@ -109,6 +111,25 @@ HCP_DEPENDENCY_TRACK_API_KEY=replace-with-upload-only-api-key
 После следующей проверки пакетов Trivy HCP автоматически отправит созданный SBOM в проект с именем inventory alias. Dependency-Track анализирует BOM асинхронно, поэтому его результаты не подменяют отчёт Trivy в момент загрузки. После завершения обработки проверяйте состояние проекта в D-Track, включая policy violations, VEX и актуальность его vulnerability intelligence.
 
 API key должен иметь `BOM_UPLOAD`, а при автоматическом создании проектов — также `PROJECT_CREATION_UPLOAD`. После изменения `.env` пересоздайте HCP через `docker compose up -d hcp`: обычный `restart` не перечитывает environment. Точный порядок первоначального запуска, версии образов и постоянные тома описаны в [README](../README.md).
+
+### Проверка CVE-источников Dependency-Track
+
+Приём SBOM и окончание BOM-processing не доказывают завершение CVE-анализа. В настройках DTrack проверьте источники: NVD REST API и внутренний анализатор; GHSA включайте при наличии отдельного токена. OSV должен оставаться отключённым. Для NVD API-ключ необязателен, но без него первичная синхронизация ограничивается скоростью запросов. Интернет нужен серверу DTrack при обновлении источников; его локально сохранённые данные используются внутренним анализатором без интернета. Онлайн-анализаторы имеют собственные сетевые требования. [NVD](https://docs.dependencytrack.org/datasources/nvd/), [GHSA](https://docs.dependencytrack.org/datasources/github-advisories/).
+
+Для чтения состояния своего сервера создайте отдельный ключ с `SYSTEM_CONFIGURATION` и передайте его через переменную окружения, не через аргумент команды. Обычный upload-only ключ HCP для этого не подходит. Команды ниже выполняются из корня репозитория в Bash; скрытый ввод не попадает в историю:
+
+```bash
+read -r -s -p 'Dependency-Track inspection API key: ' HCP_DEPENDENCY_TRACK_API_KEY
+export HCP_DEPENDENCY_TRACK_API_KEY
+python3 deployment/tests/verify_dependency_track_sources.py \
+  --inspect-url http://127.0.0.1:8081 --allow-http \
+  --output .lab/dtrack-source-inspection
+unset HCP_DEPENDENCY_TRACK_API_KEY
+```
+
+Скрипт выполняет только GET-запросы и сохраняет `existing-source-inspection.json`: готовность API/БД, включённые источники и безопасный набор настроек, даты и обнаруженные проблемы. Даже код выхода 0 здесь означает только `inspection-only`, а `fullMirrorVerified` остаётся `false`: свежий курсор не доказывает успешную первичную загрузку всей базы. Дополнительно проверьте завершение `NistApiMirrorTask` в логах, обработку общего числа записей без download/persistence errors, а затем находку на контрольной уязвимой версии и отсутствие этой же CVE на исправленной.
+
+Для отдельного воспроизводимого испытания есть `python3 deployment/tests/verify_dependency_track_sources.py`: он создаёт собственный временный DTrack 4.14.3 и загружает настоящую CVE-2021-44228 штатным NVD mirror. Затем через адаптер HCP проверяет `log4j-core` 2.14.1 и 2.17.1. Требуются Linux, Docker Compose, Node 24, `npm ci` в `web` и доступ к NVD. Существующий DTrack не меняется. Это ограниченная проверка источника и сопоставления версий; она не подтверждает весь NVD, GHSA или пакеты Astra. Фактический результат CI указан в [протоколе](verification-report.md).
 
 ## Как принимать итоговый отчёт
 

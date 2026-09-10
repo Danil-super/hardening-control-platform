@@ -97,6 +97,11 @@
             return packages, ""
 
         os_release = read_os_release()
+        try:
+            with open("/etc/astra_version", encoding="utf-8", errors="replace") as handle:
+                astra_version = handle.read(256).strip() or None
+        except OSError:
+            astra_version = None
         if shutil.which("dpkg-query"):
             packages, error = debian_packages()
         elif shutil.which("rpm"):
@@ -120,6 +125,7 @@
             "mode": "packages",
             "packageInventory": {
                 "osRelease": os_release,
+                "astraVersion": astra_version,
                 "packageCount": len(packages),
                 "manager": packages[0]["manager"] if packages else None,
                 "error": error,

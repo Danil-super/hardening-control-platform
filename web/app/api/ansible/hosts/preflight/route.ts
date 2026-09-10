@@ -1,11 +1,12 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server";
 import { getRepoRoot } from "@/lib/ansible-control";
 import { ansibleSshArgs, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
+import { assessHostReadiness, type HostReadiness } from "@/lib/host-readiness";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -20,21 +21,24 @@ function isSafeSshUser(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$/.test(value);
 }
 
-async function runAnsible(args: string[], inventoryPath: string) {
+async function runAnsible(args: string[], inventoryPath: string, stage: string) {
+  const resultDir = path.join(path.dirname(inventoryPath), stage);
   try {
-    const result = await execFileAsync("ansible", ["-i", inventoryPath, ...args], {
+    const result = await execFileAsync("ansible", ["-i", inventoryPath, "--tree", resultDir, ...args], {
       cwd: getRepoRoot(),
-      timeout: 45_000,
+      timeout: 60_000,
       maxBuffer: 1024 * 1024 * 4,
       env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_SSH_ARGS: ansibleSshArgs(), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
     });
-    return { ok: true, stdout: result.stdout, stderr: result.stderr };
+    const data = JSON.parse(readFileSync(path.join(resultDir, args[0]), "utf8"));
+    return { ok: data.failed !== true && data.unreachable !== true, stdout: result.stdout, stderr: result.stderr, data };
   } catch (error) {
     const output = error as { stdout?: string; stderr?: string; message?: string };
     return {
       ok: false,
       stdout: output.stdout ?? "",
       stderr: output.stderr ?? output.message ?? "",
+      data: null,
     };
   }
 }
@@ -70,29 +74,43 @@ export async function POST(request: Request) {
   );
 
   try {
-    const ssh = await runAnsible([alias, "-m", "raw", "-a", "true"], inventoryPath);
+    const ssh = await runAnsible([alias, "-m", "raw", "-a", "true"], inventoryPath, "ssh");
     const setup = ssh.ok
-      ? await runAnsible([alias, "-m", "setup", "-a", "filter=ansible_distribution*,ansible_python*"], inventoryPath)
-      : { ok: false, stdout: "", stderr: "SSH ping failed." };
+      ? await runAnsible([alias, "-m", "setup", "-a", "filter=ansible_distribution*,ansible_python*"], inventoryPath, "setup")
+      : { ok: false, stdout: "", stderr: "SSH ping failed.", data: null };
     const sudo = ssh.ok && become
-      ? await runAnsible([alias, "-b", "-e", "ansible_become=true", "-m", "command", "-a", "whoami"], inventoryPath)
-      : { ok: !become, stdout: become ? "" : "skipped", stderr: "" };
+      ? await runAnsible([alias, "-b", "-e", "ansible_become=true", "-m", "command", "-a", "id -u"], inventoryPath, "sudo")
+      : { ok: !become, stdout: become ? "" : "skipped", stderr: "", data: null };
+    if (become && sudo.ok && sudo.data?.stdout?.trim() !== "0") sudo.ok = false;
 
-    const osMatch = setup.stdout.match(/"ansible_distribution":\s*"([^"]+)"/);
-    const versionMatch = setup.stdout.match(/"ansible_distribution_version":\s*"([^"]+)"/);
-    const pythonMatch = setup.stdout.match(/"executable":\s*"([^"]+)"/);
+    const facts = setup.data?.ansible_facts ?? {};
+    let readiness: HostReadiness | null = null;
+    let readinessError: string | null = null;
+    if (setup.ok && sudo.ok) {
+      try {
+        const source = readFileSync(path.join(getRepoRoot(), "ansible/scripts/hcp-host-readiness.py"), "utf8");
+        const probe = await runAnsible([alias, ...(become ? ["-b", "-e", "ansible_become=true"] : []),
+          "-m", "command", "-a", JSON.stringify({ argv: ["/usr/bin/python3", "-c", source] })], inventoryPath, "readiness");
+        if (!probe.ok) throw new Error("Не удалось собрать сведения о готовности. Проверьте доступ к системным командам на хосте.");
+        readiness = assessHostReadiness(JSON.parse(probe.data.stdout));
+      } catch (error) {
+        readinessError = error instanceof Error ? error.message : "Проверка готовности не завершена.";
+      }
+    }
 
     return NextResponse.json({
       ok: ssh.ok && setup.ok && sudo.ok,
       checks: {
         ssh: { ok: ssh.ok, message: ssh.ok ? "SSH OK" : ssh.stderr || ssh.stdout },
-        python: { ok: setup.ok, message: setup.ok ? pythonMatch?.[1] ?? "Python OK" : setup.stderr || setup.stdout },
-        sudo: { ok: sudo.ok, message: become ? (sudo.ok ? sudo.stdout.trim() || "sudo OK" : sudo.stderr || sudo.stdout) : "sudo disabled" },
+        python: { ok: setup.ok, message: setup.ok ? facts.ansible_python?.executable ?? "Python OK" : setup.stderr || setup.stdout },
+        sudo: { ok: sudo.ok, message: become ? (sudo.ok ? "Доступ root подтверждён" : sudo.stderr || sudo.stdout) : "sudo отключён" },
       },
       facts: {
-        os: [osMatch?.[1], versionMatch?.[1]].filter(Boolean).join(" ") || null,
-        python: pythonMatch?.[1] ?? null,
+        os: readiness?.os ?? ([facts.ansible_distribution, facts.ansible_distribution_version].filter(Boolean).join(" ") || null),
+        python: facts.ansible_python?.executable ?? null,
       },
+      readiness,
+      readinessError,
     });
   } finally {
     rmSync(tmpDir, { recursive: true, force: true });

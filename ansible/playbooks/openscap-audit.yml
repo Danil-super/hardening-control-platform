@@ -165,6 +165,9 @@
             state: absent
           delegate_to: localhost
           become: false
+          # Explicit opt-in for acceptance/provenance workflows. ARF can
+          # contain target configuration; ordinary audits still remove it.
+          when: not (hcp_openscap_keep_arf | default(false) | bool)
       when:
         - (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
         - (openscap_binary.rc | default(1)) == 0

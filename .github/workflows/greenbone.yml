@@ -1,0 +1,53 @@
+name: Greenbone live scanner acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/greenbone.yml'
+      - 'deployment/tests/verify_greenbone.py'
+      - 'deployment/greenbone/**'
+      - 'ansible/scripts/hcp-controller-scan.py'
+  pull_request:
+    paths:
+      - '.github/workflows/greenbone.yml'
+      - 'deployment/tests/verify_greenbone.py'
+      - 'deployment/greenbone/**'
+      - 'ansible/scripts/hcp-controller-scan.py'
+
+permissions:
+  contents: read
+
+jobs:
+  live-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install PyYAML==6.0.3
+      - name: Scan only the disposable internal HTTP target with official VTs
+        run: python deployment/tests/verify_greenbone.py --timeout-minutes 85
+      - name: Preserve actual scanner and import evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: greenbone-live-scan
+          path: |
+            .lab/greenbone-acceptance/protocol.json
+            .lab/greenbone-acceptance/native-report.xml
+            .lab/greenbone-acceptance/hcp-report.json
+            .lab/greenbone-acceptance/feed-status.xml
+            .lab/greenbone-acceptance/selected-config.xml
+            .lab/greenbone-acceptance/services.log
+            .lab/greenbone-acceptance/images.json
+          if-no-files-found: warn
+      - name: Remove the disposable stack after interruptions
+        if: always()
+        run: |
+          if [ -f .lab/greenbone-acceptance/compose.json ]; then
+            docker compose -f .lab/greenbone-acceptance/compose.json down -v --remove-orphans
+          fi

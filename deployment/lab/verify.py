@@ -119,6 +119,19 @@ def main():
             return 0
         run("ping")
         record("Real SSH / Ansible ping")
+        with independent_check("Host readiness through real SSH"):
+            host = next(item for item in hosts if item["alias"] == args.host)
+            preflight = request("/api/ansible/hosts/preflight", {
+                "alias": host["alias"], "address": host["address"], "user": host["user"],
+                "port": host.get("port", 22), "become": host.get("become", True),
+            })
+            if not preflight.get("ok") or not preflight.get("readiness"):
+                raise AssertionError(f"Readiness collection failed: {preflight.get('readinessError') or preflight.get('checks')}")
+            readiness = preflight["readiness"]
+            checks = {item["id"]: item for item in readiness["checks"]}
+            if checks["packages"]["state"] != "ready" or checks["openscap"]["state"] != "needs_setup":
+                raise AssertionError("Readiness incorrectly classified package or SCAP prerequisites")
+            record("Host readiness through real SSH", readiness)
         facts = report(run("collectFacts"), "facts")
         if not facts["raw"].get("os"):
             raise AssertionError("Facts did not identify an operating system")

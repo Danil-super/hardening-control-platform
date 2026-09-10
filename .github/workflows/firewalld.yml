@@ -1,0 +1,52 @@
+name: Real firewalld SSH apply and rollback acceptance
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  firewalld-kernel-acceptance:
+    # Network namespaces provide a real incoming packet path on a disposable VM.
+    # Actual Ansible operations use a dedicated SSH listener on that path.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install firewalld, SSH and Ansible without enabling a firewall
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          sudo systemctl mask firewalld.service
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends firewalld openssh-server ansible iproute2
+          sudo systemctl unmask firewalld.service
+
+      - name: Verify real traffic, SSH protection, preview, deny and rollback
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 deployment/tests/verify_firewalld.py \
+              --execute-on-disposable-runner --work-dir "$RUNNER_TEMP/hcp-firewalld"
+
+      - name: Restore original services and remove the isolated SSH target
+        if: always()
+        timeout-minutes: 2
+        run: |
+          sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 deployment/tests/verify_firewalld.py \
+              --execute-on-disposable-runner --cleanup-only --work-dir "$RUNNER_TEMP/hcp-firewalld"
+
+      - name: Save real firewalld acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: firewalld-kernel-acceptance
+          path: ${{ runner.temp }}/hcp-firewalld/artifacts
+          if-no-files-found: warn

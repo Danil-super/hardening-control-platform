@@ -1,0 +1,68 @@
+name: Dependency-Track live NVD source acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dependency-track-sources.yml'
+      - 'deployment/tests/verify_dependency_track_sources.py'
+      - 'deployment/tests/verify_dependency_track.py'
+      - 'web/lib/dependency-track.ts'
+      - 'web/tests/_typescript-loader.mjs'
+  pull_request:
+    paths:
+      - '.github/workflows/dependency-track-sources.yml'
+      - 'deployment/tests/verify_dependency_track_sources.py'
+      - 'deployment/tests/verify_dependency_track.py'
+      - 'web/lib/dependency-track.ts'
+      - 'web/tests/_typescript-loader.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  targeted-nvd-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 23
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - name: Mirror one real NVD CVE and compare vulnerable and corrected component versions
+        run: python3 deployment/tests/verify_dependency_track_sources.py
+      - name: Save source, native mirror and finding evidence without credentials
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-track-targeted-nvd
+          path: |
+            .lab/dependency-track-sources/protocol.json
+            .lab/dependency-track-sources/nvd-response.json
+            .lab/dependency-track-sources/mirrored-cve.json
+            .lab/dependency-track-sources/findings.json
+            .lab/dependency-track-sources/hcp-report.json
+            .lab/dependency-track-sources/services.log
+          if-no-files-found: warn
+      - name: Clean up this disposable stack after interruption
+        if: always()
+        run: |
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import subprocess
+          config = pathlib.Path('.lab/dependency-track-sources/compose.json')
+          if config.exists():
+              name = json.loads(config.read_text())['name']
+              if not name.startswith('hcp-dtrack-sources-'):
+                  raise SystemExit('Unexpected acceptance stack name')
+              subprocess.run(['docker', 'compose', '-f', str(config), 'down', '-v', '--remove-orphans'], check=True)
+              network = name + '-egress'
+              if subprocess.run(['docker', 'network', 'inspect', network], capture_output=True).returncode == 0:
+                  subprocess.run(['docker', 'network', 'rm', network], check=True)
+          PY

@@ -89,6 +89,8 @@ type HostsPayload = {
 type PreflightPayload = {
   ok?: boolean;
   message?: string;
+  readiness?: import("@/lib/host-readiness").HostReadiness | null;
+  readinessError?: string | null;
   checks?: {
     ssh: { ok: boolean; message: string };
     python: { ok: boolean; message: string };
@@ -804,7 +806,7 @@ export function AnsibleControlClient() {
               <li className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
                 <p className="text-sm font-semibold text-white">3. Проверьте и добавьте</p>
                 <p className="mt-1 text-xs leading-5 text-slate-400">
-                  Нажмите «Проверить подключение». Платформа убедится в SSH-доступе, Python и sudo. Только успешное подключение можно добавить в inventory.
+                  Нажмите «Проверить подключение». Платформа проверит SSH, Python, sudo и предпосылки аудита. Для добавления достаточно рабочего подключения; подготовка сканеров показана отдельно.
                 </p>
                 <div className="mt-3 rounded bg-slate-900 p-2 text-xs leading-5 text-slate-300">
                   Fingerprint узла управления: <span className="break-all text-sky-100">{access.fingerprint ?? "не определён"}</span>
@@ -819,12 +821,37 @@ export function AnsibleControlClient() {
           {accessMessage ? <p className="mt-3 text-sm text-amber-100" role="status">{accessMessage}</p> : null}
         </section>
         {preflight && preflightFor === connectionSignature ? (
+          <>
           <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
             <CheckBadge label="SSH" ok={preflight.checks?.ssh.ok} text={preflight.checks?.ssh.message ?? preflight.message ?? ""} />
             <CheckBadge label="Python" ok={preflight.checks?.python.ok} text={preflight.checks?.python.message ?? ""} />
             <CheckBadge label="sudo" ok={preflight.checks?.sudo.ok} text={preflight.checks?.sudo.message ?? ""} />
             <CheckBadge label="OS" ok={Boolean(preflight.facts?.os)} text={preflight.facts?.os ?? "не определена"} />
           </div>
+          {preflight.readiness ? (
+            <section className="mt-3 rounded-md border border-slate-700 bg-slate-950/70 p-3" aria-label="Готовность к аудиту">
+              <h3 className="text-sm font-semibold text-white">Готовность к аудиту</h3>
+              <p className="mt-1 break-words text-xs leading-5 text-slate-400">
+                {preflight.readiness.astraVersion ? `Выпуск Astra: ${preflight.readiness.astraVersion}. ` : ""}
+                Ядро: {preflight.readiness.kernel}. Python: {preflight.readiness.pythonVersion}.
+              </p>
+              <div className="mt-3 grid gap-2 lg:grid-cols-2">
+                {preflight.readiness.checks.map((check) => (
+                  <div key={check.id} className="min-w-0 rounded border border-slate-800 p-3">
+                    <div className="flex flex-wrap items-start justify-between gap-2 text-xs">
+                      <span className="font-semibold text-slate-200">{check.title}</span>
+                      <span className={check.state === "ready" ? "text-sky-200" : "text-amber-200"}>
+                        {{ ready: "Предпосылки выполнены", needs_setup: "Нужна подготовка", unsupported: "Покрытие не подтверждено", unknown: "Не определено" }[check.state]}
+                      </span>
+                    </div>
+                    <p className="mt-2 break-words text-xs leading-5 text-slate-400">{check.detail}</p>
+                  </div>
+                ))}
+              </div>
+              {preflight.readiness.notes.map((note, index) => <p key={index} className="mt-2 break-words text-xs leading-5 text-slate-400">{note}</p>)}
+            </section>
+          ) : preflight.readinessError ? <p className="mt-2 text-sm text-amber-200" role="status">Готовность к аудиту не подтверждена: {preflight.readinessError}</p> : null}
+          </>
         ) : null}
         <details className="mt-3 rounded-md border border-slate-800 bg-slate-900/70 p-3">
           <summary className="cursor-pointer text-sm font-semibold text-slate-200">Найти хосты в разрешённой подсети</summary>

@@ -51,6 +51,20 @@ test("Trivy fixed means a vulnerable installation with a patch available", (t) =
   assert.equal(testing.trivyFinding({ Status: "end_of_life" }).status, "manual");
 });
 
+test("Astra inventory preserves release and never becomes complete Debian CVE coverage", async (t) => {
+  const h = harness(t);
+  h.report.packageInventory.osRelease = { ID: "astra", ID_LIKE: "debian", NAME: "Astra Linux", VERSION_ID: "1.7_x86-64" };
+  h.report.packageInventory.astraVersion = "1.7.6.15";
+  h.save();
+  const result = await h.scan();
+  assert.equal(result.partial, true);
+  assert.equal(result.report.vulnerabilityScan.ecosystem, null);
+  assert.match(result.report.vulnerabilityScan.coverage.reasons.join(" "), /Astra/);
+  const sbom = JSON.parse(readFileSync(path.join(h.dir, "sbom", result.report.vulnerabilityScan.sbomFile), "utf8"));
+  assert.equal(sbom.metadata.component.name, "astra");
+  assert.ok(sbom.metadata.component.properties.some((property) => property.name === "hcp:astra-version" && property.value === "1.7.6.15"));
+});
+
 test("SBOM preserves distro, source version, epoch, arch and OS identity", (t) => {
   const h = harness(t);
   h.report.packages[0].sourceVersion = "2:3.0.2-0ubuntu1";
