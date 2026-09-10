@@ -99,6 +99,9 @@ def cleanup(work):
         shutil.rmtree(Path("/var/lib/hcp-backups") / transaction, ignore_errors=True)
     for filename in ("client-key", "client-key.pub", "host-key", "host-key.pub"):
         (work / filename).unlink(missing_ok=True)
+    ssh_runtime = state.get("sshRuntimeDirectory", "")
+    if re.fullmatch(r"/run/hcp-firewalld-[a-f0-9]{12}", ssh_runtime):
+        shutil.rmtree(ssh_runtime, ignore_errors=True)
     if errors:
         write_json(work / "artifacts/cleanup.json", {"ok": False, "errors": errors})
         raise RuntimeError("; ".join(errors))
@@ -160,6 +163,7 @@ def verify(work):
         identifier = uuid.uuid4().hex[:12]
         state = {
             "namespace": "hcp-firewalld-" + identifier, "interface": "hfw" + identifier[:10],
+            "sshRuntimeDirectory": "/run/hcp-firewalld-" + identifier,
             "transaction": "txn-ci-firewalld-" + uuid.uuid4().hex,
             "originalSnapshot": snapshot(configuration), "firewallTouched": False,
             "stoppedServices": [], "cleaned": False,
@@ -228,13 +232,22 @@ except (OSError, urllib.error.URLError, TimeoutError) as error:
 
         for filename in ("client-key", "host-key"):
             command(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(work / filename)], "generate-" + filename)
+        # GitHub RUNNER_TEMP has runner-owned ancestors. OpenSSH StrictModes
+        # correctly refuses a root AuthorizedKeysFile under that path. Keep
+        # authentication material in a separate root-owned /run directory;
+        # never weaken StrictModes or alter permissions of the runner's files.
+        ssh_runtime = Path(state["sshRuntimeDirectory"])
+        ssh_runtime.mkdir(mode=0o700)
+        authorized_keys = ssh_runtime / "authorized_keys"
+        shutil.copyfile(work / "client-key.pub", authorized_keys)
+        authorized_keys.chmod(0o600)
         host_public = (work / "host-key.pub").read_text().split()
         known_hosts = work / "known_hosts"
         known_hosts.write_text(f"[{target}]:{SSH_PORT} {host_public[0]} {host_public[1]}\n")
         sshd_config = work / "sshd_config"
         sshd_config.write_text("\n".join([
             f"Port {SSH_PORT}", f"ListenAddress {target}", f"HostKey {work / 'host-key'}",
-            f"AuthorizedKeysFile {work / 'client-key.pub'}", f"PidFile {work / 'sshd.pid'}",
+            f"AuthorizedKeysFile {authorized_keys}", f"PidFile {work / 'sshd.pid'}", "StrictModes yes",
             "PermitRootLogin prohibit-password", "PasswordAuthentication no", "KbdInteractiveAuthentication no",
             "PubkeyAuthentication yes", "UsePAM yes", "AllowUsers root", "PrintMotd no", "LogLevel VERBOSE",
             "Subsystem sftp internal-sftp", "",

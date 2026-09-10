@@ -3,6 +3,19 @@ name: OpenSCAP full-profile acceptance
 on:
   push:
     branches: [main]
+    paths:
+      - .github/workflows/openscap.yml
+      - deployment/tests/verify_openscap.py
+      - ansible/playbooks/openscap-audit.yml
+      - ansible/scripts/hcp-controller-scan.py
+      - ansible/tests/test_scanner_adapters.py
+      - web/lib/openscap-policy.ts
+      - web/lib/state-store.ts
+      - web/lib/inventory.ts
+      - web/tests/openscap-policy.test.mjs
+      - web/tests/_typescript-loader.mjs
+      - web/package.json
+      - web/package-lock.json
   workflow_dispatch:
 
 permissions:

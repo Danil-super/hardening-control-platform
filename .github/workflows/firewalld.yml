@@ -3,6 +3,16 @@ name: Real firewalld SSH apply and rollback acceptance
 on:
   push:
     branches: [main]
+    paths:
+      - .github/workflows/firewalld.yml
+      - deployment/tests/verify_firewalld.py
+      - deployment/tests/verify_firewall.py
+      - ansible/scripts/hcp-firewall.py
+      - ansible/tasks/firewall-operation.yml
+      - ansible/playbooks/backup-remediation.yml
+      - ansible/playbooks/rollback-remediation.yml
+      - ansible/playbooks/close-port.yml
+      - ansible/playbooks/block-ip.yml
   workflow_dispatch:
 
 permissions:

@@ -217,7 +217,10 @@ def main():
             payload = response.read().decode("utf8")
             if response.status not in expected:
                 # Never include login/API-key response bodies in errors or artifacts.
-                raise RuntimeError(f"Dependency-Track {endpoint}: HTTP {response.status}")
+                property_label = ""
+                if endpoint == "/api/v1/configProperty" and isinstance(body, dict):
+                    property_label = " [" + str(body.get("groupName")) + "/" + str(body.get("propertyName")) + "]"
+                raise RuntimeError(f"Dependency-Track {endpoint}{property_label}: HTTP {response.status}")
         try:
             return json.loads(payload) if payload else None
         except json.JSONDecodeError:
@@ -352,7 +355,7 @@ def main():
                             ("telemetry", "submission.enabled")]:
             api("/api/v1/configProperty", {"groupName": group, "propertyName": name,
                 "propertyValue": "false", "propertyType": "BOOLEAN"}, method="POST", bearer=bearer)
-        settings = [("vuln-source", "google.osv.enabled", "", "STRING"),
+        settings = [("vuln-source", "google.osv.enabled", None, "STRING"),
                     ("scanner", "internal.enabled", "true", "BOOLEAN"),
                     ("vuln-source", "nvd.api.url", NVD_TARGET, "URL"),
                     ("vuln-source", "nvd.api.enabled", "true", "BOOLEAN"),

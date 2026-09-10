@@ -36,7 +36,7 @@ import yaml
 REPO = Path(__file__).resolve().parents[2]
 UPSTREAM_COMMIT = "173b0a14e4c4032ee84b0c37f6a8fea84788f14f"
 UPSTREAM_URL = ("https://raw.githubusercontent.com/greenbone/docs/" + UPSTREAM_COMMIT
-                + "/src/22.4/container/compose.yaml")
+                + "/src/_static/compose.yaml")
 UPSTREAM_SHA256 = "5b5117a7c200491de13bc7b79c97dc858c016c51017982d8f1de7ca077c1a868"
 FULL_FAST_ID = "daba56c8-73ec-11df-a475-002264764cea"
 # The live feed is authoritative: its name/family/metadata must also match.
