@@ -160,6 +160,43 @@ class FirewallTests(unittest.TestCase):
             with self.assertRaisesRegex(fw.FirewallError, "runtime and permanent"):
                 fw.persistent_firewalld()
 
+    def test_firewalld_zone_display_order_and_activity_are_not_configuration_changes(self):
+        runtime = 'trusted (default, active)\n  target: ACCEPT\n  interfaces: eth0\n  rich rules:\n    rule priority="-1" port port="8080" protocol="tcp" drop\n\npublic (active)\n  target: default\n  interfaces: eth1\n'
+        permanent = 'public\n  target: default\n  interfaces: eth1\n\ntrusted (default)\n  target: ACCEPT\n  interfaces: eth0\n  rich rules:\n    rule priority="-1" port port="8080" protocol="tcp" drop\n'
+        responses = [subprocess.CompletedProcess([], 0, text, "") for text in (runtime, permanent, "", "", "", "", "", "", "")]
+        with patch.object(fw, "run", side_effect=responses):
+            fw.persistent_firewalld()
+        self.assertEqual(fw.firewalld_configuration_blocks(runtime), fw.firewalld_configuration_blocks(permanent))
+
+    def test_firewalld_normalization_preserves_rules_targets_interfaces_and_rule_order(self):
+        baseline = 'public (default)\n  target: DROP\n  interfaces: eth0\n  rich rules:\n    rule priority="-1" source address="192.0.2.10" accept\n    rule priority="-1" port port="8080" protocol="tcp" drop\n'
+        changed = [baseline.replace('target: DROP', 'target: ACCEPT'),
+                   baseline.replace('interfaces: eth0', 'interfaces: eth1'),
+                   baseline.replace('port="8080"', 'port="9090"'),
+                   baseline.replace('source address="192.0.2.10" accept\n    rule priority="-1" port port="8080" protocol="tcp" drop',
+                                    'port port="8080" protocol="tcp" drop\n    rule priority="-1" source address="192.0.2.10" accept')]
+        for value in changed:
+            with self.subTest(value=value):
+                responses = [subprocess.CompletedProcess([], 0, text, "") for text in (baseline, value)]
+                with patch.object(fw, "run", side_effect=responses):
+                    with self.assertRaisesRegex(fw.FirewallError, "runtime and permanent"):
+                        fw.persistent_firewalld()
+
+    def test_firewalld_policy_activity_is_ignored_but_runtime_only_policy_is_rejected(self):
+        zones = "public (default)\n  target: default\n"
+        runtime = "allow-host-ipv6 (active)\n  target: CONTINUE\n  ingress-zones: ANY\n  egress-zones: HOST\n"
+        permanent = runtime.replace(" (active)", "")
+        for policies, accepted in ((permanent, True), (permanent.replace("CONTINUE", "ACCEPT"), False)):
+            with self.subTest(accepted=accepted):
+                responses = [subprocess.CompletedProcess([], 0, text, "") for text in
+                             (zones, zones, "--list-all-policies", runtime, policies, "", "", "", "", "", "")]
+                with patch.object(fw, "run", side_effect=responses):
+                    if accepted:
+                        fw.persistent_firewalld()
+                    else:
+                        with self.assertRaisesRegex(fw.FirewallError, "policies differ"):
+                            fw.persistent_firewalld()
+
     def test_transaction_traversal_and_archive_links_are_rejected(self):
         for transaction in ("../etc", "........", "txn-../../etc", "txn-ok/../bad"):
             with self.assertRaises(fw.FirewallError): fw.transaction_dir(args(transaction=transaction))

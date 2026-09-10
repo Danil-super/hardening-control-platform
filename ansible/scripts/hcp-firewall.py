@@ -38,13 +38,46 @@ def backend():
     return "ufw" if ufw else "firewalld"
 
 
+def firewalld_configuration_blocks(value):
+    """Ignore display-only activity and the order of independent zone/policy blocks.
+
+    Runtime getZones() and permanent getZoneNames() need not have the same order.
+    Keep every field and the order of rules inside a block: those affect policy.
+    """
+    blocks = []
+    current = []
+    for line in value.splitlines():
+        if not line.strip():
+            continue
+        if not line[0].isspace():
+            if current:
+                blocks.append(tuple(current))
+            header = re.fullmatch(r"([A-Za-z0-9_-]+)(?: \(([^)]+)\))?", line.strip())
+            if header:
+                attributes = [item.strip() for item in (header[2] or "").split(",") if item.strip() and item.strip() != "active"]
+                line = header[1] + (" (" + ", ".join(attributes) + ")" if attributes else "")
+            current = [line.rstrip()]
+        else:
+            current.append(line.rstrip())
+    if current:
+        blocks.append(tuple(current))
+    return sorted(blocks)
+
+
 def persistent_firewalld():
     runtime = run("firewall-cmd", "--list-all-zones").stdout
     permanent = run("firewall-cmd", "--permanent", "--list-all-zones").stdout
-    normalize = lambda value: re.sub(r"\s+\(active\)", "", value).strip()
-    if normalize(runtime) != normalize(permanent):
+    if firewalld_configuration_blocks(runtime) != firewalld_configuration_blocks(permanent):
         raise FirewallError("firewalld runtime and permanent configuration differ. Reconcile them before remediation to preserve rollback.")
+    # Policies have a separate API on versions that provide policy objects.
+    # Their runtime-only changes would also be discarded by rollback's reload.
+    if "--list-all-policies" in run("firewall-cmd", "--help").stdout:
+        runtime_policies = run("firewall-cmd", "--list-all-policies").stdout
+        permanent_policies = run("firewall-cmd", "--permanent", "--list-all-policies").stdout
+        if firewalld_configuration_blocks(runtime_policies) != firewalld_configuration_blocks(permanent_policies):
+            raise FirewallError("firewalld runtime and permanent policies differ; rollback cannot be guaranteed.")
     # Direct rules are a separate API and must also be preserved.
+    # Preserve their order: rules with equal priority can depend on insertion order.
     for option in ("--get-all-rules", "--get-all-chains", "--get-all-passthroughs"):
         if run("firewall-cmd", "--direct", option).stdout != run("firewall-cmd", "--permanent", "--direct", option).stdout:
             raise FirewallError("firewalld runtime and permanent direct rules differ; rollback cannot be guaranteed.")

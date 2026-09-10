@@ -364,11 +364,14 @@ except (OSError, urllib.error.URLError, TimeoutError) as error:
     except Exception as error:
         result["error"] = str(error)
         for label, argv in (("failure-firewalld-zones", ["firewall-cmd", "--list-all-zones"]),
+                            ("failure-firewalld-permanent-zones", ["firewall-cmd", "--permanent", "--list-all-zones"]),
                             ("failure-kernel-nftables", ["nft", "list", "ruleset"]),
                             ("failure-firewalld-journal", ["journalctl", "-u", "firewalld", "--no-pager", "-n", "80"])):
             try:
                 diagnostic = subprocess.run(argv, capture_output=True, text=True, timeout=10)
                 (artifacts / (label + ".log")).write_text(diagnostic.stdout + "\n" + diagnostic.stderr)
+                if "zones" in label or "journal" in label:
+                    print(label + ":\n" + diagnostic.stdout[-9000:] + diagnostic.stderr[-2000:], flush=True)
             except Exception:
                 pass
         if sshd_log:

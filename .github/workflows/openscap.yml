@@ -90,7 +90,17 @@ jobs:
             /usr/bin/python3 deployment/tests/verify_openscap.py \
             --execute-on-disposable-runner --cleanup --work-dir "$RUNNER_TEMP/hcp-openscap"
 
-      - name: Save raw ARF, normalized reports, provenance and diagnostics
+      - name: Restore CI artifact ownership after the privileged scan
+        # The production exception handler deliberately writes reports as
+        # 0600. Hand the disposable CI evidence back to the uploading runner;
+        # do not relax production report permissions to make artifact upload work.
+        if: always()
+        run: |
+          if test -d "$RUNNER_TEMP/hcp-openscap/artifacts"; then
+            sudo chown -R -- "$(id -u):$(id -g)" "$RUNNER_TEMP/hcp-openscap/artifacts"
+          fi
+
+      - name: Upload raw ARF, normalized reports, provenance and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
