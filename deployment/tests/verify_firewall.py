@@ -56,7 +56,7 @@ def cleanup(work):
     errors = []
     def execute(argv):
         result = subprocess.run(argv, capture_output=True, text=True, timeout=25,
-                                env={**os.environ, "LC_ALL": "C"})
+                                env={**os.environ, "LC_ALL": "C.UTF-8"})
         if result.returncode:
             raise RuntimeError(f"Cleanup {' '.join(argv)}: {result.stderr or result.stdout}")
         return result.stdout
@@ -120,7 +120,7 @@ def verify(work):
             raise RuntimeError("Firewall acceptance exceeded its 270-second execution budget.")
         sequence += 1
         process = subprocess.run(argv, cwd=REPO, capture_output=True, text=True,
-                                 timeout=min(timeout, remaining), env={**os.environ, "LC_ALL": "C", "ANSIBLE_FORCE_COLOR": "false"})
+                                 timeout=min(timeout, remaining), env={**os.environ, "LC_ALL": "C.UTF-8", "ANSIBLE_FORCE_COLOR": "false"})
         (artifacts / f"{sequence:02}-{label}.log").write_text(process.stdout + "\n" + process.stderr)
         if process.returncode not in allowed:
             raise RuntimeError(f"{label} exited with {process.returncode}: {process.stderr[-1500:]} {process.stdout[-1500:]}")

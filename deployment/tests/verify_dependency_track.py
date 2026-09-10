@@ -5,7 +5,8 @@ Uses the production syncDependencyTrack TypeScript adapter and actual HTTP/API
 key authentication. The CycloneDX input is a labelled test fixture. Containers
 have no external network, so this is NOT a CVE accuracy or feed freshness test.
 
-Requirements: Docker/Compose v2.20+, Node 24 and `cd web && npm ci`.
+Requirements: Linux Docker host, Compose v2.20+, Node 24 and `cd web && npm ci`.
+The client reaches the API by its private bridge IP; no ports are published.
 No existing DTrack instance or HCP state is used. The new stack is removed when
 the script exits; only the redacted protocol and service logs are retained.
 
@@ -14,6 +15,7 @@ tag 4.14.3: resources/v1/{User,Team,Permission,Event,Project,Component}Resource.
 """
 
 import argparse
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -58,11 +60,8 @@ try {
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=18081, help="Unused loopback port for the disposable API")
     parser.add_argument("--output", default=".lab/dependency-track-acceptance", help="Directory for redacted evidence")
     args = parser.parse_args()
-    if not 1024 <= args.port <= 65535:
-        parser.error("--port must be between 1024 and 65535")
     if not shutil.which("docker") or not shutil.which("node"):
         parser.error("Docker/Compose and Node 24 must be installed")
     if not (REPO / "web/node_modules/typescript").is_dir():
@@ -115,12 +114,14 @@ def main():
         return result.stdout
 
     compose = ["docker", "compose", "-f", str(compose_file)]
-    base = f"http://127.0.0.1:{args.port}"
+    base = ""  # Resolved from this run's API container after Compose starts it.
     # Prevent proxy variables in a developer's environment forwarding credentials.
     client = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def api(endpoint, body=None, method="GET", bearer=None, form=False, expected=(200,)):
-        headers = {"Accept": "application/json"}
+        # UserResource 4.14.3 produces text/plain for the two form-auth routes;
+        # advertising only JSON would be rejected with HTTP 406 by JAX-RS.
+        headers = {"Accept": "text/plain" if form else "application/json"}
         if bearer:
             headers["Authorization"] = "Bearer " + bearer
         data = None
@@ -152,7 +153,7 @@ def main():
         # distinction between an unhealthy database and an unreachable port.
         if endpoint not in ("/health", "/health/ready"):
             raise ValueError("Only unauthenticated health endpoints can be diagnosed")
-        observation = {"endpoint": endpoint, "transport": "published-loopback-port"}
+        observation = {"endpoint": endpoint, "transport": "private-container-bridge"}
         request = urllib.request.Request(base + endpoint, headers={"Accept": "application/json"})
         try:
             try:
@@ -198,7 +199,7 @@ def main():
                     "EXTRA_JAVA_OPTIONS": "-Xms512m -Xmx2g -XX:ActiveProcessorCount=2",
                     "ALPINE_HTTP_TIMEOUT_CONNECTION": "3", "ALPINE_HTTP_TIMEOUT_SOCKET": "3",
                 },
-                "ports": [f"127.0.0.1:{args.port}:8080"], "volumes": ["api-data:/data"],
+                "volumes": ["api-data:/data"],
             },
         },
         "networks": {"default": {"internal": True}},
@@ -210,8 +211,27 @@ def main():
     try:
         started = True
         command(compose + ["up", "-d", "--wait", "--wait-timeout", "300"], timeout=420)
-        # The pinned image has a /health HEALTHCHECK; also verify readiness over
-        # the exact host port used by the adapter before changing credentials.
+        # Docker does not publish loopback ports for the isolated network on
+        # every engine version. Address only the API container created by this
+        # Compose project, via the bridge shared with the Linux Docker host.
+        # The API/database still have no route to external feeds.
+        api_container = command(compose + ["ps", "-q", "api"]).strip()
+        if len(api_container) != 64 or any(char not in "0123456789abcdef" for char in api_container):
+            raise AssertionError("Compose did not identify exactly one API container")
+        networks = json.loads(command(["docker", "inspect", api_container,
+                                       "--format", "{{json .NetworkSettings.Networks}}"]))
+        network_name = project + "_default"
+        if not isinstance(networks, dict) or set(networks) != {network_name}:
+            raise AssertionError("Disposable API must belong only to its own isolated Compose network")
+        api_address = ipaddress.IPv4Address(networks[network_name]["IPAddress"])
+        if (not api_address.is_private or api_address.is_loopback or api_address.is_link_local
+                or api_address.is_multicast or api_address.is_reserved or api_address.is_unspecified):
+            raise AssertionError("Disposable API must have a private, routable bridge address")
+        base = f"http://{api_address}:8080"
+        protocol["apiTransport"] = {"kind": "private-container-bridge", "network": network_name,
+                                    "container": api_container, "endpoint": base, "publishedPorts": False}
+        # The pinned image has a /health HEALTHCHECK; verify database readiness
+        # again over the exact private address used by the production adapter.
         readiness_deadline = time.monotonic() + remaining(30)
         while time.monotonic() < readiness_deadline:
             observation = health_probe("/health/ready")
@@ -221,7 +241,7 @@ def main():
             time.sleep(2)
         else:
             protocol["aggregateHealth"] = health_probe("/health")
-            raise AssertionError("API/PostgreSQL readiness is not UP on the published port: "
+            raise AssertionError("API/PostgreSQL readiness is not UP on its private bridge address: "
                                  + json.dumps(observation, ensure_ascii=True))
         protocol["image"] = IMAGE
         protocol["imageDigests"] = json.loads(command([
@@ -314,7 +334,7 @@ def main():
         if started:
             if protocol["status"] == "failed":
                 # Compare the exact readiness endpoint inside the container to
-                # diagnose Docker port forwarding independently of database
+                # diagnose Docker bridge connectivity independently of database
                 # health. No environment, credentials or authenticated API
                 # response is included in this bounded diagnostic.
                 try:
