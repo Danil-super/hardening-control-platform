@@ -20,6 +20,11 @@ def args(**values):
 
 
 class FirewallTests(unittest.TestCase):
+    def setUp(self):
+        ipv6 = patch.object(fw, "ufw_ipv6_enabled", return_value=False)
+        ipv6.start()
+        self.addCleanup(ipv6.stop)
+
     def test_numbered_ufw_compact_and_verbose_incoming_formats(self):
         # Ubuntu 24.04 ufw(8) documents compact incoming actions without IN.
         # Retain real column spacing and an IPv6 row to exercise normalization.
@@ -41,7 +46,7 @@ class FirewallTests(unittest.TestCase):
                        "[ 1] Anywhere ALLOW Anywhere\n[ 2] 8080/tcp DENY Anywhere\n"):
             with self.subTest(output=output):
                 with patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run", return_value=subprocess.CompletedProcess([], 0, output, "")):
-                    with self.assertRaisesRegex(fw.FirewallError, "Observed IPv4 rules"):
+                    with self.assertRaisesRegex(fw.FirewallError, "Observed rules"):
                         fw.close_or_block(args())
 
     def test_ufw_deny_moves_before_allow_and_is_idempotent(self):
@@ -52,8 +57,8 @@ class FirewallTests(unittest.TestCase):
             if argv == ("ufw", "status", "numbered"):
                 return subprocess.CompletedProcess(argv, 0, "\n".join(f"[ {i+1}] {row}" for i, row in enumerate(rows)), "")
             if argv[:3] == ("ufw", "--force", "delete"):
-                rows.remove("8080/tcp DENY IN Anywhere")
-            if argv[:3] == ("ufw", "insert", "1"):
+                rows.pop(int(argv[3]) - 1)
+            if argv[:2] == ("ufw", "prepend"):
                 rows.insert(0, "8080/tcp DENY IN Anywhere")
             return subprocess.CompletedProcess(argv, 0, "", "")
         with patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run", side_effect=command):
@@ -62,6 +67,42 @@ class FirewallTests(unittest.TestCase):
             before = len(calls)
             self.assertFalse(fw.close_or_block(args())["changed"])
             self.assertTrue(all(call[:2] == ("ufw", "status") for call in calls[before:]))
+
+    def test_existing_allow_tuple_is_removed_before_prepend_in_both_families(self):
+        rows = ["22/tcp ALLOW IN Anywhere", "8080/tcp ALLOW IN Anywhere",
+                "Anywhere ALLOW IN 192.0.2.0/24", "8080/tcp ALLOW OUT Anywhere",
+                "22/tcp (v6) ALLOW IN Anywhere (v6)", "8080/tcp (v6) ALLOW IN Anywhere (v6)"]
+        calls = []
+        def command(*argv, **kwargs):
+            calls.append(argv)
+            if argv == ("ufw", "status", "numbered"):
+                return subprocess.CompletedProcess(argv, 0, "\n".join(f"[{index + 1:2}] {row}" for index, row in enumerate(rows)), "")
+            if argv[:3] == ("ufw", "--force", "delete"):
+                rows.pop(int(argv[3]) - 1)
+            elif argv[:2] == ("ufw", "prepend"):
+                # Reproduce upstream set_rule: an existing tuple, even with a
+                # different action, causes prepend/insert to skip with rc=0.
+                if "8080/tcp ALLOW IN Anywhere" in rows or "8080/tcp (v6) ALLOW IN Anywhere (v6)" in rows:
+                    return subprocess.CompletedProcess(argv, 0, "Skipping inserting existing rule", "")
+                rows.insert(0, "8080/tcp DENY IN Anywhere")
+                first_v6 = next(index for index, row in enumerate(rows) if "(v6)" in row)
+                rows.insert(first_v6, "8080/tcp (v6) DENY IN Anywhere (v6)")
+            else:
+                self.fail(f"Unexpected mutating command: {argv}")
+            return subprocess.CompletedProcess(argv, 0, "Rules updated", "")
+        with patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "ufw_ipv6_enabled", return_value=True), patch.object(fw, "run", side_effect=command):
+            self.assertTrue(fw.close_or_block(args())["changed"])
+            self.assertEqual(calls[1:4], [("ufw", "--force", "delete", "6"), ("ufw", "--force", "delete", "2"), ("ufw", "prepend", "deny", "8080/tcp")])
+            self.assertIn("8080/tcp ALLOW OUT Anywhere", rows)
+            self.assertIn("Anywhere ALLOW IN 192.0.2.0/24", rows)
+            self.assertIn("22/tcp ALLOW IN Anywhere", rows)
+            self.assertFalse(fw.close_or_block(args())["changed"])
+
+    def test_missing_ipv6_deny_never_reports_full_success(self):
+        output = "[ 1] 8080/tcp DENY IN Anywhere\n[ 2] 22/tcp (v6) ALLOW IN Anywhere (v6)\n"
+        with patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "ufw_ipv6_enabled", return_value=True), patch.object(fw, "run", return_value=subprocess.CompletedProcess([], 0, output, "")):
+            with self.assertRaisesRegex(fw.FirewallError, "every required IP family"):
+                fw.close_or_block(args())
 
     def test_preview_never_executes_mutating_commands(self):
         calls = []

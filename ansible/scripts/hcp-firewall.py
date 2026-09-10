@@ -50,20 +50,40 @@ def persistent_firewalld():
             raise FirewallError("firewalld runtime and permanent direct rules differ; rollback cannot be guaranteed.")
 
 
-def ufw_ipv4_rows(status):
+def ufw_numbered_rules(status):
     rows = []
     for raw_line in status.splitlines():
         # UFW's compact/numbered display may omit IN for the default incoming
         # direction; columns also contain alignment spaces. Ignore comments
         # only after locating the numbered rule, not the rule's direction.
         line = raw_line.split("#", 1)[0].strip()
-        if re.match(r"^\[\s*\d+\]", line) and "(v6)" not in line:
-            rows.append(" ".join(re.sub(r"^\[\s*\d+\]\s*", "", line).split()))
+        number = re.match(r"^\[\s*(\d+)\]", line)
+        if not number:
+            continue
+        version = 6 if "(v6)" in line else 4
+        text = " ".join(line[number.end():].replace("(v6)", "").split())
+        for token in text.split():
+            try:
+                if ipaddress.ip_network(token, strict=False).version == 6:
+                    version = 6
+            except ValueError:
+                pass
+        rows.append({"number": int(number[1]), "version": version, "text": text})
     return rows
+
+
+def ufw_ipv6_enabled():
+    # UFW reads this setting even when its ruleset has no IPv6 rules yet.
+    configuration = (CONFIG_ROOT / "default/ufw").read_text()
+    value = re.search(r'^\s*IPV6\s*=\s*["\']?(yes|no)["\']?\s*(?:#.*)?$', configuration, re.M | re.I)
+    if not value:
+        raise FirewallError("Cannot determine UFW IPv6 policy from /etc/default/ufw.")
+    return value[1].lower() == "yes"
 
 
 def close_or_block(args):
     selected = backend()
+    mutation_outputs = []
     if args.operation == "closePort":
         if not args.port or not 1 <= args.port <= 65535 or args.protocol not in ("tcp", "udp"):
             raise FirewallError("Invalid port or protocol.")
@@ -88,21 +108,33 @@ def close_or_block(args):
 
     if selected == "ufw":
         status = run("ufw", "status", "numbered").stdout
-        rows = ufw_ipv4_rows(status)
+        rows = ufw_numbered_rules(status)
+        families = [4, 6] if args.operation == "closePort" and ufw_ipv6_enabled() else [4]
         # Bare DENY is the documented default incoming direction. OUT and FWD
-        # must never satisfy this check. Require the exact global IPv4 rule.
+        # must never satisfy this check. Require the exact global incoming rule.
         expected = (rf"^{args.port}/{args.protocol} DENY(?: IN)? Anywhere$" if args.operation == "closePort" else rf"^Anywhere DENY(?: IN)? {re.escape(args.ip)}$")
-        matching = [index for index, row in enumerate(rows) if re.match(expected, row)]
-        changed = not matching or matching[0] != 0
+        collision_pattern = expected.replace("DENY", "(?:ALLOW|DENY|LIMIT|REJECT)")
+        def first_rules(rules):
+            return {family: next((row["text"] for row in rules if row["version"] == family), "") for family in families}
+        changed = any(not re.fullmatch(expected, first) for first in first_rules(rows).values())
         if changed and not args.check:
-            if matching:
-                run("ufw", "--force", "delete", *ufw_rule)
-            run("ufw", "insert", "1", *ufw_rule)
+            # UFW set_rule treats the same tuple with a different action as an
+            # existing rule and "insert"/"prepend" silently skips it (rc=0).
+            # Delete only exact incoming collisions, preserving wider rules,
+            # unrelated ports and OUT/FWD rules. Descending numbers stay valid
+            # while deleting both IPv4 and IPv6 entries.
+            collisions = [row["number"] for row in rows if row["version"] in families and re.fullmatch(collision_pattern, row["text"])]
+            commands = [["ufw", "--force", "delete", str(number)] for number in sorted(collisions, reverse=True)]
+            # prepend explicitly handles the start of each IP family, including
+            # an empty ruleset; insert 1 calculates an IPv6 counterpart position.
+            commands.append(["ufw", "prepend", *ufw_rule])
+            for command in commands:
+                completed = run(*command)
+                mutation_outputs.append({"argv": command, "stdout": completed.stdout[-4000:], "stderr": completed.stderr[-4000:]})
         if not args.check:
-            observed = ufw_ipv4_rows(run("ufw", "status", "numbered").stdout)
-            first = observed[0] if observed else ""
-            if not re.match(expected, first):
-                raise FirewallError(f"UFW did not install the deny rule before existing allow rules. Observed IPv4 rules: {observed!r}")
+            observed = ufw_numbered_rules(run("ufw", "status", "numbered").stdout)
+            if any(not re.fullmatch(expected, first) for first in first_rules(observed).values()):
+                raise FirewallError(f"UFW did not install the deny rule first in every required IP family. Observed rules: {observed!r}. Command output: {mutation_outputs!r}")
     else:
         zones = {line.split()[0] for line in run("firewall-cmd", "--get-active-zones").stdout.splitlines() if line and not line[0].isspace()}
         zones.add(run("firewall-cmd", "--get-default-zone").stdout.strip())
@@ -118,7 +150,7 @@ def close_or_block(args):
                         if not args.check:
                             run(*command, f"--add-rich-rule={rule}")
                             run(*command, f"--query-rich-rule={rule}")
-    return {"ok": True, "backend": selected, "changed": changed, "checkMode": args.check}
+    return {"ok": True, "backend": selected, "changed": changed, "checkMode": args.check, "commands": mutation_outputs}
 
 
 def transaction_dir(args):
