@@ -74,7 +74,8 @@ ET.SubElement(credentials, "password").text = payload["password"]
 with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
     sock.settimeout(90)
     sock.connect("/run/gvmd/gvmd.sock")
-    exchange(sock, ET.tostring(auth, encoding="unicode"))
+    if payload.get("password") is not None:
+        exchange(sock, ET.tostring(auth, encoding="unicode"))
     result = exchange(sock, payload["xml"])
 print(ET.tostring(result, encoding="unicode"))
 '''
@@ -177,13 +178,13 @@ def main():
         save()
         print("STAGE " + name, flush=True)
 
-    def gmp(request):
+    def gmp(request, *, authenticate=True):
         document = request if isinstance(request, str) else ET.tostring(request, encoding="unicode")
         result = command(compose + ["exec", "-T", "gvm-tools", "python3", "-c", GMP_CLIENT],
-                         input=json.dumps({"password": password, "xml": document}), timeout=110)
+                         input=json.dumps({"password": password if authenticate else None, "xml": document}), timeout=110)
         return ET.fromstring(result)
 
-    def wait_for(name, probe, budget):
+    def wait_for(name, probe, budget, diagnostics=None):
         until = time.monotonic() + remaining(budget)
         last_error = "not ready"
         attempts = 0
@@ -197,6 +198,8 @@ def main():
             attempts += 1
             if attempts % 3 == 1:
                 print(f"WAIT {name}: {last_error}", flush=True)
+                if diagnostics:
+                    diagnostics()
             time.sleep(min(20, max(0, until - time.monotonic())))
         raise TimeoutError(f"{name} did not become ready: {last_error}")
 
@@ -252,14 +255,51 @@ def main():
         stage("start services and import feeds")
         command(compose + ["up", "-d"], timeout=1800)
 
-        def change_password():
-            # Official gvmd CLI has no stdin password option. The generated
-            # one-time credential is never logged or included in artifacts.
-            command(compose + ["exec", "-T", "-u", "gvmd", "gvmd", "gvmd",
-                               "--user=admin", "--new-password=" + password], timeout=100)
-            return gmp("<get_version/>")
+        def bootstrap_diagnostics():
+            logs = redact(command(compose + ["logs", "--no-color", "--tail", "30", "gvmd", "pg-gvm"],
+                                  timeout=30, check=False))
+            states = command(compose + ["ps", "-a", "--format", "json", "gvmd", "pg-gvm", "gvm-tools", "ospd-openvas"],
+                             timeout=30, check=False)
+            protocol["bootstrapDiagnostics"] = {"logs": logs[-6000:], "states": states[-6000:]}
+            save()
+            print("BOOTSTRAP " + logs[-3000:], flush=True)
+            if "Starting gvmd failed" in logs:
+                raise ValueError("The manager startup script reported a terminal daemon failure; see bootstrap diagnostics")
 
-        version = wait_for("authenticated manager", change_password, 900)
+        # start-gvmd migrates the schema and creates its initial user before
+        # opening GMP. Running a second modifying gvmd CLI process during that
+        # migration can race the bootstrap. First probe only get_version on
+        # the real listener; never interpret an SQL/auth failure as no user.
+        wait_for("manager listener after database bootstrap",
+                 lambda: gmp("<get_version/>", authenticate=False), 900, bootstrap_diagnostics)
+        gvmd_cli = compose + ["exec", "-T", "-u", "gvmd", "gvmd", "gvmd"]
+        users_text = command(gvmd_cli + ["--get-users", "--verbose"], timeout=100)
+        users = {}
+        for line in users_text.splitlines():
+            if not line.strip():
+                continue
+            match = re.fullmatch(r"(.+?)\s+([0-9a-fA-F-]{36})", line.strip())
+            if not match:
+                raise RuntimeError("gvmd --get-users returned an unrecognized user record")
+            users[match[1]] = str(uuid.UUID(match[2]))
+        created_admin = "admin" not in users
+        # This is exclusively the brand-new disposable manager. Creating its
+        # account is allowed only after a successful user listing proves that
+        # it is absent; a database/permission error never enters this branch.
+        if created_admin:
+            command(gvmd_cli + ["--create-user=admin", "--password=" + password], timeout=100)
+            users_text = command(gvmd_cli + ["--get-users", "--verbose"], timeout=100)
+            admin_match = re.search(r"^admin\s+([0-9a-fA-F-]{36})\s*$", users_text, re.MULTILINE)
+            if not admin_match:
+                raise RuntimeError("New administrator is not present after successful account creation")
+            admin_id = str(uuid.UUID(admin_match[1]))
+        else:
+            admin_id = users["admin"]
+            # The CLI has no stdin password option. Never print its argv.
+            command(gvmd_cli + ["--user=admin", "--new-password=" + password], timeout=100)
+        command(gvmd_cli + ["--modify-setting", "78eceaec-3385-11ea-b237-28d24461215b", "--value", admin_id], timeout=100)
+        version = gmp("<get_version/>")
+        record("Administrator and Feed Import Owner initialized after schema bootstrap", createdAdministrator=created_admin)
         record("Manager accepts fresh credentials over private GMP socket", gmpVersion=version.findtext("version"))
         cid = command(compose + ["ps", "-q", "target"]).strip()
         target = json.loads(command(["docker", "inspect", cid]))[0]
@@ -449,6 +489,8 @@ def main():
                 result = subprocess.run(compose + ["logs", "--no-color", "--tail", "1500"], cwd=REPO,
                                         capture_output=True, text=True, timeout=45)
                 (output / "services.log").write_text(redact(result.stdout + result.stderr))
+                if protocol["status"] != "passed":
+                    print("FINAL SERVICE DIAGNOSTICS\n" + redact(result.stdout + result.stderr)[-8000:], flush=True)
             except (OSError, subprocess.SubprocessError) as error:
                 protocol["logCollectionError"] = redact(str(error))
             try:
