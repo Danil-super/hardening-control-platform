@@ -37,7 +37,9 @@
 
         events = []
         for source, command in sources.items():
-            completed = subprocess.run(["bash", "-lc", command], check=False, capture_output=True, text=True, timeout=12)
+            completed = subprocess.run(["bash", "-lc", command], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+            completed.stdout = completed.stdout.decode("utf-8", "replace") if isinstance(completed.stdout, bytes) else completed.stdout
+            completed.stderr = completed.stderr.decode("utf-8", "replace") if isinstance(completed.stderr, bytes) else completed.stderr
             lines = [line for line in completed.stdout.splitlines() if line.strip()]
             for line in lines:
                 events.append({"source": source, "message": line[:500]})
@@ -57,7 +59,7 @@
                 "sources": sorted(set(event["source"] for event in events)),
             },
             "events": events[:120],
-        }, ensure_ascii=False))
+        }, ensure_ascii=True))
         PY
       args:
         executable: /bin/bash

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect bounded, read-only host facts; compatible with Python 3.7+.
+"""Collect bounded, read-only host facts; compatible with Python 3.5+.
 
 This is a readiness probe, not a vulnerability or compliance assessment.  It
 never installs tools, changes configuration, or contacts a network service.
@@ -84,12 +84,16 @@ def run_query(argv, errors, label):
         "SYSTEMD_COLORS": "0",
     })
     try:
-        return subprocess.run(
+        result = subprocess.run(
             argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE, universal_newlines=True,
-            encoding="utf-8", errors="replace", timeout=COMMAND_TIMEOUT,
+            stderr=subprocess.PIPE, timeout=COMMAND_TIMEOUT,
             env=environment, cwd="/", check=False,
         )
+        # Decode explicitly: Python 3.5 has no subprocess encoding/errors
+        # options, and the host's C locale must not discard Cyrillic output.
+        result.stdout = result.stdout.decode("utf-8", "replace")
+        result.stderr = result.stderr.decode("utf-8", "replace")
+        return result
     except subprocess.TimeoutExpired:
         errors.append("{}: status query timed out after {}s".format(label, COMMAND_TIMEOUT))
     except OSError:
@@ -195,4 +199,4 @@ def collect_readiness():
 
 
 if __name__ == "__main__":
-    print(json.dumps(collect_readiness(), ensure_ascii=False, sort_keys=True))
+    print(json.dumps(collect_readiness(), ensure_ascii=True, sort_keys=True))

@@ -57,7 +57,9 @@
 
         def run(command):
             try:
-                completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=8, env={**os.environ, "LC_ALL": "C"})
+                completed = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8, env={**os.environ, "LC_ALL": "C"})
+                completed.stdout = completed.stdout.decode("utf-8", "replace") if isinstance(completed.stdout, bytes) else completed.stdout
+                completed.stderr = completed.stderr.decode("utf-8", "replace") if isinstance(completed.stderr, bytes) else completed.stderr
                 return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
             except Exception as exc:
                 return None, "", str(exc)
@@ -152,14 +154,14 @@
             port = int(rule["port"])
             if port in open_ports:
                 findings.append(finding(
-                    f"dangerous_port_{port}",
+                    'dangerous_port_{}'.format(port),
                     rule["title"],
                     "Сеть",
                     rule.get("risk", "medium"),
                     "failed",
-                    f"На хосте прослушивается потенциально опасный порт {port}.",
+                    'На хосте прослушивается потенциально опасный порт {}.'.format(port),
                     rule["recommendation"],
-                    f"open_port={port}",
+                    'open_port={}'.format(port),
                     "close_port",
             ))
 
@@ -250,7 +252,7 @@
                 "failed" if max_auth_failed else "passed",
                 "Проверяется глобальное значение MaxAuthTries из sshd -T.",
                 ssh_rules.get("max_auth_tries", {}).get("recommendation", "Установите MaxAuthTries 4 или меньше."),
-                f"MaxAuthTries={max_auth_tries_raw or 'default(6)'}; expected<={max_auth_limit}",
+                'MaxAuthTries={}; expected<={}'.format(max_auth_tries_raw or 'default(6)', max_auth_limit),
                 None,
                 ["/etc/ssh/sshd_config"],
             ))
@@ -284,21 +286,21 @@
             "passed" if firewall_active else "failed" if firewall_known else "manual",
             "Проверяется активность ufw/firewalld. Собственные правила nftables/iptables и внешние межсетевые экраны требуют отдельной оценки.",
             "Включите и настройте ufw/firewalld на хосте.",
-            f"ufw={ufw_output or 'n/a'}; firewalld={firewalld_output or 'n/a'}",
+            'ufw={}; firewalld={}'.format(ufw_output or 'n/a', firewalld_output or 'n/a'),
         ))
 
         for rule in service_rules:
             service = rule["service"]
             active, evidence = service_active(service)
             findings.append(finding(
-                f"service_{service}_active",
-                rule["title"] if active else f"{rule['title']} не подтвержден",
+                'service_{}_active'.format(service),
+                rule["title"] if active else '{} не подтвержден'.format(rule['title']),
                 "Сервисы",
                 rule.get("risk", "medium"),
                 "passed" if active else "manual" if active is None else "failed",
-                f"Проверяется активность systemd-сервиса {service}.",
+                'Проверяется активность systemd-сервиса {}.'.format(service),
                 rule["recommendation"],
-                f"{service}={evidence}",
+                '{}={}'.format(service, evidence),
             ))
 
         unattended = package_rules.get("unattended_upgrades", {})
@@ -412,7 +414,7 @@
         service_lines = []
         for service in critical_services:
             code, output, error = run(["systemctl", "is-active", service])
-            service_lines.append(f"{service}={output or error or code}")
+            service_lines.append('{}={}'.format(service, output or error or code))
         findings.append(finding(
             "critical_services_review",
             "Проверить состояние критичных сервисов",
@@ -432,14 +434,14 @@
                 if active:
                     active_web_services.append(service)
                 findings.append(finding(
-                    f"web_service_{service}",
-                    f"Web-сервис {service} активен" if active else f"Web-сервис {service} не активен",
+                    'web_service_{}'.format(service),
+                    'Web-сервис {} активен'.format(service) if active else 'Web-сервис {} не активен'.format(service),
                     "Web-сервер",
                     "info" if active else "low",
                     "passed" if active else "manual",
-                    f"Проверяется состояние systemd-сервиса {service}.",
+                    'Проверяется состояние systemd-сервиса {}.'.format(service),
                     "Отключите неиспользуемый web-сервис или проверьте его конфигурацию.",
-                    f"{service}={evidence}",
+                    '{}={}'.format(service, evidence),
                 ))
 
             nginx_code, nginx_output, nginx_error = run(["bash", "-lc", "nginx -T 2>&1"])
@@ -659,7 +661,7 @@
             },
             "summary": summary,
             "findings": findings,
-        }, ensure_ascii=False))
+        }, ensure_ascii=True))
         PY
       args:
         executable: /bin/bash

@@ -6,7 +6,7 @@ import { promisify } from "node:util";
 import { NextResponse } from "next/server";
 import { getRepoRoot } from "@/lib/ansible-control";
 import { ansibleSshArgs, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
-import { assessHostReadiness, type HostReadiness } from "@/lib/host-readiness";
+import { assessHostReadiness, assessTargetPython, type HostReadiness } from "@/lib/host-readiness";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -75,17 +75,29 @@ export async function POST(request: Request) {
 
   try {
     const ssh = await runAnsible([alias, "-m", "raw", "-a", "true"], inventoryPath, "ssh");
-    const setup = ssh.ok
+    // raw needs no target Python: diagnose old or missing runtimes before
+    // transferring Ansible modules which may use unsupported syntax.
+    const pythonProbe = ssh.ok
+      ? await runAnsible([alias, "-m", "raw", "-a", '/usr/bin/python3 -c "import sys; print(\'HCP_PYTHON=%s.%s.%s\' % sys.version_info[:3])"'], inventoryPath, "python-version")
+      : null;
+    const targetPython = pythonProbe?.ok ? pythonProbe.data?.stdout?.match(/^HCP_PYTHON=(\d+\.\d+\.\d+)\r?$/m)?.[1] ?? null : null;
+    let coreVersion: string | null = null;
+    try {
+      const version = await execFileAsync("ansible", ["--version"], { cwd: getRepoRoot(), timeout: 10_000, maxBuffer: 65536 });
+      coreVersion = version.stdout.match(/^ansible\s+\[core\s+(\d+\.\d+\.\d+)/)?.[1] ?? null;
+    } catch { /* Actual setup below remains the authority for unknown versions. */ }
+    const pythonCompatibility = assessTargetPython(targetPython, coreVersion);
+    const setup = ssh.ok && pythonCompatibility.compatible !== false
       ? await runAnsible([alias, "-m", "setup", "-a", "filter=ansible_distribution*,ansible_python*"], inventoryPath, "setup")
-      : { ok: false, stdout: "", stderr: "SSH ping failed.", data: null };
+      : { ok: false, stdout: "", stderr: ssh.ok ? pythonCompatibility.message : "Сначала требуется SSH-подключение.", data: null };
     const sudo = ssh.ok && become
-      ? await runAnsible([alias, "-b", "-e", "ansible_become=true", "-m", "command", "-a", "id -u"], inventoryPath, "sudo")
+      ? await runAnsible([alias, "-b", "-e", "ansible_become=true", "-m", "raw", "-a", "id -u"], inventoryPath, "sudo")
       : { ok: !become, stdout: become ? "" : "skipped", stderr: "", data: null };
     if (become && sudo.ok && sudo.data?.stdout?.trim() !== "0") sudo.ok = false;
 
     const facts = setup.data?.ansible_facts ?? {};
     let readiness: HostReadiness | null = null;
-    let readinessError: string | null = null;
+    let readinessError: string | null = ssh.ok && pythonCompatibility.compatible === false ? pythonCompatibility.message : null;
     if (setup.ok && sudo.ok) {
       try {
         const source = readFileSync(path.join(getRepoRoot(), "ansible/scripts/hcp-host-readiness.py"), "utf8");
@@ -102,12 +114,14 @@ export async function POST(request: Request) {
       ok: ssh.ok && setup.ok && sudo.ok,
       checks: {
         ssh: { ok: ssh.ok, message: ssh.ok ? "SSH OK" : ssh.stderr || ssh.stdout },
-        python: { ok: setup.ok, message: setup.ok ? facts.ansible_python?.executable ?? "Python OK" : setup.stderr || setup.stdout },
+        python: { ok: setup.ok, message: setup.ok ? `Python ${targetPython}: модуль Ansible выполнен (${facts.ansible_python?.executable ?? "/usr/bin/python3"}).` : setup.stderr || setup.stdout },
         sudo: { ok: sudo.ok, message: become ? (sudo.ok ? "Доступ root подтверждён" : sudo.stderr || sudo.stdout) : "sudo отключён" },
       },
       facts: {
         os: readiness?.os ?? ([facts.ansible_distribution, facts.ansible_distribution_version].filter(Boolean).join(" ") || null),
         python: facts.ansible_python?.executable ?? null,
+        pythonVersion: targetPython,
+        ansibleCoreVersion: coreVersion,
       },
       readiness,
       readinessError,

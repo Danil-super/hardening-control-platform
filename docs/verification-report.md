@@ -39,7 +39,7 @@
 
 ## Реальный Docker-стенд в GitHub Actions
 
-В [прогоне ab0f454](https://github.com/Danil-super/hardening-control-platform/actions/runs/34494211763) **все четыре задания завершились успешно**: `web`, `ansible`, `container`, `lab`. Подтверждены Docker build, веб-проверки, четыре проверки entrypoint через chroot и Ansible `--syntax-check` всех 13 плейбуков.
+В [прогоне d3455fc](https://github.com/Danil-super/hardening-control-platform/actions/runs/34496801661) **все четыре задания завершились успешно**: `web`, `ansible`, `container`, `lab`. Подтверждены Docker build, веб-проверки, четыре проверки entrypoint через chroot и Ansible `--syntax-check` всех 13 плейбуков.
 
 На реальном Debian-контейнере `lab-insecure` выполнены:
 

@@ -4,7 +4,7 @@ import test, { after } from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
 
 const compiled = compileServerModules(["host-readiness"]);
-const { assessHostReadiness } = await import(compiled.url("host-readiness"));
+const { assessHostReadiness, assessTargetPython } = await import(compiled.url("host-readiness"));
 after(() => rmSync(compiled.directory, { recursive: true, force: true }));
 const baseline = () => ({ schemaVersion: 1, osRelease: { ID: "ubuntu", VERSION_ID: "24.04" }, astraVersion: null,
   kernel: "6.8", pythonVersion: "3.12.3", effectiveUid: 0, initSystem: "systemd",
@@ -23,6 +23,33 @@ test("Astra derived from Debian never inherits verified CVE/SCAP prerequisites",
   assert.equal(result.astraVersion, "1.7.6.15");
   probe.osRelease.ID = "debian";
   assert.equal(state(assessHostReadiness(probe), "cve"), "unsupported");
+});
+
+test("Astra releases preserve exact identity and share capability-based checks", () => {
+  for (const version of ["1.6.7.15", "1.7.6.15", "1.8.1", "future-release"]) {
+    const probe = baseline();
+    probe.osRelease = { ID: "astra", ID_LIKE: "debian", VERSION_ID: version };
+    probe.astraVersion = version;
+    const result = assessHostReadiness(probe);
+    assert.equal(result.astraVersion, version);
+    assert.equal(state(result, "packages"), "ready");
+    assert.equal(state(result, "cve"), "unsupported");
+    assert.equal(state(result, "openscap"), "needs_setup");
+  }
+});
+
+test("target Python is checked against the installed controller before modules run", () => {
+  assert.equal(assessTargetPython("3.5.10", "2.14.18").compatible, true);
+  assert.equal(assessTargetPython("3.7.3", "2.14.18").compatible, true);
+  assert.equal(assessTargetPython("3.11.2", "2.14.18").compatible, true);
+  assert.equal(assessTargetPython("3.12.3", "2.14.18").compatible, false);
+  assert.equal(assessTargetPython("3.7.3", "2.20.0").compatible, false);
+  assert.equal(assessTargetPython("3.11.2", "2.20.0").compatible, true);
+  for (const version of [null, "unknown", "2.7.18", "3.4.10"]) {
+    assert.equal(assessTargetPython(version, "2.14.18").compatible, false);
+  }
+  assert.equal(assessTargetPython("3.11.2", "2.99.0").compatible, null);
+  assert.equal(assessTargetPython("3.11.2", null).compatible, null);
 });
 
 test("unknown firewall, competing managers and containers do not get readiness", () => {

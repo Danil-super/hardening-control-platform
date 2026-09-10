@@ -21,12 +21,14 @@ class FirewallError(RuntimeError):
 
 def run(*args, acceptable=(0,)):
     try:
-        result = subprocess.run(args, capture_output=True, text=True, timeout=45,
+        result = subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=45,
                                 env={**os.environ, "LC_ALL": "C"})
+        result.stdout = result.stdout.decode("utf-8", "replace") if isinstance(result.stdout, bytes) else result.stdout
+        result.stderr = result.stderr.decode("utf-8", "replace") if isinstance(result.stderr, bytes) else result.stderr
     except (OSError, subprocess.TimeoutExpired) as error:
         raise FirewallError(str(error)) from error
     if result.returncode not in acceptable:
-        raise FirewallError(f"{' '.join(args)}: {result.stderr.strip() or result.stdout.strip()}")
+        raise FirewallError('{}: {}'.format(' '.join(args), result.stderr.strip() or result.stdout.strip()))
     return result
 
 
@@ -54,8 +56,8 @@ def firewalld_configuration_blocks(value):
                 blocks.append(tuple(current))
             header = re.fullmatch(r"([A-Za-z0-9_-]+)(?: \(([^)]+)\))?", line.strip())
             if header:
-                attributes = [item.strip() for item in (header[2] or "").split(",") if item.strip() and item.strip() != "active"]
-                line = header[1] + (" (" + ", ".join(attributes) + ")" if attributes else "")
+                attributes = [item.strip() for item in (header.group(2) or "").split(",") if item.strip() and item.strip() != "active"]
+                line = header.group(1) + (" (" + ", ".join(attributes) + ")" if attributes else "")
             current = [line.rstrip()]
         else:
             current.append(line.rstrip())
@@ -101,7 +103,7 @@ def ufw_numbered_rules(status):
                     version = 6
             except ValueError:
                 pass
-        rows.append({"number": int(number[1]), "version": version, "text": text})
+        rows.append({"number": int(number.group(1)), "version": version, "text": text})
     return rows
 
 
@@ -111,7 +113,7 @@ def ufw_ipv6_enabled():
     value = re.search(r'^\s*IPV6\s*=\s*["\']?(yes|no)["\']?\s*(?:#.*)?$', configuration, re.M | re.I)
     if not value:
         raise FirewallError("Cannot determine UFW IPv6 policy from /etc/default/ufw.")
-    return value[1].lower() == "yes"
+    return value.group(1).lower() == "yes"
 
 
 def close_or_block(args):
@@ -122,8 +124,8 @@ def close_or_block(args):
             raise FirewallError("Invalid port or protocol.")
         if args.protocol == "tcp" and args.port in (22, args.ssh_port):
             raise FirewallError("The management SSH port cannot be closed automatically.")
-        ufw_rule = ["deny", f"{args.port}/{args.protocol}"]
-        rich_rules = [f'rule family="{family}" priority="-32768" port port="{args.port}" protocol="{args.protocol}" drop' for family in ("ipv4", "ipv6")]
+        ufw_rule = ["deny", '{}/{}'.format(args.port, args.protocol)]
+        rich_rules = ['rule family="{}" priority="-32768" port port="{}" protocol="{}" drop'.format(family, args.port, args.protocol) for family in ("ipv4", "ipv6")]
     else:
         try:
             address = ipaddress.IPv4Address(args.ip)
@@ -137,7 +139,7 @@ def close_or_block(args):
         if str(address) == args.ssh_client or str(address) in args.protected_ip:
             raise FirewallError("The host or management address cannot be blocked.")
         ufw_rule = ["deny", "from", str(address)]
-        rich_rules = [f'rule family="ipv4" priority="-32768" source address="{address}" drop']
+        rich_rules = ['rule family="ipv4" priority="-32768" source address="{}" drop'.format(address)]
 
     if selected == "ufw":
         status = run("ufw", "status", "numbered").stdout
@@ -145,7 +147,7 @@ def close_or_block(args):
         families = [4, 6] if args.operation == "closePort" and ufw_ipv6_enabled() else [4]
         # Bare DENY is the documented default incoming direction. OUT and FWD
         # must never satisfy this check. Require the exact global incoming rule.
-        expected = (rf"^{args.port}/{args.protocol} DENY(?: IN)? Anywhere$" if args.operation == "closePort" else rf"^Anywhere DENY(?: IN)? {re.escape(args.ip)}$")
+        expected = ('^{}/{} DENY(?: IN)? Anywhere$'.format(args.port, args.protocol) if args.operation == "closePort" else '^Anywhere DENY(?: IN)? {}$'.format(re.escape(args.ip)))
         collision_pattern = expected.replace("DENY", "(?:ALLOW|DENY|LIMIT|REJECT)")
         def first_rules(rules):
             return {family: next((row["text"] for row in rules if row["version"] == family), "") for family in families}
@@ -167,7 +169,7 @@ def close_or_block(args):
         if not args.check:
             observed = ufw_numbered_rules(run("ufw", "status", "numbered").stdout)
             if any(not re.fullmatch(expected, first) for first in first_rules(observed).values()):
-                raise FirewallError(f"UFW did not install the deny rule first in every required IP family. Observed rules: {observed!r}. Command output: {mutation_outputs!r}")
+                raise FirewallError('UFW did not install the deny rule first in every required IP family. Observed rules: {!r}. Command output: {!r}'.format(observed, mutation_outputs))
     else:
         zones = {line.split()[0] for line in run("firewall-cmd", "--get-active-zones").stdout.splitlines() if line and not line[0].isspace()}
         zones.add(run("firewall-cmd", "--get-default-zone").stdout.strip())
@@ -177,12 +179,12 @@ def close_or_block(args):
                 raise FirewallError("Invalid firewalld zone.")
             for rule in rich_rules:
                 for persistence in ([], ["--permanent"]):
-                    command = ["firewall-cmd", *persistence, f"--zone={zone}"]
-                    if run(*command, f"--query-rich-rule={rule}", acceptable=(0, 1)).returncode == 1:
+                    command = ["firewall-cmd", *persistence, '--zone={}'.format(zone)]
+                    if run(*command, '--query-rich-rule={}'.format(rule), acceptable=(0, 1)).returncode == 1:
                         changed = True
                         if not args.check:
-                            run(*command, f"--add-rich-rule={rule}")
-                            run(*command, f"--query-rich-rule={rule}")
+                            run(*command, '--add-rich-rule={}'.format(rule))
+                            run(*command, '--query-rich-rule={}'.format(rule))
     return {"ok": True, "backend": selected, "changed": changed, "checkMode": args.check, "commands": mutation_outputs}
 
 
@@ -215,15 +217,15 @@ def backup(args):
     directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     archive_path = directory / "firewall-state.tar.gz"
-    with tarfile.open(archive_path, "w:gz") as archive:
-        archive.add(CONFIG_ROOT / selected, arcname=f"etc/{selected}")
-    os.chmod(archive_path, 0o600)
-    with tarfile.open(archive_path) as archive:
+    with tarfile.open(str(archive_path), "w:gz") as archive:
+        archive.add(str(CONFIG_ROOT / selected), arcname='etc/{}'.format(selected))
+    os.chmod(str(archive_path), 0o600)
+    with tarfile.open(str(archive_path)) as archive:
         validate_members(archive, selected)
     metadata = {"backend": selected, "machineId": machine_id(), "transactionId": args.transaction,
                 "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest()}
     (directory / "metadata.json").write_text(json.dumps(metadata))
-    os.chmod(directory / "metadata.json", 0o600)
+    os.chmod(str(directory / "metadata.json"), 0o600)
     return {"ok": True, "changed": True, "backupRef": str(archive_path)}
 
 
@@ -240,19 +242,19 @@ def rollback(args):
         raise FirewallError("The active firewall backend changed since backup.")
     # Extract into staging first. Replacement also removes files created since
     # backup (plain tar extraction over / would leave those new rules behind).
-    with tempfile.TemporaryDirectory(prefix=".hcp-rollback-", dir=CONFIG_ROOT) as staging:
-        with tarfile.open(archive_path) as archive:
+    with tempfile.TemporaryDirectory(prefix=".hcp-rollback-", dir=str(CONFIG_ROOT)) as staging:
+        with tarfile.open(str(archive_path)) as archive:
             validate_members(archive, selected)
             archive.extractall(staging, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
         destination = CONFIG_ROOT / selected
         if destination.is_symlink():
             raise FirewallError("Firewall configuration must not be a symlink.")
         previous = Path(staging) / "previous"
-        destination.rename(previous)
+        destination.rename(str(previous))
         try:
-            (Path(staging) / "etc" / selected).rename(destination)
+            (Path(staging) / "etc" / selected).rename(str(destination))
         except OSError:
-            previous.rename(destination)
+            previous.rename(str(destination))
             raise
     run("ufw", "reload") if selected == "ufw" else run("firewall-cmd", "--reload")
     if backend() != selected:

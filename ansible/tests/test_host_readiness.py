@@ -40,8 +40,9 @@ class HostReadinessTests(unittest.TestCase):
         self.assertTrue(any("distribution ID" in error for error in errors))
 
     def test_status_queries_are_noninteractive_locale_stable_and_bounded(self):
-        with patch.object(probe.subprocess, "run", return_value=completed()) as run:
-            probe.run_query(["/usr/sbin/ufw", "status"], [], "ufw")
+        with patch.object(probe.subprocess, "run", return_value=completed(stdout=b"\xd0\x90\xff", stderr=b"")) as run:
+            result = probe.run_query(["/usr/sbin/ufw", "status"], [], "ufw")
+        self.assertEqual(result.stdout, "А\ufffd")
         args, kwargs = run.call_args
         self.assertEqual(args[0], ["/usr/sbin/ufw", "status"])
         self.assertEqual(kwargs["env"]["LC_ALL"], "C")

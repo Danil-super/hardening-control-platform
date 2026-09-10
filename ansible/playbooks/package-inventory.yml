@@ -31,7 +31,9 @@
 
         def run(command):
             try:
-                completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=60)
+                completed = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+                completed.stdout = completed.stdout.decode("utf-8", "replace") if isinstance(completed.stdout, bytes) else completed.stdout
+                completed.stderr = completed.stderr.decode("utf-8", "replace") if isinstance(completed.stderr, bytes) else completed.stderr
                 return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
             except Exception as exc:
                 return None, "", str(exc)
@@ -88,11 +90,11 @@
                 source = re.match(r"^(.+)-([^-]+)-([^-]+)\.(?:src|nosrc)\.rpm$", parts[4])
                 packages.append({
                     "name": parts[0],
-                    "version": f"{epoch}:{version}" if epoch not in {"", "0", "(none)"} else version,
+                    "version": '{}:{}'.format(epoch, version) if epoch not in {"", "0", "(none)"} else version,
                     "arch": parts[3] if len(parts) > 3 else "",
                     "manager": "rpm",
                     "sourceName": source.group(1) if source else "",
-                    "sourceVersion": ((f"{epoch}:" if epoch not in {"", "0", "(none)"} else "") + source.group(2) + "-" + source.group(3)) if source else "",
+                    "sourceVersion": (('{}:'.format(epoch) if epoch not in {"", "0", "(none)"} else "") + source.group(2) + "-" + source.group(3)) if source else "",
                 })
             return packages, ""
 
@@ -140,7 +142,7 @@
             },
             "findings": [],
             "packages": packages,
-        }, ensure_ascii=False))
+        }, ensure_ascii=True))
         PY
       args:
         executable: /bin/bash

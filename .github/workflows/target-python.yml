@@ -1,0 +1,53 @@
+name: Legacy target Python compatibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/target-python.yml'
+      - 'deployment/tests/verify_target_python.py'
+      - 'ansible/scripts/hcp-host-readiness.py'
+      - 'ansible/scripts/hcp-firewall.py'
+      - 'ansible/playbooks/agentless-audit.yml'
+      - 'ansible/playbooks/package-inventory.yml'
+      - 'ansible/playbooks/collect-security-events.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/target-python.yml'
+      - 'deployment/tests/verify_target_python.py'
+      - 'ansible/scripts/hcp-host-readiness.py'
+      - 'ansible/scripts/hcp-firewall.py'
+      - 'ansible/playbooks/agentless-audit.yml'
+      - 'ansible/playbooks/package-inventory.yml'
+      - 'ansible/playbooks/collect-security-events.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  python35:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Pull the historical official interpreter and record its digest
+        run: |
+          docker pull python:3.5.10-slim
+          docker image inspect python:3.5.10-slim --format '{{index .RepoDigests 0}}' > target-python-image.txt
+          cat target-python-image.txt
+      - name: Execute actual target scripts in an isolated Python 3.5 container
+        run: |
+          set -o pipefail
+          docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
+            --user 65534:65534 --tmpfs /tmp:rw,nosuid,nodev,size=64m --memory 256m \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" \
+            --env PYTHONIOENCODING=utf-8 --env PYTHONDONTWRITEBYTECODE=1 --workdir /workspace \
+            "$(cat target-python-image.txt)" python deployment/tests/verify_target_python.py 2>&1 | tee target-python-results.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: target-python35-compatibility
+          path: |
+            target-python-image.txt
+            target-python-results.txt

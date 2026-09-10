@@ -28,6 +28,29 @@ type Probe = {
   errors: string[];
 };
 
+/** Target Python support from the Ansible core support matrix (2026-09-10).
+ * Unknown future core releases require an actual module probe, not a guess.
+ */
+export function assessTargetPython(version: string | null, coreVersion: string | null) {
+  const python = version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
+  if (!python) return { compatible: false, message: "Не удалось определить Python /usr/bin/python3 на хосте. Установите Python из репозитория своего выпуска ОС." };
+  const major = Number(python[1]);
+  const minor = Number(python[2]);
+  if (major !== 3 || minor < 5) return { compatible: false, message: `Обнаружен Python ${version}. Удалённым скриптам HCP требуется Python 3.5 или новее из репозитория вашего выпуска ОС.` };
+  const branch = coreVersion?.match(/^(2\.\d+)(?:\.\d+)?$/)?.[1];
+  const ranges: Record<string, [number, number]> = {
+    "2.12": [5, 10], "2.13": [5, 10], "2.14": [5, 11], "2.15": [5, 11],
+    "2.16": [6, 12], "2.17": [7, 12], "2.18": [8, 13], "2.19": [8, 13],
+    "2.20": [9, 14], "2.21": [9, 14],
+  };
+  const range = branch ? ranges[branch] : undefined;
+  if (!range) return { compatible: null, message: `Python ${version}; совместимость с установленным Ansible проверяется запуском модуля.` };
+  const compatible = minor >= range[0] && minor <= range[1];
+  return { compatible, message: compatible
+    ? `Python ${version}; ansible-core ${coreVersion}: версии совместимы, требуется проверка выполнения модуля.`
+    : `Python ${version} не входит в диапазон 3.${range[0]}–3.${range[1]} установленного ansible-core ${coreVersion}. Выберите совместимый control node; не заменяйте системный Python хоста пакетами другой ОС.` };
+}
+
 /** Readiness describes prerequisites only; it is never a security assessment. */
 export function assessHostReadiness(value: unknown): HostReadiness {
   const probe = value as Probe | null;
