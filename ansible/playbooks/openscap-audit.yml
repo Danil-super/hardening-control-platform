@@ -43,7 +43,7 @@
       delegate_to: localhost
       become: false
       changed_when: false
-      when: not openscap_datastream or not openscap_profile
+      when: (openscap_datastream | length) == 0 or (openscap_profile | length) == 0
 
     - name: Check OpenSCAP executable on target
       ansible.builtin.command:
@@ -51,14 +51,14 @@
       changed_when: false
       failed_when: false
       register: openscap_binary
-      when: openscap_datastream and openscap_profile
+      when: (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
 
     - name: Check selected SSG datastream on target
       ansible.builtin.stat:
         path: "{{ openscap_datastream }}"
         checksum_algorithm: sha256
       register: openscap_content
-      when: openscap_datastream and openscap_profile
+      when: (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
 
     - name: Explain unavailable OpenSCAP prerequisites
       ansible.builtin.command:
@@ -84,8 +84,8 @@
       become: false
       changed_when: false
       when:
-        - openscap_datastream and openscap_profile
-        - (openscap_binary.rc | default(1)) != 0 or not (openscap_content.stat.isreg | default(false))
+        - (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
+        - (openscap_binary.rc | default(1)) != 0 or not (openscap_content.stat.isreg | default(false) | bool)
 
     - name: Run OpenSCAP and always remove temporary target files
       block:
@@ -120,7 +120,7 @@
             src: "{{ openscap_remote_dir.path }}/results.arf.xml"
             dest: "{{ openscap_raw_report }}"
             flat: true
-          when: openscap_arf.stat.exists
+          when: openscap_arf.stat.exists | default(false) | bool
           no_log: true
 
         - name: Normalize OpenSCAP ARF on control node
@@ -166,6 +166,6 @@
           delegate_to: localhost
           become: false
       when:
-        - openscap_datastream and openscap_profile
+        - (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
         - (openscap_binary.rc | default(1)) == 0
-        - openscap_content.stat.isreg | default(false)
+        - openscap_content.stat.isreg | default(false) | bool
