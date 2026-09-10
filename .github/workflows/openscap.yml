@@ -1,0 +1,182 @@
+name: OpenSCAP six-rule acceptance
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  openscap-six-rule-acceptance:
+    # This is an audit of six real SSG checks on a disposable Ubuntu VM.
+    # It is not a full CIS assessment, and it performs no remediation.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      SSG_VERSION: 0.1.79
+      # Digest published by the official v0.1.79 GitHub release asset API.
+      SSG_ARCHIVE_SHA256: 946718cf6f88e7a976d7e2b4f01ceaba6af9b18cace37d2c8bbffa8b205dd3e8
+      HCP_CI_PROFILE: xccdf_org.hcp.content_profile_ci_six_rules
+      HCP_CI_RUN_ID: ci-six-rules
+      ANSIBLE_FORCE_COLOR: "false"
+      ANSIBLE_LOCALHOST_WARNING: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the real scanner and Ansible on the disposable VM
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          test "$(. /etc/os-release; printf '%s' "$ID:$VERSION_ID")" = "ubuntu:24.04"
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends ansible openscap-scanner python3-lxml
+          mkdir -p "$RUNNER_TEMP/hcp-openscap/artifacts/reports"
+          oscap --version > "$RUNNER_TEMP/hcp-openscap/artifacts/oscap-version.txt"
+          ansible --version > "$RUNNER_TEMP/hcp-openscap/artifacts/ansible-version.txt"
+          cp /etc/os-release "$RUNNER_TEMP/hcp-openscap/artifacts/os-release.txt"
+
+      - name: Download and verify official ComplianceAsCode content
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          curl --fail --location --retry 2 --retry-delay 2 --connect-timeout 15 --max-time 120 \
+            "https://github.com/ComplianceAsCode/content/releases/download/v${SSG_VERSION}/scap-security-guide-${SSG_VERSION}.zip" \
+            --output "$RUNNER_TEMP/hcp-openscap/ssg.zip"
+          printf '%s  %s\n' "$SSG_ARCHIVE_SHA256" "$RUNNER_TEMP/hcp-openscap/ssg.zip" | sha256sum --check --strict
+          /usr/bin/python3 - <<'PY'
+          import os
+          import pathlib
+          import zipfile
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "hcp-openscap"
+          with zipfile.ZipFile(root / "ssg.zip") as archive:
+              names = [name for name in archive.namelist() if pathlib.PurePosixPath(name).name == "ssg-ubuntu2404-ds.xml"]
+              assert len(names) == 1, f"Expected exactly one Ubuntu 24.04 datastream, got {names}"
+              (root / "ssg-ubuntu2404-original-ds.xml").write_bytes(archive.read(names[0]))
+          PY
+
+      - name: Select six unchanged SSG checks in an explicit acceptance profile
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          from lxml import etree
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "hcp-openscap"
+          original = root / "ssg-ubuntu2404-original-ds.xml"
+          datastream = root / "ssg-ubuntu2404-ci-six-rules-ds.xml"
+          rules = [
+              "file_permissions_etc_passwd",
+              "file_owner_etc_passwd",
+              "file_groupowner_etc_passwd",
+              "file_permissions_etc_shadow",
+              "accounts_root_gid_zero",
+              "accounts_no_uid_except_zero",
+          ]
+          rule_ids = {f"xccdf_org.ssgproject.content_rule_{rule}" for rule in rules}
+          tree = etree.parse(str(original), etree.XMLParser(resolve_entities=False, no_network=True))
+          ns = "{http://checklists.nist.gov/xccdf/1.2}"
+          benchmarks = tree.findall(f".//{ns}Benchmark")
+          assert len(benchmarks) == 1, "Expected one XCCDF benchmark"
+          benchmark = benchmarks[0]
+          all_rules = benchmark.findall(f".//{ns}Rule")
+          indexed = {rule.get("id"): rule for rule in all_rules}
+          assert rule_ids <= indexed.keys(), f"SSG release is missing selected rules: {rule_ids - indexed.keys()}"
+          # Require actual OVAL-backed checks, rather than manual or empty rules.
+          for identifier in sorted(rule_ids):
+              checks = indexed[identifier].findall(f".//{ns}check")
+              assert any(check.get("system") == "http://oval.mitre.org/XMLSchema/oval-definitions-5" for check in checks), identifier
+          profiles = benchmark.findall(f"{ns}Profile")
+          assert profiles, "Expected official SSG profiles"
+          profile = etree.Element(f"{ns}Profile", id=os.environ["HCP_CI_PROFILE"])
+          etree.SubElement(profile, f"{ns}title").text = "HCP six-rule OpenSCAP acceptance (not a full CIS assessment)"
+          etree.SubElement(profile, f"{ns}description").text = "Executes six unmodified SSG checks on the disposable Ubuntu 24.04 CI runner."
+          # No inheritance from CIS: explicitly select or deselect every rule.
+          for rule in all_rules:
+              etree.SubElement(profile, f"{ns}select", idref=rule.get("id"), selected="true" if rule.get("id") in rule_ids else "false")
+          benchmark.insert(benchmark.index(profiles[-1]) + 1, profile)
+          tree.write(str(datastream), encoding="UTF-8", xml_declaration=True)
+          provenance = {
+              "scope": "six-rule acceptance; not full CIS",
+              "source": f"https://github.com/ComplianceAsCode/content/releases/tag/v{os.environ['SSG_VERSION']}",
+              "version": os.environ["SSG_VERSION"],
+              "archiveSha256": os.environ["SSG_ARCHIVE_SHA256"],
+              "originalDatastreamSha256": hashlib.sha256(original.read_bytes()).hexdigest(),
+              "datastreamSha256": hashlib.sha256(datastream.read_bytes()).hexdigest(),
+              "profile": os.environ["HCP_CI_PROFILE"],
+              "datastream": str(datastream),
+              "ruleIds": sorted(rule_ids),
+          }
+          (root / "artifacts/provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
+          (root / "inventory.ini").write_text("[linux_hosts]\nhcp-openscap-ci ansible_connection=local ansible_python_interpreter=/usr/bin/python3\n")
+          variables = {
+              "hcp_reports_dir": str(root / "artifacts/reports"),
+              "report_run_id": os.environ["HCP_CI_RUN_ID"],
+              "hcp_openscap_datastream": str(datastream),
+              "hcp_openscap_profile": os.environ["HCP_CI_PROFILE"],
+              "hcp_openscap_policy_group": "ci-six-rule-acceptance",
+          }
+          (root / "vars.json").write_text(json.dumps(variables))
+          PY
+          oscap ds sds-validate "$RUNNER_TEMP/hcp-openscap/ssg-ubuntu2404-ci-six-rules-ds.xml"
+          oscap info "$RUNNER_TEMP/hcp-openscap/ssg-ubuntu2404-ci-six-rules-ds.xml" > "$RUNNER_TEMP/hcp-openscap/artifacts/datastream-info.txt"
+
+      - name: Execute the project playbook and normalize real OpenSCAP results
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          timeout --signal=TERM --kill-after=15s 180s \
+            ansible-playbook -i "$RUNNER_TEMP/hcp-openscap/inventory.ini" \
+            ansible/playbooks/openscap-audit.yml --limit hcp-openscap-ci -v \
+            -e "@$RUNNER_TEMP/hcp-openscap/vars.json" \
+            | tee "$RUNNER_TEMP/hcp-openscap/artifacts/playbook.log"
+
+      - name: Require complete results and exact content identity
+        run: |
+          set -euo pipefail
+          /usr/bin/python3 - <<'PY'
+          import collections
+          import json
+          import os
+          import pathlib
+          import re
+
+          root = pathlib.Path(os.environ["RUNNER_TEMP"]) / "hcp-openscap/artifacts"
+          provenance = json.loads((root / "provenance.json").read_text())
+          report_path = root / "reports" / f"hcp-openscap-ci-openscap-{os.environ['HCP_CI_RUN_ID']}.json"
+          report = json.loads(report_path.read_text())
+          scanner = report["scanner"]
+          assert report["mode"] == "openscap" and report["inventoryHost"] == "hcp-openscap-ci", report
+          assert scanner["available"] is True and scanner["partial"] is False, scanner
+          assert scanner["scannerExitCode"] in (0, 2), scanner
+          assert scanner["profile"] == provenance["profile"], scanner
+          assert scanner["datastream"] == provenance["datastream"], scanner
+          assert scanner["datastreamChecksum"] == "sha256:" + provenance["datastreamSha256"], scanner
+          assert scanner["policyGroup"] == "ci-six-rule-acceptance", scanner
+          assert float(scanner["datastreamLastModified"]) > 0, scanner
+          findings = report["findings"]
+          assert len(findings) == len(provenance["ruleIds"]) == 6, findings
+          evaluated = [re.search(r"(?:^|;\s*)rule=([^;\s]+)", finding["evidence"]).group(1) for finding in findings]
+          assert sorted(evaluated) == provenance["ruleIds"], evaluated
+          assert all(finding["source"] == "openscap" and finding["status"] in ("passed", "failed") for finding in findings), findings
+          counts = scanner["ruleResultCounts"]
+          assert counts.get("pass", 0) + counts.get("fail", 0) == 6, counts
+          assert not any(counts.get(status, 0) for status in ("error", "unknown", "notchecked")), counts
+          assert report["summary"]["total"] == 6, report["summary"]
+          result = {"ok": True, "scope": provenance["scope"], "profile": provenance["profile"], "rulesEvaluated": 6, "statusCounts": dict(collections.Counter(finding["status"] for finding in findings))}
+          (root / "acceptance.json").write_text(json.dumps(result, indent=2) + "\n")
+          print(json.dumps(result, indent=2))
+          PY
+
+      - name: Save reports, provenance and scanner diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: openscap-six-rule-acceptance
+          path: ${{ runner.temp }}/hcp-openscap/artifacts/
+          if-no-files-found: warn
+          retention-days: 14

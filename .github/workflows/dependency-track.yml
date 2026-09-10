@@ -1,0 +1,60 @@
+name: Dependency-Track ingestion acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/dependency-track.yml'
+      - 'deployment/tests/verify_dependency_track.py'
+      - 'web/lib/dependency-track.ts'
+      - 'web/lib/ansible-control.ts'
+      - 'web/lib/ansible-reports.ts'
+      - 'web/tests/_typescript-loader.mjs'
+      - 'web/package*.json'
+      - 'docker-compose.yml'
+  pull_request:
+    paths:
+      - '.github/workflows/dependency-track.yml'
+      - 'deployment/tests/verify_dependency_track.py'
+      - 'web/lib/dependency-track.ts'
+      - 'web/lib/ansible-control.ts'
+      - 'web/lib/ansible-reports.ts'
+      - 'web/tests/_typescript-loader.mjs'
+      - 'web/package*.json'
+      - 'docker-compose.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  ingestion:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+        working-directory: web
+      - name: Validate the production HCP adapter against disposable Dependency-Track
+        run: python3 deployment/tests/verify_dependency_track.py
+      - name: Save ingestion evidence (no credentials or runtime database)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-track-ingestion
+          path: |
+            .lab/dependency-track-acceptance/protocol.json
+            .lab/dependency-track-acceptance/hcp-report.json
+            .lab/dependency-track-acceptance/services.log
+          if-no-files-found: warn
+      - name: Clean up the disposable stack after an interrupted check
+        if: always()
+        run: |
+          if [ -f .lab/dependency-track-acceptance/compose.json ]; then
+            docker compose -f .lab/dependency-track-acceptance/compose.json down -v --remove-orphans
+          fi

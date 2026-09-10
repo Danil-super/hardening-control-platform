@@ -4,7 +4,7 @@
 
 ## 1. Быстрый прогон в Docker
 
-Нужны Docker Engine/Compose v2 с поддержкой `up --wait`, Git и OpenSSH client. Команды выполняются из корня репозитория. Лаборатория использует отдельный Compose-проект `hcp-lab`, собственные ключи и volumes; рабочая установка HCP не затрагивается.
+Нужны Docker Engine/Compose v2 с поддержкой `up --wait`, Git, OpenSSH client и Python 3 для автоматической проверки. В Windows выполняйте команды в WSL2 с включённой интеграцией Docker Desktop; в macOS — в терминале с запущенным Docker Desktop. Команды выполняются из корня репозитория. Лаборатория использует отдельный Compose-проект `hcp-lab`, собственные ключи и volumes; рабочая установка HCP не затрагивается.
 
 ```bash
 ./deployment/lab/up.sh
@@ -23,7 +23,7 @@ docker compose -f deployment/lab/docker-compose.yml ps
 | Аудит SSH | Результат переговоров с реальным SSH-сервером; перечень алгоритмов и их оценка |
 | Nmap | TCP-порты 22 и 23 видимы из контейнера HCP |
 | Проверка пакетов и CVE при пустом offline-cache | Инвентарь и SBOM созданы; CVE-результат неполный с объяснением отсутствия базы |
-| Временный Lynis | Реальный отчёт Lynis либо явная ошибка; после завершения нет каталога `/tmp/hcp-lynis-*` |
+| Временный Lynis | Завершённый отчёт Lynis с собственным hardening index; после завершения нет каталога `/tmp/hcp-lynis-*`; ошибка сканера означает неуспешный прогон |
 | OpenSCAP без подготовки | Явное сообщение об отсутствии scanner/content, а не успешный аудит с нулём проблем |
 | Перезапуск HCP | Хост, сохранённые отчёты и выбор источника данных сохраняются |
 
@@ -35,7 +35,7 @@ docker compose -f deployment/lab/docker-compose.yml ps
 docker compose -f deployment/lab/docker-compose.yml exec --user node -T hcp ansible --version
 docker compose -f deployment/lab/docker-compose.yml exec --user node -T hcp trivy --version
 docker compose -f deployment/lab/docker-compose.yml exec --user node -T hcp nmap --version
-docker compose -f deployment/lab/docker-compose.yml exec --user node -T hcp ssh-audit --version
+docker compose -f deployment/lab/docker-compose.yml exec --user node -T hcp ssh-audit --help
 docker compose -f deployment/lab/docker-compose.yml exec --user node -T hcp lynis show version
 docker compose -f deployment/lab/docker-compose.yml exec -T lab-target sh -c 'ls -d /tmp/hcp-lynis-* 2>/dev/null || true'
 ```
