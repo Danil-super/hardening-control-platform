@@ -72,7 +72,7 @@ python3 deployment/lab/verify.py --check-persistence
 
 Тот же сценарий добавлен в GitHub Actions как job `lab`. Он не заменяет испытания OpenSCAP с подходящим SSG, отдельного Greenbone, Dependency-Track и полного цикла firewall на ВМ.
 
-Дополнительно в репозитории есть отдельные CI-проверки: OpenSCAP на шести настоящих правилах SSG, приём и обработка SBOM в Dependency-Track, а также UFW backup → preview → apply → rollback на одноразовой Ubuntu-ВМ. Их подтверждённые результаты, ссылки на артефакты и ограничения приведены в [отчёте проверки](../../docs/verification-report.md). Сценарий UFW из `deployment/tests/verify_firewall.py` предназначен только для одноразового GitHub runner; на своей ВМ используйте процедуру ниже.
+Дополнительно есть отдельные CI-сценарии: полный исходный профиль OpenSCAP и шесть контрольных правил с нарушением/откатом; приём SBOM и анализ настоящей записи NVD в Dependency-Track; UFW и firewalld backup → preview → apply → rollback на Ubuntu-ВМ; [живой Greenbone](../greenbone/README.md) на отдельной HTTP-цели. Подтверждённые результаты, ссылки на артефакты и ограничения приведены в [отчёте проверки](../../docs/verification-report.md). Скрипты изменения firewall и прав файлов предназначены только для одноразового GitHub runner; на своей ВМ используйте процедуру ниже.
 
 ## 2. Полноценный стенд на виртуальных машинах
 
