@@ -58,7 +58,9 @@ class EntrypointTest(unittest.TestCase):
             destination = self.root / library.lstrip("/")
             if not destination.exists():
                 destination.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(library, destination)
+                # The ELF interpreter must retain its executable mode inside
+                # chroot; copyfile alone creates it with 0644 permissions.
+                shutil.copy2(library, destination)
 
     def start(self, command="id -u"):
         return subprocess.run(

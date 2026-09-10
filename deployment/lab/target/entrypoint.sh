@@ -24,4 +24,4 @@ with socket.socket() as server:
                 client.sendall(b"HCP LAB test listener\r\n")
             except OSError:
                 pass' &
-exec /usr/sbin/sshd -D -e -h /etc/ssh/host_keys/ssh_host_ed25519_key
+exec /usr/sbin/sshd -D -e

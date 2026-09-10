@@ -8,7 +8,7 @@ RUN apt-get update \
   && chmod 440 /etc/sudoers.d/lab \
   && mkdir -p /run/sshd /home/lab/.ssh /etc/ssh/host_keys \
   && rm -f /etc/ssh/ssh_host_* \
-  && printf '%s\n' 'PermitRootLogin yes' 'PasswordAuthentication no' 'PermitEmptyPasswords no' 'MaxAuthTries 8' >> /etc/ssh/sshd_config
+  && printf '%s\n' 'HostKey /etc/ssh/host_keys/ssh_host_ed25519_key' 'PermitRootLogin yes' 'PasswordAuthentication no' 'PermitEmptyPasswords no' 'MaxAuthTries 8' >> /etc/ssh/sshd_config
 
 COPY entrypoint.sh /usr/local/bin/lab-entrypoint
 RUN chmod 755 /usr/local/bin/lab-entrypoint

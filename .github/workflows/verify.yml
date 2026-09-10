@@ -66,7 +66,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: lab-verification
-          path: .lab/verification.json
+          path: |
+            .lab/verification.json
+            .lab/reports/*.json
           if-no-files-found: warn
       - name: Show service logs on failure
         if: failure()

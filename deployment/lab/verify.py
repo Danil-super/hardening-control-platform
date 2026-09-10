@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Acceptance checks against the running, disposable HCP Docker laboratory."""
 import argparse
+import contextlib
 import http.cookiejar
 import json
 import os
@@ -67,6 +68,9 @@ def main():
             raise AssertionError(f"{mode}: reportId missing")
         item = request("/api/ansible/reports/" + urllib.parse.quote(identifier, safe=""))["report"]
         raw = item["raw"]
+        snapshots = Path(args.output).parent / "reports"
+        snapshots.mkdir(parents=True, exist_ok=True)
+        (snapshots / f"{mode}.json").write_text(json.dumps(item, ensure_ascii=False, indent=2) + "\n")
         if raw.get("inventoryHost") != args.host or raw.get("mode") != mode:
             raise AssertionError(f"{mode}: incorrect report host or mode")
         if item.get("reportTimeValid") is not True:
@@ -74,6 +78,18 @@ def main():
         return item
 
     original_mode = None
+    failures = []
+
+    @contextlib.contextmanager
+    def independent_check(name):
+        try:
+            yield
+        except Exception as error:
+            message = f"{name}: {error}"
+            failures.append(message)
+            protocol["checks"].append({"name": name, "status": "failed", "error": str(error)})
+            print(f"FAIL {message}", file=sys.stderr, flush=True)
+
     try:
         request("/api/ansible/hosts", expected=401, authenticated=False)
         record("Unauthenticated control API is blocked")
@@ -107,66 +123,75 @@ def main():
         if not facts["raw"].get("os"):
             raise AssertionError("Facts did not identify an operating system")
         record("Host facts", {"reportId": facts["id"], "os": facts["raw"]["os"]})
-        baseline = report(run("agentlessAudit"), "agentless")
-        failed = [finding for finding in baseline["findings"] if finding.get("status") == "failed"]
-        for evidence in ("PermitRootLogin=yes", "MaxAuthTries=8"):
-            if not any(evidence in finding.get("evidence", "") for finding in failed):
-                raise AssertionError(f"Known lab deviation was not detected: {evidence}")
-        record("Known SSH configuration deviations", {"reportId": baseline["id"]})
-        ssh = report(run("sshCryptoAudit"), "ssh-audit")
-        if ssh["raw"].get("scanner", {}).get("available") is not True or ssh["raw"]["scanner"].get("partial"):
-            raise AssertionError("ssh-audit did not return complete scanner output")
-        record("Real ssh-audit negotiation", {"reportId": ssh["id"]})
-        network = report(run("networkPortScan"), "nmap")
-        if network["raw"].get("scanner", {}).get("partial") or not network["raw"]["scanner"].get("available"):
-            raise AssertionError("Nmap did not return complete scanner output")
-        for port in (22, 23):
-            if not any(f.get("id") == f"nmap_open_tcp_{port}"
-                       for f in network["findings"]):
-                raise AssertionError(f"Nmap did not detect open TCP port {port}")
-        record("Real Nmap observes TCP ports 22 and 23", {"reportId": network["id"]})
-        lynis = report(run("lynisTemporaryAudit"), "lynis")
-        if not lynis["raw"].get("scanner", {}).get("available") or lynis["raw"]["scanner"].get("partial"):
-            raise AssertionError("Lynis did not return a complete scanner report")
-        record("Real temporary Lynis run", {"reportId": lynis["id"]})
+        with independent_check('Known SSH configuration deviations'):
+            baseline = report(run("agentlessAudit"), "agentless")
+            failed = [finding for finding in baseline["findings"] if finding.get("status") == "failed"]
+            for evidence in ("PermitRootLogin=yes", "MaxAuthTries=8"):
+                if not any(evidence in finding.get("evidence", "") for finding in failed):
+                    observed = [{"id": f.get("id"), "status": f.get("status"), "evidence": f.get("evidence")} for f in baseline["findings"] if f.get("category") == "SSH"]
+                    raise AssertionError(f"Known lab deviation was not detected: {evidence}; observed={observed}")
+            record("Known SSH configuration deviations", {"reportId": baseline["id"]})
+        with independent_check('Real ssh-audit negotiation'):
+            ssh = report(run("sshCryptoAudit"), "ssh-audit")
+            if ssh["raw"].get("scanner", {}).get("available") is not True or ssh["raw"]["scanner"].get("partial"):
+                raise AssertionError(f"ssh-audit did not return complete scanner output: {ssh['findings']}")
+            record("Real ssh-audit negotiation", {"reportId": ssh["id"]})
+        with independent_check('Real Nmap scan'):
+            network = report(run("networkPortScan"), "nmap")
+            if network["raw"].get("scanner", {}).get("partial") or not network["raw"]["scanner"].get("available"):
+                raise AssertionError("Nmap did not return complete scanner output")
+            for port in (22, 23):
+                if not any(f.get("id") == f"nmap_open_tcp_{port}"
+                           for f in network["findings"]):
+                    raise AssertionError(f"Nmap did not detect open TCP port {port}")
+            record("Real Nmap observes TCP ports 22 and 23", {"reportId": network["id"]})
+        with independent_check('Real temporary Lynis run'):
+            lynis = report(run("lynisTemporaryAudit"), "lynis")
+            if not lynis["raw"].get("scanner", {}).get("available") or lynis["raw"]["scanner"].get("partial"):
+                raise AssertionError(f"Lynis did not return a complete scanner report: {lynis['raw'].get('scanner')}")
+            record("Real temporary Lynis run", {"reportId": lynis["id"]})
         original_mode = request("/api/settings/vulnerability-data")["database"]["mode"]
         protocol["databaseModeBefore"] = original_mode
         request("/api/settings/vulnerability-data", {"mode": "offline"}, method="PATCH")
-        packages = report(run("packageInventory"), "packages")
-        if not packages["raw"].get("packages") or packages["raw"].get("packageInventory", {}).get("error"):
-            raise AssertionError("Package inventory is empty or incomplete")
+        with independent_check('Package inventory and Trivy'):
+            packages = report(run("packageInventory"), "packages")
+            if not packages["raw"].get("packages") or packages["raw"].get("packageInventory", {}).get("error"):
+                raise AssertionError("Package inventory is empty or incomplete")
 
-        def cve_scan():
-            payload = request("/api/ansible/vulnerabilities/check", {"hostAlias": args.host, "reportId": packages["id"]})
-            item = report(payload, "vulnerabilities")
-            if item["score"] is not None:
-                raise AssertionError("CVE report invents a security percentage")
-            return payload, item
+            def cve_scan():
+                payload = request("/api/ansible/vulnerabilities/check", {"hostAlias": args.host, "reportId": packages["id"]})
+                item = report(payload, "vulnerabilities")
+                if item["score"] is not None:
+                    raise AssertionError("CVE report invents a security percentage")
+                return payload, item
 
-        initial, initial_report = cve_scan()
-        freshness = initial_report["raw"]["vulnerabilityScan"]["databaseFreshness"]
-        if freshness["status"] != "fresh" and not initial_report["partial"]:
-            raise AssertionError("Missing/stale/unknown DB was treated as a complete scan")
-        record("Offline CVE result preserves database availability", {"reportId": initial_report["id"], "database": freshness["status"]})
-        if args.online:
-            request("/api/settings/vulnerability-data", {"mode": "online"}, method="PATCH")
-            online, online_report = cve_scan()
-            if online.get("partial") or online_report["partial"]:
-                raise AssertionError(f"Live Trivy online scan is incomplete: {online.get('message')}")
-            request("/api/settings/vulnerability-data", {"mode": "offline"}, method="PATCH")
-            offline, offline_report = cve_scan()
-            if offline.get("partial") or offline_report["partial"]:
-                raise AssertionError(f"Cached Trivy offline scan is incomplete: {offline.get('message')}")
-            def findings(item):
-                return sorted((f["id"], f["status"], f["risk"]) for f in item["findings"] if f.get("source") == "trivy")
-            if findings(online_report) != findings(offline_report):
-                raise AssertionError("Online/offline findings differ for the same inventory and cached DB")
-            record("Real Trivy DB: online and cached offline results match", {"onlineReport": online_report["id"], "offlineReport": offline_report["id"]})
-        unprepared = run("openScapAudit")
-        unprepared_report = report(unprepared, "openscap")
-        if not unprepared.get("partial") or not unprepared_report["partial"]:
-            raise AssertionError("Unprepared OpenSCAP target was treated as a complete audit")
-        record("Unprepared OpenSCAP is explicitly incomplete", {"reportId": unprepared_report["id"]})
+            initial, initial_report = cve_scan()
+            freshness = initial_report["raw"]["vulnerabilityScan"]["databaseFreshness"]
+            if freshness["status"] != "fresh" and not initial_report["partial"]:
+                raise AssertionError("Missing/stale/unknown DB was treated as a complete scan")
+            record("Offline CVE result preserves database availability", {"reportId": initial_report["id"], "database": freshness["status"]})
+            if args.online:
+                request("/api/settings/vulnerability-data", {"mode": "online"}, method="PATCH")
+                online, online_report = cve_scan()
+                if online.get("partial") or online_report["partial"]:
+                    raise AssertionError(f"Live Trivy online scan is incomplete: {online.get('message')}")
+                request("/api/settings/vulnerability-data", {"mode": "offline"}, method="PATCH")
+                offline, offline_report = cve_scan()
+                if offline.get("partial") or offline_report["partial"]:
+                    raise AssertionError(f"Cached Trivy offline scan is incomplete: {offline.get('message')}")
+                def findings(item):
+                    return sorted((f["id"], f["status"], f["risk"]) for f in item["findings"] if f.get("source") == "trivy")
+                if findings(online_report) != findings(offline_report):
+                    raise AssertionError("Online/offline findings differ for the same inventory and cached DB")
+                record("Real Trivy DB: online and cached offline results match", {"onlineReport": online_report["id"], "offlineReport": offline_report["id"]})
+        with independent_check('Unprepared OpenSCAP handling'):
+            unprepared = run("openScapAudit")
+            unprepared_report = report(unprepared, "openscap")
+            if not unprepared.get("partial") or not unprepared_report["partial"]:
+                raise AssertionError("Unprepared OpenSCAP target was treated as a complete audit")
+            record("Unprepared OpenSCAP is explicitly incomplete", {"reportId": unprepared_report["id"]})
+        if failures:
+            raise AssertionError("; ".join(failures))
         protocol["status"] = "passed"
     except Exception as error:
         protocol["status"] = "failed"
