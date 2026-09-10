@@ -1,0 +1,54 @@
+name: Real UFW apply and rollback acceptance
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ufw-kernel-acceptance:
+    # A dedicated hosted VM supplies a real kernel firewall. The Docker client
+    # only observes the VM's bridge address; it is not the firewall target.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install real UFW and Ansible
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = "github-hosted"
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends ufw ansible
+
+      - name: Fetch the isolated HTTP probe client
+        timeout-minutes: 2
+        run: docker pull python:3.12-alpine
+
+      - name: Verify actual preview, deny, idempotence and rollback
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 deployment/tests/verify_firewall.py \
+              --execute-on-disposable-runner --work-dir "$RUNNER_TEMP/hcp-firewall"
+
+      - name: Restore the original firewall and remove the isolated client
+        if: always()
+        timeout-minutes: 1
+        run: |
+          sudo env GITHUB_ACTIONS="$GITHUB_ACTIONS" RUNNER_ENVIRONMENT="$RUNNER_ENVIRONMENT" \
+            python3 deployment/tests/verify_firewall.py \
+              --execute-on-disposable-runner --cleanup-only --work-dir "$RUNNER_TEMP/hcp-firewall"
+
+      - name: Save the real firewall acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ufw-kernel-acceptance
+          path: ${{ runner.temp }}/hcp-firewall/artifacts
+          if-no-files-found: warn
