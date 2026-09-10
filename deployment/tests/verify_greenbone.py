@@ -423,9 +423,7 @@ def main():
         selection.append(element("nvt", oid=TRACE_OID))
         modify.append(selection)
         gmp(modify)
-        # Use one operation per request. The tested gvmd aborted its request
-        # process on a combined selection plus repeated preference elements.
-        # Independent calls also identify the exact failing preference.
+        # One preference per request makes failed operations identifiable.
         for name, value in (("safe_checks", "yes"), ("auto_enable_dependencies", "yes"), ("optimize_test", "no")):
             modify = element("modify_config", config_id=config_id)
             preference = element("preference")
@@ -437,9 +435,16 @@ def main():
         config = config_response.find("config")
         if config is None or config.findtext("nvt_count") != "1":
             raise RuntimeError("Restricted config must explicitly select exactly one official VT")
-        selected = gmp(element("get_nvts", config_id=config_id))
-        if {entry.get("oid") for entry in selected.findall("nvt")} != {TRACE_OID}:
-            raise RuntimeError("Scanner selection contains unexpected VTs")
+        # get_nvts requires a specific nvt_oid; it is not a config selection
+        # listing command. get_configs details exposes the actual selectors:
+        # type 0 = all VTs, 1 = a family, 2 = one VT (GMP 22.7).
+        selectors = [(entry.findtext("include"), entry.findtext("type"), entry.findtext("family_or_nvt"))
+                     for entry in config.findall("./nvt_selectors/nvt_selector")]
+        included = [(kind, value) for include, kind, value in selectors if include != "0"]
+        if included != [("2", TRACE_OID)]:
+            raise RuntimeError("Unexpected persisted VT include selectors: " + repr(included))
+        if config.findtext("nvt_count/growing") != "0" or config.findtext("family_count/growing") != "0":
+            raise RuntimeError("Restricted scan config must not automatically select new VTs or families")
         preferences = {entry.findtext("name"): entry.findtext("value") for entry in config.findall("./preferences/preference")}
         if preferences.get("safe_checks") != "yes" or preferences.get("auto_enable_dependencies") != "yes":
             raise RuntimeError("Safe checks and automatic dependencies were not persisted")
