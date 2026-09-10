@@ -24,6 +24,12 @@ python3 -m venv .venv-greenbone
 сети, порты на компьютере не публикуются. Никакие машины локальной сети не
 сканируются. После испытания контейнеры и их временные данные удаляются.
 
+По умолчанию загружаются официальные NASL/Notus VTs, конфигурации и форматы
+отчётов. Полные справочники SCAP/CERT исключены из этого ограниченного сценария:
+они не нужны для обнаружения включённого HTTP TRACE. Их первоначальное заполнение
+создаёт отдельную большую нагрузку на БД. Это не подтверждает их готовность для
+полного аудита; в постоянной установке Greenbone их нужно настроить отдельно.
+
 Проверяется один официальный VT HTTP TRACE и его штатные зависимости при
 включённом `safe_checks`. Это подтверждает реальный сетевой запуск и передачу
 находки в HCP; полного аудита Astra, всех сетевых служб или покрытия CVE такая
@@ -51,6 +57,18 @@ python3 -m venv .venv-greenbone
 .venv-greenbone/bin/python deployment/tests/verify_greenbone.py \
   --output .lab/greenbone-second-run --timeout-minutes 120
 ```
+
+Для отдельной проверки с полной первичной загрузкой SCAP/CERT:
+
+```bash
+.venv-greenbone/bin/python deployment/tests/verify_greenbone.py \
+  --output .lab/greenbone-with-advisories --include-advisory-feeds --timeout-minutes 180
+```
+
+Это всё ещё одна тестовая HTTP-цель. Успешный короткий CI-прогон не означает,
+что вариант с полной загрузкой advisory-баз тоже прошёл. Конфигурации сканирования
+импортируются после готовности VTs и назначения Feed Import Owner; ожидание
+сохраняет отдельную диагностику manager/scanner, а не только PostgreSQL.
 
 В GitHub Actions используется workflow `Greenbone live scanner acceptance`;
 артефакт с доказательствами называется `greenbone-live-scan`. Сам факт наличия

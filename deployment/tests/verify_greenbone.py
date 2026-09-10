@@ -120,6 +120,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default=".lab/greenbone-acceptance")
     parser.add_argument("--timeout-minutes", type=int, default=85)
+    parser.add_argument("--include-advisory-feeds", action="store_true",
+                        help="Also import full SCAP/CERT advisory databases; not needed for the selected HTTP VT")
     args = parser.parse_args()
     if not 20 <= args.timeout_minutes <= 180:
         parser.error("Timeout must be between 20 and 180 minutes")
@@ -140,6 +142,7 @@ def main():
         "scope": "Actual official HTTP TRACE VT against one disposable container, followed by the production HCP XML parser",
         "targetIsSynthetic": True, "reportIsFixture": False, "fullHostAudit": False,
         "externalRuntimeNetwork": False, "upstreamComposeCommit": UPSTREAM_COMMIT,
+        "advisoryFeedsIncluded": args.include_advisory_feeds,
         "upstreamComposeSha256": UPSTREAM_SHA256, "checks": [], "stage": "preflight",
         "limitations": ["No Astra compatibility or complete OS/CVE coverage is asserted",
                         "Only the selected safe VT and its scanner dependencies run",
@@ -223,6 +226,17 @@ def main():
         stack["networks"] = {"default": {"internal": True}}
         for name in ("gsa", "gsad", "gvm-config", "nginx", "openvas"):
             del stack["services"][name]
+        # This acceptance establishes a real network VT and HCP import. The
+        # complete SCAP/CERT advisory mirror is an independent, much larger
+        # workload (the live runner spent 40 min importing CVE tables). Keep
+        # the official NASL/Notus feed and data objects unchanged; no VT/report
+        # is manufactured. Full advisory ingestion remains explicitly opt-in.
+        if not args.include_advisory_feeds:
+            for name in ("scap-data", "cert-bund-data", "dfn-cert-data"):
+                del stack["services"][name]
+                for service in stack["services"].values():
+                    service.get("depends_on", {}).pop(name, None)
+            protocol["limitations"].append("SCAP/CERT advisory databases are excluded from this network-VT acceptance")
         for service in stack["services"].values():
             if service.get("ports") or service.get("network_mode") or service.get("privileged"):
                 raise RuntimeError("Pinned upstream unexpectedly publishes a port or uses host/privileged networking")
@@ -314,10 +328,13 @@ def main():
         protocol["target"] = {"container": cid, "address": target_ip, "port": 80, "network": network_name}
         record("Only the new disposable target address is selected", host=target_ip)
 
+        def feed_diagnostics():
+            for service in ("gvmd", "ospd-openvas", "pg-gvm"):
+                logs = command(compose + ["logs", "--no-color", "--tail", "20", service], timeout=30, check=False)
+                print("FEED DIAGNOSTICS " + service + "\n" + redact(logs)[-4000:], flush=True)
+
+        stage("load official VT caches")
         def feeds_ready():
-            configs = gmp(f'<get_configs config_id="{FULL_FAST_ID}"/>')
-            if configs.find("config") is None:
-                raise RuntimeError("Official scan configurations have not been imported")
             feeds = gmp("<get_feeds/>")
             (output / "feed-status.xml").write_text(ET.tostring(feeds, encoding="unicode"))
             feed_info = []
@@ -348,9 +365,21 @@ def main():
             protocol["feeds"] = feed_info
             return nvt
 
-        nvt = wait_for("official feeds and scanner/manager VT caches", feeds_ready, 2400)
+        nvt = wait_for("official feeds and scanner/manager VT caches", feeds_ready,
+                       3600 if args.include_advisory_feeds else 1200, feed_diagnostics)
         family = nvt.findtext("family")
         record("Actual official HTTP TRACE VT and fresh feed loaded", oid=TRACE_OID, name=nvt.findtext("name"), family=family)
+        # Upstream requires imported VTs and a Feed Import Owner before scan
+        # configurations can be loaded. Rebuild only the official data objects
+        # in this fresh manager, after both prerequisites are established.
+        stage("import official scan configuration after VT caches")
+        command(gvmd_cli + ["--rebuild-gvmd-data=all"], timeout=300)
+        def configuration_ready():
+            response = gmp(f'<get_configs config_id="{FULL_FAST_ID}"/>')
+            if response.find("config") is None:
+                raise RuntimeError("Official Full and fast configuration is not available after data import")
+            return response
+        wait_for("official scan configuration", configuration_ready, 180, feed_diagnostics)
         stage("create restricted scan configuration")
         scanners = gmp('<get_scanners details="1" filter="rows=-1"/>')
         candidates = [scanner for scanner in scanners.findall("scanner") if scanner.findtext("type") == "2"]
@@ -491,6 +520,10 @@ def main():
                 (output / "services.log").write_text(redact(result.stdout + result.stderr))
                 if protocol["status"] != "passed":
                     print("FINAL SERVICE DIAGNOSTICS\n" + redact(result.stdout + result.stderr)[-8000:], flush=True)
+                    for service in ("gvmd", "ospd-openvas"):
+                        diagnostic = subprocess.run(compose + ["logs", "--no-color", "--tail", "100", service], cwd=REPO,
+                                                    capture_output=True, text=True, timeout=30)
+                        print("FINAL " + service + "\n" + redact(diagnostic.stdout + diagnostic.stderr)[-12000:], flush=True)
             except (OSError, subprocess.SubprocessError) as error:
                 protocol["logCollectionError"] = redact(str(error))
             try:
