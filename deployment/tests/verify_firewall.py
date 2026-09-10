@@ -232,6 +232,16 @@ except (OSError, urllib.error.URLError, TimeoutError) as error:
         result["ok"] = True
     except Exception as error:
         result["error"] = str(error)
+        # Capture real runtime rules before finally restores the original UFW
+        # state, so a failed priority/format assertion remains diagnosable.
+        try:
+            observed = subprocess.run(["ufw", "status", "numbered"], capture_output=True, text=True,
+                                      timeout=10, env={**os.environ, "LC_ALL": "C.UTF-8"})
+            diagnostics = observed.stdout + "\n" + observed.stderr
+            (artifacts / "failure-ufw-status-numbered.log").write_text(diagnostics)
+            print("UFW status before failure cleanup:\n" + diagnostics, flush=True)
+        except Exception as diagnostic_error:
+            result["diagnosticError"] = str(diagnostic_error)
         raise
     finally:
         if server:

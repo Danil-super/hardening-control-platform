@@ -50,6 +50,18 @@ def persistent_firewalld():
             raise FirewallError("firewalld runtime and permanent direct rules differ; rollback cannot be guaranteed.")
 
 
+def ufw_ipv4_rows(status):
+    rows = []
+    for raw_line in status.splitlines():
+        # UFW's compact/numbered display may omit IN for the default incoming
+        # direction; columns also contain alignment spaces. Ignore comments
+        # only after locating the numbered rule, not the rule's direction.
+        line = raw_line.split("#", 1)[0].strip()
+        if re.match(r"^\[\s*\d+\]", line) and "(v6)" not in line:
+            rows.append(" ".join(re.sub(r"^\[\s*\d+\]\s*", "", line).split()))
+    return rows
+
+
 def close_or_block(args):
     selected = backend()
     if args.operation == "closePort":
@@ -76,8 +88,10 @@ def close_or_block(args):
 
     if selected == "ufw":
         status = run("ufw", "status", "numbered").stdout
-        rows = [re.sub(r"^\[\s*\d+\]\s*", "", line.strip()) for line in status.splitlines() if re.match(r"^\[\s*\d+\]", line.strip()) and "(v6)" not in line]
-        expected = (rf"^{args.port}/{args.protocol}\s+DENY IN\s+Anywhere\s*$" if args.operation == "closePort" else rf"^Anywhere\s+DENY IN\s+{re.escape(args.ip)}\s*$")
+        rows = ufw_ipv4_rows(status)
+        # Bare DENY is the documented default incoming direction. OUT and FWD
+        # must never satisfy this check. Require the exact global IPv4 rule.
+        expected = (rf"^{args.port}/{args.protocol} DENY(?: IN)? Anywhere$" if args.operation == "closePort" else rf"^Anywhere DENY(?: IN)? {re.escape(args.ip)}$")
         matching = [index for index, row in enumerate(rows) if re.match(expected, row)]
         changed = not matching or matching[0] != 0
         if changed and not args.check:
@@ -85,9 +99,10 @@ def close_or_block(args):
                 run("ufw", "--force", "delete", *ufw_rule)
             run("ufw", "insert", "1", *ufw_rule)
         if not args.check:
-            first = next((re.sub(r"^\[\s*\d+\]\s*", "", line.strip()) for line in run("ufw", "status", "numbered").stdout.splitlines() if re.match(r"^\[\s*\d+\]", line.strip()) and "(v6)" not in line), "")
+            observed = ufw_ipv4_rows(run("ufw", "status", "numbered").stdout)
+            first = observed[0] if observed else ""
             if not re.match(expected, first):
-                raise FirewallError("UFW did not install the deny rule before existing allow rules.")
+                raise FirewallError(f"UFW did not install the deny rule before existing allow rules. Observed IPv4 rules: {observed!r}")
     else:
         zones = {line.split()[0] for line in run("firewall-cmd", "--get-active-zones").stdout.splitlines() if line and not line[0].isspace()}
         zones.add(run("firewall-cmd", "--get-default-zone").stdout.strip())

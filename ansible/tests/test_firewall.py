@@ -20,6 +20,30 @@ def args(**values):
 
 
 class FirewallTests(unittest.TestCase):
+    def test_numbered_ufw_compact_and_verbose_incoming_formats(self):
+        # Ubuntu 24.04 ufw(8) documents compact incoming actions without IN.
+        # Retain real column spacing and an IPv6 row to exercise normalization.
+        for action in ("DENY", "DENY IN", "DENY    IN"):
+            with self.subTest(action=action):
+                output = f"Status: active\nTo                         Action      From\n[ 1] 8080/tcp                   {action}    Anywhere\n[ 2] 22/tcp                     ALLOW       Anywhere\n[ 3] 8080/tcp (v6)              DENY        Anywhere (v6)\n"
+                with patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run", return_value=subprocess.CompletedProcess([], 0, output, "")) as command:
+                    self.assertFalse(fw.close_or_block(args())["changed"])
+                    self.assertEqual(command.call_count, 2)
+                    self.assertTrue(all(call.args == ("ufw", "status", "numbered") for call in command.call_args_list))
+
+    def test_compact_source_deny_is_recognized_as_incoming(self):
+        output = "[ 1] Anywhere                   DENY        198.51.100.42\n"
+        with patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run", return_value=subprocess.CompletedProcess([], 0, output, "")):
+            self.assertFalse(fw.close_or_block(args(operation="blockIp"))["changed"])
+
+    def test_wrong_direction_or_lower_priority_deny_is_never_accepted(self):
+        for output in ("[ 1] 8080/tcp DENY OUT Anywhere\n", "[ 1] 8080/tcp DENY FWD Anywhere\n",
+                       "[ 1] Anywhere ALLOW Anywhere\n[ 2] 8080/tcp DENY Anywhere\n"):
+            with self.subTest(output=output):
+                with patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run", return_value=subprocess.CompletedProcess([], 0, output, "")):
+                    with self.assertRaisesRegex(fw.FirewallError, "Observed IPv4 rules"):
+                        fw.close_or_block(args())
+
     def test_ufw_deny_moves_before_allow_and_is_idempotent(self):
         rows = ["8080/tcp ALLOW IN Anywhere", "8080/tcp DENY IN Anywhere"]
         calls = []
