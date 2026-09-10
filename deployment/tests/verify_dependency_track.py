@@ -146,6 +146,38 @@ def main():
         protocol["checks"].append({"name": name, "status": "passed", **details})
         print("PASS " + name, flush=True)
 
+    def health_probe(endpoint):
+        # This diagnostic deliberately cannot request authenticated API routes.
+        # It preserves HTTP errors and unexpected bodies instead of hiding the
+        # distinction between an unhealthy database and an unreachable port.
+        if endpoint not in ("/health", "/health/ready"):
+            raise ValueError("Only unauthenticated health endpoints can be diagnosed")
+        observation = {"endpoint": endpoint, "transport": "published-loopback-port"}
+        request = urllib.request.Request(base + endpoint, headers={"Accept": "application/json"})
+        try:
+            try:
+                response = client.open(request, timeout=remaining(5))
+            except urllib.error.HTTPError as error:
+                response = error
+            with response:
+                payload = response.read(4097)
+                observation.update(httpStatus=response.status, bodyTruncated=len(payload) > 4096)
+                body = redact(payload[:4096].decode("utf8", errors="replace"))
+                try:
+                    observation["body"] = json.loads(body)
+                except json.JSONDecodeError:
+                    observation["body"] = redact(body)
+        except (urllib.error.URLError, OSError, TimeoutError) as error:
+            observation["error"] = redact(f"{type(error).__name__}: {error}")
+        return observation
+
+    def database_ready(observation):
+        health = observation.get("body")
+        return (observation.get("httpStatus") == 200 and isinstance(health, dict)
+                and health.get("status") == "UP" and isinstance(health.get("checks"), list)
+                and any(isinstance(check, dict) and check.get("name") == "database"
+                        and check.get("status") == "UP" for check in health["checks"]))
+
     stack = {
         "name": project,
         "services": {
@@ -182,15 +214,15 @@ def main():
         # the exact host port used by the adapter before changing credentials.
         readiness_deadline = time.monotonic() + remaining(30)
         while time.monotonic() < readiness_deadline:
-            try:
-                health = api("/health/ready")
-                if isinstance(health, dict) and health.get("status") == "UP":
-                    break
-            except (urllib.error.URLError, RuntimeError, TimeoutError):
-                pass
+            observation = health_probe("/health/ready")
+            protocol["readiness"] = observation
+            if database_ready(observation):
+                break
             time.sleep(2)
         else:
-            raise AssertionError("API/PostgreSQL readiness is not UP on the published port")
+            protocol["aggregateHealth"] = health_probe("/health")
+            raise AssertionError("API/PostgreSQL readiness is not UP on the published port: "
+                                 + json.dumps(observation, ensure_ascii=True))
         protocol["image"] = IMAGE
         protocol["imageDigests"] = json.loads(command([
             "docker", "image", "inspect", IMAGE, "--format", "{{json .RepoDigests}}",
@@ -280,10 +312,31 @@ def main():
         print("FAIL " + protocol["error"], file=sys.stderr, flush=True)
     finally:
         if started:
+            if protocol["status"] == "failed":
+                # Compare the exact readiness endpoint inside the container to
+                # diagnose Docker port forwarding independently of database
+                # health. No environment, credentials or authenticated API
+                # response is included in this bounded diagnostic.
+                try:
+                    internal = subprocess.run(compose + ["exec", "-T", "api", "curl", "--silent", "--show-error",
+                        "--max-time", "5", "--noproxy", "*", "--write-out", "\nHTTP_STATUS=%{http_code}\n",
+                        "http://127.0.0.1:8080/health/ready"], cwd=REPO,
+                        capture_output=True, text=True, timeout=10)
+                    diagnostic = {"transport": "container-loopback", "endpoint": "/health/ready",
+                                  "exitCode": internal.returncode, "output": redact(internal.stdout[:4096]),
+                                  "error": redact(internal.stderr[:1024])}
+                    protocol["containerReadiness"] = diagnostic
+                    print("HEALTH " + json.dumps(diagnostic, ensure_ascii=True), file=sys.stderr, flush=True)
+                except Exception as error:
+                    protocol["healthDiagnosticError"] = redact(str(error))
             try:
                 logs = subprocess.run(compose + ["logs", "--no-color", "--tail=150"], cwd=REPO,
                                       capture_output=True, text=True, timeout=20)
-                (output / "services.log").write_text(redact(logs.stdout + logs.stderr))
+                safe_logs = redact(logs.stdout + logs.stderr)
+                (output / "services.log").write_text(safe_logs)
+                if protocol["status"] == "failed":
+                    print("Service log tail (redacted, at most 12000 characters):\n" + safe_logs[-12000:],
+                          file=sys.stderr, flush=True)
             except Exception as error:
                 protocol["logCollectionError"] = redact(str(error))
             try:
