@@ -4,7 +4,8 @@
 Creates a NEW isolated stack and exactly one synthetic HTTP target. No address
 argument, published port, host networking, LAN discovery or existing database
 is accepted. The selected official VT detects the intentionally enabled HTTP
-TRACE method; its normal scanner dependencies are enabled, safe_checks is on.
+TRACE method; the official Nmap port scanner and normal VT dependencies are
+also enabled, safe_checks is on.
 This verifies a real network finding, not a full host/OS or CVE coverage claim.
 
 Linux Docker/Compose host, Python 3.10+ and PyYAML 6.0.3 are required. Docker's
@@ -41,6 +42,7 @@ UPSTREAM_SHA256 = "5b5117a7c200491de13bc7b79c97dc858c016c51017982d8f1de7ca077c1a
 FULL_FAST_ID = "daba56c8-73ec-11df-a475-002264764cea"
 # The live feed is authoritative: its name/family/metadata must also match.
 TRACE_OID = "1.3.6.1.4.1.25623.1.0.11213"
+NMAP_OID = "1.3.6.1.4.1.25623.1.0.14259"  # Official Nmap (NASL wrapper) port scanner
 
 # GMP is a stream of XML documents over the manager's private Unix socket.
 # Use the official gvm-tools image's Python runtime. Credentials go through
@@ -145,7 +147,7 @@ def main():
         "advisoryFeedsIncluded": args.include_advisory_feeds,
         "upstreamComposeSha256": UPSTREAM_SHA256, "checks": [], "stage": "preflight",
         "limitations": ["No Astra compatibility or complete OS/CVE coverage is asserted",
-                        "Only the selected safe VT and its scanner dependencies run",
+                        "Only HTTP TRACE, the Nmap port scanner and their scanner dependencies run",
                         "GMP orchestration belongs to this acceptance script; the HCP UI still imports XML"],
     }
     compose = ["docker", "compose", "-f", str(compose_file)]
@@ -380,6 +382,13 @@ def main():
         nvt = wait_for("official feeds and scanner/manager VT caches", feeds_ready,
                        3600 if args.include_advisory_feeds else 1200, feed_diagnostics)
         family = nvt.findtext("family")
+        port_scanner = gmp(element("get_nvts", nvt_oid=NMAP_OID, details="1")).find("nvt")
+        if port_scanner is None or "nmap" not in (port_scanner.findtext("name") or "").lower() or port_scanner.findtext("family") != "Port scanners":
+            raise RuntimeError("Official Nmap port-scanner VT identity has changed or is unavailable")
+        nmap_version = command(compose + ["exec", "-T", "ospd-openvas", "nmap", "--version"], timeout=30)
+        if "Nmap version" not in nmap_version:
+            raise RuntimeError("The official scanner image does not provide its Nmap dependency")
+        protocol["portScanner"] = {"oid": NMAP_OID, "name": port_scanner.findtext("name"), "version": nmap_version.splitlines()[0]}
         record("Actual official HTTP TRACE VT and fresh feed loaded", oid=TRACE_OID, vtName=nvt.findtext("name"), family=family)
         # Upstream requires imported VTs and a Feed Import Owner before scan
         # configurations can be loaded. Rebuild only the official data objects
@@ -408,7 +417,7 @@ def main():
         modify.append(selection)
         gmp(modify)
         # GMP deliberately preserves partial selections when a family is
-        # omitted. Clear those explicitly before adding the single safe VT.
+        # omitted. Clear those explicitly before adding the bounded VT set.
         cleared = gmp(element("get_configs", config_id=config_id, details="1"))
         for old_family in cleared.findall("./config/families/family"):
             if int(old_family.findtext("nvt_count") or "0"):
@@ -417,12 +426,16 @@ def main():
                 old_selection.append(element("family", old_family.findtext("name")))
                 clear.append(old_selection)
                 gmp(clear)
-        modify = element("modify_config", config_id=config_id)
-        selection = element("nvt_selection")
-        selection.append(element("family", family))
-        selection.append(element("nvt", oid=TRACE_OID))
-        modify.append(selection)
-        gmp(modify)
+        # A vulnerability VT's dependencies do not replace selecting a port
+        # scanner. Treating unscanned ports as closed can otherwise yield Done
+        # without testing the listening service.
+        for selected_family, oid in ((family, TRACE_OID), ("Port scanners", NMAP_OID)):
+            modify = element("modify_config", config_id=config_id)
+            selection = element("nvt_selection")
+            selection.append(element("family", selected_family))
+            selection.append(element("nvt", oid=oid))
+            modify.append(selection)
+            gmp(modify)
         # One preference per request makes failed operations identifiable.
         for name, value in (("safe_checks", "yes"), ("auto_enable_dependencies", "yes"), ("optimize_test", "no")):
             modify = element("modify_config", config_id=config_id)
@@ -433,22 +446,22 @@ def main():
         config_response = gmp(element("get_configs", config_id=config_id, details="1"))
         (output / "selected-config.xml").write_text(ET.tostring(config_response, encoding="unicode"))
         config = config_response.find("config")
-        if config is None or config.findtext("nvt_count") != "1":
-            raise RuntimeError("Restricted config must explicitly select exactly one official VT")
+        if config is None or config.findtext("nvt_count") != "2":
+            raise RuntimeError("Restricted config must select HTTP TRACE and its explicit port scanner only")
         # get_nvts requires a specific nvt_oid; it is not a config selection
         # listing command. get_configs details exposes the actual selectors:
         # type 0 = all VTs, 1 = a family, 2 = one VT (GMP 22.7).
         selectors = [(entry.findtext("include"), entry.findtext("type"), entry.findtext("family_or_nvt"))
                      for entry in config.findall("./nvt_selectors/nvt_selector")]
         included = [(kind, value) for include, kind, value in selectors if include != "0"]
-        if included != [("2", TRACE_OID)]:
+        if sorted(included) != sorted([("2", TRACE_OID), ("2", NMAP_OID)]):
             raise RuntimeError("Unexpected persisted VT include selectors: " + repr(included))
         if config.findtext("nvt_count/growing") != "0" or config.findtext("family_count/growing") != "0":
             raise RuntimeError("Restricted scan config must not automatically select new VTs or families")
         preferences = {entry.findtext("name"): entry.findtext("value") for entry in config.findall("./preferences/preference")}
         if preferences.get("safe_checks") != "yes" or preferences.get("auto_enable_dependencies") != "yes":
             raise RuntimeError("Safe checks and automatic dependencies were not persisted")
-        record("Restricted single-VT selection and safe scanner preferences verified")
+        record("Restricted TRACE and port-scanner selection with safe preferences verified")
         create = element("create_port_list")
         create.extend([element("name", "Only disposable HTTP port 80"), element("port_range", "T:80")])
         port_id = gmp(create).get("id")
@@ -460,6 +473,13 @@ def main():
         create.extend([element("name", "HCP live HTTP TRACE acceptance"), element("config", id=config_id),
                        element("target", id=target_id), element("scanner", id=scanner_id)])
         task_id = gmp(create).get("id")
+        stage("verify target HTTP reachability from the scanner")
+        http_probe = ("import sys, urllib.request; "
+                      "print(urllib.request.urlopen('http://' + sys.argv[1] + '/', timeout=10).read(1024).decode())")
+        baseline = command(compose + ["exec", "-T", "ospd-openvas", "python3", "-c", http_probe, target_ip], timeout=30)
+        if "Owned disposable HCP test target." not in baseline:
+            raise RuntimeError("The intended HTTP target is not reachable from the actual scanner container")
+        record("Actual scanner container reaches the owned HTTP target before scanning")
         stage("run real network scan")
         start = gmp(element("start_task", task_id=task_id))
         report_id = start.findtext("report_id")
@@ -491,6 +511,16 @@ def main():
         results = report.findall("./results/result")
         if any(result.findtext("host") != target_ip for result in results):
             raise RuntimeError("Native report includes an unexpected target")
+        protocol["nativeResultSummary"] = [
+            {"name": result.findtext("name"), "oid": result.find("nvt").get("oid") if result.find("nvt") is not None else None,
+             "host": result.findtext("host"), "port": result.findtext("port"),
+             "severity": result.findtext("severity"), "qod": result.findtext("qod/value")}
+            for result in results]
+        protocol["nativeErrors"] = [{"description": error.findtext("description"), "host": error.findtext("host")}
+                                    for error in report.findall("./errors/error")]
+        save()
+        print("NATIVE RESULT SUMMARY " + json.dumps(protocol["nativeResultSummary"], ensure_ascii=True), flush=True)
+        print("NATIVE SCANNER ERRORS " + json.dumps(protocol["nativeErrors"], ensure_ascii=True), flush=True)
         matches = [result for result in results if result.find("nvt") is not None and result.find("nvt").get("oid") == TRACE_OID]
         if not matches or not any(float(result.findtext("severity") or "0") > 0 for result in matches):
             raise RuntimeError("Official VT failed to detect the deliberately enabled HTTP TRACE method")
@@ -542,7 +572,7 @@ def main():
                 (output / "services.log").write_text(redact(result.stdout + result.stderr))
                 if protocol["status"] != "passed":
                     print("FINAL SERVICE DIAGNOSTICS\n" + redact(result.stdout + result.stderr)[-8000:], flush=True)
-                    for service in ("gvmd", "ospd-openvas"):
+                    for service in ("gvmd", "ospd-openvas", "target"):
                         diagnostic = subprocess.run(compose + ["logs", "--no-color", "--tail", "100", service], cwd=REPO,
                                                     capture_output=True, text=True, timeout=30)
                         print("FINAL " + service + "\n" + redact(diagnostic.stdout + diagnostic.stderr)[-12000:], flush=True)
