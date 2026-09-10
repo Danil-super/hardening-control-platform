@@ -11,6 +11,7 @@
     lynis_executable: "{{ lookup('env', 'HCP_LYNIS_EXECUTABLE') | default('/usr/sbin/lynis', true) }}"
     lynis_profile: "{{ lookup('env', 'HCP_LYNIS_PROFILE') | default('/etc/lynis/default.prf', true) }}"
     lynis_raw_report: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-lynis-{{ report_suffix }}.report.dat"
+    lynis_diagnostics: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-lynis-{{ report_suffix }}.diagnostics.json"
 
   tasks:
     - name: Ensure local report directory exists
@@ -127,6 +128,20 @@
             dest: "{{ lynis_remote_dir.path }}/lynis/default.prf"
             mode: "0644"
 
+        # Debian keeps plugins outside /usr/share/lynis. Lynis validates the
+        # directory even with --no-plugins; use an empty, private directory.
+        - name: Provide isolated empty plugin directory required by Lynis
+          ansible.builtin.file:
+            path: "{{ lynis_remote_dir.path }}/plugins"
+            state: directory
+            mode: "0700"
+
+        - name: Disable optional online version lookup in temporary profile
+          ansible.builtin.lineinfile:
+            path: "{{ lynis_remote_dir.path }}/lynis/default.prf"
+            regexp: '^#?skip-upgrade-test='
+            line: skip-upgrade-test=yes
+
         - name: Check that no other Lynis instance is active
           ansible.builtin.stat:
             path: /run/lynis.pid
@@ -147,6 +162,8 @@
               - --profile
               - "{{ lynis_remote_dir.path }}/lynis/default.prf"
               - --no-plugins
+              - --plugindir
+              - "{{ lynis_remote_dir.path }}/plugins"
               - --quick
               - --no-colors
               - --no-log
@@ -180,6 +197,15 @@
           become: false
           no_log: true
 
+        - name: Preserve bounded startup diagnostics until normalization
+          ansible.builtin.copy:
+            content: "{{ {'stdout': (lynis_run.stdout | default(''))[-16000:], 'stderr': (lynis_run.stderr | default(''))[-16000:]} | to_json }}"
+            dest: "{{ lynis_diagnostics }}"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+
         - name: Normalize Lynis report on control node
           ansible.builtin.command:
             argv:
@@ -188,6 +214,8 @@
               - lynis-report
               - --input
               - "{{ lynis_raw_report }}"
+              - --diagnostics-input
+              - "{{ lynis_diagnostics }}"
               - --inventory-host
               - "{{ inventory_hostname }}"
               - --run-id
@@ -224,6 +252,13 @@
             path: "{{ lynis_bundle.path }}"
             state: absent
           when: lynis_bundle is defined and lynis_bundle.path is defined
+          delegate_to: localhost
+          become: false
+
+        - name: Remove transient Lynis startup diagnostics from control node
+          ansible.builtin.file:
+            path: "{{ lynis_diagnostics }}"
+            state: absent
           delegate_to: localhost
           become: false
       when: lynis_available | bool

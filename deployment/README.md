@@ -4,7 +4,17 @@
 
 ## Подготовка
 
-Образ control node уже содержит Ansible, Lynis, Nmap, `ssh-audit`, OpenSCAP и Trivy. OpenSCAP не устанавливается на управляемые ВМ автоматически: для точной SCAP-проверки его и SSG content заранее готовят только на тех хостах, где это одобрено.
+Образ control node уже содержит Ansible, Lynis, Nmap, `ssh-audit 3.3.0`, OpenSCAP и Trivy. SSH-сканер устанавливается из [PyPI](https://pypi.org/project/ssh-audit/3.3.0/) в отдельный Python venv; пакет `ssh-audit 2.5` из Debian bookworm не поддерживает необходимый формат результатов. HCP проверяет версию и наличие `--skip-rate-test` до подключения к хосту и всегда отключает тест частоты подключений. OpenSCAP не устанавливается на управляемые ВМ автоматически: для точной SCAP-проверки его и SSG content заранее готовят только на тех хостах, где это одобрено.
+
+При запуске без Docker установите поддерживаемый SSH-сканер на управляющей машине:
+
+```bash
+sudo apt-get install python3-venv
+sudo python3 -m venv /opt/hcp-tools/ssh-audit
+sudo /opt/hcp-tools/ssh-audit/bin/pip install --only-binary=:all: ssh-audit==3.3.0
+```
+
+Задайте `HCP_SSH_AUDIT_BIN=/opt/hcp-tools/ssh-audit/bin/ssh-audit` в окружении сервиса HCP. Установка требует доступа к PyPI; сам SSH-аудит работает внутри локальной сети.
 
 ```bash
 cp .env.production.example .env

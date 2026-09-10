@@ -14,6 +14,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -97,7 +98,7 @@ def base_report(args: argparse.Namespace, mode: str, source: str, findings: list
         "os": None,
         "profileId": mode,
         "mode": mode,
-        "scanner": {"source": source, "partial": extra.get("available") is False, **extra},
+        "scanner": {"source": source, "available": True, "partial": extra.get("available") is False, **extra},
         "summary": summary,
         "findings": findings,
         "events": [],
@@ -144,7 +145,20 @@ def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
     if not shutil.which(binary):
         return unavailable(args, "ssh-audit", "ssh_audit", "ssh-audit")
 
-    code, stdout, stderr = run([binary, "--json", "--skip-rate-test", "-p", str(args.port), args.host], 90)
+    help_code, help_stdout, help_stderr = run([binary, "--help"], 10)
+    help_output = help_stdout + "\n" + help_stderr
+    version_match = re.search(r"ssh-audit(?:\.py)?\s+v?(\d+)\.(\d+)\.(\d+)", help_output, re.IGNORECASE)
+    version = tuple(map(int, version_match.groups())) if version_match else None
+    skip_rate_test = "--skip-rate-test" in help_output
+    # Never remove the rate-test safety flag to accommodate an incompatible
+    # distro package. Old JSON formats omit findings and cannot support HCP.
+    if help_code != 0 or version is None or version < (3, 2, 0) or not skip_rate_test:
+        return base_report(args, "ssh-audit", "ssh_audit", [incomplete_finding("ssh_audit",
+            "Требуется ssh-audit >=3.2.0 с JSON и --skip-rate-test. Обновите control node; Docker-образ HCP содержит ssh-audit 3.3.0. " + help_output[:700])],
+            available=False, partial=True, target=f"{args.host}:{args.port}", exitCode=help_code,
+            version=".".join(map(str, version)) if version else None)
+    command = [binary, "--json", "--skip-rate-test", "-p", str(args.port), args.host]
+    code, stdout, stderr = run(command, 90)
     try:
         payload = json.loads(stdout)
         if (not isinstance(payload, dict) or not isinstance(payload.get("banner"), dict)
@@ -163,7 +177,7 @@ def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
                 risk="info",
                 status="manual",
                 source="ssh_audit",
-                description="ssh-audit не вернул корректный JSON. Целевой SSH-сервис не изменялся.",
+                description="ssh-audit не вернул полный читаемый результат согласования алгоритмов. Целевой SSH-сервис не изменялся.",
                 recommendation="Проверьте доступность SSH-порта и журнал control node.",
                 evidence=(stderr or stdout or f"exit={code}"),
             )],
@@ -274,6 +288,9 @@ def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
         target=payload.get("target", f"{args.host}:{args.port}"),
         banner=banner,
         exitCode=code,
+        version=".".join(map(str, version)) if version else None,
+        outputFormat="json",
+        connectionRateTest="disabled",
     )
 
 
@@ -385,6 +402,35 @@ def values_from_lynis_report(content: str, key: str) -> list[str]:
     return [line[len(prefix):].strip() for line in content.splitlines() if line.startswith(prefix)]
 
 
+def lynis_diagnostics(input_path: str | None) -> dict[str, Any] | None:
+    """Keep bounded startup evidence, never the complete potentially sensitive audit log."""
+    if not input_path:
+        return None
+    try:
+        diagnostic_path = Path(input_path)
+        if diagnostic_path.stat().st_size > 2 * 1024 * 1024:
+            return {"readable": False, "reason": "diagnostics_too_large"}
+        payload = json.loads(diagnostic_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError("invalid diagnostics object")
+    except (OSError, ValueError):
+        return {"readable": False, "reason": "diagnostics_unreadable"}
+    stdout = payload.get("stdout") if isinstance(payload.get("stdout"), str) else ""
+    stderr = payload.get("stderr") if isinstance(payload.get("stderr"), str) else ""
+    startup_errors = []
+    for line in (stderr + "\n" + stdout).splitlines():
+        line = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", line).strip()
+        if not re.search(r"error|cannot|could not|permission denied|not found|no such file|failed|invalid|unknown option|unrecognized|unsupported|requires?", line, re.IGNORECASE):
+            continue
+        if re.search(r"password|passwd|secret|token|api[-_ ]?key|authorization|private[ _-]?key", line, re.IGNORECASE):
+            continue
+        startup_errors.append(line[:400])
+        if len(startup_errors) == 8:
+            break
+    return {"readable": True, "stdoutBytes": len(stdout.encode()), "stderrBytes": len(stderr.encode()),
+            "startupErrors": startup_errors, "fullOutputStored": False}
+
+
 def lynis_report(args: argparse.Namespace) -> dict[str, Any]:
     try:
         content = Path(args.input).read_text(encoding="utf-8", errors="replace")
@@ -475,11 +521,13 @@ def lynis_report(args: argparse.Namespace) -> dict[str, Any]:
         "lynis",
         findings,
         temporaryExecution=True,
+        available=not partial,
         partial=partial,
         scannerExitCode=args.exit_code,
         hardeningIndex=hardening_index if not partial else None,
         reportedHardeningIndex=hardening_index,
         version=report_fields.get("lynis_version"),
+        executionDiagnostics=lynis_diagnostics(getattr(args, "diagnostics_input", None)) if partial else None,
     )
 
 
@@ -777,6 +825,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--input")
+    parser.add_argument("--diagnostics-input")
     parser.add_argument("--exit-code", type=int, default=0)
     parser.add_argument("--profile")
     parser.add_argument("--datastream")

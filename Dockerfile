@@ -17,8 +17,15 @@ RUN cd web && npm run build
 FROM node:24-bookworm-slim AS runtime
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ansible ca-certificates lynis nmap openscap-scanner openssh-client python3 ssh-audit util-linux \
+  && apt-get install -y --no-install-recommends ansible ca-certificates lynis nmap openscap-scanner openssh-client python3 python3-venv util-linux \
   && rm -rf /var/lib/apt/lists/*
+
+# Debian bookworm packages ssh-audit 2.5, whose JSON omits recommendations and
+# lacks --skip-rate-test. Keep the supported scanner isolated from system Python.
+RUN python3 -m venv /opt/hcp-tools/ssh-audit \
+  && /opt/hcp-tools/ssh-audit/bin/pip install --no-cache-dir --only-binary=:all: ssh-audit==3.3.0 \
+  && ln -s /opt/hcp-tools/ssh-audit/bin/ssh-audit /usr/local/bin/ssh-audit \
+  && ssh-audit --help
 
 ENV NODE_ENV=production \
   HOME=/home/node \

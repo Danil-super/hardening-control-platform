@@ -56,8 +56,38 @@ class ScannerAdaptersTest(unittest.TestCase):
             return parser(arguments(input=str(input_path), **options))
 
     def invoke_network(self, parser, payload, code=0):
-        with patch.object(scanner.shutil, "which", return_value="/test/tool"), patch.object(scanner, "run", return_value=(code, payload, "")):
+        def response(command, timeout):
+            if command[-1] == "--help":
+                return 0, "ssh-audit v3.3.0\n  --skip-rate-test", ""
+            return code, payload, ""
+        with patch.object(scanner.shutil, "which", return_value="/test/tool"), patch.object(scanner, "run", side_effect=response):
             return parser(arguments())
+
+    def test_ssh_25_distro_cli_is_rejected_before_any_target_connection(self):
+        with patch.object(scanner.shutil, "which", return_value="/test/tool"), patch.object(scanner, "run", return_value=(
+            0, "# ssh-audit v2.5.0, https://github.com/jtesta/ssh-audit\n --json --batch --no-colors --verbose", ""
+        )) as execute:
+            report = scanner.ssh_audit(arguments())
+        self.assertTrue(report["scanner"]["partial"])
+        self.assertFalse(report["scanner"]["available"])
+        self.assertEqual(report["scanner"]["version"], "2.5.0")
+        self.assertIn("ssh-audit >=3.2.0", report["findings"][0]["evidence"])
+        self.assertEqual(execute.call_count, 1)
+
+    def test_ssh_current_cli_always_disables_connection_rate_test(self):
+        with patch.object(scanner.shutil, "which", return_value="/test/tool"), patch.object(scanner, "run", side_effect=[
+            (0, "ssh-audit v3.3.0\n --skip-rate-test", ""), (0, json.dumps(ssh_payload()), "")
+        ]) as execute:
+            report = scanner.ssh_audit(arguments())
+        self.assertIn("--skip-rate-test", execute.call_args_list[1].args[0])
+        self.assertEqual(report["scanner"]["connectionRateTest"], "disabled")
+
+    def test_unknown_or_new_cli_without_skip_flag_is_not_run_against_target(self):
+        for help_output in ("usage: unknown scanner", "ssh-audit v3.3.0\n --json"):
+            with patch.object(scanner.shutil, "which", return_value="/test/tool"), patch.object(scanner, "run", return_value=(0, help_output, "")) as execute:
+                report = scanner.ssh_audit(arguments())
+            self.assertTrue(report["scanner"]["partial"])
+            self.assertEqual(execute.call_count, 1)
 
     def assert_no_pass(self, report):
         self.assertFalse(any(item["status"] == "passed" for item in report["findings"]))
@@ -72,6 +102,7 @@ class ScannerAdaptersTest(unittest.TestCase):
     def test_ssh_complete_clean_handshake_can_pass(self):
         report = self.invoke_network(scanner.ssh_audit, json.dumps(ssh_payload()))
         self.assertFalse(report["scanner"]["partial"])
+        self.assertTrue(report["scanner"]["available"])
         self.assertEqual(report["findings"][0]["status"], "passed")
 
     def test_ssh_change_recommendations_are_not_dropped(self):
@@ -131,7 +162,32 @@ class ScannerAdaptersTest(unittest.TestCase):
     def test_lynis_unfinished_index_is_not_presented_as_valid_score(self):
         report = self.parse_file("lynis_version=3.1.6\nhardening_index=99\n", scanner.lynis_report)
         self.assertTrue(report["scanner"]["partial"])
+        self.assertFalse(report["scanner"]["available"])
         self.assertIsNone(report["summary"]["score"])
+
+    def test_lynis_startup_diagnostics_are_bounded_and_exclude_secrets(self):
+        with tempfile.TemporaryDirectory() as directory:
+            diagnostics = Path(directory) / "diagnostics.json"
+            diagnostics.write_text(json.dumps({
+                "stdout": "Regular audit output\n" + "\n".join("Error loading test " + str(i) for i in range(20)),
+                "stderr": "Unknown option: --unsupported-test\nError password=do-not-publish\nError token=do-not-publish",
+            }))
+            report = self.parse_file("", scanner.lynis_report, exit_code=1, diagnostics_input=str(diagnostics))
+        metadata = report["scanner"]["executionDiagnostics"]
+        self.assertFalse(report["scanner"]["available"])
+        self.assertIn("Unknown option: --unsupported-test", metadata["startupErrors"])
+        self.assertLessEqual(len(metadata["startupErrors"]), 8)
+        self.assertNotIn("do-not-publish", json.dumps(report))
+        self.assertNotIn("Regular audit output", json.dumps(report))
+        self.assertFalse(metadata["fullOutputStored"])
+
+    def test_lynis_invalid_diagnostics_do_not_hide_original_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            diagnostics = Path(directory) / "diagnostics.json"
+            diagnostics.write_text("<invalid")
+            report = self.parse_file("", scanner.lynis_report, exit_code=1, diagnostics_input=str(diagnostics))
+        self.assertFalse(report["scanner"]["available"])
+        self.assertFalse(report["scanner"]["executionDiagnostics"]["readable"])
 
     def test_lynis_preserves_all_warnings(self):
         content = "lynis_version=3.1.6\nhardening_index=64\nfinish=true\n" + "\n".join(f"warning[]=TEST-{i}|Evidence {i}|" for i in range(100))
@@ -139,6 +195,7 @@ class ScannerAdaptersTest(unittest.TestCase):
         self.assertEqual(report["summary"]["medium"], 100)
         self.assertEqual(report["summary"]["score"], 64)
         self.assertFalse(report["scanner"]["partial"])
+        self.assertTrue(report["scanner"]["available"])
 
     def test_openscap_uses_rule_result_severity_and_preserves_over_800(self):
         xml = '<TestResult xmlns="http://checklists.nist.gov/xccdf/1.2">' + ''.join(f'<rule-result idref="rule-{i}" severity="high"><result>fail</result></rule-result>' for i in range(850)) + '</TestResult>'
