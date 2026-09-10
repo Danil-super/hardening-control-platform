@@ -183,8 +183,16 @@ def main():
 
     def gmp(request, *, authenticate=True):
         document = request if isinstance(request, str) else ET.tostring(request, encoding="unicode")
-        result = command(compose + ["exec", "-T", "gvm-tools", "python3", "-c", GMP_CLIENT],
-                         input=json.dumps({"password": password if authenticate else None, "xml": document}), timeout=110)
+        root = ET.fromstring(document)
+        description = root.tag + " [" + ", ".join(child.tag for child in root) + "]"
+        protocol["lastGmpRequest"] = {"command": root.tag, "elements": [child.tag for child in root],
+                                      "sha256": hashlib.sha256(document.encode()).hexdigest()}
+        save()
+        try:
+            result = command(compose + ["exec", "-T", "gvm-tools", "python3", "-c", GMP_CLIENT],
+                             input=json.dumps({"password": password if authenticate else None, "xml": document}), timeout=110)
+        except RuntimeError as error:
+            raise RuntimeError(description + ": " + str(error)) from error
         return ET.fromstring(result)
 
     def wait_for(name, probe, budget, diagnostics=None):
@@ -414,11 +422,16 @@ def main():
         selection.append(element("family", family))
         selection.append(element("nvt", oid=TRACE_OID))
         modify.append(selection)
+        gmp(modify)
+        # Use one operation per request. The tested gvmd aborted its request
+        # process on a combined selection plus repeated preference elements.
+        # Independent calls also identify the exact failing preference.
         for name, value in (("safe_checks", "yes"), ("auto_enable_dependencies", "yes"), ("optimize_test", "no")):
+            modify = element("modify_config", config_id=config_id)
             preference = element("preference")
             preference.extend([element("name", name), element("value", base64.b64encode(value.encode()).decode())])
             modify.append(preference)
-        gmp(modify)
+            gmp(modify)
         config_response = gmp(element("get_configs", config_id=config_id, details="1"))
         (output / "selected-config.xml").write_text(ET.tostring(config_response, encoding="unicode"))
         config = config_response.find("config")
