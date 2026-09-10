@@ -1,0 +1,111 @@
+// Exercises the production Next server with isolated state and explicit fixtures.
+// Does not claim to execute remote scanners or change any host's firewall.
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { setTimeout as delay } from "node:timers/promises";
+
+const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const temporary = mkdtempSync(path.join(os.tmpdir(), "hcp-http-smoke-"));
+const reports = path.join(temporary, "reports");
+mkdirSync(reports);
+const probe = createServer();
+await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
+const port = probe.address().port;
+await new Promise((resolve) => probe.close(resolve));
+const base = `http://127.0.0.1:${port}`;
+const reportId = "smoke-vulnerabilities-run-http";
+writeFileSync(path.join(reports, `${reportId}.json`), JSON.stringify({
+  inventoryHost: "smoke", hostname: "fixture-host", createdAt: new Date().toISOString(),
+  mode: "vulnerabilities", profileId: "cve_packages", summary: { score: 99, high: 7, total: 7 },
+  scanner: { available: false, partial: true },
+  vulnerabilityScan: { partial: true, message: "Фикстура: база отсутствует" },
+  findings: [{ id: "fixture", title: "Сканер недоступен", description: "Контролируемый вход интеграционного теста",
+    category: "CVE пакеты", source: "trivy", risk: "info", status: "manual", recommendation: "Повторить аудит", remediationAvailable: false }],
+}));
+let child;
+let output = "";
+let cookie = "";
+let checks = 0;
+
+async function start() {
+  child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], {
+    cwd: webDir, stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1",
+      HCP_STATE_DIR: temporary, HCP_REPORTS_DIR: reports,
+      HCP_ADMIN_PASSWORD: "http-smoke-password", HCP_AUTH_SECRET: "http-smoke-session-key",
+      HCP_AUDIT_HMAC_KEY: "http-smoke-ledger-key", HCP_SCHEDULE_API_KEY: "http-smoke-schedule-key",
+      HCP_TRIVY_MODE: "offline", HCP_TRIVY_CACHE_DIR: path.join(temporary, "trivy-cache"),
+      HCP_SSH_PRIVATE_KEY_PATH: path.join(temporary, "absent-key"), HCP_PRODUCTION_MODE: "true" },
+  });
+  for (const stream of [child.stdout, child.stderr]) stream.on("data", (value) => { output = (output + value).slice(-12000); });
+  for (let attempt = 0; attempt < 160; attempt++) {
+    if (child.exitCode !== null) throw new Error(`Next exited during startup: ${output}`);
+    try { if ((await fetch(`${base}/login`)).ok) return; } catch { /* server is starting */ }
+    await delay(250);
+  }
+  throw new Error(`Next did not become ready: ${output}`);
+}
+
+async function stop() {
+  if (!child || child.exitCode !== null) return;
+  const exited = new Promise((resolve) => child.once("exit", resolve));
+  child.kill("SIGTERM");
+  await Promise.race([exited, delay(5000)]);
+  if (child.exitCode === null) { child.kill("SIGKILL"); await exited; }
+}
+
+async function request(endpoint, { method = "GET", body, auth = true, origin = base, status = 200 } = {}) {
+  const response = await fetch(base + endpoint, {
+    method, redirect: "manual", headers: { "Content-Type": "application/json", Origin: origin, ...(auth && cookie ? { Cookie: cookie } : {}) },
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+  });
+  assert.equal(response.status, status, `${method} ${endpoint}`);
+  checks++;
+  return response;
+}
+
+try {
+  await start();
+  await request("/api/ansible/hosts", { auth: false, status: 401 });
+  await request(`/reports/agentless/${reportId}`, { auth: false, status: 307 });
+  await request("/reports/correlation/smoke", { auth: false, status: 307 });
+  await request("/api/ansible/auth/login", { method: "POST", body: { password: "wrong" }, auth: false, status: 401 });
+  const login = await request("/api/ansible/auth/login", { method: "POST", body: { password: "http-smoke-password" }, auth: false });
+  cookie = login.headers.get("set-cookie").split(";", 1)[0];
+  assert.match(cookie, /^hcp_admin_session=/);
+  await request("/api/settings/vulnerability-data", { method: "PATCH", origin: "https://foreign.invalid", body: { mode: "online" }, status: 403 });
+  const settings = await (await request("/api/settings/vulnerability-data", { method: "PATCH", body: { mode: "online" } })).json();
+  assert.equal(settings.database.mode, "online");
+  assert.equal(settings.freshness.status, "missing");
+  await request("/api/internal/scheduled/openscap", { method: "POST", body: {}, auth: false, status: 401 });
+  const report = await (await request(`/api/ansible/reports/${reportId}`)).json();
+  assert.equal(report.report.partial, true);
+  assert.equal(report.report.score, null);
+  assert.equal(report.report.high, 0);
+  assert.equal(report.report.eventsCount, 0);
+  const rendered = await (await request(`/reports/agentless/${reportId}`)).text();
+  assert.match(rendered, /Сканер не выполнил проверку/);
+  assert.doesNotMatch(rendered, />99%/);
+  await request("/reports/correlation/smoke");
+  await request("/hosts");
+  await request("/data-sources");
+  await request("/policies");
+  await stop();
+  await start();
+  const persisted = await (await request("/api/settings/vulnerability-data")).json();
+  assert.equal(persisted.database.mode, "online");
+  await request(`/api/ansible/reports/${reportId}`);
+  await request("/reports/agentless");
+  await request("/api/ansible/auth/logout", { method: "POST" });
+  cookie = "";
+  await request("/api/ansible/hosts", { status: 401 });
+  console.log(`PASS ${checks} HTTP checks: auth, CSRF, report rendering, source selection and restart persistence (isolated fixtures)`);
+} finally {
+  await stop();
+  rmSync(temporary, { recursive: true, force: true });
+}

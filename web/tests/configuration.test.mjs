@@ -144,8 +144,8 @@ test("OpenSCAP and Greenbone XML are normalized as distinct sources", () => {
     const greenboneInput = path.join(temporaryDir, "greenbone.xml");
     const greenboneOutput = path.join(temporaryDir, "greenbone.json");
     writeFileSync(greenboneInput, `<?xml version="1.0"?>
-      <report><results><result id="result-1"><host>10.0.0.10</host><port>443/tcp</port><threat>High</threat><severity>8.8</severity><description>Test finding</description><solution>Patch package</solution><nvt oid="1.3.6.1.4.1"><name>TLS issue</name><cve>CVE-2026-0001</cve></nvt></result></results></report>`);
-    execFileSync("python3", [script, "greenbone-report", "--input", greenboneInput, "--inventory-host", "host-1", "--run-id", "run-test", "--output", greenboneOutput]);
+      <report><scan_run_status>Done</scan_run_status><results><result id="result-1"><host>10.0.0.10</host><port>443/tcp</port><threat>High</threat><severity>8.8</severity><qod><value>80</value></qod><description>Test finding</description><solution>Patch package</solution><nvt oid="1.3.6.1.4.1"><name>TLS issue</name><cve>CVE-2026-0001</cve></nvt></result></results></report>`);
+    execFileSync("python3", [script, "greenbone-report", "--input", greenboneInput, "--host", "10.0.0.10", "--inventory-host", "host-1", "--run-id", "run-test", "--output", greenboneOutput]);
     const greenbone = JSON.parse(readFileSync(greenboneOutput, "utf8"));
     assert.equal(greenbone.mode, "greenbone");
     assert.equal(greenbone.findings[0].source, "greenbone");
@@ -166,7 +166,8 @@ test("deep audit scheduling keeps package scanning authenticated and OpenSCAP op
   assert.match(scheduler, /run_openscap/);
   assert.match(deepService, /HCP_DEEP_SCHEDULE_TASKS=packages/);
   assert.match(deepTimer, /OnCalendar=\*-\*-\* 02:30:00/);
-  assert.match(route, /timingSafeEqual/);
+  assert.match(route, /isScheduledRequestAuthorized/);
+  assert.match(read(path.join("web", "lib", "scheduled-auth.ts")), /timingSafeEqual/);
   assert.match(route, /syncDependencyTrack/);
 });
 
@@ -177,7 +178,7 @@ test("correlation and vendor-aware package evidence are available in reports", (
   const inventory = read(path.join("ansible", "playbooks", "package-inventory.yml"));
   assert.match(correlation, /CVE-\\d\{4\}/);
   assert.match(correlation, /HCP_CORRELATION_MAX_AGE_HOURS/);
-  assert.match(reportPage, /подтверждено/);
+  assert.match(reportPage, /Совпадение CVE или порта не подтверждает уязвимость/);
   assert.match(vulnerabilities, /vendor_status=/);
   assert.match(vulnerabilities, /will_not_fix/);
   assert.match(inventory, /EPOCHNUM/);

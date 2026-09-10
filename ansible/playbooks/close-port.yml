@@ -1,80 +1,29 @@
 ---
-- name: Close selected port with host firewall
+- name: Close a port with an explicit high-priority firewall deny
   hosts: linux_hosts
   become: true
   gather_facts: false
-
-  vars:
-    target_protocol: "{{ target_protocol | default('tcp') }}"
-
   tasks:
-    - name: Validate target port
+    - name: Validate port request
       ansible.builtin.assert:
         that:
           - target_port is defined
-          - target_port | int > 0
-          - target_port | int <= 65535
-          - target_protocol in ['tcp', 'udp']
-        fail_msg: "Укажите target_port от 1 до 65535 и target_protocol tcp/udp."
+          - (target_port | string) is match('^[0-9]{1,5}$')
+          - (target_protocol | default('tcp')) in ['tcp', 'udp']
 
-    - name: Check ufw availability
-      ansible.builtin.shell: command -v ufw
+    - name: Read the active SSH transport endpoint
+      ansible.builtin.command: printenv SSH_CONNECTION
+      become: false
+      register: hcp_ssh_connection
       changed_when: false
+      check_mode: false
       failed_when: false
-      register: ufw_binary
 
-    - name: Check firewalld availability
-      ansible.builtin.shell: command -v firewall-cmd
-      changed_when: false
-      failed_when: false
-      register: firewalld_binary
-
-    - name: Read ufw status
-      ansible.builtin.command: ufw status
-      changed_when: false
-      failed_when: false
-      register: ufw_status
-      when: ufw_binary.rc == 0
-
-    - name: Read firewalld status
-      ansible.builtin.command: firewall-cmd --state
-      changed_when: false
-      failed_when: false
-      register: firewalld_status
-      when: firewalld_binary.rc == 0
-
-    - name: Require an active supported firewall
-      ansible.builtin.assert:
-        that:
-          - >-
-            (ufw_binary.rc == 0 and 'Status: active' in (ufw_status.stdout | default('')))
-            or (firewalld_binary.rc == 0 and (firewalld_status.stdout | default('')) == 'running')
-        fail_msg: "На хосте нет активного ufw/firewalld. Автоматическое закрытие порта остановлено без изменений."
-
-    - name: Deny selected port with ufw
-      ansible.builtin.command: "ufw deny {{ target_port }}/{{ target_protocol }}"
-      when:
-        - ufw_binary.rc == 0
-        - "'Status: active' in (ufw_status.stdout | default(''))"
-
-    - name: Remove selected port from firewalld runtime config
-      ansible.builtin.command: "firewall-cmd --remove-port={{ target_port }}/{{ target_protocol }}"
-      changed_when: false
-      failed_when: false
-      when:
-        - firewalld_binary.rc == 0
-        - "(firewalld_status.stdout | default('')) == 'running'"
-
-    - name: Remove selected port from firewalld permanent config
-      ansible.builtin.command: "firewall-cmd --permanent --remove-port={{ target_port }}/{{ target_protocol }}"
-      changed_when: false
-      failed_when: false
-      when:
-        - firewalld_binary.rc == 0
-        - "(firewalld_status.stdout | default('')) == 'running'"
-
-    - name: Reload firewalld
-      ansible.builtin.command: firewall-cmd --reload
-      when:
-        - firewalld_binary.rc == 0
-        - "(firewalld_status.stdout | default('')) == 'running'"
+    - name: Execute or preview a port deny
+      ansible.builtin.include_tasks: ../tasks/firewall-operation.yml
+      vars:
+        hcp_firewall_argv: >-
+          {{ ['closePort', '--port', target_port | string,
+              '--protocol', target_protocol | default('tcp'),
+              '--ssh-port', (hcp_ssh_connection.stdout.split()[3] if hcp_ssh_connection.stdout.split() | length == 4 else ansible_port | default(22)) | string]
+             + (['--check'] if ansible_check_mode else []) }}

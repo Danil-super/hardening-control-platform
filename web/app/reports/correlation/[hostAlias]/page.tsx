@@ -36,7 +36,7 @@ export default async function HostCorrelationPage({ params }: { params: Promise<
   const { hostAlias } = await params;
   const report = buildHostCorrelation(decodeURIComponent(hostAlias));
   if (!report) notFound();
-  const confirmed = report.findings.filter((item) => item.confidence === "confirmed").length;
+  const manual = report.findings.filter((item) => item.confidence === "manual").length;
   const high = report.findings.filter((item) => item.risk === "high").length;
 
   return (
@@ -54,16 +54,29 @@ export default async function HostCorrelationPage({ params }: { params: Promise<
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Проблемы" value={report.findings.length} detail="Только свежие доказательства" icon={<FileText size={18} />} />
-        <SummaryCard label="Подтверждены" value={confirmed} detail="Двумя и более источниками" icon={<CheckCircle2 size={18} />} />
+        <SummaryCard label="Требуют проверки" value={manual} detail="Неполные результаты или исключения" icon={<CheckCircle2 size={18} />} />
         <SummaryCard label="Высокий риск" value={high} detail="Не является суммой CVSS" icon={<AlertTriangle size={18} />} />
-        <SummaryCard label="Свежие источники" value={report.freshReports.length} detail={`Устаревших: ${report.staleReports.length}`} icon={<ShieldCheck size={18} />} />
+        <SummaryCard label="Полные свежие проверки" value={report.freshReports.filter((item) => !item.partial).length} detail={`Неполных или устаревших: ${report.partialReports.length}`} icon={<ShieldCheck size={18} />} />
       </div>
 
       {report.staleReports.length ? (
         <section className="rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
-          В сводку не включены устаревшие источники: {report.staleReports.map((item) => `${item.mode} (${formatDate(item.createdAt)})`).join(", ")}. Повторите соответствующий аудит, прежде чем принимать решение.
+          В сводку не включены источники с устаревшей или некорректной датой: {report.staleReports.map((item) => `${item.mode} (${formatDate(item.createdAt)})`).join(", ")}. Повторите соответствующий аудит, прежде чем принимать решение.
         </section>
       ) : null}
+
+      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+        <h2 className="font-semibold text-white">Покрытие проверками</h2>
+        <p className="mt-2 text-sm text-slate-400">Совпадение CVE или порта не подтверждает уязвимость. Передача SBOM и сбор сведений не являются завершённым аудитом.</p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+          {report.coverage.map((item) => (
+            <p key={item.reportId} className="text-sm text-slate-300">
+              {item.mode}: {!item.auditEvidence ? "сведения / передача данных" : !item.available ? "недоступен" : !item.validTime ? "некорректная дата" : !item.fresh ? "устарел" : item.partial ? "частичный результат" : "завершён"}
+            </p>
+          ))}
+          {!report.coverage.length ? <p className="text-sm text-slate-400">Проверки ещё не проводились.</p> : null}
+        </div>
+      </section>
 
       <section className="space-y-3">
         {report.findings.length ? report.findings.map((finding) => (
@@ -77,7 +90,7 @@ export default async function HostCorrelationPage({ params }: { params: Promise<
               <div className="flex flex-wrap gap-2 text-xs font-semibold">
                 <span className={`rounded-md border px-2 py-1 ${riskTone(finding.risk)}`}>{finding.risk}</span>
                 <span className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2 py-1 text-sky-100">
-                  {finding.confidence === "confirmed" ? "подтверждено" : finding.confidence === "manual" ? "ручная оценка" : "один источник"}
+                  {finding.confidence === "manual" ? "ручная оценка" : "обнаруженные признаки"}
                 </span>
               </div>
             </div>

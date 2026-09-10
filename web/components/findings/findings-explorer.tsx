@@ -20,6 +20,10 @@ const sourceLabels: Record<Finding["source"], string> = {
   ssh_audit: "ssh-audit с control node",
   nmap: "Nmap с control node",
   lynis: "Временный запуск Lynis",
+  openscap: "OpenSCAP / SCAP Security Guide",
+  trivy: "Trivy",
+  greenbone: "Greenbone / OpenVAS",
+  dependency_track: "OWASP Dependency-Track",
 };
 
 function categoryLabel(category: string) {
@@ -68,7 +72,7 @@ export function FindingsExplorer({
     <section className="space-y-4">
       <div className="flex flex-col gap-3 rounded-md border border-slate-800 bg-slate-950/70 p-4 lg:flex-row lg:items-center lg:justify-between">
         <div>
-          <p className="text-sm font-semibold text-white">Найденные проблемы</p>
+          <p className="text-sm font-semibold text-white">Результаты проверок</p>
           <p className="mt-1 text-sm text-slate-400">Показано: {filteredFindings.length} из {findings.length}</p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -87,6 +91,7 @@ export function FindingsExplorer({
         </div>
         <select
           value={category}
+          aria-label="Категория проверки"
           onChange={(event) => setCategory(event.target.value)}
           className="h-10 rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
         >
@@ -127,7 +132,7 @@ export function FindingsExplorer({
             {finding.remediationAvailable && hostAlias ? <LinkButton href={remediationLinkHref ?? "/hosts"} variant="secondary" className="mt-4">Открыть управление хостом</LinkButton> : null}
           </article>
         )) : (
-          <div className="rounded-md border border-slate-800 bg-slate-950/70 px-4 py-8 text-center text-sm text-slate-400">Для выбранных фильтров проблем нет.</div>
+          <div className="rounded-md border border-slate-800 bg-slate-950/70 px-4 py-8 text-center text-sm text-slate-400">Нет результатов, соответствующих выбранным фильтрам.</div>
         )}
       </div>
 

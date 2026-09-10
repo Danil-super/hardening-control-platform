@@ -1,5 +1,8 @@
 .git
 .vscode
+.env
+.env.*
+.lab
 node_modules
 web/node_modules
 web/.next
@@ -7,6 +10,7 @@ web/.env*
 ansible/inventory.ini
 ansible/incidents.json
 ansible/scheduler.json
+ansible/*.sqlite*
 ansible/reports
 ansible/playbooks/custom
 secrets

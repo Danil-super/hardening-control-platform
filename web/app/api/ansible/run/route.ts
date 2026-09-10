@@ -10,11 +10,13 @@ import {
   validateExtraVars,
 } from "@/lib/ansible-control";
 import { applyOpenScapExceptions, resolveOpenScapPolicyForHost } from "@/lib/openscap-policy";
+import { inspectAuditReports } from "@/lib/audit-result";
+import { readAnsibleReport } from "@/lib/ansible-reports";
+import { listOpenScapExceptions } from "@/lib/state-store";
 import {
   applyRemediation,
   isReversibleRemediationAction,
   previewRemediation,
-  wouldBlockProtectedAddress,
 } from "@/lib/remediation";
 
 export const dynamic = "force-dynamic";
@@ -82,13 +84,6 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
-    if (action === "blockIp" && wouldBlockProtectedAddress(limit, extraVars.values.block_ip)) {
-      return NextResponse.json(
-        { ok: false, error: "protected_address_block_prohibited", message: "Нельзя автоматически блокировать IP управляемого хоста или адрес control node." },
-        { status: 400 },
-      );
-    }
-
     try {
       if (mode === "preview") {
         const preview = await previewRemediation({
@@ -118,15 +113,19 @@ export async function POST(request: Request) {
         extraVars: extraVars.values,
         reason: body.reason.trim(),
       });
+      const postAudit = applied.postAuditReportId ? readAnsibleReport(applied.postAuditReportId) : null;
+      const partial = Boolean(applied.postAuditError || !postAudit || postAudit.partial);
       return NextResponse.json({
         ok: true,
+        partial,
         mode,
         action,
         profileId,
         limit,
         message: applied.postAuditError
           ? `Изменение применено, но повторный аудит завершился ошибкой: ${applied.postAuditError}`
-          : "Изменение применено: резервная копия создана, повторный аудит выполнен.",
+          : partial ? "Изменение применено и резервная копия создана, но повторный аудит неполный. Проверьте ограничения отчёта."
+            : "Изменение применено: резервная копия создана, повторный аудит выполнен.",
         transaction: applied.transaction,
         preAuditReportId: applied.preAuditReportId,
         postAuditReportId: applied.postAuditReportId,
@@ -162,9 +161,11 @@ export async function POST(request: Request) {
 
   let runnerExtraVars = extraVars.values;
   let openScapPolicy: ReturnType<typeof resolveOpenScapPolicyForHost> | null = null;
+  let openScapExceptions: ReturnType<typeof listOpenScapExceptions> = [];
   if (action === "openScapAudit" && limit) {
     try {
       openScapPolicy = resolveOpenScapPolicyForHost(limit);
+      openScapExceptions = listOpenScapExceptions();
       if (openScapPolicy.policy) {
         runnerExtraVars = {
           ...runnerExtraVars,
@@ -190,21 +191,23 @@ export async function POST(request: Request) {
     });
     const reportId = reportIdForRun({ action, profileId, limit, reportRunId });
     let exceptionsApplied = 0;
+    let policyWarning: string | null = null;
     if (action === "openScapAudit" && limit && reportId) {
       try {
-        exceptionsApplied = applyOpenScapExceptions({ hostAlias: limit, reportId }).applied;
-      } catch {
-        // The scanner output is still valid even if a policy annotation could
-        // not be saved. The raw report must remain available to the operator.
+        exceptionsApplied = applyOpenScapExceptions({ hostAlias: limit, reportId, resolved: openScapPolicy ?? undefined, exceptions: openScapExceptions }).applied;
+      } catch (error) {
+        policyWarning = `Не удалось учесть исключения OpenSCAP: ${error instanceof Error ? error.message : "неизвестная ошибка"}`;
       }
     }
-    const auditMessage = action === "openScapAudit"
+    const outcome = inspectAuditReports({ action, profileId, limit, reportRunId });
+    if (policyWarning) { outcome.partial = true; outcome.warnings.push(policyWarning); }
+    const auditMessage = (action === "openScapAudit"
       ? `${openScapPolicy?.policy ? `OpenSCAP: профиль группы ${openScapPolicy.policy.groupName}.` : "OpenSCAP: использована конфигурация окружения."}${exceptionsApplied ? ` Применено исключений: ${exceptionsApplied}.` : ""}`
-      : "Проверка выполнена.";
+      : "Проверка выполнена.") + (outcome.partial ? ` Проверка неполная: ${outcome.warnings.join(" ")}` : "");
     appendIncident({
       action,
       kind: "audit",
-      status: "success",
+      status: outcome.partial ? "failed" : "success",
       profileId,
       limit: limit || null,
       message: auditMessage,
@@ -218,6 +221,10 @@ export async function POST(request: Request) {
       limit: limit || null,
       reportRunId,
       reportId,
+      reportIds: outcome.reportIds,
+      partial: outcome.partial,
+      warnings: outcome.warnings,
+      message: auditMessage,
       openScapPolicy: openScapPolicy?.policy ? {
         groupName: openScapPolicy.policy.groupName,
         datastream: openScapPolicy.policy.datastream,

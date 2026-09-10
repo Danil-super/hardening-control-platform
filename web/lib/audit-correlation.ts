@@ -1,4 +1,4 @@
-import { listAnsibleReports, readAnsibleReport, targetAliasFromReportFileName, type AnsibleReportSummary } from "@/lib/ansible-reports";
+import { listAnsibleReports, readAnsibleReport, targetAliasFromReport, reportTimestamp, type AnsibleReportSummary } from "@/lib/ansible-reports";
 import type { Finding, FindingSource, RiskLevel } from "@/types";
 
 export type CorrelationEvidence = {
@@ -10,6 +10,7 @@ export type CorrelationEvidence = {
   title: string;
   status: Finding["status"];
   evidence: string;
+  partial: boolean;
 };
 
 export type CorrelatedFinding = {
@@ -18,7 +19,7 @@ export type CorrelatedFinding = {
   category: string;
   risk: RiskLevel;
   status: Finding["status"];
-  confidence: "confirmed" | "observed" | "manual";
+  confidence: "observed" | "manual";
   sources: CorrelationEvidence[];
   description: string;
   recommendation: string;
@@ -30,6 +31,10 @@ export type CorrelationCoverage = {
   profileId: string | null;
   createdAt: string | null;
   fresh: boolean;
+  partial: boolean;
+  available: boolean;
+  validTime: boolean;
+  auditEvidence: boolean;
 };
 
 function safeHostAlias(value: string) {
@@ -42,8 +47,7 @@ function maxAgeHours() {
 }
 
 function reportTime(report: AnsibleReportSummary) {
-  const timestamp = Date.parse(report.createdAt ?? report.modifiedAt);
-  return Number.isNaN(timestamp) ? 0 : timestamp;
+  return reportTimestamp(report);
 }
 
 function reportKey(report: AnsibleReportSummary) {
@@ -81,9 +85,15 @@ function portFromFinding(finding: Finding) {
 
 function identityForFinding(finding: Finding) {
   const cve = cveFromFinding(finding);
-  if (cve) return { key: `cve:${cve}`, title: cve, category: "Подтверждённые CVE" };
   const port = portFromFinding(finding);
-  if (port) return { key: `network:${port}`, title: `Сетевой сервис ${port}`, category: "Сетевая поверхность" };
+  if (cve) {
+    const packageName = finding.evidence?.match(/\bpackage=([^;\s]+)/)?.[1];
+    // A CVE in two different packages or network services is not the same
+    // finding, and a banner/CVE match is never proof of exploitability.
+    const component = packageName ? `package:${packageName}` : port ? `service:${port}` : `${finding.source}:${finding.id}`;
+    return { key: `cve:${cve}:${component}`, title: packageName ? `${cve} · ${packageName}` : finding.title, category: "Обнаруженные CVE" };
+  }
+  if (port) return { key: `network:${port}:${finding.source}:${finding.id}`, title: finding.title, category: "Сетевая поверхность" };
   const rule = finding.evidence?.match(/\brule=([^;\s]+)/)?.[1];
   if (rule) return { key: `rule:${rule}`, title: finding.title, category: finding.category };
   const oid = finding.evidence?.match(/\boid=([^;\s]+)/)?.[1];
@@ -110,12 +120,13 @@ export function buildHostCorrelation(hostAlias: string) {
   const ageHours = maxAgeHours();
   const minimumTime = now - ageHours * 60 * 60 * 1000;
   const reports = listAnsibleReports().filter((report) => (
-    targetAliasFromReportFileName(report.fileName, report.profileId, report.mode) === hostAlias
+    targetAliasFromReport(report) === hostAlias
   ));
   const latestByKind = new Map<string, AnsibleReportSummary>();
   for (const report of reports) {
     const key = reportKey(report);
-    if (!latestByKind.has(key)) latestByKind.set(key, report);
+    const previous = latestByKind.get(key);
+    if (!previous || reportTime(report) > reportTime(previous)) latestByKind.set(key, report);
   }
 
   const coverage = Array.from(latestByKind.values()).map((report) => ({
@@ -123,11 +134,15 @@ export function buildHostCorrelation(hostAlias: string) {
     mode: report.mode,
     profileId: report.profileId,
     createdAt: report.createdAt,
-    fresh: reportTime(report) >= minimumTime,
+    fresh: report.reportTimeValid && reportTime(report) >= minimumTime,
+    partial: report.partial,
+    available: report.available,
+    validTime: report.reportTimeValid,
+    auditEvidence: !["facts", "events", "packages", "dependency-track"].includes(report.mode),
   }));
   const grouped = new Map<string, { identity: ReturnType<typeof identityForFinding>; findings: Finding[]; sources: CorrelationEvidence[] }>();
   for (const report of latestByKind.values()) {
-    if (reportTime(report) < minimumTime) continue;
+    if (!report.reportTimeValid || reportTime(report) < minimumTime || ["facts", "events", "packages", "dependency-track"].includes(report.mode)) continue;
     const detail = readAnsibleReport(report.id);
     if (!detail) continue;
     for (const finding of detail.findings) {
@@ -144,6 +159,7 @@ export function buildHostCorrelation(hostAlias: string) {
         title: finding.title,
         status: finding.status,
         evidence: finding.evidence ?? "Нет дополнительного технического доказательства.",
+        partial: report.partial,
       });
       grouped.set(identity.key, group);
     }
@@ -153,9 +169,9 @@ export function buildHostCorrelation(hostAlias: string) {
     const sources = group.sources.sort((left, right) => sourceLabel(left.source).localeCompare(sourceLabel(right.source), "ru"));
     const independentSources = new Set(sources.map((item) => item.source));
     const status = statusFor(group.findings);
-    const confidence = status === "manual"
+    const confidence = status === "manual" || sources.some((source) => source.partial)
       ? "manual"
-      : independentSources.size > 1 ? "confirmed" : "observed";
+      : "observed";
     const sourceText = Array.from(independentSources).map(sourceLabel).join(", ");
     return {
       id: key.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 160),
@@ -165,11 +181,9 @@ export function buildHostCorrelation(hostAlias: string) {
       status,
       confidence,
       sources,
-      description: confidence === "confirmed"
-        ? `Проблема подтверждена независимыми источниками: ${sourceText}.`
-        : confidence === "manual"
+      description: confidence === "manual"
           ? `Есть неполное или требующее ручной оценки доказательство из: ${sourceText}.`
-          : `Проблема обнаружена источником: ${sourceText}. Для повышения уверенности сопоставьте её с ролью хоста и данными поставщика ОС.`,
+          : `Признаки обнаружены: ${sourceText}. Совпадение идентификаторов не подтверждает применимость уязвимости; проверьте компонент, его версию и данные поставщика ОС.`,
       recommendation: group.findings[0]?.recommendation ?? "Проверьте техническое доказательство и назначьте владельца исправления.",
     };
   }).sort((left, right) => {
@@ -183,6 +197,7 @@ export function buildHostCorrelation(hostAlias: string) {
     findings,
     coverage,
     staleReports: coverage.filter((item) => !item.fresh),
-    freshReports: coverage.filter((item) => item.fresh),
+    freshReports: coverage.filter((item) => item.fresh && item.auditEvidence),
+    partialReports: coverage.filter((item) => item.auditEvidence && (item.partial || !item.fresh)),
   };
 }

@@ -1,45 +1,32 @@
-import { timingSafeEqual } from "node:crypto";
 import { NextResponse } from "next/server";
 import { appendIncident } from "@/lib/ansible-control";
-import { listAnsibleReports, targetAliasFromReportFileName } from "@/lib/ansible-reports";
+import { listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
+import { isScheduledRequestAuthorized, isScheduledRunId } from "@/lib/scheduled-auth";
 import { syncDependencyTrack } from "@/lib/dependency-track";
 import { scanPackageInventory } from "@/lib/vulnerability-scan";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-function isAuthorized(request: Request) {
-  const expected = process.env.HCP_SCHEDULE_API_KEY?.trim();
-  const received = request.headers.get("x-hcp-schedule-key")?.trim();
-  if (!expected || !received || expected.length !== received.length) {
-    return false;
-  }
-  return timingSafeEqual(Buffer.from(expected), Buffer.from(received));
-}
-
-function safeRunId(value: unknown): value is string {
-  return typeof value === "string" && /^schedule-[A-Za-z0-9_.:-]{8,120}$/.test(value);
-}
-
 export async function POST(request: Request) {
-  if (!isAuthorized(request)) {
+  if (!isScheduledRequestAuthorized(request)) {
     return NextResponse.json({ ok: false, message: "Недействительный ключ планировщика." }, { status: 401 });
   }
   const body = await request.json().catch(() => ({}));
-  if (!safeRunId(body?.reportRunId)) {
+  if (!isScheduledRunId(body?.reportRunId)) {
     return NextResponse.json({ ok: false, message: "Некорректный reportRunId планировщика." }, { status: 400 });
   }
 
   const packageReports = listAnsibleReports().filter((report) => (
-    report.mode === "packages" && report.id.endsWith(`-packages-${body.reportRunId}`)
+    report.mode === "packages" && report.reportTimeValid && report.id.endsWith(`-packages-${body.reportRunId}`)
   ));
   if (!packageReports.length) {
     return NextResponse.json({ ok: false, message: "Новые отчёты инвентаря пакетов не найдены." }, { status: 409 });
   }
 
-  const results: Array<{ hostAlias: string; vulnerabilityReportId?: string; dependencyTrack?: string; error?: string }> = [];
+  const results: Array<{ hostAlias: string; vulnerabilityReportId?: string; dependencyTrack?: string; partial?: boolean; error?: string }> = [];
   for (const packageReport of packageReports) {
-    const hostAlias = targetAliasFromReportFileName(packageReport.fileName, packageReport.profileId, packageReport.mode);
+    const hostAlias = targetAliasFromReport(packageReport);
     try {
       const scan = await scanPackageInventory({ reportId: packageReport.id, hostAlias });
       const sbomFile = (scan.report as { vulnerabilityScan?: { sbomFile?: unknown } }).vulnerabilityScan?.sbomFile;
@@ -51,13 +38,14 @@ export async function POST(request: Request) {
           dependencyTrack = `Не передан: ${error instanceof Error ? error.message : "неизвестная ошибка"}`;
         }
       }
-      results.push({ hostAlias, vulnerabilityReportId: scan.reportId, dependencyTrack });
+      const partial = Boolean((scan.report as { vulnerabilityScan?: { partial?: boolean } }).vulnerabilityScan?.partial);
+      results.push({ hostAlias, vulnerabilityReportId: scan.reportId, dependencyTrack, partial });
     } catch (error) {
       results.push({ hostAlias, error: error instanceof Error ? error.message : "неизвестная ошибка" });
     }
   }
 
-  const failed = results.filter((result) => result.error);
+  const failed = results.filter((result) => result.error || result.partial);
   appendIncident({
     action: "scheduledPackageVulnerabilityScan",
     kind: "audit",

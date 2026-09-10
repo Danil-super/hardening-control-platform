@@ -4,7 +4,9 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle2,
+  Copy,
   FileText,
+  KeyRound,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -12,6 +14,7 @@ import {
   Server,
   ShieldCheck,
   Terminal,
+  Upload,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Button, LinkButton } from "@/components/ui/button";
@@ -25,6 +28,8 @@ type HealthPayload = {
 
 type RunPayload = {
   ok?: boolean;
+  partial?: boolean;
+  warnings?: string[];
   action?: string;
   command?: string;
   message?: string;
@@ -41,7 +46,7 @@ type RemediationTransaction = {
   createdAt: string;
   hostAlias: string;
   action: string;
-  status: "preparing" | "backed_up" | "applied" | "failed" | "rolled_back";
+  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back";
   reason: string;
   backupRef: string | null;
   preAuditReportId: string | null;
@@ -103,6 +108,19 @@ type DiscoveryPayload = {
   message?: string;
 };
 
+type AccessPayload = {
+  ok?: boolean;
+  publicKey?: string;
+  fingerprint?: string | null;
+  message?: string;
+};
+
+type HostKeyPayload = {
+  ok?: boolean;
+  fingerprints?: Array<{ fingerprint: string; algorithm: string }>;
+  message?: string;
+};
+
 const profileOptions = [
   { id: "basic_linux", label: "Базовый Linux" },
   { id: "ssh_security", label: "SSH-сервер" },
@@ -119,6 +137,7 @@ const auditActions = [
   { id: "sshCryptoAudit", label: "Проверить SSH-криптографию", icon: ShieldCheck, advanced: true },
   { id: "networkPortScan", label: "Проверить открытые порты", icon: Search, requiresConfirmation: true, advanced: true },
   { id: "lynisTemporaryAudit", label: "Запустить Lynis", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
+  { id: "openScapAudit", label: "Проверить SSG-профиль OpenSCAP", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
 ] as const;
 
 const responseActions = [
@@ -134,7 +153,9 @@ const transactionStatusLabels: Record<RemediationTransaction["status"], string> 
   backed_up: "резервная копия создана",
   applied: "применено",
   failed: "ошибка",
-  rolled_back: "откачено",
+  rolling_back: "выполняется откат",
+  rollback_failed: "ошибка отката",
+  rolled_back: "восстановлено",
 };
 
 const transactionActionLabels: Record<string, string> = {
@@ -182,6 +203,7 @@ export function AnsibleControlClient() {
   const [manualGroup, setManualGroup] = useState("linux_hosts");
   const [manualBecome, setManualBecome] = useState(true);
   const [preflight, setPreflight] = useState<PreflightPayload | null>(null);
+  const [preflightFor, setPreflightFor] = useState("");
   const [scanCidr, setScanCidr] = useState("");
   const [discovery, setDiscovery] = useState<DiscoveryPayload | null>(null);
   const [targetPort, setTargetPort] = useState("23");
@@ -190,15 +212,37 @@ export function AnsibleControlClient() {
   const [changeReason, setChangeReason] = useState("");
   const [confirmedHost, setConfirmedHost] = useState("");
   const [transactions, setTransactions] = useState<RemediationTransaction[]>([]);
+  const [access, setAccess] = useState<AccessPayload | null>(null);
+  const [hostKeyScan, setHostKeyScan] = useState<HostKeyPayload | null>(null);
+  const [trustedFingerprint, setTrustedFingerprint] = useState("");
+  const [accessLoading, setAccessLoading] = useState("");
+  const [accessMessage, setAccessMessage] = useState("");
+  const [copied, setCopied] = useState("");
+  const [greenboneFile, setGreenboneFile] = useState<File | null>(null);
+  const [greenboneMessage, setGreenboneMessage] = useState("");
 
   const selectedHost = useMemo(
     () => hosts?.hosts?.find((host) => host.alias === selectedAlias) ?? null,
     [hosts, selectedAlias],
   );
 
+  const connectionSignature = useMemo(
+    () => [manualAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo"].join("\u0000"),
+    [manualAddress, manualAlias, manualBecome, manualPort, manualUser],
+  );
+
   useEffect(() => {
     void refreshAll();
+    void loadControlKey();
   }, []);
+
+  const installPublicKeyCommand = useMemo(() => {
+    if (!access?.publicKey) {
+      return "";
+    }
+    const quotedKey = access.publicKey.replaceAll("'", "'\"'\"'");
+    return `install -d -m 700 ~/.ssh && printf '%s\\n' '${quotedKey}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
+  }, [access?.publicKey]);
 
   async function refreshAll() {
     setLoading("refresh");
@@ -218,6 +262,8 @@ export function AnsibleControlClient() {
         setSelectedAlias(nextHosts.hosts[0].alias);
       }
       return nextHosts as HostsPayload;
+    } catch {
+      setRunResult({ ok: false, message: "Не удалось обновить данные. Проверьте подключение к платформе и повторите запрос." });
     } finally {
       setLoading("");
     }
@@ -236,7 +282,92 @@ export function AnsibleControlClient() {
     setTransactions(payload.transactions ?? []);
   }
 
+  async function loadControlKey() {
+    setAccessLoading("key");
+    try {
+      const response = await fetch("/api/ansible/access");
+      const payload = await response.json();
+      setAccess(payload);
+      if (!payload.ok) {
+        setAccessMessage(payload.message ?? "Не удалось получить публичный ключ узла управления.");
+      }
+    } catch {
+      setAccess({ ok: false, message: "Не удалось связаться с мастером подключения." });
+      setAccessMessage("Не удалось связаться с мастером подключения.");
+    } finally {
+      setAccessLoading("");
+    }
+  }
+
+  async function copyToClipboard(value: string, label: string) {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(label);
+    } catch {
+      setAccessMessage("Не удалось скопировать автоматически. Выделите значение и скопируйте вручную.");
+    }
+  }
+
+  async function scanHostFingerprint() {
+    if (!manualAddress) {
+      setAccessMessage("Сначала укажите IP-адрес или hostname целевого хоста.");
+      return;
+    }
+    setAccessLoading("scan");
+    setAccessMessage("");
+    setHostKeyScan(null);
+    try {
+      const response = await fetch("/api/ansible/access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ operation: "scan", address: manualAddress, port: manualPort }),
+      });
+      const payload = await response.json();
+      setHostKeyScan(payload);
+      setAccessMessage(payload.message ?? "");
+    } catch {
+      setAccessMessage("Не удалось получить fingerprint SSH-хоста.");
+    } finally {
+      setAccessLoading("");
+    }
+  }
+
+  async function trustScannedHostKey() {
+    if (!manualAddress || !trustedFingerprint) {
+      setAccessMessage("Укажите хост и вставьте fingerprint, подтверждённый через консоль или доверенный канал.");
+      return;
+    }
+    setAccessLoading("trust");
+    setAccessMessage("");
+    try {
+      const response = await fetch("/api/ansible/access", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          operation: "trust",
+          address: manualAddress,
+          port: manualPort,
+          expectedFingerprint: trustedFingerprint.trim(),
+        }),
+      });
+      const payload = await response.json();
+      setAccessMessage(payload.message ?? "");
+    } catch {
+      setAccessMessage("Не удалось сохранить проверенный SSH-ключ сервера.");
+    } finally {
+      setAccessLoading("");
+    }
+  }
+
   async function addManualHost() {
+    if (!preflight?.ok || preflightFor !== connectionSignature) {
+      setRunResult({
+        ok: false,
+        action: "addHost",
+        message: "Сначала успешно проверьте это SSH-подключение. После изменения полей проверку нужно повторить.",
+      });
+      return;
+    }
     setLoading("manualHost");
     setRunResult(null);
     setFreshReportHref("");
@@ -321,6 +452,8 @@ export function AnsibleControlClient() {
     setLoading("preflight");
     setRunResult(null);
     setPreflight(null);
+    setPreflightFor("");
+    const checkedConnection = connectionSignature;
     try {
       const response = await fetch("/api/ansible/hosts/preflight", {
         method: "POST",
@@ -334,6 +467,9 @@ export function AnsibleControlClient() {
         }),
       });
       setPreflight(await response.json());
+      setPreflightFor(checkedConnection);
+    } catch {
+      setPreflight({ ok: false, message: "Проверка подключения не завершена: нет ответа от платформы." });
     } finally {
       setLoading("");
     }
@@ -380,6 +516,8 @@ export function AnsibleControlClient() {
     );
     const confirmationText = action === "lynisTemporaryAudit"
       ? "Lynis будет временно передан на выбранную ВМ, выполнен с sudo, а его каталог и сырой отчет будут удалены. Продолжить?"
+      : action === "openScapAudit"
+        ? "OpenSCAP выполнится на выбранной ВМ с заранее установленным SSG datastream. Запуск не меняет настройки, но может занять до 30 минут. Продолжить?"
       : action === "networkPortScan"
         ? "Nmap выполнит сетевую проверку top-100 TCP-портов выбранного хоста с control node. Продолжить?"
         : "Запустить проверку?";
@@ -432,12 +570,28 @@ export function AnsibleControlClient() {
           body: JSON.stringify({ hostAlias: selectedAlias, reportId: payload.reportId }),
         });
         const cvePayload = await cveResponse.json();
+        let dependencyTrackMessage = "";
+        let dependencyTrackFailed = false;
+        if (cvePayload.ok && cvePayload.reportId && cvePayload.report?.vulnerabilityScan?.sbomFile) {
+          try {
+            const dependencyTrackResponse = await fetch("/api/ansible/dependency-track/sync", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ hostAlias: selectedAlias, vulnerabilityReportId: cvePayload.reportId }),
+            });
+            const dependencyTrackPayload = await dependencyTrackResponse.json();
+            dependencyTrackFailed = !dependencyTrackResponse.ok || !dependencyTrackPayload.ok;
+            dependencyTrackMessage = dependencyTrackPayload.message ? ` ${dependencyTrackPayload.message}` : "";
+          } catch {
+            dependencyTrackFailed = true;
+            dependencyTrackMessage = " Передача в Dependency-Track не подтверждена: нет ответа от платформы.";
+          }
+        }
         setRunResult({
           ok: cvePayload.ok,
+          partial: Boolean(cvePayload.partial || dependencyTrackFailed),
           action,
-          message: cvePayload.ok
-            ? "CVE-аудит пакетов выполнен."
-            : cvePayload.message ?? "Не удалось выполнить CVE-аудит пакетов.",
+          message: `${cvePayload.message ?? (cvePayload.ok ? "CVE-аудит пакетов выполнен." : "Не удалось выполнить CVE-аудит пакетов.")}${dependencyTrackMessage}`,
           stdout: payload.stdout,
           stderr: payload.stderr,
         });
@@ -451,6 +605,34 @@ export function AnsibleControlClient() {
       }
       if (payload.ok && payload.postAuditReportId) {
         setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.postAuditReportId)}`);
+      }
+    } catch {
+      setRunResult({ ok: false, action, message: "Ответ на запуск не получен. Проверьте журнал действий и отчёты перед повторным запуском." });
+    } finally {
+      setLoading("");
+    }
+  }
+
+  async function importGreenboneReport() {
+    if (!selectedAlias || !greenboneFile) {
+      setGreenboneMessage("Выберите хост и XML-файл отчёта Greenbone.");
+      return;
+    }
+    setLoading("greenboneImport");
+    setGreenboneMessage("");
+    setFreshReportHref("");
+    try {
+      const form = new FormData();
+      form.set("hostAlias", selectedAlias);
+      form.set("report", greenboneFile);
+      const response = await fetch("/api/ansible/greenbone/import", { method: "POST", body: form });
+      const payload = await response.json();
+      setGreenboneMessage(payload.message ?? "Не удалось импортировать отчёт Greenbone.");
+      setRunResult({ ok: payload.ok, partial: payload.partial, action: "greenboneImport", message: payload.message });
+      if (payload.ok && payload.reportId) {
+        setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.reportId)}`);
+        setGreenboneFile(null);
+        await loadHosts();
       }
     } finally {
       setLoading("");
@@ -553,7 +735,90 @@ export function AnsibleControlClient() {
             Удалить хост
           </Button>
         </div>
-        {preflight ? (
+        <section className="mt-4 rounded-md border border-sky-400/25 bg-sky-500/5 p-4" aria-labelledby="connection-wizard-title">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div className="flex gap-3">
+              <KeyRound size={20} className="mt-0.5 shrink-0 text-sky-200" aria-hidden="true" />
+              <div>
+                <h3 id="connection-wizard-title" className="font-semibold text-white">Мастер первого SSH-подключения</h3>
+                <p className="mt-1 max-w-3xl text-sm leading-5 text-slate-300">
+                  Пароли в платформу не вводятся и не сохраняются. Сначала добавьте ключ узла управления на хост, затем подтвердите SSH fingerprint через независимый канал.
+                </p>
+              </div>
+            </div>
+            <Button variant="secondary" onClick={loadControlKey} disabled={Boolean(accessLoading)}>
+              <RefreshCw size={16} className={accessLoading === "key" ? "animate-spin" : ""} aria-hidden="true" />
+              Обновить ключ
+            </Button>
+          </div>
+
+          {access?.ok && access.publicKey ? (
+            <ol className="mt-4 grid gap-3 lg:grid-cols-3">
+              <li className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <p className="text-sm font-semibold text-white">1. Добавьте ключ на хост</p>
+                <p className="mt-1 text-xs leading-5 text-slate-400">
+                  Откройте консоль ВМ или используйте уже выданный временный доступ. Выполните команду только на выбранном целевом хосте.
+                </p>
+                <code className="mt-3 block break-all rounded bg-slate-900 p-2 text-xs text-sky-100">{access.publicKey}</code>
+                <Button variant="secondary" className="mt-2 w-full" onClick={() => copyToClipboard(access.publicKey ?? "", "public-key")}>
+                  <Copy size={15} aria-hidden="true" />
+                  {copied === "public-key" ? "Скопировано" : "Скопировать ключ"}
+                </Button>
+                <code className="mt-2 block break-all rounded bg-slate-900 p-2 text-xs text-slate-300">{installPublicKeyCommand}</code>
+                <Button variant="secondary" className="mt-2 w-full" onClick={() => copyToClipboard(installPublicKeyCommand, "install-command")}>
+                  <Copy size={15} aria-hidden="true" />
+                  {copied === "install-command" ? "Скопировано" : "Скопировать команду"}
+                </Button>
+              </li>
+
+              <li className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <p className="text-sm font-semibold text-white">2. Подтвердите ключ сервера</p>
+                <p className="mt-1 text-xs leading-5 text-slate-400">
+                  Укажите выше адрес и порт SSH. Сверьте fingerprint с консолью гипервизора, панелью провайдера или утверждённым реестром ключей — не с результатом сканирования.
+                </p>
+                <Button variant="secondary" className="mt-3 w-full" onClick={scanHostFingerprint} disabled={Boolean(accessLoading) || !manualAddress}>
+                  <Search size={15} className={accessLoading === "scan" ? "animate-pulse" : ""} aria-hidden="true" />
+                  Получить fingerprint по сети
+                </Button>
+                {hostKeyScan?.fingerprints?.length ? (
+                  <div className="mt-2 space-y-1" aria-label="Неподтверждённые fingerprints">
+                    {hostKeyScan.fingerprints.map((item) => (
+                      <button
+                        key={`${item.algorithm}-${item.fingerprint}`}
+                        onClick={() => setTrustedFingerprint(item.fingerprint)}
+                        className="block w-full break-all rounded border border-amber-400/25 bg-amber-500/10 p-2 text-left text-xs text-amber-100"
+                        title="Подставить для сравнения после независимой проверки"
+                      >
+                        {item.algorithm}: {item.fingerprint}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <Field label="Подтверждённый SHA256 fingerprint" value={trustedFingerprint} onChange={setTrustedFingerprint} placeholder="SHA256:…" />
+                <Button className="mt-2 w-full" onClick={trustScannedHostKey} disabled={Boolean(accessLoading) || !manualAddress || !trustedFingerprint}>
+                  <ShieldCheck size={15} className={accessLoading === "trust" ? "animate-pulse" : ""} aria-hidden="true" />
+                  Сохранить проверенный ключ
+                </Button>
+              </li>
+
+              <li className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
+                <p className="text-sm font-semibold text-white">3. Проверьте и добавьте</p>
+                <p className="mt-1 text-xs leading-5 text-slate-400">
+                  Нажмите «Проверить подключение». Платформа убедится в SSH-доступе, Python и sudo. Только успешное подключение можно добавить в inventory.
+                </p>
+                <div className="mt-3 rounded bg-slate-900 p-2 text-xs leading-5 text-slate-300">
+                  Fingerprint узла управления: <span className="break-all text-sky-100">{access.fingerprint ?? "не определён"}</span>
+                </div>
+              </li>
+            </ol>
+          ) : (
+            <p className="mt-3 rounded-md border border-slate-700 bg-slate-950/70 p-3 text-sm text-slate-300">
+              {accessLoading === "key" ? "Загружается публичный ключ узла управления…" : access?.message ?? "Публичный ключ узла управления пока недоступен."}
+            </p>
+          )}
+          {accessMessage ? <p className="mt-3 text-sm text-amber-100" role="status">{accessMessage}</p> : null}
+        </section>
+        {preflight && preflightFor === connectionSignature ? (
           <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
             <CheckBadge label="SSH" ok={preflight.checks?.ssh.ok} text={preflight.checks?.ssh.message ?? preflight.message ?? ""} />
             <CheckBadge label="Python" ok={preflight.checks?.python.ok} text={preflight.checks?.python.message ?? ""} />
@@ -752,6 +1017,29 @@ export function AnsibleControlClient() {
             </div>
           </details>
 
+          <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Импорт сетевого отчёта Greenbone / OpenVAS</summary>
+            <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
+              Greenbone запускается отдельным сканером сети. Экспортируйте завершённый report в XML и привяжите его к выбранному хосту: результаты не смешиваются с SSH и CVE-аудитом.
+            </p>
+            <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
+              <label className="block min-w-0 flex-1">
+                <span className="text-xs font-semibold text-slate-400">XML-отчёт Greenbone (до 20 МБ)</span>
+                <input
+                  type="file"
+                  accept=".xml,application/xml,text/xml"
+                  onChange={(event) => setGreenboneFile(event.target.files?.[0] ?? null)}
+                  className="mt-2 block w-full text-sm text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:text-slate-100"
+                />
+              </label>
+              <Button variant="secondary" onClick={importGreenboneReport} disabled={Boolean(loading) || !selectedHost || !greenboneFile}>
+                <Upload size={16} className={loading === "greenboneImport" ? "animate-pulse" : ""} aria-hidden="true" />
+                Импортировать XML
+              </Button>
+            </div>
+            {greenboneMessage ? <p className="mt-3 text-xs leading-5 text-slate-300" role="status">{greenboneMessage}</p> : null}
+          </details>
+
           <details className="mt-4 rounded-md border border-amber-400/20 bg-amber-500/5 p-3">
             <summary className="cursor-pointer text-sm font-semibold text-amber-100">Обратимые изменения firewall</summary>
             <p className="mt-1 text-xs leading-5 text-slate-400">
@@ -790,7 +1078,7 @@ export function AnsibleControlClient() {
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-white">Последние изменения</h2>
-              <p className="mt-1 text-sm text-slate-400">Откат доступен только для успешно применённых изменений.</p>
+              <p className="mt-1 text-sm text-slate-400">Резервную копию можно восстановить после применения или ошибки изменения.</p>
             </div>
             <Button variant="secondary" onClick={loadRemediations} disabled={Boolean(loading)}>
               <RefreshCw size={16} aria-hidden="true" />
@@ -812,7 +1100,7 @@ export function AnsibleControlClient() {
                         Отчёт после изменения
                       </LinkButton>
                     ) : null}
-                    {transaction.status === "applied" ? (
+                    {transaction.backupRef && ["applied", "failed", "rollback_failed"].includes(transaction.status) ? (
                       <Button variant="danger" onClick={() => rollbackTransaction(transaction)} disabled={Boolean(loading)}>
                         <RotateCcw size={16} aria-hidden="true" />
                         Откатить
@@ -830,10 +1118,11 @@ export function AnsibleControlClient() {
           {runResult ? (
             <div className="mt-3 space-y-3 text-sm">
               <div className={`rounded-md border p-3 ${
-                runResult.ok ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-red-400/30 bg-red-500/10 text-red-100"
+                !runResult.ok ? "border-red-400/30 bg-red-500/10 text-red-100" : runResult.partial ? "border-amber-400/30 bg-amber-500/10 text-amber-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
               }`}>
-                <p className="font-semibold">{runResult.ok ? "Успешно" : "Ошибка"}</p>
+                <p className="font-semibold">{!runResult.ok ? "Ошибка" : runResult.partial ? "Выполнено с ограничениями" : "Выполнено"}</p>
                 {runResult.message ? <p className="mt-1">{runResult.message}</p> : null}
+                {runResult.warnings?.length ? <ul className="mt-2 list-inside list-disc space-y-1">{runResult.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul> : null}
                 {freshReportHref ? (
                   <LinkButton href={freshReportHref} variant="secondary" className="mt-3 w-full bg-slate-950/60">
                     Открыть отчет

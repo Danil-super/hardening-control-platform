@@ -40,6 +40,7 @@
         python3 - <<'PY'
         import json
         import os
+        import shutil
         import socket
         import subprocess
         from datetime import datetime, timezone
@@ -52,10 +53,11 @@
         package_rules = rules.get("package_rules", {})
         filesystem_rules = rules.get("filesystem_rules", {})
         profile_checks = rules.get("profile_checks", {})
+        incomplete_checks = []
 
         def run(command):
             try:
-                completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=8)
+                completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=8, env={**os.environ, "LC_ALL": "C"})
                 return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
             except Exception as exc:
                 return None, "", str(exc)
@@ -82,15 +84,34 @@
 
         def service_active(service):
             code, output, error = run(["systemctl", "is-active", service])
-            return code == 0 and output == "active", output or error or str(code)
+            if code == 0 and output == "active":
+                return True, output
+            if code == 3 and output in {"inactive", "failed", "activating", "deactivating"}:
+                return False, output
+            incomplete_checks.append("service_" + service)
+            return None, output or error or str(code)
+
+        def result_available(check_id, code, accepted=(0,)):
+            if code in accepted:
+                return True
+            incomplete_checks.append(check_id)
+            return False
 
         def package_installed(names):
             installed = []
             missing = []
             for name in names:
-                command = "dpkg-query -W -f='${Status}' " + name + " 2>/dev/null || rpm -q " + name + " 2>/dev/null"
-                code, output, _ = run(["bash", "-lc", command])
-                if code == 0 and output:
+                if shutil.which("dpkg-query"):
+                    code, output, _ = run(["dpkg-query", "-W", "-f=${Status}", name])
+                    present = code == 0 and output == "install ok installed"
+                elif shutil.which("rpm"):
+                    code, output, _ = run(["rpm", "-q", name])
+                    present = code == 0 and bool(output)
+                else:
+                    code, present = None, False
+                if code not in (0, 1):
+                    incomplete_checks.append("security_auto_updates")
+                if present:
                     installed.append(name)
                 else:
                     missing.append(name)
@@ -98,6 +119,7 @@
 
         findings = []
         code, ss_output, ss_error = run(["ss", "-tuln"])
+        ports_available = result_available("open_ports", code)
         open_ports = set()
         open_sockets = []
         if code == 0:
@@ -141,44 +163,33 @@
                     "close_port",
             ))
 
-        ssh_config = ""
         effective_ssh_values = {}
-        sshd_code, sshd_output, _ = run(["sshd", "-T"])
+        sshd_code, sshd_output, sshd_error = run(["sshd", "-T"])
         if sshd_code == 0:
             for raw_line in sshd_output.splitlines():
                 parts = raw_line.split(None, 1)
                 if len(parts) == 2:
                     effective_ssh_values[parts[0].lower()] = parts[1].strip().lower()
-        try:
-            with open("/etc/ssh/sshd_config", encoding="utf-8", errors="replace") as handle:
-                ssh_config = handle.read()
-        except OSError as exc:
+        ssh_available = result_available("ssh_effective_config", sshd_code) and all(
+            key in effective_ssh_values for key in ("permitrootlogin", "passwordauthentication", "permitemptypasswords", "maxauthtries")
+        )
+        if not ssh_available:
+            incomplete_checks.append("ssh_effective_config")
             findings.append(finding(
                 "sshd_config_unavailable",
-                "Конфигурация SSH недоступна для чтения",
+                "Эффективная конфигурация SSH не получена",
                 "SSH",
                 "info",
                 "manual",
-                "Не удалось прочитать /etc/ssh/sshd_config.",
-                "Проверьте конфигурацию SSH вручную.",
-                str(exc),
+                "sshd -T не вернул проверяемую конфигурацию. Разбор одного файла не учитывает Include, значения по умолчанию и блоки Match.",
+                "Проверьте sshd -t и sshd -T, затем повторите аудит. Условия Match проверяются отдельно для нужного пользователя и адреса.",
+                sshd_error or sshd_output or str(sshd_code),
             ))
 
         def ssh_value(name):
-            effective_value = effective_ssh_values.get(name.lower())
-            if effective_value is not None:
-                return effective_value
-            value = None
-            for raw_line in ssh_config.splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                parts = line.split(None, 1)
-                if len(parts) == 2 and parts[0].lower() == name.lower():
-                    value = parts[1].strip().lower()
-            return value
+            return effective_ssh_values.get(name.lower())
 
-        if ssh_config:
+        if ssh_available:
             permit_root = ssh_value("PermitRootLogin")
             root_failed = permit_root in {None, "yes", "prohibit-password", "without-password", "forced-commands-only"}
             findings.append(finding(
@@ -187,7 +198,7 @@
                 "SSH",
                 "high",
                 "failed" if root_failed else "passed",
-                "Проверяется параметр PermitRootLogin.",
+                "Проверяется глобальное значение PermitRootLogin из sshd -T; условные блоки Match требуют отдельной проверки.",
                 ssh_rules.get("permit_root_login", {}).get("recommendation", "Установите PermitRootLogin no."),
                 "PermitRootLogin=" + (permit_root or "default"),
                 None,
@@ -202,7 +213,7 @@
                 "SSH",
                 "high",
                 "failed" if password_failed else "passed",
-                "Проверяется параметр PasswordAuthentication.",
+                "Проверяется глобальное значение PasswordAuthentication; условные блоки Match и keyboard-interactive требуют отдельной проверки.",
                 ssh_rules.get("password_authentication", {}).get("recommendation", "Отключите парольный SSH-вход."),
                 "PasswordAuthentication=" + (password_auth or "default"),
                 None,
@@ -217,7 +228,7 @@
                 "SSH",
                 ssh_rules.get("empty_passwords", {}).get("risk", "high"),
                 "failed" if empty_failed else "passed",
-                "Проверяется параметр PermitEmptyPasswords.",
+                "Проверяется глобальное значение PermitEmptyPasswords из sshd -T.",
                 ssh_rules.get("empty_passwords", {}).get("recommendation", "Установите PermitEmptyPasswords no."),
                 "PermitEmptyPasswords=" + (empty_passwords or "default"),
                 None,
@@ -237,14 +248,14 @@
                 "SSH",
                 ssh_rules.get("max_auth_tries", {}).get("risk", "medium"),
                 "failed" if max_auth_failed else "passed",
-                "Проверяется параметр MaxAuthTries.",
+                "Проверяется глобальное значение MaxAuthTries из sshd -T.",
                 ssh_rules.get("max_auth_tries", {}).get("recommendation", "Установите MaxAuthTries 4 или меньше."),
                 f"MaxAuthTries={max_auth_tries_raw or 'default(6)'}; expected<={max_auth_limit}",
                 None,
                 ["/etc/ssh/sshd_config"],
             ))
 
-        if not any(item["id"].startswith("dangerous_port_") for item in findings):
+        if ports_available and not any(item["id"].startswith("dangerous_port_") for item in findings):
             findings.append(finding(
                 "dangerous_ports_absent",
                 "Опасные сетевые порты не обнаружены",
@@ -262,13 +273,16 @@
             (ufw_code == 0 and "Status: active" in ufw_output)
             or (firewalld_code == 0 and firewalld_output.strip() == "running")
         )
+        firewall_known = firewall_active or (ufw_code == 0 and "Status: inactive" in ufw_output) or (firewalld_code == 252 and firewalld_output == "not running")
+        if not firewall_known:
+            incomplete_checks.append("firewall_active")
         findings.append(finding(
             "firewall_active",
             "Межсетевой экран активен" if firewall_active else "Межсетевой экран не активен или не определен",
             "Сеть",
             "medium",
-            "passed" if firewall_active else "failed",
-            "Проверяется наличие активного ufw или firewalld.",
+            "passed" if firewall_active else "failed" if firewall_known else "manual",
+            "Проверяется активность ufw/firewalld. Собственные правила nftables/iptables и внешние межсетевые экраны требуют отдельной оценки.",
             "Включите и настройте ufw/firewalld на хосте.",
             f"ufw={ufw_output or 'n/a'}; firewalld={firewalld_output or 'n/a'}",
         ))
@@ -281,7 +295,7 @@
                 rule["title"] if active else f"{rule['title']} не подтвержден",
                 "Сервисы",
                 rule.get("risk", "medium"),
-                "passed" if active else "failed",
+                "passed" if active else "manual" if active is None else "failed",
                 f"Проверяется активность systemd-сервиса {service}.",
                 rule["recommendation"],
                 f"{service}={evidence}",
@@ -295,25 +309,34 @@
             "Механизм security-обновлений найден" if installed_auto_update else "Механизм security-обновлений не найден",
             "Обновления",
             unattended.get("risk", "low"),
-            "passed" if installed_auto_update else "failed",
+            "passed" if installed_auto_update else "manual" if "security_auto_updates" in incomplete_checks else "failed",
             "Проверяется наличие unattended-upgrades, dnf-automatic или yum-cron.",
             unattended.get("recommendation", "Настройте автоматическую установку security-обновлений."),
             "installed=" + (",".join(installed_auto_update) if installed_auto_update else "none"),
         ))
 
-        updates_code, updates_output, updates_error = run([
-            "bash",
-            "-lc",
-            "apt list --upgradable 2>/dev/null | tail -n +2 | head -n 20 || dnf check-update --security 2>/dev/null | head -n 20 || yum check-update --security 2>/dev/null | head -n 20",
-        ])
+        if shutil.which("apt"):
+            updates_code, updates_output, updates_error = run(["apt", "list", "--upgradable"])
+            update_success_codes = (0,)
+            updates_output = "\n".join(line for line in updates_output.splitlines() if "/" in line and "[upgradable from:" in line)
+        elif shutil.which("dnf"):
+            updates_code, updates_output, updates_error = run(["dnf", "-C", "check-update", "--security"])
+            update_success_codes = (0, 100)
+        elif shutil.which("yum"):
+            updates_code, updates_output, updates_error = run(["yum", "-C", "check-update", "--security"])
+            update_success_codes = (0, 100)
+        else:
+            updates_code, updates_output, updates_error = None, "", "Пакетный менеджер не найден"
+            update_success_codes = (0,)
+        updates_known = result_available("package_updates_available", updates_code, update_success_codes)
         updates_available = bool(updates_output.strip())
         findings.append(finding(
             "package_updates_available",
-            "Есть доступные обновления пакетов" if updates_available else "Доступные обновления пакетов не найдены",
+            "Есть доступные обновления пакетов" if updates_available else "В локальном кэше обновления не найдены" if updates_known else "Наличие обновлений не проверено",
             "Обновления",
             "medium" if updates_available else "info",
-            "manual" if updates_available else "passed",
-            "Проверяется наличие обновлений через пакетный менеджер дистрибутива.",
+            "manual",
+            "Используется локальный кэш пакетного менеджера без обращения к внешним репозиториям. Отсутствие обновлений в кэше не подтверждает его актуальность или отсутствие CVE.",
             "Просмотрите список обновлений и установите security-обновления в окно обслуживания.",
             updates_output or updates_error or "no upgradable packages detected",
         ))
@@ -336,37 +359,33 @@
             sudo_evidence,
         ))
 
-        nopasswd_code, nopasswd_output, nopasswd_error = run([
-            "bash",
-            "-lc",
-            "grep -R \"NOPASSWD\" /etc/sudoers /etc/sudoers.d 2>/dev/null | head -n 20",
-        ])
+        sudo_paths = [value for value in ("/etc/sudoers", "/etc/sudoers.d") if os.path.exists(value)]
+        nopasswd_code, nopasswd_output, nopasswd_error = run(["grep", "-R", "-n", "NOPASSWD", *sudo_paths]) if sudo_paths else (None, "", "sudoers недоступен")
+        nopasswd_output = "\n".join(line for line in nopasswd_output.splitlines() if "NOPASSWD" in line.split(":", 2)[-1].split("#", 1)[0])
+        nopasswd_known = result_available("sudo_nopasswd", nopasswd_code, (0, 1))
         nopasswd_found = bool(nopasswd_output.strip())
         findings.append(finding(
             "sudo_nopasswd",
-            "Найден sudo без пароля" if nopasswd_found else "sudo без пароля не найден",
+            "Найден sudo без пароля" if nopasswd_found else "sudo без пароля не найден" if nopasswd_known else "Правила sudo без пароля не проверены",
             "Учетные записи",
             "medium",
-            "failed" if nopasswd_found else "passed",
-            "Проверяются правила sudoers с NOPASSWD.",
-            "Уберите NOPASSWD там, где он не требуется для автоматизации.",
+            "manual",
+            "Проверяются доступные правила sudoers с NOPASSWD; право может быть необходимо учётной записи Ansible.",
+            "Проверьте обоснование NOPASSWD, разрешённые команды и дополнительные Include-пути sudoers.",
             nopasswd_output or nopasswd_error or "no NOPASSWD entries",
             None,
             ["/etc/sudoers", "/etc/sudoers.d"],
         ))
 
-        empty_pass_code, empty_pass_output, empty_pass_error = run([
-            "bash",
-            "-lc",
-            "awk -F: '($2 == \"\") {print $1}' /etc/shadow 2>/dev/null | head -n 20",
-        ])
+        empty_pass_code, empty_pass_output, empty_pass_error = run(["awk", "-F:", '($2 == "") {print $1}', "/etc/shadow"])
+        empty_pass_known = result_available("empty_password_accounts", empty_pass_code)
         empty_pass_found = bool(empty_pass_output.strip())
         findings.append(finding(
             "empty_password_accounts",
-            "Найдены учетные записи без пароля" if empty_pass_found else "Учетные записи без пароля не найдены",
+            "Найдены учетные записи без пароля" if empty_pass_found else "Учетные записи без пароля не найдены" if empty_pass_known else "Учетные записи без пароля не проверены",
             "Учетные записи",
             "high",
-            "failed" if empty_pass_found else "passed",
+            "failed" if empty_pass_found else "passed" if empty_pass_known else "manual",
             "Проверяется /etc/shadow на пустой хеш пароля.",
             "Заблокируйте такие учетные записи или задайте надежный пароль.",
             empty_pass_output or empty_pass_error or "no empty password accounts",
@@ -374,19 +393,17 @@
             ["/etc/shadow"],
         ))
 
-        failed_log_code, failed_log_output, failed_log_error = run([
-            "bash",
-            "-lc",
-            "grep -Ei 'failed password|authentication failure|invalid user' /var/log/auth.log /var/log/secure 2>/dev/null | tail -n 20",
-        ])
+        auth_logs = [value for value in ("/var/log/auth.log", "/var/log/secure") if os.path.exists(value)]
+        failed_log_code, failed_log_output, failed_log_error = run(["grep", "-Ei", "failed password|authentication failure|invalid user", *auth_logs]) if auth_logs else (None, "", "auth.log/secure недоступны; проверьте journalctl")
+        failed_log_known = result_available("failed_logins", failed_log_code, (0, 1))
         failed_login_detected = bool(failed_log_output.strip())
         findings.append(finding(
             "failed_logins",
-            "Обнаружены неудачные попытки входа" if failed_login_detected else "Неудачные попытки входа не найдены в доступных логах",
+            "Обнаружены неудачные попытки входа" if failed_login_detected else "Неудачные попытки входа не найдены в доступных логах" if failed_log_known else "Журналы аутентификации не проверены",
             "Аутентификация",
             "medium",
-            "failed" if failed_login_detected else "passed",
-            "Проверяются последние записи auth.log/secure по неудачным входам.",
+            "manual",
+            "Проверяются доступные auth.log/secure. Неудачная попытка входа сама по себе не подтверждает уязвимость или компрометацию.",
             "При множественных попытках включите блокировку источника, fail2ban или правила firewall.",
             failed_log_output or failed_log_error or "no matching log lines",
         ))
@@ -427,19 +444,24 @@
 
             nginx_code, nginx_output, nginx_error = run(["bash", "-lc", "nginx -T 2>&1"])
             if nginx_code == 0:
-                server_tokens_off = "server_tokens off" in nginx_output.lower()
+                active_nginx_lines = [line.split("#", 1)[0].strip().lower() for line in nginx_output.splitlines()]
+                server_tokens_off = any(line.startswith("server_tokens off;") for line in active_nginx_lines)
                 findings.append(finding(
                     "nginx_server_tokens",
-                    "Nginx не раскрывает версию" if server_tokens_off else "Nginx может раскрывать версию",
+                    "Nginx: найдено server_tokens off" if server_tokens_off else "Nginx: ограничение версии не подтверждено",
                     "Web-сервер",
                     "low",
-                    "passed" if server_tokens_off else "failed",
-                    "Проверяется параметр server_tokens в итоговой конфигурации nginx.",
+                    "manual",
+                    "Проверяется наличие директивы в nginx -T. Наследование и переопределения server/location требуют проверки каждого виртуального хоста.",
                     "Добавьте server_tokens off; в HTTP-контекст nginx и примените конфигурацию после nginx -t.",
                     "server_tokens=" + ("off" if server_tokens_off else "not found"),
                     None,
                     ["/etc/nginx"],
                 ))
+            elif "nginx" in active_web_services:
+                incomplete_checks.append("nginx_configuration")
+                findings.append(finding("nginx_config_unavailable", "Конфигурация активного Nginx не проверена", "Web-сервер", "info", "manual",
+                    "nginx -T завершился с ошибкой.", "Проверьте nginx -t и доступ к конфигурации.", nginx_error or nginx_output))
 
             apache_code, apache_output, apache_error = run(["bash", "-lc", "apache2ctl -t -D DUMP_RUN_CFG 2>&1 || httpd -t -D DUMP_RUN_CFG 2>&1"])
             if apache_code == 0:
@@ -449,13 +471,17 @@
                     "Apache ограничивает раскрытие версии" if apache_hardened else "Apache banner hardening не подтвержден",
                     "Web-сервер",
                     "low",
-                    "passed" if apache_hardened else "failed",
-                    "Проверяются ServerTokens Prod и ServerSignature Off в конфигурации Apache.",
+                    "manual",
+                    "DUMP_RUN_CFG не гарантирует вывод ServerTokens/ServerSignature. Проверьте конфигурацию виртуальных хостов и реальные HTTP-заголовки.",
                     "Установите ServerTokens Prod и ServerSignature Off, затем проверьте apachectl -t.",
                     apache_output[-500:] or apache_error,
                     None,
                     ["/etc/apache2", "/etc/httpd"],
                 ))
+            elif any(service in active_web_services for service in ("apache2", "httpd")):
+                incomplete_checks.append("apache_configuration")
+                findings.append(finding("apache_config_unavailable", "Конфигурация активного Apache не проверена", "Web-сервер", "info", "manual",
+                    "Не получен DUMP_RUN_CFG Apache.", "Проверьте конфигурацию Apache вручную.", apache_error or apache_output))
 
             if not active_web_services:
                 findings.append(finding(
@@ -477,67 +503,95 @@
                 "Docker Engine доступен" if docker_available else "Docker Engine недоступен",
                 "Docker",
                 "info" if docker_available else "medium",
-                "passed" if docker_available else "failed",
+                "passed" if docker_available else "manual",
                 "Проверяется доступность Docker Engine от имени пользователя аудита.",
                 "Установите Docker только если он действительно нужен этому хосту; иначе используйте базовый профиль.",
                 docker_output or docker_error or str(docker_code),
             ))
+            if not docker_available:
+                incomplete_checks.append("docker_engine_available")
             if docker_available:
-                rootless = "rootless" in docker_output.lower()
+                security_code, security_output, security_error = run(["docker", "info", "--format", "{" + "{json .SecurityOptions}" + "}"])
+                rootless_known = result_available("docker_rootless", security_code)
+                try:
+                    security_options = json.loads(security_output) if rootless_known else None
+                    if not isinstance(security_options, list):
+                        raise ValueError("Docker SecurityOptions unavailable")
+                    rootless = "name=rootless" in security_options
+                except (ValueError, TypeError):
+                    rootless_known, rootless = False, False
+                    incomplete_checks.append("docker_rootless")
                 findings.append(finding(
                     "docker_rootless",
-                    "Docker rootless mode включен" if rootless else "Docker работает в rootful-режиме",
+                    "Docker rootless mode включен" if rootless else "Docker работает в rootful-режиме" if rootless_known else "Режим Docker rootless не определён",
                     "Docker",
                     "medium",
-                    "passed" if rootless else "manual",
+                    "passed" if rootless_known and rootless else "manual",
                     "Проверяются Docker SecurityOptions на наличие rootless mode.",
                     "Оцените возможность rootless Docker или ограничьте доступ к docker.sock.",
-                    docker_output,
+                    security_output or security_error or "SecurityOptions unavailable",
                 ))
                 socket_code, socket_output, socket_error = run(["bash", "-lc", "stat -c '%a %U:%G' /var/run/docker.sock 2>/dev/null"])
-                socket_safe = socket_code == 0 and socket_output.startswith("660 ")
+                socket_known = result_available("docker_socket_permissions", socket_code)
+                socket_safe = socket_known and socket_output in {"660 root:docker", "600 root:root", "600 root:docker"}
                 findings.append(finding(
                     "docker_socket_permissions",
                     "Права docker.sock ограничены" if socket_safe else "Права docker.sock требуют проверки",
                     "Docker",
                     "high",
-                    "passed" if socket_safe else "failed",
+                    "passed" if socket_safe else "manual" if not socket_known else "failed",
                     "Проверяются режим и владелец /var/run/docker.sock.",
                     "Ограничьте членство в группе docker: доступ к сокету фактически равен root-доступу.",
                     socket_output or socket_error or "socket not found",
                     None,
                     ["/var/run/docker.sock"],
                 ))
-                privileged_code, privileged_output, privileged_error = run([
-                    "bash", "-lc",
-                    "for id in $(docker ps -q); do docker inspect \"$id\" 2>/dev/null | grep -q '\"Privileged\": true' && echo privileged=$id; done",
-                ])
-                privileged = "privileged=true" in privileged_output.lower()
+                privileged_code, containers_output, privileged_error = run(["docker", "ps", "-q"])
+                privileged_known = result_available("docker_privileged_containers", privileged_code)
+                privileged_ids = []
+                container_ids = containers_output.split() if privileged_known else []
+                if container_ids:
+                    inspect_code, inspect_output, inspect_error = run(["docker", "inspect", *container_ids])
+                    privileged_known = result_available("docker_privileged_containers", inspect_code)
+                    try:
+                        containers = json.loads(inspect_output) if privileged_known else None
+                        if not isinstance(containers, list) or len(containers) != len(container_ids):
+                            raise ValueError("Неполный результат docker inspect")
+                        for container in containers:
+                            config = container.get("HostConfig", {})
+                            if not isinstance(config.get("Privileged"), bool):
+                                raise ValueError("Нет HostConfig.Privileged")
+                            if config["Privileged"]:
+                                privileged_ids.append(container.get("Id", "unknown"))
+                    except (ValueError, TypeError, AttributeError) as error:
+                        privileged_known = False
+                        incomplete_checks.append("docker_privileged_containers")
+                        privileged_error = inspect_error or str(error)
+                privileged = bool(privileged_ids)
+                privileged_output = ", ".join(privileged_ids)
                 findings.append(finding(
                     "docker_privileged_containers",
-                    "Privileged-контейнеры не обнаружены" if not privileged else "Обнаружены privileged-контейнеры",
+                    "Обнаружены privileged-контейнеры" if privileged else "Privileged-контейнеры не обнаружены" if privileged_known else "Privileged-контейнеры не проверены",
                     "Docker",
                     "high",
-                    "passed" if not privileged else "failed",
+                    "failed" if privileged else "passed" if privileged_known else "manual",
                     "Проверяются запущенные контейнеры Docker на HostConfig.Privileged.",
                     "Уберите privileged: true либо оформите отдельное обоснование и компенсирующие меры.",
-                    privileged_output or privileged_error or "no running containers",
+                    privileged_output or privileged_error or "no privileged running containers",
                 ))
 
         writable_paths = filesystem_rules.get("world_writable_paths", {}).get("paths", ["/tmp", "/var/tmp"])
-        quoted_paths = " ".join(writable_paths)
         writable_code, writable_output, writable_error = run([
-            "bash",
-            "-lc",
-            f"find {quoted_paths} -xdev -type d -perm -0002 ! -perm -1000 -print 2>/dev/null | head -n 20",
+            "find", *writable_paths, "-xdev", "-type", "d", "-perm", "-0002", "!", "-perm", "-1000", "-print",
         ])
+        writable_known = result_available("world_writable_dirs", writable_code)
         writable_failed = bool(writable_output.strip())
         findings.append(finding(
             "world_writable_dirs",
-            "Найдены world-writable директории без sticky bit" if writable_failed else "World-writable директории без sticky bit не найдены",
+            "Найдены world-writable директории без sticky bit" if writable_failed else "World-writable директории без sticky bit не найдены" if writable_known else "Права временных директорий не проверены",
             "Файловая система",
             filesystem_rules.get("world_writable_paths", {}).get("risk", "medium"),
-            "failed" if writable_failed else "passed",
+            "failed" if writable_failed else "passed" if writable_known else "manual",
             "Проверяются временные директории на небезопасные права.",
             filesystem_rules.get("world_writable_paths", {}).get("recommendation", "Добавьте sticky bit или исправьте права директорий."),
             writable_output or writable_error or "no unsafe directories",
@@ -569,7 +623,8 @@
         ]
         maximum_penalty = sum(weights[item["risk"]] for item in scoreable_findings)
         penalty = sum(weights[item["risk"]] for item in scoreable_findings if item["status"] == "failed")
-        summary["score"] = 100 if maximum_penalty == 0 else round(100 * (1 - penalty / maximum_penalty))
+        summary["score"] = None if incomplete_checks or maximum_penalty == 0 else round(100 * (1 - penalty / maximum_penalty))
+        summary["total"] = len(findings)
 
         os_name = "Unknown Linux"
         try:
@@ -593,6 +648,7 @@
             "os": os_name,
             "profileId": profile_id,
             "mode": "agentless",
+            "scanner": {"source": "agentless", "partial": bool(incomplete_checks), "incompleteChecks": sorted(set(incomplete_checks))},
             "agentless": {
                 "version": rules.get("audit_rules_version", "0.2.0"),
                 "control": "ansible",
@@ -628,7 +684,7 @@
       ansible.builtin.copy:
         content: "{{ agentless_audit.stdout }}"
         dest: "{{ agentless_report_dir }}/{{ inventory_hostname }}-{{ audit_profile | default('basic_linux') }}-{{ report_suffix }}.json"
-        mode: "0644"
+        mode: "0600"
       delegate_to: localhost
       become: false
 

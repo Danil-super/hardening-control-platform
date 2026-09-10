@@ -56,6 +56,7 @@
     - name: Check selected SSG datastream on target
       ansible.builtin.stat:
         path: "{{ openscap_datastream }}"
+        checksum_algorithm: sha256
       register: openscap_content
       when: openscap_datastream and openscap_profile
 
@@ -70,7 +71,7 @@
           - --run-id
           - "{{ report_suffix }}"
           - --reason
-          - "{{ 'oscap не установлен на целевом хосте.' if (openscap_binary.rc | default(1)) != 0 else 'Не найден указанный SSG datastream: ' ~ openscap_datastream }}"
+          - "{{ 'oscap не установлен на целевом хосте.' if (openscap_binary.rc | default(1)) != 0 else 'SSG datastream не является доступным обычным файлом: ' ~ openscap_datastream }}"
           - --profile
           - "{{ openscap_profile }}"
           - --datastream
@@ -84,7 +85,7 @@
       changed_when: false
       when:
         - openscap_datastream and openscap_profile
-        - (openscap_binary.rc | default(1)) != 0 or not (openscap_content.stat.exists | default(false))
+        - (openscap_binary.rc | default(1)) != 0 or not (openscap_content.stat.isreg | default(false))
 
     - name: Run OpenSCAP and always remove temporary target files
       block:
@@ -145,7 +146,7 @@
               - --datastream-mtime
               - "{{ openscap_content.stat.mtime | default('') | string }}"
               - --datastream-checksum
-              - "{{ openscap_content.stat.checksum | default('') }}"
+              - "{{ 'sha256:' ~ openscap_content.stat.checksum if openscap_content.stat.checksum is defined else '' }}"
               - --output
               - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
           delegate_to: localhost
@@ -167,4 +168,4 @@
       when:
         - openscap_datastream and openscap_profile
         - (openscap_binary.rc | default(1)) == 0
-        - openscap_content.stat.exists | default(false)
+        - openscap_content.stat.isreg | default(false)

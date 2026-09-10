@@ -10,8 +10,10 @@
 cp .env.production.example .env
 cp ansible/inventory.example.ini ansible/inventory.ini
 mkdir -p secrets
-install -m 600 ~/.ssh/hcp-control secrets/hcp-control
+chmod 700 secrets
+ssh-keygen -t ed25519 -N '' -f secrets/hcp-control -C hcp-control
 install -m 600 /dev/null secrets/known_hosts
+chmod 600 .env secrets/hcp-control
 ```
 
 Перед добавлением ключей хостов в `secrets/known_hosts` сверяйте fingerprint через консоль или доверенный канал. Например, после проверки fingerprint:
@@ -23,29 +25,32 @@ chmod 600 secrets/known_hosts
 
 После запуска этот начальный файл переносится в постоянный volume. Для новых хостов используйте «Мастер первого SSH-подключения» в `/hosts`: он показывает публичный ключ узла управления, сохраняет только независимо подтверждённый ключ сервера и не принимает пароль от SSH. Не редактируйте `known_hosts` внутри контейнера вручную.
 
-Заполните `.env` уникальными `HCP_ADMIN_PASSWORD`, `HCP_AUTH_SECRET`, `HCP_AUDIT_HMAC_KEY` и `HCP_SCHEDULE_API_KEY`, затем настройте целевые хосты в `ansible/inventory.ini`. Последний ключ защищает hash-chain журнал от незаметного пересчета при изменении SQLite-файла; ключ планировщика разрешает локальной job сохранять результаты Trivy в приложение.
+Заполните `.env` уникальными `HCP_ADMIN_PASSWORD`, `HCP_AUTH_SECRET`, `HCP_AUDIT_HMAC_KEY` и `HCP_SCHEDULE_API_KEY`, затем настройте начальные хосты в `ansible/inventory.ini`. `HCP_AUDIT_HMAC_KEY` защищает hash-chain журнал от незаметного пересчёта при изменении SQLite-файла; `HCP_SCHEDULE_API_KEY` разрешает внутренним заданиям обращаться к API. Парольная фраза SSH-ключа не поддерживается без ssh-agent, поэтому используется отдельный незашифрованный ключ с правами 600.
 
 ## Запуск
 
 ```bash
-docker compose up -d --build
+docker compose config --quiet
+docker compose up -d --build --wait --wait-timeout 180
 docker compose logs -f hcp
 ```
 
-Откройте `http://127.0.0.1:3000` на control node либо используйте SSH-туннель. Отчеты, SQLite-база транзакций и append-only журнал сохраняются в именованном volume `hcp-runtime`.
+Откройте `http://127.0.0.1:3000` на control node либо используйте SSH-туннель. Отчёты, SQLite, журнал, `known_hosts` и рабочий inventory сохраняются в volume `hcp-runtime`. Файл `ansible/inventory.ini` — только начальный seed; рабочая копия `/var/lib/hcp/inventory.ini` связана с `/app/ansible/inventory.ini` и доступна пользователю `node` для сохранения через панель. Последующие изменения seed не заменяют рабочую копию.
+
+Первый прогон выполните по [инструкции стенда](lab/README.md): она разделяет быстрые контейнерные проверки и полноценные испытания на ВМ.
 
 ## Изолированная сеть и CVE
 
-Единственный CVE-провайдер платформы — Trivy. В online-режиме он обновляет свою базу уязвимостей; для изолированного контура заранее зеркалируйте базы во внутренний OCI-registry и включите offline-режим:
+Пакетный CVE-аудит HCP выполняет Trivy. Если доступно внутреннее OCI-зеркало, задайте его и используйте сетевой режим:
 
 ```env
-HCP_TRIVY_MODE=offline
+HCP_TRIVY_MODE=online
 HCP_TRIVY_DB_REPOSITORY=registry.security.intra/trivy-db
 HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db
 HCP_TRIVY_MAX_DB_AGE_HOURS=168
 ```
 
-В offline-режиме Trivy не обновляет базы и не делает исходящий запрос. Если готовой локальной базы нет или её нельзя прочитать, HCP создаёт отчёт `manual`, а не сообщает об отсутствии CVE. Возраст базы контролируется по `HCP_TRIVY_MAX_DB_AGE_HOURS`; при превышении лимита отчёт тоже помечается частичным.
+Для полностью изолированного режима сначала загрузите базу в `/var/lib/hcp/trivy-cache` в окно обновления, затем выберите «Локальная база» в интерфейсе. Один адрес зеркала не заполняет cache. В offline-режиме Trivy не обновляет базы. Если cache отсутствует или недоступен, HCP создаёт неполный отчёт с ручной проверкой. Возраст базы контролируется по `HCP_TRIVY_MAX_DB_AGE_HOURS`; при превышении лимита отчёт тоже помечается частичным. Переключатель относится к Trivy, а не ко всем интеграциям и обновлениям ОС.
 
 Dependency-Track не запускается по умолчанию. После заполнения его пароля БД включите отдельный профиль: `docker compose --profile dependency-track up -d --build`. Подробные инструкции для OpenSCAP, Trivy, Greenbone и Dependency-Track — в [docs/audit-integrations.md](../docs/audit-integrations.md).
 
@@ -58,19 +63,27 @@ sudo cp deployment/systemd/hcp-scheduled-audit.service /etc/systemd/system/
 sudo cp deployment/systemd/hcp-scheduled-audit.timer /etc/systemd/system/
 sudo cp deployment/systemd/hcp-deep-audit.service /etc/systemd/system/
 sudo cp deployment/systemd/hcp-deep-audit.timer /etc/systemd/system/
+sudo systemctl edit hcp-scheduled-audit.service
+sudo systemctl edit hcp-deep-audit.service
+```
+
+Для обоих сервисов добавьте `[Service]` и `WorkingDirectory=/абсолютный/путь/hardening-control-platform`; без override используется `/opt/hardening-control-platform`. Проверьте `/usr/bin/docker` командой `command -v docker`. Units выполняют сканеры через `docker compose exec --user node`, чтобы созданные отчёты оставались доступны веб-приложению. После настройки:
+
+```bash
 sudo systemctl daemon-reload
+sudo systemctl start hcp-scheduled-audit.service hcp-deep-audit.service
 sudo systemctl enable --now hcp-scheduled-audit.timer hcp-deep-audit.timer
 systemctl list-timers 'hcp-*audit.timer'
 ```
 
 `hcp-scheduled-audit.timer` запускает `basic_linux` для группы `linux_hosts` каждые 15 минут. `hcp-deep-audit.timer` запускает инвентарь пакетов и Trivy ежедневно в 02:30. OpenSCAP не включён в него по умолчанию: для него нужно сначала подготовить подходящие хосты и отдельную inventory-группу.
 
-Чтобы выбрать профиль или группы, добавьте в environment сервиса `hcp` в `docker-compose.yml`:
+Чтобы выбрать профиль или группы, задайте в `.env`:
 
-```yaml
-HCP_SCHEDULE_PROFILE: ssh_security
-HCP_SCHEDULE_LIMIT: production_linux
-HCP_SCHEDULE_DEEP_LIMIT: package_audit_hosts
+```env
+HCP_SCHEDULE_PROFILE=ssh_security
+HCP_SCHEDULE_LIMIT=production_linux
+HCP_SCHEDULE_DEEP_LIMIT=package_audit_hosts
 ```
 
 После изменения выполните `docker compose up -d` и перезапустите оба timer. Внутренний `flock` блокирует параллельные плановые запуски.
@@ -84,12 +97,14 @@ Environment=HCP_DEEP_SCHEDULE_TASKS=packages,openscap
 
 Затем выполните `sudo systemctl daemon-reload && sudo systemctl restart hcp-deep-audit.timer`. Не включайте OpenSCAP для общей группы разнородных серверов: datastream и профиль должны соответствовать ОС и роли хоста.
 
+Плановый OpenSCAP вызывает внутренний API с `HCP_SCHEDULE_API_KEY`, получает хосты выбранной группы и применяет профиль/исключения из SQLite по каждому хосту. Для него, как и для Trivy, должен работать сервис HCP. Прямой запуск `ansible-playbook openscap-audit.yml` читает только переданные переменные и не применяет сохранённые исключения.
+
 ## Обязательные меры перед эксплуатацией
 
-- Используйте отдельный SSH-ключ и отдельного технического пользователя; выдавайте `sudo` только на нужные команды.
+- Используйте отдельный SSH-ключ и отдельного технического пользователя. Полный набор текущих Ansible-проверок требует удалённого Python с `sudo` без пароля: подготовка такого доступа даёт широкие привилегии, поэтому control node должен администрироваться как привилегированный узел.
 - Фиксируйте SSH host keys через мастер или начальный `secrets/known_hosts`; в репозитории включена строгая проверка ключей и после запуска ключи хранятся в persistent volume.
 - Ограничьте доступ к панели VPN или reverse proxy с TLS. Не меняйте `HCP_BIND_ADDRESS` на `0.0.0.0` без firewall и TLS.
-- Сохраните резервную копию inventory и Docker volume, настройте ротацию отчетов.
+- Сохраните резервную копию рабочего inventory из volume и всего Docker volume; автоматическая ротация отчётов пока не реализована.
 - Response-действия панели ограничены обратимыми firewall-операциями. Перед применением обязательно выполните dry-run и проверьте созданную резервную копию; обновления пакетов и управление сервисами выполняйте по отдельной ручной процедуре.
 - Nmap и временный Lynis запускайте только для активов, на проверку которых есть разрешение. Временный Lynis выполняет код на ВМ, но удаляет каталог сразу после получения отчета.
-- OpenSCAP/Trivy для образов ВМ разворачивайте отдельным scanner worker с доступом только к API снимков гипервизора; не добавляйте их в гостевые ОС.
+- Проверка образов/снимков гипервизора не реализована. В текущем проекте OpenSCAP работает на подготовленной гостевой ОС, Trivy — на control node по собранному списку пакетов.

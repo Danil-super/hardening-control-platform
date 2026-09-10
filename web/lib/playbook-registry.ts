@@ -263,6 +263,9 @@ export function createCustomPlaybook({
 }
 
 export async function syntaxCheckPlaybook(playbook: RegisteredPlaybook) {
+  if (playbook.source === "custom" && !customPlaybooksEnabled()) {
+    throw new Error("Пользовательские playbook отключены в production режиме.");
+  }
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
   const playbookPath = path.join(repoRoot, playbook.file);
@@ -283,6 +286,12 @@ export async function runRegisteredPlaybook({
   limit?: string;
   variables: Record<string, string>;
 }) {
+  if (playbook.source === "builtin") {
+    throw new Error("Встроенные проверки запускаются через /api/ansible/run с подтверждением и проверкой целей.");
+  }
+  if (!customPlaybooksEnabled()) {
+    throw new Error("Пользовательские playbook отключены в production режиме.");
+  }
   if (playbook.kind !== "audit") {
     throw new Error("Response-playbook'и запускаются только через транзакционный контур remediation.");
   }
@@ -304,12 +313,22 @@ export async function runRegisteredPlaybook({
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
   const playbookPath = path.join(repoRoot, playbook.file);
   const args = ["-i", inventoryPath, playbookPath];
+  const extraVars: Record<string, string> = {};
   for (const variable of playbook.variables) {
     const value = variables[variable.name] || variable.defaultValue;
     if (value) {
-      args.push("-e", `${variable.name}=${value}`);
+      if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(variable.name) || /^(?:ansible_|hcp_)/.test(variable.name)) {
+        throw new Error("Недопустимое имя переменной пользовательского playbook.");
+      }
+      if (typeof value !== "string" || value.length > 4096) {
+        throw new Error(`Значение ${variable.name} должно быть строкой не длиннее 4096 символов.`);
+      }
+      extraVars[variable.name] = value;
     }
   }
+  // Ansible parses key=value strings again: JSON prevents a variable value
+  // containing spaces from introducing ansible_connection or other keys.
+  if (Object.keys(extraVars).length) args.push("-e", JSON.stringify(extraVars));
   if (limit) {
     args.push("--limit", limit);
   }

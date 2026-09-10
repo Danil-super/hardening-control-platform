@@ -9,4 +9,4 @@ WorkingDirectory=/opt/hardening-control-platform
 # Keep OpenSCAP opt-in: add openscap only after an SSG profile and a dedicated
 # inventory group have been prepared.
 Environment=HCP_DEEP_SCHEDULE_TASKS=packages
-ExecStart=/usr/bin/docker compose exec -T -e HCP_SCHEDULE_TASKS=${HCP_DEEP_SCHEDULE_TASKS} hcp /usr/local/bin/hcp-scheduled-audit
+ExecStart=/usr/bin/docker compose exec --user node -T -e HCP_SCHEDULE_TASKS=${HCP_DEEP_SCHEDULE_TASKS} hcp /usr/local/bin/hcp-scheduled-audit

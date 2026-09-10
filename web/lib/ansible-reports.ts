@@ -9,6 +9,11 @@ export type AnsibleReportSummary = {
   createdAt: string | null;
   modifiedAt: string;
   host: string;
+  inventoryHost: string | null;
+  partial: boolean;
+  needsReview: boolean;
+  available: boolean;
+  reportTimeValid: boolean;
   profileId: string | null;
   mode: string;
   score: number | null;
@@ -32,6 +37,7 @@ export type AnsibleReportDetail = AnsibleReportSummary & {
 };
 
 type ReportJson = {
+  inventoryHost?: string;
   createdAt?: string;
   hostname?: string;
   os?: string;
@@ -42,7 +48,13 @@ type ReportJson = {
   };
   scanner?: {
     hardeningIndex?: unknown;
+    partial?: boolean;
+    available?: boolean;
+    error?: unknown;
   };
+  vulnerabilityScan?: { partial?: boolean };
+  packageInventory?: { error?: string };
+  partial?: boolean;
   findings?: Finding[];
   events?: Array<{
     source?: string;
@@ -94,23 +106,32 @@ export function targetAliasFromReportFileName(fileName: string, profileId: strin
   };
   const kind = reportKinds[mode];
   if (kind) {
-    return reportId.replace(new RegExp(`-${kind}(?:-[a-zA-Z0-9_.:-]+)?$`, "i"), "");
+    return reportId.replace(new RegExp(`^(.*)-${kind}(?:-(?:run|schedule)-[a-zA-Z0-9_.:-]+)?$`, "i"), "$1");
   }
   if (profileId) {
-    return reportId.replace(new RegExp(`-${escapeRegExp(profileId)}(?:-[a-zA-Z0-9_.:-]+)?$`, "i"), "");
+    return reportId.replace(new RegExp(`^(.*)-${escapeRegExp(profileId)}(?:-(?:run|schedule)-[a-zA-Z0-9_.:-]+)?$`, "i"), "$1");
   }
   return reportId;
 }
 
-function numberOrZero(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+export function targetAliasFromReport(report: Pick<AnsibleReportSummary, "inventoryHost" | "fileName" | "profileId" | "mode">) {
+  return report.inventoryHost ?? targetAliasFromReportFileName(report.fileName, report.profileId, report.mode);
+}
+
+export function reportTimestamp(report: Pick<AnsibleReportSummary, "createdAt" | "modifiedAt">, now = Date.now()) {
+  const timestamp = Date.parse(report.createdAt ?? report.modifiedAt);
+  // Invalid or future dates may remain in history, but never outrank a real run.
+  return Number.isFinite(timestamp) && timestamp <= now ? timestamp : 0;
 }
 
 function numberOrNull(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : null;
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
 }
 
 function scoreFromReport(parsed: ReportJson, mode: string) {
+  // Only these checks define a configuration score. Historical CVE scores
+  // were derived from finding counts and must not be presented as protection.
+  if (mode !== "agentless" && mode !== "lynis") return null;
   const summaryScore = numberOrNull(parsed.summary?.score);
   if (summaryScore !== null) {
     return summaryScore;
@@ -121,9 +142,23 @@ function scoreFromReport(parsed: ReportJson, mode: string) {
   return mode === "lynis" ? numberOrNull(parsed.scanner?.hardeningIndex) : null;
 }
 
+function isFinding(value: unknown): value is Finding {
+  if (!value || typeof value !== "object") return false;
+  const item = value as Record<string, unknown>;
+  return ["id", "title", "description", "recommendation", "category", "profileId"].every((key) => typeof item[key] === "string")
+    && ["high", "medium", "low", "info"].includes(String(item.risk))
+    && ["failed", "passed", "manual", "fixed"].includes(String(item.status))
+    && ["agentless", "custom", "ssh_audit", "nmap", "lynis", "openscap", "trivy", "greenbone", "dependency_track"].includes(String(item.source))
+    && (item.evidence === undefined || typeof item.evidence === "string");
+}
+
 function readReportJson(reportPath: string): ReportJson | null {
   try {
-    return JSON.parse(readFileSync(reportPath, "utf8")) as ReportJson;
+    const value = JSON.parse(readFileSync(reportPath, "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    if (["createdAt", "hostname", "os", "profileId", "mode", "inventoryHost"].some((key) => value[key] != null && typeof value[key] !== "string")) return null;
+    if (value.inventoryHost != null && !/^[a-zA-Z0-9_.:-]{1,96}$/.test(value.inventoryHost)) return null;
+    return value as ReportJson;
   } catch {
     return null;
   }
@@ -138,26 +173,40 @@ function buildReportSummary(fileName: string, fullPath: string): AnsibleReportSu
   const stats = statSync(fullPath);
   const mode = parsed.mode ?? "agentless";
   const profileId = parsed.profileId ?? null;
-  const summary = parsed.summary ?? {};
-  const findings = Array.isArray(parsed.findings) ? parsed.findings : [];
+  const findings = Array.isArray(parsed.findings) ? parsed.findings.filter(isFinding) : [];
   const events = Array.isArray(parsed.events) ? parsed.events : [];
+  const createdAt = typeof parsed.createdAt === "string" ? parsed.createdAt : null;
+  const inventoryHost = typeof parsed.inventoryHost === "string" && /^[a-zA-Z0-9_.:-]{1,96}$/.test(parsed.inventoryHost)
+    ? parsed.inventoryHost : null;
+  const available = parsed.scanner?.available !== false;
+  const partial = !available || parsed.partial === true || parsed.scanner?.partial === true || Boolean(parsed.scanner?.error)
+    || parsed.vulnerabilityScan?.partial === true || Boolean(parsed.packageInventory?.error)
+    || (parsed.findings !== undefined && (!Array.isArray(parsed.findings) || findings.length !== parsed.findings.length))
+    || mode === "dependency-track";
+  const needsReview = findings.some((finding) => finding.status === "manual");
+  const reportTimeValid = reportTimestamp({ createdAt, modifiedAt: stats.mtime.toISOString() }) > 0;
 
   return {
     id: reportIdFromFileName(fileName),
     fileName,
     path: fullPath,
-    createdAt: parsed.createdAt ?? null,
+    createdAt,
     modifiedAt: stats.mtime.toISOString(),
     host: parsed.hostname ?? targetAliasFromReportFileName(fileName, profileId, mode),
+    inventoryHost,
+    available,
+    partial,
+    needsReview,
+    reportTimeValid,
     profileId,
     mode,
-    score: scoreFromReport(parsed, mode),
-    high: numberOrZero(summary.high),
-    medium: numberOrZero(summary.medium),
-    low: numberOrZero(summary.low),
-    info: numberOrZero(summary.info),
+    score: partial || !reportTimeValid ? null : scoreFromReport(parsed, mode),
+    high: findings.filter((finding) => finding.status === "failed" && finding.risk === "high").length,
+    medium: findings.filter((finding) => finding.status === "failed" && finding.risk === "medium").length,
+    low: findings.filter((finding) => finding.status === "failed" && finding.risk === "low").length,
+    info: findings.filter((finding) => finding.risk === "info").length,
     findingsCount: findings.length,
-    eventsCount: events.length || numberOrZero(summary.total),
+    eventsCount: events.length,
   };
 }
 
@@ -171,12 +220,12 @@ export function listAnsibleReports() {
     .filter((fileName) => fileName.endsWith(".json"))
     .map((fileName) => {
       const fullPath = path.join(reportsDir, fileName);
-      return buildReportSummary(fileName, fullPath);
+      try { return buildReportSummary(fileName, fullPath); } catch { return null; }
     })
     .filter((report): report is AnsibleReportSummary => Boolean(report))
     .sort((left, right) => {
-      const leftTime = Date.parse(left.createdAt ?? left.modifiedAt);
-      const rightTime = Date.parse(right.createdAt ?? right.modifiedAt);
+      const leftTime = reportTimestamp(left);
+      const rightTime = reportTimestamp(right);
       return rightTime - leftTime;
     });
 }
@@ -203,7 +252,7 @@ export function readAnsibleReport(reportId: string): AnsibleReportDetail | null 
     ...summary,
     hostname: parsed.hostname ?? null,
     os: parsed.os ?? null,
-    findings: Array.isArray(parsed.findings) ? parsed.findings : [],
+    findings: Array.isArray(parsed.findings) ? parsed.findings.filter(isFinding) : [],
     events: Array.isArray(parsed.events) ? parsed.events : [],
     raw: parsed,
   };

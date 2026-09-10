@@ -21,6 +21,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 ENV NODE_ENV=production \
+  HOME=/home/node \
   PORT=3000 \
   HCP_REPORTS_DIR=/var/lib/hcp/reports \
   HCP_STATE_DIR=/var/lib/hcp \

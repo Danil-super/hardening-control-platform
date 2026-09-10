@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
+import { isIP } from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -12,7 +13,7 @@ export type HostKeyCandidate = {
   hostKeyLine: string;
 };
 
-function configuredPrivateKeyPath() {
+export function configuredPrivateKeyPath() {
   return process.env.HCP_SSH_PRIVATE_KEY_PATH ?? path.join(os.homedir(), ".ssh", "hcp-control");
 }
 
@@ -23,7 +24,8 @@ export function getKnownHostsPath() {
 }
 
 export function ansibleSshArgs() {
-  return `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=${getKnownHostsPath()}`;
+  // Ansible parses this value with shlex, so a path must remain one argument.
+  return `-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${JSON.stringify(getKnownHostsPath())}`;
 }
 
 function isPublicKey(value: string) {
@@ -56,15 +58,13 @@ export async function getControlPublicKey() {
     throw Object.assign(new Error("Ключ узла управления не найден. Создайте его и укажите HCP_SSH_PRIVATE_KEY_PATH."), { code: "control_key_missing" });
   }
 
-  const publicKeyPath = `${privateKeyPath}.pub`;
-  let publicKey = existsSync(publicKeyPath) ? readFileSync(publicKeyPath, "utf8").trim() : "";
-  if (!isPublicKey(publicKey)) {
-    const result = await execFileAsync("ssh-keygen", ["-y", "-f", privateKeyPath], {
+  // Derive from the private key actually used by Ansible: a stale .pub file
+  // otherwise makes the onboarding wizard install an unrelated key.
+  const result = await execFileAsync("ssh-keygen", ["-y", "-P", "", "-f", privateKeyPath], {
       timeout: 10_000,
       maxBuffer: 64 * 1024,
     });
-    publicKey = result.stdout.trim();
-  }
+  const publicKey = result.stdout.trim();
 
   if (!isPublicKey(publicKey)) {
     throw Object.assign(new Error("Не удалось получить корректный публичный ключ узла управления."), { code: "control_key_invalid" });
@@ -78,16 +78,15 @@ export function isSafeSshHostAddress(value: unknown): value is string {
   if (typeof value !== "string" || value.length > 253) {
     return false;
   }
-  const ipv4 = value.split(".");
-  if (ipv4.length === 4 && ipv4.every((part) => /^\d{1,3}$/.test(part))) {
-    return ipv4.every((part) => Number(part) <= 255);
-  }
+  if (isIP(value)) return true;
+  if (/^[\d.]+$/.test(value)) return false;
   return value.split(".").every((label) => /^[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$/.test(label));
 }
 
 export function normalizeSshPort(value: unknown) {
+  if (value === undefined || value === null) return 22;
   const port = typeof value === "string" ? Number(value) : value;
-  return typeof port === "number" && Number.isInteger(port) && port > 0 && port <= 65535 ? port : 22;
+  return typeof port === "number" && Number.isInteger(port) && port > 0 && port <= 65535 ? port : null;
 }
 
 function keyScanError(error: unknown) {
@@ -96,6 +95,9 @@ function keyScanError(error: unknown) {
 }
 
 export async function scanHostKeys(address: string, port: number) {
+  if (!isSafeSshHostAddress(address) || normalizeSshPort(port) === null) {
+    throw Object.assign(new Error("Некорректный SSH-адрес или порт."), { code: "bad_address" });
+  }
   let stdout = "";
   try {
     const result = await execFileAsync("ssh-keyscan", ["-T", "8", "-p", String(port), "-t", "ed25519,ecdsa,rsa", address], {
@@ -110,7 +112,8 @@ export async function scanHostKeys(address: string, port: number) {
   const keyLines = stdout
     .split("\n")
     .map((line) => line.trim())
-    .filter((line) => /^(?:[^\s]+)\s+(?:ssh-(?:ed25519|rsa)|ecdsa-sha2-nistp\d+)\s+[A-Za-z0-9+/=]+/.test(line));
+    .filter((line) => /^(?:[^\s]+)\s+(?:ssh-(?:ed25519|rsa)|ecdsa-sha2-nistp\d+)\s+[A-Za-z0-9+/=]+$/.test(line))
+    .map((line) => `${hostPattern(address, port)} ${line.split(/\s+/).slice(1).join(" ")}`);
   const candidates = (await Promise.all(keyLines.map(async (hostKeyLine) => {
     const fingerprint = await fingerprintForKeyLine(hostKeyLine);
     return fingerprint ? { ...fingerprint, hostKeyLine } : null;
@@ -143,23 +146,48 @@ export async function trustHostKey({
 
   const knownHostsPath = getKnownHostsPath();
   mkdirSync(path.dirname(knownHostsPath), { recursive: true, mode: 0o700 });
+  const lockPath = `${knownHostsPath}.hcp-lock`;
+  try {
+    mkdirSync(lockPath, { mode: 0o700 });
+  } catch (error) {
+    if ((error as { code?: string }).code === "EEXIST") {
+      throw Object.assign(new Error("Сейчас сохраняется другой SSH key. Повторите операцию после её завершения."), { code: "host_key_store_busy" });
+    }
+    throw error;
+  }
+  try {
   const current = existsSync(knownHostsPath) ? readFileSync(knownHostsPath, "utf8") : "";
-  const currentLines = current.split("\n").map((line) => line.trim()).filter(Boolean);
-  if (currentLines.includes(candidate.hostKeyLine)) {
+  const pattern = hostPattern(address, port);
+  let matchingLines: string[] = [];
+  if (existsSync(knownHostsPath)) {
+    try {
+      const result = await execFileAsync("ssh-keygen", ["-F", pattern, "-f", knownHostsPath], { timeout: 10_000, maxBuffer: 128 * 1024 });
+      matchingLines = result.stdout.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+    } catch (error) {
+      if ((error as { code?: number }).code !== 1) throw error;
+    }
+  }
+  const [, candidateType, candidateKey] = candidate.hostKeyLine.split(/\s+/);
+  if (matchingLines.some((line) => {
+    const [, type, key] = line.split(/\s+/);
+    return type === candidateType && key === candidateKey;
+  })) {
     return { fingerprint: candidate.fingerprint, algorithm: candidate.algorithm, alreadyTrusted: true };
   }
 
-  const pattern = hostPattern(address, port);
-  const [, candidateType] = candidate.hostKeyLine.split(/\s+/, 3);
-  const conflictingKey = currentLines.some((line) => {
-    const [hosts, type] = line.split(/\s+/, 3);
-    return hosts?.split(",").includes(pattern) && type === candidateType;
+  const conflictingKey = matchingLines.some((line) => {
+    const fields = line.split(/\s+/);
+    const type = fields[line.startsWith("@") ? 2 : 1];
+    return type === candidateType;
   });
   if (conflictingKey) {
     throw Object.assign(new Error("Для этого адреса уже сохранён другой SSH key того же типа. Проверьте ротацию ключа вручную."), { code: "host_key_conflict" });
   }
 
-  appendFileSync(knownHostsPath, `${candidate.hostKeyLine}\n`, { mode: 0o600 });
+  appendFileSync(knownHostsPath, `${current && !current.endsWith("\n") ? "\n" : ""}${candidate.hostKeyLine}\n`, { mode: 0o600 });
   chmodSync(knownHostsPath, 0o600);
   return { fingerprint: candidate.fingerprint, algorithm: candidate.algorithm, alreadyTrusted: false };
+  } finally {
+    rmSync(lockPath, { recursive: true, force: true });
+  }
 }

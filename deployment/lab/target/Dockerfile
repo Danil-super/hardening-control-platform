@@ -6,7 +6,8 @@ RUN apt-get update \
   && useradd --create-home --shell /bin/bash lab \
   && echo 'lab ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/lab \
   && chmod 440 /etc/sudoers.d/lab \
-  && mkdir -p /run/sshd /home/lab/.ssh \
+  && mkdir -p /run/sshd /home/lab/.ssh /etc/ssh/host_keys \
+  && rm -f /etc/ssh/ssh_host_* \
   && printf '%s\n' 'PermitRootLogin yes' 'PasswordAuthentication no' 'PermitEmptyPasswords no' 'MaxAuthTries 8' >> /etc/ssh/sshd_config
 
 COPY entrypoint.sh /usr/local/bin/lab-entrypoint

@@ -1,5 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
@@ -28,7 +28,7 @@ export type RemediationTransaction = {
   hostAlias: string;
   action: string;
   profileId: string;
-  status: "preparing" | "backed_up" | "applied" | "failed" | "rolled_back";
+  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back";
   reason: string;
   parameters: Record<string, string>;
   backupRef: string | null;
@@ -90,7 +90,8 @@ function getDatabase() {
     mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
   }
   const database = new DatabaseSync(databasePath);
-  database.exec("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;");
+  chmodSync(databasePath, 0o600);
+  database.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
   database.exec(`
     CREATE TABLE IF NOT EXISTS audit_events (
       id TEXT PRIMARY KEY,
@@ -122,6 +123,9 @@ function getDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS remediation_transactions_active_host
       ON remediation_transactions(host_alias)
       WHERE status IN ('preparing', 'backed_up');
+    CREATE UNIQUE INDEX IF NOT EXISTS remediation_transactions_exclusive_host
+      ON remediation_transactions(host_alias)
+      WHERE status IN ('preparing', 'backed_up', 'rolling_back');
 
     CREATE TABLE IF NOT EXISTS runtime_settings (
       setting_key TEXT PRIMARY KEY,
@@ -150,13 +154,48 @@ function getDatabase() {
     CREATE INDEX IF NOT EXISTS openscap_exceptions_group_expiry
       ON openscap_exceptions(group_name, expires_at);
   `);
+  // Preserve old signatures: their version is exposed by verification instead
+  // of silently re-signing history with the stronger payload encoding.
+  const auditColumns = database.prepare("PRAGMA table_info(audit_events)").all();
+  if (!auditColumns.some((column) => column.name === "hash_version")) {
+    try {
+      database.exec("ALTER TABLE audit_events ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1");
+    } catch (error) {
+      // Another worker may have completed this additive migration meanwhile.
+      if (!database.prepare("PRAGMA table_info(audit_events)").all().some((column) => column.name === "hash_version")) throw error;
+    }
+  }
   globalRef.hcpDatabase = database;
   globalRef.hcpDatabasePath = databasePath;
   return database;
 }
 
-function canonicalJson(value: unknown) {
-  return JSON.stringify(value, Object.keys(value as Record<string, unknown>).sort());
+function canonicalValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+      .map(([key, child]) => [key, canonicalValue(child)]));
+  }
+  return value;
+}
+
+const activeTransactions = new WeakSet<DatabaseSync>();
+
+function inTransaction<T>(operation: (database: DatabaseSync) => T): T {
+  const database = getDatabase();
+  if (activeTransactions.has(database)) return operation(database);
+  database.exec("BEGIN IMMEDIATE");
+  activeTransactions.add(database);
+  try {
+    const result = operation(database);
+    database.exec("COMMIT");
+    return result;
+  } catch (error) {
+    database.exec("ROLLBACK");
+    throw error;
+  } finally {
+    activeTransactions.delete(database);
+  }
 }
 
 function auditIntegrityKey() {
@@ -184,6 +223,8 @@ export function getVulnerabilityDatabaseSettings(): VulnerabilityDatabaseSetting
 }
 
 export function setVulnerabilityDatabaseMode(mode: VulnerabilityDatabaseMode) {
+  if (mode !== "online" && mode !== "offline") throw new Error("Некорректный режим базы уязвимостей.");
+  return inTransaction(() => {
   const updatedAt = new Date().toISOString();
   getDatabase().prepare(`
     INSERT INTO runtime_settings (setting_key, setting_value, updated_at)
@@ -192,6 +233,7 @@ export function setVulnerabilityDatabaseMode(mode: VulnerabilityDatabaseMode) {
   `).run("vulnerability_database_mode", mode, updatedAt);
   appendAuditEvent("vulnerability_database_mode_changed", "vulnerability_database_mode", { mode });
   return { mode, source: "interface" as const, updatedAt };
+  });
 }
 
 function isSafePolicyIdentifier(value: string) {
@@ -259,6 +301,7 @@ export function listOpenScapPolicies() {
 }
 
 export function upsertOpenScapPolicy(input: Pick<OpenScapPolicy, "groupName" | "datastream" | "profile">) {
+  return inTransaction(() => {
   const groupName = input.groupName.trim();
   const datastream = input.datastream.trim();
   const profile = input.profile.trim();
@@ -276,9 +319,11 @@ export function upsertOpenScapPolicy(input: Pick<OpenScapPolicy, "groupName" | "
   `).run(groupName, datastream, profile, now, now);
   appendAuditEvent("openscap_policy_upserted", groupName, { groupName, datastream, profile });
   return listOpenScapPolicies().find((policy) => policy.groupName === groupName) ?? null;
+  });
 }
 
 export function deleteOpenScapPolicy(groupNameInput: string) {
+  return inTransaction(() => {
   const groupName = groupNameInput.trim();
   assertOpenScapGroupName(groupName);
   const result = getDatabase().prepare("DELETE FROM openscap_policies WHERE group_name = ?").run(groupName);
@@ -286,6 +331,7 @@ export function deleteOpenScapPolicy(groupNameInput: string) {
     appendAuditEvent("openscap_policy_deleted", groupName, { groupName });
   }
   return result.changes > 0;
+  });
 }
 
 export function listOpenScapExceptions() {
@@ -296,6 +342,7 @@ export function listOpenScapExceptions() {
 }
 
 export function upsertOpenScapException(input: Pick<OpenScapException, "groupName" | "ruleId" | "reason" | "expiresAt">) {
+  return inTransaction(() => {
   const groupName = input.groupName.trim();
   const ruleId = input.ruleId.trim();
   const reason = input.reason.trim();
@@ -321,9 +368,11 @@ export function upsertOpenScapException(input: Pick<OpenScapException, "groupNam
   `).run(id, groupName, ruleId, reason, expiresAt, createdAt, updatedAt);
   appendAuditEvent("openscap_exception_upserted", id, { groupName, ruleId, reason, expiresAt });
   return listOpenScapExceptions().find((exception) => exception.id === id) ?? null;
+  });
 }
 
 export function deleteOpenScapException(id: string) {
+  return inTransaction(() => {
   if (!/^openscap_exception_[a-f0-9-]{36}$/.test(id)) {
     throw new Error("Идентификатор исключения имеет недопустимый формат.");
   }
@@ -332,10 +381,14 @@ export function deleteOpenScapException(id: string) {
     appendAuditEvent("openscap_exception_deleted", id, { id });
   }
   return result.changes > 0;
+  });
 }
 
-function computeEntryHash(value: Record<string, unknown>) {
-  return createHmac("sha256", auditIntegrityKey()).update(canonicalJson(value)).digest("hex");
+function computeEntryHash(value: Record<string, unknown>, version = 2) {
+  const encoded = version === 1
+    ? JSON.stringify(value, Object.keys(value).sort())
+    : JSON.stringify(canonicalValue(value));
+  return createHmac("sha256", auditIntegrityKey()).update(encoded).digest("hex");
 }
 
 function toIncident(row: Record<string, unknown>): IncidentRecord | null {
@@ -355,17 +408,18 @@ function toIncident(row: Record<string, unknown>): IncidentRecord | null {
 }
 
 export function appendAuditEvent(eventType: string, entityId: string, payload: Record<string, unknown>) {
-  const database = getDatabase();
+  return inTransaction((database) => {
   const createdAt = new Date().toISOString();
-  const previous = database.prepare("SELECT entry_hash FROM audit_events ORDER BY created_at DESC, rowid DESC LIMIT 1").get();
+  const previous = database.prepare("SELECT entry_hash FROM audit_events ORDER BY rowid DESC LIMIT 1").get();
   const previousHash = typeof previous?.entry_hash === "string" ? previous.entry_hash : null;
   const payloadJson = JSON.stringify(payload);
-  const hash = computeEntryHash({ createdAt, eventType, entityId, payload, previousHash });
+  const hash = computeEntryHash({ createdAt, eventType, entityId, payload: JSON.parse(payloadJson), previousHash });
   database.prepare(`
-    INSERT INTO audit_events (id, created_at, event_type, entity_id, payload_json, previous_hash, entry_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO audit_events (id, created_at, event_type, entity_id, payload_json, previous_hash, entry_hash, hash_version)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 2)
   `).run(randomUUID(), createdAt, eventType, entityId, payloadJson, previousHash, hash);
   return { createdAt, entryHash: hash, previousHash };
+  });
 }
 
 export function appendIncident(record: Omit<IncidentRecord, "id" | "createdAt">) {
@@ -399,29 +453,37 @@ export function readIncidents(limit = 300) {
 
 export function verifyAuditChain() {
   const rows = getDatabase()
-    .prepare("SELECT created_at, event_type, entity_id, payload_json, previous_hash, entry_hash FROM audit_events ORDER BY created_at ASC, rowid ASC")
+    .prepare("SELECT created_at, event_type, entity_id, payload_json, previous_hash, entry_hash, hash_version FROM audit_events ORDER BY rowid ASC")
     .all();
+  const legacyEntries = rows.filter((row) => row.hash_version === 1).length;
   let previousHash: string | null = null;
   for (const row of rows) {
-    const payload = JSON.parse(String(row.payload_json));
+    let payload: unknown;
+    try { payload = JSON.parse(String(row.payload_json)); } catch {
+      return { valid: false, entries: rows.length, brokenAt: String(row.entity_id), legacyEntries, payloadProtected: false };
+    }
+    if (row.hash_version !== 1 && row.hash_version !== 2) {
+      return { valid: false, entries: rows.length, brokenAt: String(row.entity_id), legacyEntries, payloadProtected: false };
+    }
     const expectedHash: string = computeEntryHash({
       createdAt: row.created_at,
       eventType: row.event_type,
       entityId: row.entity_id,
       payload,
       previousHash,
-    });
+    }, Number(row.hash_version));
     if (row.previous_hash !== previousHash || row.entry_hash !== expectedHash) {
-      return { valid: false, entries: rows.length, brokenAt: String(row.entity_id) };
+      return { valid: false, entries: rows.length, brokenAt: String(row.entity_id), legacyEntries, payloadProtected: false };
     }
     previousHash = String(row.entry_hash);
   }
-  return { valid: true, entries: rows.length, brokenAt: null };
+  return { valid: true, entries: rows.length, brokenAt: null, legacyEntries, payloadProtected: legacyEntries === 0 };
 }
 
 export function createRemediationTransaction(input: Omit<RemediationTransaction, "createdAt" | "updatedAt" | "status" | "backupRef" | "preAuditReportId" | "postAuditReportId" | "error">) {
+  return inTransaction((database) => {
   const now = new Date().toISOString();
-  getDatabase().prepare(`
+  database.prepare(`
     INSERT INTO remediation_transactions (
       id, created_at, updated_at, host_alias, action, profile_id, status, reason, parameters_json,
       backup_ref, pre_audit_report_id, post_audit_report_id, error
@@ -435,12 +497,14 @@ export function createRemediationTransaction(input: Omit<RemediationTransaction,
     parameters: input.parameters,
   });
   return getRemediationTransaction(input.id);
+  });
 }
 
 export function updateRemediationTransaction(
   id: string,
   update: Partial<Pick<RemediationTransaction, "status" | "backupRef" | "preAuditReportId" | "postAuditReportId" | "error">>,
 ) {
+  return inTransaction(() => {
   const current = getRemediationTransaction(id);
   if (!current) {
     return null;
@@ -461,6 +525,37 @@ export function updateRemediationTransaction(
     error: next.error,
   });
   return next;
+  });
+}
+
+export function hasActiveRemediationForHost(hostAlias: string) {
+  return Boolean(getDatabase().prepare(`SELECT 1 FROM remediation_transactions
+    WHERE host_alias = ? AND status IN ('preparing', 'backed_up', 'rolling_back') LIMIT 1`).get(hostAlias));
+}
+
+export function claimRemediationRollback(id: string): RemediationTransaction {
+  return inTransaction((database) => {
+    const current = getRemediationTransaction(id);
+    if (!current || !current.backupRef || !["applied", "failed", "rollback_failed"].includes(current.status)) {
+      throw Object.assign(new Error("Эта операция недоступна для отката."), { code: "rollback_not_available" });
+    }
+    if (hasActiveRemediationForHost(current.hostAlias)) {
+      throw Object.assign(new Error("На хосте уже выполняется изменение или откат."), { code: "host_operation_active" });
+    }
+    const newer = database.prepare(`SELECT id FROM remediation_transactions
+      WHERE host_alias = ? AND rowid > (SELECT rowid FROM remediation_transactions WHERE id = ?)
+        AND backup_ref IS NOT NULL AND status IN ('applied', 'failed', 'rollback_failed', 'rolling_back', 'backed_up') LIMIT 1`)
+      .get(current.hostAlias, id);
+    if (newer) {
+      throw Object.assign(new Error("Сначала откатите более поздние изменения этого хоста."), { code: "newer_remediation_exists" });
+    }
+    const row = database.prepare(`UPDATE remediation_transactions SET status = 'rolling_back', updated_at = ?, error = NULL
+      WHERE id = ? AND status IN ('applied', 'failed', 'rollback_failed') AND backup_ref IS NOT NULL RETURNING *`)
+      .get(new Date().toISOString(), id);
+    if (!row) throw Object.assign(new Error("Операция уже занята или недоступна для отката."), { code: "rollback_not_available" });
+    appendAuditEvent("remediation_rolling_back", id, { hostAlias: current.hostAlias, backupRef: current.backupRef });
+    return rowToTransaction(row);
+  });
 }
 
 function rowToTransaction(row: Record<string, unknown>): RemediationTransaction {

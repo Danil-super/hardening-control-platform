@@ -10,7 +10,6 @@
     lynis_source_dir: "{{ lookup('env', 'HCP_LYNIS_SOURCE_DIR') | default('/usr/share/lynis', true) }}"
     lynis_executable: "{{ lookup('env', 'HCP_LYNIS_EXECUTABLE') | default('/usr/sbin/lynis', true) }}"
     lynis_profile: "{{ lookup('env', 'HCP_LYNIS_PROFILE') | default('/etc/lynis/default.prf', true) }}"
-    lynis_plugin_dir: "{{ lookup('env', 'HCP_LYNIS_PLUGIN_DIR') | default('/etc/lynis/plugins', true) }}"
     lynis_raw_report: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-lynis-{{ report_suffix }}.report.dat"
 
   tasks:
@@ -44,16 +43,9 @@
       become: false
       register: lynis_profile_file
 
-    - name: Check Lynis plugin directory on control node
-      ansible.builtin.stat:
-        path: "{{ lynis_plugin_dir }}"
-      delegate_to: localhost
-      become: false
-      register: lynis_plugins
-
     - name: Determine Lynis availability on control node
       ansible.builtin.set_fact:
-        lynis_available: "{{ lynis_data.stat.exists and lynis_binary.stat.exists and lynis_profile_file.stat.exists and lynis_plugins.stat.isdir }}"
+        lynis_available: "{{ lynis_data.stat.exists and lynis_binary.stat.exists and lynis_profile_file.stat.exists }}"
       delegate_to: localhost
       become: false
 
@@ -133,12 +125,6 @@
           ansible.builtin.copy:
             src: "{{ lynis_profile }}"
             dest: "{{ lynis_remote_dir.path }}/lynis/default.prf"
-            mode: "0644"
-
-        - name: Transfer Lynis plugin directory without installing it
-          ansible.builtin.copy:
-            src: "{{ lynis_plugin_dir }}/"
-            dest: "{{ lynis_remote_dir.path }}/lynis/plugins/"
             mode: "0644"
 
         - name: Check that no other Lynis instance is active

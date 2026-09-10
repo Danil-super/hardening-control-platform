@@ -1,67 +1,30 @@
 ---
-- name: Block source IP with host firewall
+- name: Block a source address without blocking the management connection
   hosts: linux_hosts
   become: true
   gather_facts: false
-
   tasks:
-    - name: Validate source IP
+    - name: Validate source address request
       ansible.builtin.assert:
-        that:
-          - block_ip is defined
-          - block_ip is match('^([0-9]{1,3}\\.){3}[0-9]{1,3}$')
-        fail_msg: "Укажите block_ip в формате IPv4."
+        that: block_ip is defined
 
-    - name: Check ufw availability
-      ansible.builtin.shell: command -v ufw
+    - name: Read the actual SSH management endpoints before sudo
+      ansible.builtin.command: printenv SSH_CONNECTION
+      become: false
+      register: hcp_ssh_connection
       changed_when: false
-      failed_when: false
-      register: ufw_binary
+      check_mode: false
 
-    - name: Check firewalld availability
-      ansible.builtin.shell: command -v firewall-cmd
-      changed_when: false
-      failed_when: false
-      register: firewalld_binary
-
-    - name: Read ufw status
-      ansible.builtin.command: ufw status
-      changed_when: false
-      failed_when: false
-      register: ufw_status
-      when: ufw_binary.rc == 0
-
-    - name: Read firewalld status
-      ansible.builtin.command: firewall-cmd --state
-      changed_when: false
-      failed_when: false
-      register: firewalld_status
-      when: firewalld_binary.rc == 0
-
-    - name: Require an active supported firewall
+    - name: Require verified management endpoints
       ansible.builtin.assert:
-        that:
-          - >-
-            (ufw_binary.rc == 0 and 'Status: active' in (ufw_status.stdout | default('')))
-            or (firewalld_binary.rc == 0 and (firewalld_status.stdout | default('')) == 'running')
-        fail_msg: "На хосте нет активного ufw/firewalld. Автоматическая блокировка IP остановлена без изменений."
+        that: hcp_ssh_connection.stdout.split() | length == 4
+        fail_msg: "Cannot verify the management SSH endpoints. Blocking stopped."
 
-    - name: Deny source IP with ufw
-      ansible.builtin.command: "ufw deny from {{ block_ip }}"
-      when:
-        - ufw_binary.rc == 0
-        - "'Status: active' in (ufw_status.stdout | default(''))"
-
-    - name: Add firewalld rich rule for source IP
-      ansible.builtin.command: "firewall-cmd --permanent --add-rich-rule=rule family=ipv4 source address={{ block_ip }} drop"
-      changed_when: false
-      failed_when: false
-      when:
-        - firewalld_binary.rc == 0
-        - "(firewalld_status.stdout | default('')) == 'running'"
-
-    - name: Reload firewalld
-      ansible.builtin.command: firewall-cmd --reload
-      when:
-        - firewalld_binary.rc == 0
-        - "(firewalld_status.stdout | default('')) == 'running'"
+    - name: Execute or preview a source address deny
+      ansible.builtin.include_tasks: ../tasks/firewall-operation.yml
+      vars:
+        hcp_firewall_argv: >-
+          {{ ['blockIp', '--ip', block_ip,
+              '--ssh-client', hcp_ssh_connection.stdout.split()[0],
+              '--protected-ip', hcp_ssh_connection.stdout.split()[2]]
+             + (['--check'] if ansible_check_mode else []) }}

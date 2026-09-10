@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -69,8 +68,8 @@ function parseCidr(cidr: string) {
   }
 
   const mask = (0xffffffff << (32 - prefix)) >>> 0;
-  const network = base & mask;
-  const broadcast = network | (~mask >>> 0);
+  const network = (base & mask) >>> 0;
+  const broadcast = (network | (~mask >>> 0)) >>> 0;
   const count = Math.max(0, broadcast - network - 1);
   if (count > maxHostsPerScan) {
     return null;
@@ -236,57 +235,6 @@ async function scanLocalHosts(cidr: string) {
   });
 }
 
-function ensureInventory(repoRoot: string) {
-  const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
-  if (!existsSync(inventoryPath)) {
-    const example = path.join(repoRoot, "ansible", "inventory.example.ini");
-    const content = existsSync(example)
-      ? readFileSync(example, "utf8")
-      : "[linux_hosts]\n\n[linux_hosts:vars]\nansible_python_interpreter=/usr/bin/python3\n";
-    writeFileSync(inventoryPath, content);
-  }
-  return inventoryPath;
-}
-
-function addHostsToInventory(hosts: DiscoveredHost[], sshUser: string, become: boolean) {
-  const repoRoot = getRepoRoot();
-  const inventoryPath = ensureInventory(repoRoot);
-  const current = readFileSync(inventoryPath, "utf8");
-  const existingIps = new Set(
-    current
-      .split("\n")
-      .filter((line) => line.trim() && !line.trim().startsWith("#"))
-      .map((line) => line.match(/\bansible_host=(\d{1,3}(?:\.\d{1,3}){3})/)?.[1])
-      .filter((ip): ip is string => Boolean(ip)),
-  );
-
-  const newLines = hosts
-    .filter((host) => host.sshOpen && !existingIps.has(host.ip))
-    .map((host) => {
-      host.added = true;
-      return `${host.alias} ansible_host=${host.ip} ansible_user=${sshUser} ansible_become=${become ? "true" : "false"}`;
-    });
-
-  if (!newLines.length) {
-    return { inventoryPath, added: 0 };
-  }
-
-  const lines = current.split("\n");
-  const varsIndex = lines.findIndex((line) => line.trim() === "[linux_hosts:vars]");
-  const hostsIndex = lines.findIndex((line) => line.trim() === "[linux_hosts]");
-
-  if (hostsIndex === -1) {
-    lines.push("", "[linux_hosts]", ...newLines);
-  } else if (varsIndex !== -1 && varsIndex > hostsIndex) {
-    lines.splice(varsIndex, 0, ...newLines);
-  } else {
-    lines.splice(hostsIndex + 1, 0, ...newLines);
-  }
-
-  writeFileSync(inventoryPath, lines.join("\n").replace(/\n{3,}/g, "\n\n"));
-  return { inventoryPath, added: newLines.length };
-}
-
 function isSafeSshUser(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9_.-]{1,64}$/.test(value);
 }
@@ -305,6 +253,9 @@ export async function GET() {
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
+  if (body?.addToInventory) {
+    return NextResponse.json({ ok: false, error: "verified_onboarding_required", message: "Добавляйте найденные хосты через мастер подключения с проверкой SSH-ключа и доступа." }, { status: 400 });
+  }
   const candidates = await detectLocalCidrs();
   const cidr = typeof body?.cidr === "string" && body.cidr ? body.cidr : candidates[0]?.cidr;
   const parsed = cidr ? parseCidr(cidr) : null;
@@ -322,9 +273,7 @@ export async function POST(request: Request) {
 
   const sshUser = isSafeSshUser(body?.sshUser) ? body.sshUser : process.env.USER || "root";
   const become = typeof body?.become === "boolean" ? body.become : true;
-  const addToInventory = Boolean(body?.addToInventory);
   const hosts = await scanLocalHosts(cidr);
-  const inventory = addToInventory ? addHostsToInventory(hosts, sshUser, become) : null;
   const sshReady = hosts.filter((host) => host.sshOpen).length;
 
   return NextResponse.json({
@@ -333,10 +282,10 @@ export async function POST(request: Request) {
     scannedHosts: parsed.count,
     sshUser,
     become,
-    addToInventory,
+    addToInventory: false,
     found: hosts,
     sshReady,
-    added: inventory?.added ?? 0,
-    inventoryPath: inventory?.inventoryPath ?? path.join(getRepoRoot(), "ansible", "inventory.ini"),
+    added: 0,
+    inventoryPath: path.join(getRepoRoot(), "ansible", "inventory.ini"),
   });
 }

@@ -1,7 +1,10 @@
-import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { getReportsDir } from "@/lib/ansible-reports";
+import { getReportsDir, listAnsibleReports } from "@/lib/ansible-reports";
+import { isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
+import { hasActiveRemediationForHost } from "@/lib/state-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -36,27 +39,23 @@ function getRepoRoot() {
 }
 
 function isSafeAlias(value: unknown): value is string {
-  return typeof value === "string" && /^[a-zA-Z0-9_.-]{1,64}$/.test(value);
+  return typeof value === "string" && /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$/.test(value) && !["all", "ungrouped"].includes(value);
 }
 
 function isSafeSshUser(value: unknown): value is string {
-  return typeof value === "string" && /^[a-zA-Z0-9_.-]{1,64}$/.test(value);
+  return typeof value === "string" && /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$/.test(value);
 }
 
 function isSafeHostAddress(value: unknown): value is string {
-  if (typeof value !== "string") {
-    return false;
-  }
-  return /^(?:[a-zA-Z0-9.-]{1,253}|\d{1,3}(?:\.\d{1,3}){3})$/.test(value);
+  return isSafeSshHostAddress(value);
 }
 
 function isSafeGroup(value: unknown): value is string {
-  return typeof value === "string" && /^[a-zA-Z0-9_.-]{1,64}$/.test(value);
+  return typeof value === "string" && /^[a-zA-Z_][a-zA-Z0-9_]{0,63}$/.test(value) && !["all", "ungrouped"].includes(value);
 }
 
 function normalizePort(value: unknown) {
-  const port = typeof value === "string" ? Number(value) : value;
-  return typeof port === "number" && Number.isInteger(port) && port > 0 && port <= 65535 ? port : 22;
+  return normalizeSshPort(value);
 }
 
 function ensureInventory(repoRoot: string) {
@@ -122,11 +121,20 @@ function readInventoryHosts(inventoryPath: string) {
     const [alias, ...tokens] = line.split(/\s+/);
     const values = parseKeyValueTokens(tokens);
     const address = values.get("ansible_host") ?? alias;
+    const existing = hosts.find((host) => host.alias === alias);
+    if (existing) {
+      if (values.has("ansible_host")) existing.address = address;
+      if (values.has("ansible_user")) existing.user = values.get("ansible_user") ?? null;
+      if (values.has("ansible_port")) existing.port = normalizePort(values.get("ansible_port")) ?? 22;
+      if (values.has("ansible_become")) existing.become = parseBoolean(values.get("ansible_become"));
+      if (!existing.groups.includes(currentGroup)) existing.groups.push(currentGroup);
+      continue;
+    }
     hosts.push({
       alias,
       address,
       user: values.get("ansible_user") ?? null,
-      port: normalizePort(values.get("ansible_port")),
+      port: normalizePort(values.get("ansible_port")) ?? 22,
       become: parseBoolean(values.get("ansible_become")),
       groups: [currentGroup],
       raw: line,
@@ -185,9 +193,8 @@ function insertHostLine(lines: string[], group: string, line: string) {
   if (hostsIndex === -1) {
     const insertIndex = varsIndex === -1 ? lines.length : varsIndex;
     lines.splice(insertIndex, 0, "", groupHeader, line);
-  } else if (varsIndex !== -1 && varsIndex > hostsIndex) {
-    lines.splice(varsIndex, 0, line);
   } else {
+    // Insert in this group's section, never before an unrelated later :vars.
     lines.splice(hostsIndex + 1, 0, line);
   }
 
@@ -220,30 +227,23 @@ function normalizeInventoryText(lines: string[]) {
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
 }
 
-function readReport(reportPath: string): HostReport | null {
-  try {
-    const content = JSON.parse(readFileSync(reportPath, "utf8")) as {
-      createdAt?: string;
-      profileId?: string;
-      mode?: string;
-      summary?: Partial<Record<"score" | "high" | "medium" | "low" | "info", number>>;
-    };
-    const summary = content.summary ?? {};
-    return {
-      path: reportPath,
-      fileName: path.basename(reportPath),
-      createdAt: content.createdAt ?? null,
-      profileId: content.profileId ?? null,
-      mode: content.mode ?? "agentless",
-      score: typeof summary.score === "number" ? summary.score : null,
-      high: typeof summary.high === "number" ? summary.high : 0,
-      medium: typeof summary.medium === "number" ? summary.medium : 0,
-      low: typeof summary.low === "number" ? summary.low : 0,
-      info: typeof summary.info === "number" ? summary.info : 0,
-    };
-  } catch {
-    return null;
-  }
+function saveInventory(inventoryPath: string, lines: string[]) {
+  // Deployment may link inventory.ini into the persistent state volume.
+  const destination = existsSync(inventoryPath) ? realpathSync(inventoryPath) : inventoryPath;
+  const temporaryPath = `${destination}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, normalizeInventoryText(lines), { mode: 0o600 });
+  renameSync(temporaryPath, destination);
+}
+
+function identityCollides(current: string, alias: string, group: string) {
+  const groups = new Set(Array.from(current.matchAll(/^\[([^\]:]+)(?::(?:vars|children))?\]\s*$/gm), (match) => match[1]));
+  let section = "";
+  const hostAliases = current.split("\n").flatMap((raw) => {
+    const line = raw.trim();
+    if (line.startsWith("[")) { section = line; return []; }
+    return !line || line.startsWith("#") || section.includes(":") ? [] : [line.split(/\s+/)[0]];
+  });
+  return alias === group || groups.has(alias) || hostAliases.includes(group);
 }
 
 function attachReports(hosts: InventoryHost[], reportsPath: string) {
@@ -251,22 +251,16 @@ function attachReports(hosts: InventoryHost[], reportsPath: string) {
     return hosts;
   }
 
-  const reportFiles = readdirSync(reportsPath)
-    .filter((fileName) => fileName.endsWith(".json"))
-    .map((fileName) => {
-      const fullPath = path.join(reportsPath, fileName);
-      return { fileName, fullPath, mtimeMs: statSync(fullPath).mtimeMs };
-    })
-    .sort((left, right) => right.mtimeMs - left.mtimeMs);
+  const reports = listAnsibleReports();
 
   return hosts.map((host) => {
-    const hostReports = reportFiles.filter((file) => file.fileName.startsWith(`${host.alias}-`));
+    const hostReports = reports.filter((report) => (report.inventoryHost ?? report.host) === host.alias);
     // The host score is a hardening score. Package CVE and event reports have
     // different semantics and must not replace it merely because they are newer.
-    const reportFile = hostReports.find((file) => readReport(file.fullPath)?.mode === "agentless");
+    const reportFile = hostReports.find((report) => report.mode === "agentless");
     return {
       ...host,
-      lastReport: reportFile ? readReport(reportFile.fullPath) : null,
+      lastReport: reportFile ?? null,
       reportCount: hostReports.length,
     };
   });
@@ -312,6 +306,10 @@ export async function POST(request: Request) {
   const port = normalizePort(body?.port);
   const group = isSafeGroup(body?.group) ? body.group.trim() : "linux_hosts";
 
+  if (port === null || (body?.group !== undefined && !isSafeGroup(body.group))) {
+    return NextResponse.json({ ok: false, message: "Укажите SSH-порт 1–65535 и группу из букв, цифр и подчёркивания." }, { status: 400 });
+  }
+
   if (!isSafeAlias(alias)) {
     return NextResponse.json(
       { ok: false, error: "bad_alias", message: "Alias может содержать буквы, цифры, точку, дефис и подчёркивание." },
@@ -338,6 +336,10 @@ export async function POST(request: Request) {
   const current = readFileSync(inventoryPath, "utf8");
   const hosts = readInventoryHosts(inventoryPath);
 
+  if (identityCollides(current, alias, group)) {
+    return NextResponse.json({ ok: false, message: "Имя хоста не должно совпадать с именем inventory-группы." }, { status: 400 });
+  }
+
   if (hosts.some((host) => host.alias === alias)) {
     return NextResponse.json(
       { ok: false, error: "duplicate_alias", message: "Хост с таким alias уже есть в inventory." },
@@ -345,7 +347,7 @@ export async function POST(request: Request) {
     );
   }
 
-  if (hosts.some((host) => host.address === address)) {
+  if (hosts.some((host) => host.address === address && host.port === port)) {
     return NextResponse.json(
       { ok: false, error: "duplicate_address", message: "Хост с таким IP уже есть в inventory." },
       { status: 409 },
@@ -354,7 +356,7 @@ export async function POST(request: Request) {
 
   const newLine = hostLine({ alias, address, port, user, become });
   const lines = current.split("\n");
-  writeFileSync(inventoryPath, normalizeInventoryText(insertHostLine(lines, group, newLine)));
+  saveInventory(inventoryPath, insertHostLine(lines, group, newLine));
 
   return NextResponse.json({
     ok: true,
@@ -380,7 +382,7 @@ export async function PUT(request: Request) {
   const port = normalizePort(body?.port);
   const group = isSafeGroup(body?.group) ? body.group.trim() : "linux_hosts";
 
-  if (!isSafeAlias(alias) || !isSafeHostAddress(address) || !isSafeSshUser(user)) {
+  if (!isSafeAlias(alias) || !isSafeHostAddress(address) || !isSafeSshUser(user) || port === null || (body?.group !== undefined && !isSafeGroup(body.group))) {
     return NextResponse.json(
       { ok: false, message: "Проверьте alias, IP/hostname и SSH-пользователя." },
       { status: 400 },
@@ -391,11 +393,17 @@ export async function PUT(request: Request) {
   const inventoryPath = ensureInventory(repoRoot);
   const current = readFileSync(inventoryPath, "utf8");
   const hosts = readInventoryHosts(inventoryPath);
+  if (identityCollides(current, alias, group)) {
+    return NextResponse.json({ ok: false, message: "Имя хоста не должно совпадать с именем inventory-группы." }, { status: 400 });
+  }
+  if (hasActiveRemediationForHost(alias)) {
+    return NextResponse.json({ ok: false, message: "Дождитесь завершения изменения или отката на этом хосте." }, { status: 409 });
+  }
   const existing = hosts.find((host) => host.alias === alias);
   if (!existing) {
     return NextResponse.json({ ok: false, message: "Хост не найден в inventory." }, { status: 404 });
   }
-  if (hosts.some((host) => host.alias !== alias && host.address === address)) {
+  if (hosts.some((host) => host.alias !== alias && host.address === address && host.port === port)) {
     return NextResponse.json(
       { ok: false, error: "duplicate_address", message: "Другой хост с таким IP уже есть в inventory." },
       { status: 409 },
@@ -408,7 +416,7 @@ export async function PUT(request: Request) {
     group,
     hostLine({ alias, address, port, user, become }),
   );
-  writeFileSync(inventoryPath, normalizeInventoryText(nextLines));
+  saveInventory(inventoryPath, nextLines);
 
   return NextResponse.json({
     ok: true,
@@ -424,6 +432,10 @@ export async function DELETE(request: Request) {
     return NextResponse.json({ ok: false, message: "Укажите корректный alias." }, { status: 400 });
   }
 
+  if (hasActiveRemediationForHost(alias)) {
+    return NextResponse.json({ ok: false, message: "Дождитесь завершения изменения или отката на этом хосте." }, { status: 409 });
+  }
+
   const repoRoot = getRepoRoot();
   const inventoryPath = ensureInventory(repoRoot);
   const current = readFileSync(inventoryPath, "utf8");
@@ -431,6 +443,6 @@ export async function DELETE(request: Request) {
   if (!result.removed) {
     return NextResponse.json({ ok: false, message: "Хост не найден в inventory." }, { status: 404 });
   }
-  writeFileSync(inventoryPath, normalizeInventoryText(result.lines));
+  saveInventory(inventoryPath, result.lines);
   return NextResponse.json({ ok: true, message: "Хост удален из inventory." });
 }

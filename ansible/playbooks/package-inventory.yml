@@ -23,6 +23,8 @@
         python3 - <<'PY'
         import json
         import os
+        import re
+        import shutil
         import socket
         import subprocess
         from datetime import datetime, timezone
@@ -48,7 +50,7 @@
             return data
 
         def debian_packages():
-            code, output, error = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${binary:Package}\t${Version}\t${Architecture}\n"])
+            code, output, error = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\n"])
             packages = []
             if code != 0:
                 return packages, error
@@ -58,39 +60,51 @@
                 # residual dpkg record (for example, "rc").  Those packages
                 # are not executable code on the managed host and would
                 # otherwise create false CVE findings.
-                if len(parts) < 3 or not parts[0].startswith("ii"):
+                if not parts or len(parts[0]) < 2 or parts[0][1] != "i":
                     continue
+                if len(parts) != 6 or not all(parts[1:]):
+                    return packages, "Incomplete dpkg package/source metadata"
                 packages.append({
                     "name": parts[1],
                     "version": parts[2],
                     "arch": parts[3] if len(parts) > 3 else "",
                     "manager": "dpkg",
+                    "sourceName": parts[4],
+                    "sourceVersion": parts[5],
                 })
             return packages, ""
 
         def rpm_packages():
-            code, output, error = run(["rpm", "-qa", "--qf", "%{NAME}\t%{EPOCHNUM}\t%{VERSION}-%{RELEASE}\t%{ARCH}\n"])
+            code, output, error = run(["rpm", "-qa", "--qf", "%{NAME}\t%{EPOCHNUM}\t%{VERSION}-%{RELEASE}\t%{ARCH}\t%{SOURCERPM}\n"])
             packages = []
             if code != 0:
                 return packages, error
             for line in output.splitlines():
                 parts = line.split("\t")
-                if len(parts) < 3:
-                    continue
+                if len(parts) < 5:
+                    return packages, "Incomplete RPM package metadata"
                 epoch = parts[1]
                 version = parts[2]
+                source = re.match(r"^(.+)-([^-]+)-([^-]+)\.(?:src|nosrc)\.rpm$", parts[4])
                 packages.append({
                     "name": parts[0],
                     "version": f"{epoch}:{version}" if epoch not in {"", "0", "(none)"} else version,
                     "arch": parts[3] if len(parts) > 3 else "",
                     "manager": "rpm",
+                    "sourceName": source.group(1) if source else "",
+                    "sourceVersion": ((f"{epoch}:" if epoch not in {"", "0", "(none)"} else "") + source.group(2) + "-" + source.group(3)) if source else "",
                 })
             return packages, ""
 
         os_release = read_os_release()
-        packages, error = debian_packages()
-        if not packages:
+        if shutil.which("dpkg-query"):
+            packages, error = debian_packages()
+        elif shutil.which("rpm"):
             packages, error = rpm_packages()
+        else:
+            packages, error = [], "No supported package manager (dpkg/rpm) found"
+        if not packages and not error:
+            error = "Package inventory is empty"
 
         created_at = datetime.now(timezone.utc).isoformat()
         print(json.dumps({

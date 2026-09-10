@@ -4,7 +4,7 @@ import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { readIncidents } from "@/lib/ansible-control";
 import { verifyAuditChain } from "@/lib/state-store";
-import { listAnsibleReports, targetAliasFromReportFileName } from "@/lib/ansible-reports";
+import { listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -106,14 +106,15 @@ export default async function AgentlessReportsPage({
   const hostFilter = requestedHost && /^[a-zA-Z0-9_.-]{1,64}$/.test(requestedHost) ? requestedHost : null;
   const reports = listAnsibleReports();
   const scopedReports = hostFilter
-    ? reports.filter((report) => targetAliasFromReportFileName(report.fileName, report.profileId, report.mode) === hostFilter)
+    ? reports.filter((report) => targetAliasFromReport(report) === hostFilter)
     : reports;
   const incidents = readIncidents();
   const auditIntegrity = verifyAuditChain();
   const auditReports = scopedReports.filter((report) => report.mode === "agentless");
   const latestAuditsByHost = new Map<string, (typeof auditReports)[number]>();
   for (const report of auditReports) {
-    const alias = targetAliasFromReportFileName(report.fileName, report.profileId, report.mode);
+    if (!report.reportTimeValid) continue;
+    const alias = targetAliasFromReport(report);
     if (!latestAuditsByHost.has(alias)) {
       latestAuditsByHost.set(alias, report);
     }
@@ -121,20 +122,21 @@ export default async function AgentlessReportsPage({
   const latestAudits = Array.from(latestAuditsByHost.values());
   const reportsByHost = new Map<string, typeof reports>();
   for (const report of reports) {
-    const alias = targetAliasFromReportFileName(report.fileName, report.profileId, report.mode);
+    const alias = targetAliasFromReport(report);
     const hostReports = reportsByHost.get(alias) ?? [];
     hostReports.push(report);
     reportsByHost.set(alias, hostReports);
   }
   const hostRows = Array.from(reportsByHost, ([host, hostReports]) => {
     const latestReport = hostReports[0];
-    const mainAudit = hostReports.find((report) => report.mode === "agentless") ?? null;
+    const mainAudit = hostReports.find((report) => report.mode === "agentless" && report.reportTimeValid) ?? null;
     return { host, hostReports, latestReport, mainAudit };
   });
   const scores = latestAudits
     .map((report) => report.score)
     .filter((score): score is number => typeof score === "number");
-  const averageScore = scores.length
+  const matchingProfiles = new Set(latestAudits.map((report) => report.profileId)).size === 1;
+  const averageScore = scores.length && scores.length === latestAudits.length && matchingProfiles
     ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length)
     : null;
 
@@ -160,7 +162,7 @@ export default async function AgentlessReportsPage({
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Всего отчётов" value={scopedReports.length} detail={hostFilter ? "По выбранному хосту" : "Сохранённые результаты"} icon={<FileText size={18} />} />
         <SummaryCard label="Аудиты" value={auditReports.length} detail="С проблемами и оценкой" icon={<ShieldCheck size={18} />} />
-        <SummaryCard label="Средняя оценка" value={averageScore === null ? "нет" : `${averageScore}%`} detail="По последнему аудиту хоста" icon={<Activity size={18} />} />
+        <SummaryCard label="Выполнение правил" value={averageScore === null ? "нет общей оценки" : `${averageScore}%`} detail="Полные аудиты одного профиля; не вероятность защиты" icon={<Activity size={18} />} />
         <SummaryCard label="Высокие риски" value={latestAudits.reduce((sum, report) => sum + report.high, 0)} detail="В последних аудитах" icon={<AlertTriangle size={18} />} />
       </div>
 
@@ -202,7 +204,7 @@ export default async function AgentlessReportsPage({
                     </td>
                     <td className="px-4 py-4">
                       <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${scoreTone(report.score)}`}>
-                        {report.score === null ? "нет score" : `${report.score}%`}
+                        {report.partial ? "частичный результат" : !report.reportTimeValid ? "некорректная дата" : report.score === null ? "без общей оценки" : `${report.score}%`}
                       </span>
                       {report.mode === "lynis" ? <p className="mt-1 text-xs text-slate-500">индекс Lynis</p> : null}
                     </td>
@@ -305,10 +307,15 @@ export default async function AgentlessReportsPage({
             <h2 className="text-lg font-semibold text-white">Журнал действий</h2>
             <p className="mt-1 text-sm text-slate-400">Нельзя изменить или удалить через панель.</p>
           </div>
-          <span className={`inline-flex w-fit rounded-md border px-2 py-1 text-xs font-semibold ${auditIntegrity.valid ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-red-400/30 bg-red-500/10 text-red-100"}`}>
-            {auditIntegrity.valid ? `Цепочка целостна · ${auditIntegrity.entries}` : "Проверка целостности не пройдена"}
+          <span className={`inline-flex w-fit rounded-md border px-2 py-1 text-xs font-semibold ${auditIntegrity.valid && auditIntegrity.payloadProtected ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-amber-400/30 bg-amber-500/10 text-amber-100"}`}>
+            {!auditIntegrity.valid ? "Проверка целостности не пройдена" : auditIntegrity.payloadProtected ? `Цепочка целостна · ${auditIntegrity.entries}` : `Ограниченная проверка · ${auditIntegrity.legacyEntries} старых записей`}
           </span>
         </div>
+        {auditIntegrity.legacyEntries > 0 ? (
+          <p className="border-b border-amber-400/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+            Старый формат журнала не защищал все поля события. Целостность содержимого {auditIntegrity.legacyEntries} старых записей нельзя подтвердить; история сохранена без повторного подписания. Новые записи используют полную подпись данных.
+          </p>
+        ) : null}
         {incidents.length ? (
           <div className="max-h-[620px] overflow-y-auto overflow-x-hidden">
             <table className="w-full table-fixed text-left text-sm">

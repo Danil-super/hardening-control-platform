@@ -9,7 +9,10 @@ report that a dedicated, temporary Ansible run has already retrieved.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import ipaddress
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -60,7 +63,8 @@ def finding(
         "remediationAvailable": False,
         "remediationId": None,
         "affectedFiles": [],
-        "evidence": evidence[:3000],
+        "evidence": evidence if len(evidence) <= 3000 else evidence[:3000] + "\n[Доказательство сокращено: превышен лимит 3000 символов.]",
+        "evidenceTruncated": len(evidence) > 3000,
     }
 
 
@@ -93,7 +97,7 @@ def base_report(args: argparse.Namespace, mode: str, source: str, findings: list
         "os": None,
         "profileId": mode,
         "mode": mode,
-        "scanner": {"source": source, **extra},
+        "scanner": {"source": source, "partial": extra.get("available") is False, **extra},
         "summary": summary,
         "findings": findings,
         "events": [],
@@ -121,7 +125,18 @@ def unavailable(args: argparse.Namespace, mode: str, source: str, tool: str) -> 
 def algorithm_names(items: Any) -> list[str]:
     if not isinstance(items, list):
         return []
-    return [str(item.get("name")) for item in items if isinstance(item, dict) and item.get("name")]
+    return [str(item.get("name")) if isinstance(item, dict) else item for item in items
+            if (isinstance(item, dict) and item.get("name")) or isinstance(item, str)]
+
+
+def incomplete_finding(source: str, evidence: str) -> dict[str, Any]:
+    return finding(
+        identifier=f"{source}_incomplete", title="Проверка выполнена не полностью",
+        risk="info", status="manual", source=source,
+        description="Имеющиеся результаты сохранены, но отсутствие других находок не подтверждает защищённость.",
+        recommendation="Проверьте журнал, входные данные и доступность сканера, затем повторите аудит.",
+        evidence=evidence,
+    )
 
 
 def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
@@ -132,7 +147,12 @@ def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
     code, stdout, stderr = run([binary, "--json", "--skip-rate-test", "-p", str(args.port), args.host], 90)
     try:
         payload = json.loads(stdout)
-    except json.JSONDecodeError:
+        if (not isinstance(payload, dict) or not isinstance(payload.get("banner"), dict)
+                or not payload["banner"].get("raw")
+                or not all(isinstance(payload.get(kind), list) and payload[kind] for kind in ("kex", "key", "enc", "mac"))
+                or not isinstance(payload.get("recommendations"), dict)):
+            raise ValueError("JSON не содержит полного результата согласования SSH-алгоритмов")
+    except (json.JSONDecodeError, ValueError):
         return base_report(
             args,
             "ssh-audit",
@@ -148,31 +168,58 @@ def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
                 evidence=(stderr or stdout or f"exit={code}"),
             )],
             available=True,
+            partial=True,
             target=f"{args.host}:{args.port}",
             exitCode=code,
         )
 
     findings: list[dict[str, Any]] = []
     recommendations = payload.get("recommendations", {}) if isinstance(payload, dict) else {}
-    severity_map = (("critical", "high"), ("warning", "medium"))
+    covered_algorithms: set[tuple[str, str]] = set()
+    severity_map = (("critical", "high"), ("warning", "medium"), ("informational", "info"))
     for recommendation_level, risk in severity_map:
-        delete_items = recommendations.get(recommendation_level, {}).get("del", {}) if isinstance(recommendations, dict) else {}
-        if not isinstance(delete_items, dict):
+        level_items = recommendations.get(recommendation_level, {})
+        if not isinstance(level_items, dict):
             continue
-        for algorithm_kind, algorithms in delete_items.items():
-            names = algorithm_names(algorithms)
-            if not names:
+        for action, action_label in (("del", "отключить"), ("chg", "изменить параметры"), ("add", "добавить")):
+            action_items = level_items.get(action, {})
+            if not isinstance(action_items, dict):
                 continue
-            findings.append(finding(
-                identifier=f"ssh_audit_{recommendation_level}_{algorithm_kind}",
-                title=f"SSH предлагает отключить алгоритмы ({algorithm_kind})",
-                risk=risk,
-                status="failed",
-                source="ssh_audit",
-                description="Набор алгоритмов SSH не соответствует рекомендациям ssh-audit.",
-                recommendation="Сверьте совместимость клиентов, затем исключите алгоритмы через централизованный SSH hardening-playbook.",
-                evidence=", ".join(names),
-            ))
+            for algorithm_kind, algorithms in action_items.items():
+                names = algorithm_names(algorithms)
+                if not names:
+                    continue
+                if risk != "info":
+                    covered_algorithms.update((algorithm_kind, name) for name in names)
+                findings.append(finding(
+                    identifier=f"ssh_audit_{recommendation_level}_{action}_{algorithm_kind}",
+                    title=f"SSH: {action_label} алгоритмы ({algorithm_kind})", risk=risk,
+                    status="failed" if risk != "info" else "manual", source="ssh_audit",
+                    description="ssh-audit сформировал рекомендацию по согласованным SSH-алгоритмам.",
+                    recommendation="Проверьте совместимость клиентов перед изменением конфигурации SSH.",
+                    evidence=json.dumps(algorithms, ensure_ascii=False),
+                ))
+
+    # Algorithm notes contain failures omitted by the recommendation generator,
+    # e.g. unknown algorithms. Keep these findings instead of reporting a clean scan.
+    for kind in ("kex", "key", "enc", "mac"):
+        for index, algorithm in enumerate(payload[kind]):
+            if not isinstance(algorithm, dict) or not isinstance(algorithm.get("notes"), dict):
+                continue
+            if (kind, algorithm.get("algorithm", "")) in covered_algorithms:
+                continue
+            for level, risk in (("fail", "high"), ("warn", "medium")):
+                notes = algorithm["notes"].get(level)
+                if not notes:
+                    continue
+                findings.append(finding(
+                    identifier=f"ssh_audit_note_{kind}_{index}_{level}",
+                    title=f"SSH: замечание к {algorithm.get('algorithm', kind)}", risk=risk,
+                    status="failed", source="ssh_audit",
+                    description="ssh-audit отметил недостаток или неизвестный алгоритм при согласовании SSH.",
+                    recommendation="Проверьте детали замечания и совместимость клиентов перед изменением SSH.",
+                    evidence=json.dumps(notes, ensure_ascii=False),
+                ))
 
     cves = payload.get("cves", []) if isinstance(payload, dict) else []
     if isinstance(cves, list) and cves:
@@ -180,9 +227,9 @@ def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
             identifier="ssh_audit_cves",
             title="SSH-аудит сообщил об известных CVE",
             risk="high",
-            status="failed",
+            status="manual",
             source="ssh_audit",
-            description="SSH-сервис или его криптографическая конфигурация связаны с известными CVE.",
+            description="Сопоставление баннера с CVE требует проверки исправлений поставщика ОС, включая backport-патчи.",
             recommendation="Проверьте версию OpenSSH у поставщика ОС и установите доступные security updates.",
             evidence=", ".join(str(value) for value in cves),
         ))
@@ -200,7 +247,12 @@ def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
             evidence=" ".join(str(value) for value in notes),
         ))
 
-    if not any(item["status"] == "failed" for item in findings):
+    # ssh-audit returns 2/3 for findings; 1/-1 are execution errors.
+    partial = code not in {0, 2, 3}
+    if partial or (code in {2, 3} and not findings):
+        partial = True
+        findings.append(incomplete_finding("ssh_audit", stderr or f"exit={code}; details unavailable"))
+    if not findings and not partial:
         findings.append(finding(
             identifier="ssh_audit_no_blocking_findings",
             title="SSH crypto-аудит не выявил блокирующих рекомендаций",
@@ -218,6 +270,7 @@ def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
         "ssh_audit",
         findings,
         available=True,
+        partial=partial,
         target=payload.get("target", f"{args.host}:{args.port}"),
         banner=banner,
         exitCode=code,
@@ -238,6 +291,8 @@ def nmap(args: argparse.Namespace) -> dict[str, Any]:
         return unavailable(args, "nmap", "nmap", "nmap")
 
     command = [binary, "-Pn", "-n", "-sT", "-sV", "--version-light", "--top-ports", "100", "-oX", "-", args.host]
+    if ":" in args.host:
+        command.insert(1, "-6")
     code, stdout, stderr = run(command, 180)
     try:
         root = element_tree.fromstring(stdout)
@@ -257,13 +312,17 @@ def nmap(args: argparse.Namespace) -> dict[str, Any]:
                 evidence=(stderr or stdout or f"exit={code}"),
             )],
             available=True,
+            partial=True,
             target=args.host,
             exitCode=code,
         )
 
     findings: list[dict[str, Any]] = []
+    finished = root.find("runstats/finished")
+    partial = root.tag != "nmaprun" or code != 0 or finished is None or finished.get("exit") != "success"
     host = root.find("host")
     if host is None or host.find("status") is None or host.find("status").get("state") != "up":
+        partial = True
         findings.append(finding(
             identifier="nmap_host_unreachable",
             title="Nmap не подтвердил доступность хоста",
@@ -279,7 +338,13 @@ def nmap(args: argparse.Namespace) -> dict[str, Any]:
             state = port.find("state")
             if state is None or state.get("state") != "open":
                 continue
-            number = int(port.get("portid", "0"))
+            try:
+                number = int(port.get("portid", "0"))
+                if not 1 <= number <= 65535:
+                    raise ValueError("port out of range")
+            except ValueError:
+                partial = True
+                continue
             protocol = port.get("protocol", "tcp")
             service = port.find("service")
             service_name = service.get("name", "unknown") if service is not None else "unknown"
@@ -290,13 +355,15 @@ def nmap(args: argparse.Namespace) -> dict[str, Any]:
                 identifier=f"nmap_open_{protocol}_{number}",
                 title=f"Открыт {protocol}/{number} ({service_name})",
                 risk=risk,
-                status="failed" if risk != "info" else "manual",
+                status="manual",
                 source="nmap",
-                description="Сервис доступен из сети управления. Открытие порта требует осознанного обоснования.",
+                description="Сервис доступен из сети управления. Сам по себе открытый порт не подтверждает уязвимость; необходима оценка его назначения и доступа.",
                 recommendation="Подтвердите необходимость сервиса, ограничьте источники доступа и отключите неиспользуемые службы.",
-                evidence=f"service={service_name}; product={product}; version={version}",
+                evidence=f"service={service_name}; product={product}; version={version}; method={service.get('method', '') if service is not None else ''}; confidence={service.get('conf', '') if service is not None else ''}",
             ))
-        if not findings:
+        if host.find("ports") is None:
+            partial = True
+        if not findings and not partial:
             findings.append(finding(
                 identifier="nmap_no_open_top_ports",
                 title="В top-100 TCP-портах открытые сервисы не обнаружены",
@@ -307,7 +374,10 @@ def nmap(args: argparse.Namespace) -> dict[str, Any]:
                 recommendation="Используйте SSH-аудит для проверки локальных сокетов и правил firewall.",
             ))
 
-    return base_report(args, "nmap", "nmap", findings, available=True, target=args.host, exitCode=code)
+    if partial:
+        findings.append(incomplete_finding("nmap", stderr or f"exit={code}; finished={finished.attrib if finished is not None else 'missing'}"))
+    return base_report(args, "nmap", "nmap", findings, available=True, partial=partial, target=args.host, exitCode=code,
+                       scope="top-100 TCP ports; service discovery; no vulnerability scripts", version=root.get("version"))
 
 
 def values_from_lynis_report(content: str, key: str) -> list[str]:
@@ -325,7 +395,7 @@ def lynis_report(args: argparse.Namespace) -> dict[str, Any]:
         read_error = ""
 
     findings: list[dict[str, Any]] = []
-    for value in values_from_lynis_report(content, "warning")[:60]:
+    for value in values_from_lynis_report(content, "warning"):
         rule, _, detail = value.partition("|")
         findings.append(finding(
             identifier=f"lynis_warning_{rule or len(findings)}",
@@ -337,7 +407,7 @@ def lynis_report(args: argparse.Namespace) -> dict[str, Any]:
             recommendation="Оцените рекомендацию Lynis, влияние на роль сервера и применяйте изменение отдельным approval-playbook.",
             evidence=detail or value,
         ))
-    for value in values_from_lynis_report(content, "suggestion")[:60]:
+    for value in values_from_lynis_report(content, "suggestion"):
         rule, _, detail = value.partition("|")
         findings.append(finding(
             identifier=f"lynis_suggestion_{rule or len(findings)}",
@@ -366,11 +436,15 @@ def lynis_report(args: argparse.Namespace) -> dict[str, Any]:
     for line in content.splitlines():
         if line.startswith("hardening_index="):
             try:
-                hardening_index = int(line.split("=", 1)[1].strip())
+                value = int(line.split("=", 1)[1].strip())
+                hardening_index = value if 0 <= value <= 100 else None
             except ValueError:
                 pass
             break
 
+    report_fields = dict(line.split("=", 1) for line in content.splitlines() if "=" in line and not line.startswith("#"))
+    completed = bool(report_fields.get("lynis_version")) and report_fields.get("finish") == "true"
+    partial = bool(read_error) or not completed or args.exit_code != 0
     if read_error or not content:
         findings.append(finding(
             identifier="lynis_no_report",
@@ -382,6 +456,8 @@ def lynis_report(args: argparse.Namespace) -> dict[str, Any]:
             recommendation="Проверьте sudo-доступ и журнал запуска; временный каталог на ВМ будет удален автоматически.",
             evidence=read_error or f"exit={args.exit_code}",
         ))
+    elif not completed:
+        findings.append(incomplete_finding("lynis", "Отсутствуют lynis_version или завершающий маркер finish=true."))
     elif not findings:
         findings.append(finding(
             identifier="lynis_no_recommendations",
@@ -399,8 +475,11 @@ def lynis_report(args: argparse.Namespace) -> dict[str, Any]:
         "lynis",
         findings,
         temporaryExecution=True,
+        partial=partial,
         scannerExitCode=args.exit_code,
-        hardeningIndex=hardening_index,
+        hardeningIndex=hardening_index if not partial else None,
+        reportedHardeningIndex=hardening_index,
+        version=report_fields.get("lynis_version"),
     )
 
 
@@ -465,6 +544,7 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
             )],
             available=True,
             profile=args.profile,
+            partial=True,
             datastream=args.datastream,
             policyGroup=args.policy_group or "environment",
             datastreamLastModified=args.datastream_mtime or None,
@@ -483,19 +563,25 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
             severities[identifier] = element.get("severity", "")
 
     findings: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for element in root.iter():
+    test_results = [element for element in root.iter() if local_name(element) == "TestResult"]
+    result_root = test_results[-1] if test_results else root
+    result_counts: dict[str, int] = {}
+    for element in result_root.iter():
         if local_name(element) != "rule-result":
             continue
         identifier = element.get("idref", "")
         result = child_text(element, "result").lower()
-        if not identifier or identifier in seen or result in {"notapplicable", "notselected", "informational"}:
+        result_counts[result or "unknown"] = result_counts.get(result or "unknown", 0) + 1
+        if not identifier or result in {"notapplicable", "notselected", "informational"}:
             continue
-        seen.add(identifier)
         status = "passed" if result == "pass" else ("failed" if result == "fail" else "manual")
-        severity = severities.get(identifier, "")
+        severity = element.get("severity") or severities.get(identifier, "")
+        instance = child_text(element, "instance")
+        finding_id = f"openscap_{identifier}"
+        if instance:
+            finding_id += "_" + hashlib.sha256(instance.encode()).hexdigest()[:12]
         findings.append(finding(
-            identifier=f"openscap_{identifier}"[:160],
+            identifier=finding_id,
             title=titles.get(identifier, identifier),
             risk=risk_from_severity(severity) if status == "failed" else "info",
             status=status,
@@ -512,9 +598,10 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
                 if status != "passed"
                 else "Повторяйте проверку после изменения ОС или базовой конфигурации."
             ),
-            evidence=f"rule={identifier}; result={result or 'unknown'}; severity={severity or 'unknown'}",
+            evidence=f"rule={identifier}; result={result or 'unknown'}; severity={severity or 'unknown'}; instance={instance}",
         ))
 
+    partial = not findings or args.exit_code not in {0, 2} or any(item["status"] == "manual" for item in findings)
     if not findings:
         findings.append(finding(
             identifier="openscap_no_rule_results",
@@ -526,13 +613,17 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
             recommendation="Проверьте идентификатор профиля командой oscap info и повторите проверку.",
             evidence=f"exit={args.exit_code}",
         ))
+    if args.exit_code not in {0, 2}:
+        findings.append(incomplete_finding("openscap", f"exit={args.exit_code}; oscap eval did not complete successfully"))
 
     return base_report(
         args,
         "openscap",
         "openscap",
-        findings[:800],
+        findings,
         available=True,
+        partial=partial,
+        ruleResultCounts=result_counts,
         profile=args.profile,
         datastream=args.datastream,
         policyGroup=args.policy_group or "environment",
@@ -568,63 +659,94 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
     try:
         root = element_tree.parse(args.input).getroot()
     except (OSError, element_tree.ParseError) as error:
-        return base_report(
-            args,
-            "greenbone",
-            "greenbone",
-            [finding(
-                identifier="greenbone_xml_unreadable",
-                title="Не удалось прочитать XML-отчёт Greenbone",
-                risk="info",
-                status="manual",
-                source="greenbone",
-                description="Импорт не подтверждает отсутствие уязвимостей: файл не соответствует ожидаемому формату отчёта.",
-                recommendation="Экспортируйте результат задачи Greenbone в XML и загрузите файл повторно.",
-                evidence=str(error),
-            )],
-            imported=False,
-        )
+        raise ValueError("Не удалось прочитать XML-отчёт Greenbone. Экспортируйте report XML повторно.") from error
+
+    # Only consume direct results of one report; never merge delta/previous
+    # reports or assign another host's results to the selected inventory host.
+    reports = [element for element in root.iter() if local_name(element) == "report"
+               and any(local_name(child) == "results" for child in element)]
+    if len(reports) != 1:
+        raise ValueError("Загрузите один XML-отчёт Greenbone с разделом results.")
+    report_root = reports[0]
+    results_root = next(child for child in report_root if local_name(child) == "results")
+    results = [child for child in results_root if local_name(child) == "result"]
+
+    def host_identity(value: str) -> str:
+        value = value.strip().strip("[]")
+        try:
+            return str(ipaddress.ip_address(value))
+        except ValueError:
+            return value.rstrip(".").lower()
+
+    expected_hosts = {host_identity(value) for value in [args.host, *getattr(args, "expected_host", [])] if value}
+    if not expected_hosts:
+        raise ValueError("Для импорта требуется адрес выбранного хоста из inventory.")
+    matching_results = [element for element in results if host_identity(child_text(element, "host")) in expected_hosts]
+    matched_host_record = any(local_name(element) == "host" and host_identity(child_text(element, "ip")) in expected_hosts
+                              for element in report_root)
+    if not matching_results and not matched_host_record:
+        raise ValueError("В отчёте Greenbone нет результатов или записи для адреса выбранного хоста. Проверьте цель сканирования и inventory.")
 
     findings: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for element in root.iter():
-        if local_name(element) != "result":
-            continue
+    invalid_severity = False
+    for element in matching_results:
         identifier = child_text(element, "id") or element.get("id", "")
         host = child_text(element, "host")
         port = child_text(element, "port")
         nvt = next((child for child in element if local_name(child) == "nvt"), None)
         oid = nvt.get("oid", "") if nvt is not None else ""
-        name = child_text(nvt, "name") if nvt is not None else ""
+        name = child_text(element, "name") or (child_text(nvt, "name") if nvt is not None else "")
         severity_text = child_text(element, "severity")
         threat = child_text(element, "threat")
         try:
             severity_score = float(severity_text)
+            if not math.isfinite(severity_score) or not -3 <= severity_score <= 10:
+                raise ValueError("invalid severity")
         except ValueError:
-            severity_score = 0.0
+            severity_score = None
+            invalid_severity = True
         normalized_threat = threat.lower()
         status = "failed"
-        if normalized_threat in {"log", "false positive", "false_positive"}:
+        if severity_score is None or severity_score <= 0 or normalized_threat in {"log", "false positive", "false_positive", "error"}:
             status = "manual"
-        risk = "high" if severity_score >= 7 else "medium" if severity_score >= 4 else "low" if severity_score > 0 else "info"
-        key = (oid or identifier or name or "greenbone-result") + "-" + host + "-" + port
+        risk = "high" if severity_score is not None and severity_score >= 7 else "medium" if severity_score is not None and severity_score >= 4 else "low" if severity_score is not None and severity_score > 0 else "info"
+        key = (identifier or oid or name or "greenbone-result") + "-" + host + "-" + port
         if key in seen:
             continue
         seen.add(key)
         description = child_text(element, "description")
-        solution = child_text(element, "solution")
-        cves = child_text(nvt, "cve") if nvt is not None else ""
+        solution = child_text(element, "solution") or (child_text(nvt, "solution") if nvt is not None else "")
+        tags = dict(part.split("=", 1) for part in child_text(nvt, "tags").split("|") if "=" in part) if nvt is not None else {}
+        solution = solution or tags.get("solution", "")
+        cves = [child_text(nvt, "cve")] if nvt is not None and child_text(nvt, "cve") else []
+        if nvt is not None:
+            cves.extend(ref.get("id", "") for ref in nvt.iter() if local_name(ref) == "ref" and ref.get("type", "").lower() == "cve")
+        qod = next((child for child in element if local_name(child) == "qod"), None)
+        qod_value = child_text(qod, "value") if qod is not None else "unknown"
+        try:
+            if not 70 <= int(qod_value) <= 100:
+                status = "manual"
+        except ValueError:
+            status = "manual"
         findings.append(finding(
-            identifier=("greenbone_" + key).replace(" ", "_")[:160],
+            identifier="greenbone_" + hashlib.sha256(key.encode()).hexdigest()[:24],
             title=name or "Находка Greenbone/OpenVAS",
             risk=risk,
             status=status,
             source="greenbone",
-            description=(description or "Greenbone сообщил о сетевой уязвимости.")[:1200],
-            recommendation=(solution or "Проверьте рекомендации производителя и примените исправление по утверждённой процедуре.")[:1200],
-            evidence=f"result={identifier}; oid={oid or 'unknown'}; host={host or 'unknown'}; port={port or 'unknown'}; threat={threat or 'unknown'}; severity={severity_text or 'unknown'}; cve={cves or 'none'}",
+            description=description or "Greenbone сообщил результат сетевой проверки.",
+            recommendation=solution or "Проверьте рекомендации производителя и примените исправление по утверждённой процедуре.",
+            evidence=f"result={identifier}; oid={oid or 'unknown'}; host={host}; port={port or 'unknown'}; threat={threat or 'unknown'}; severity={severity_text or 'unknown'}; qod={qod_value}; cve={','.join(cves) or 'none'}",
         ))
 
+    scan_status = child_text(report_root, "scan_run_status")
+    count_root = next((child for child in report_root if local_name(child) == "result_count"), None)
+    try:
+        full_count = int(child_text(count_root, "full")) if count_root is not None else None
+    except ValueError:
+        full_count = None
+    partial = not findings or scan_status.lower() != "done" or invalid_severity or (full_count is not None and full_count > len(results))
     if not findings:
         findings.append(finding(
             identifier="greenbone_no_results",
@@ -635,14 +757,21 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
             description="Пустой импорт не подтверждает безопасность: проверьте статус задачи, цель и актуальность VT-feeds в Greenbone.",
             recommendation="Убедитесь, что задача завершена и экспортирован именно report XML.",
         ))
+    if partial:
+        findings.append(incomplete_finding("greenbone", f"scanStatus={scan_status or 'unknown'}; exportedResults={len(results)}; fullResults={full_count}; invalidSeverity={invalid_severity}"))
 
-    return base_report(args, "greenbone", "greenbone", findings[:1000], imported=True, importedFrom="Greenbone XML")
+    return base_report(args, "greenbone", "greenbone", findings, imported=True, importedFrom="Greenbone XML",
+                       partial=partial, target=args.host, scanStatus=scan_status or None,
+                       scanStartedAt=child_text(report_root, "scan_start") or None,
+                       scanEndedAt=child_text(report_root, "scan_end") or None,
+                       matchedResults=len(matching_results), excludedOtherHostResults=len(results) - len(matching_results))
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("mode", choices=("ssh-audit", "nmap", "lynis-report", "lynis-unavailable", "openscap-arf", "openscap-unavailable", "greenbone-report"))
     parser.add_argument("--host")
+    parser.add_argument("--expected-host", action="append", default=[])
     parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--inventory-host", required=True)
     parser.add_argument("--run-id", required=True)
@@ -656,8 +785,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--datastream-checksum")
     parser.add_argument("--reason")
     args = parser.parse_args()
-    if args.mode in {"ssh-audit", "nmap"} and not args.host:
-        parser.error("--host is required for network scanner modes")
+    if args.mode in {"ssh-audit", "nmap", "greenbone-report"} and not args.host:
+        parser.error("--host is required for network scanner and Greenbone import modes")
     if args.mode in {"lynis-report", "openscap-arf", "greenbone-report"} and not args.input:
         parser.error(f"--input is required for {args.mode}")
     return args
@@ -665,18 +794,23 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    report = {
-        "ssh-audit": ssh_audit,
-        "nmap": nmap,
-        "lynis-report": lynis_report,
-        "lynis-unavailable": lynis_unavailable,
-        "openscap-arf": openscap_arf,
-        "openscap-unavailable": openscap_unavailable,
-        "greenbone-report": greenbone_report,
-    }[args.mode](args)
+    try:
+        report = {
+            "ssh-audit": ssh_audit,
+            "nmap": nmap,
+            "lynis-report": lynis_report,
+            "lynis-unavailable": lynis_unavailable,
+            "openscap-arf": openscap_arf,
+            "openscap-unavailable": openscap_unavailable,
+            "greenbone-report": greenbone_report,
+        }[args.mode](args)
+    except ValueError as error:
+        print(str(error), file=sys.stderr)
+        return 2
     destination = Path(args.output)
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    destination.chmod(0o600)
     print(destination)
     return 0
 

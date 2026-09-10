@@ -3,11 +3,16 @@ name: hcp-lab
 services:
   lab-target:
     build: ./target
-    environment:
-      HCP_LAB_PUBLIC_KEY: ${HCP_LAB_PUBLIC_KEY:?Run ./deployment/lab/up.sh}
+    volumes:
+      - type: bind
+        source: ../../.lab/hcp-lab.pub
+        target: /run/secrets/lab-authorized-key
+        read_only: true
+        bind:
+          create_host_path: false
+      - hcp-lab-host-keys:/etc/ssh/host_keys
     ports:
       - "127.0.0.1:2222:22"
-    cap_add: [NET_ADMIN]
     networks: [lab]
 
   hcp:
@@ -20,23 +25,34 @@ services:
       HCP_AUTH_SECRET: lab-only-secret-change-in-production
       HCP_AUDIT_HMAC_KEY: lab-only-audit-integrity-key-change-in-production
       HCP_SSH_PRIVATE_KEY_PATH: /home/node/.ssh/hcp-control
+      ANSIBLE_PRIVATE_KEY_FILE: /home/node/.ssh/hcp-control
+      ANSIBLE_CONFIG: /app/ansible.cfg
       HCP_KNOWN_HOSTS_PATH: /var/lib/hcp/known_hosts
       ANSIBLE_SSH_ARGS: -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/hcp/known_hosts
       HCP_REPORTS_DIR: /var/lib/hcp/reports
       HCP_STATE_DIR: /var/lib/hcp
       HCP_TRIVY_MODE: offline
+      HCP_TRIVY_CACHE_DIR: /var/lib/hcp/trivy-cache
+      HCP_TRIVY_MAX_DB_AGE_HOURS: 168
       HCP_PRODUCTION_MODE: "true"
     ports:
       - "127.0.0.1:3001:3000"
     volumes:
       - hcp-lab-state:/var/lib/hcp
-      - ../../ansible/inventory.lab.ini:/app/ansible/inventory.ini:ro
+      - ../../ansible/inventory.lab.ini:/run/secrets/inventory.ini:ro
       - ../../.lab/hcp-lab:/run/secrets/hcp-control:ro
       - ../../.lab/known_hosts:/run/secrets/known_hosts:ro
     networks: [lab]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 5s
+      start_period: 30s
+      retries: 12
 
 networks:
   lab:
 
 volumes:
   hcp-lab-state:
+  hcp-lab-host-keys:

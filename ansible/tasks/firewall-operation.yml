@@ -1,0 +1,36 @@
+---
+- name: Allocate an isolated firewall helper
+  ansible.builtin.tempfile:
+    state: directory
+    prefix: hcp-firewall-
+  register: hcp_firewall_temp
+  check_mode: false
+  changed_when: false
+
+- name: Run validated firewall operation
+  block:
+    - name: Copy the validated firewall helper
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../scripts/hcp-firewall.py"
+        dest: "{{ hcp_firewall_temp.path }}/hcp-firewall.py"
+        mode: "0700"
+      check_mode: false
+      changed_when: false
+
+    - name: Execute firewall operation or read-only preview
+      ansible.builtin.command:
+        argv: "{{ ['python3', hcp_firewall_temp.path + '/hcp-firewall.py'] + hcp_firewall_argv }}"
+      register: hcp_firewall_result
+      check_mode: false
+      changed_when: (hcp_firewall_result.stdout | from_json).changed | default(false)
+
+    - name: Show verified firewall result
+      ansible.builtin.debug:
+        msg: "{{ hcp_firewall_result.stdout | from_json }}"
+  always:
+    - name: Remove the temporary firewall helper
+      ansible.builtin.file:
+        path: "{{ hcp_firewall_temp.path }}"
+        state: absent
+      check_mode: false
+      changed_when: false

@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server";
 import { getRepoRoot } from "@/lib/ansible-control";
-import { ansibleSshArgs } from "@/lib/ssh-access";
+import { ansibleSshArgs, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -13,20 +13,11 @@ export const runtime = "nodejs";
 const execFileAsync = promisify(execFile);
 
 function isSafeAlias(value: unknown): value is string {
-  return typeof value === "string" && /^[a-zA-Z0-9_.-]{1,64}$/.test(value);
+  return typeof value === "string" && /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$/.test(value) && !["all", "ungrouped", "preflight"].includes(value);
 }
 
 function isSafeSshUser(value: unknown): value is string {
-  return typeof value === "string" && /^[a-zA-Z0-9_.-]{1,64}$/.test(value);
-}
-
-function isSafeHostAddress(value: unknown): value is string {
-  return typeof value === "string" && /^(?:[a-zA-Z0-9.-]{1,253}|\d{1,3}(?:\.\d{1,3}){3})$/.test(value);
-}
-
-function normalizePort(value: unknown) {
-  const port = typeof value === "string" ? Number(value) : value;
-  return typeof port === "number" && Number.isInteger(port) && port > 0 && port <= 65535 ? port : 22;
+  return typeof value === "string" && /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$/.test(value);
 }
 
 async function runAnsible(args: string[], inventoryPath: string) {
@@ -35,7 +26,7 @@ async function runAnsible(args: string[], inventoryPath: string) {
       cwd: getRepoRoot(),
       timeout: 45_000,
       maxBuffer: 1024 * 1024 * 4,
-      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_SSH_ARGS: ansibleSshArgs() },
+      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_SSH_ARGS: ansibleSshArgs(), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
     });
     return { ok: true, stdout: result.stdout, stderr: result.stderr };
   } catch (error) {
@@ -53,32 +44,38 @@ export async function POST(request: Request) {
   const alias = typeof body?.alias === "string" ? body.alias.trim() : "";
   const address = typeof body?.address === "string" ? body.address.trim() : "";
   const user = typeof body?.user === "string" ? body.user.trim() : "";
-  const port = normalizePort(body?.port);
+  const port = normalizeSshPort(body?.port);
   const become = typeof body?.become === "boolean" ? body.become : true;
 
-  if (!isSafeAlias(alias) || !isSafeHostAddress(address) || !isSafeSshUser(user)) {
+  if (!isSafeAlias(alias) || !isSafeSshHostAddress(address) || !isSafeSshUser(user) || port === null) {
     return NextResponse.json(
-      { ok: false, message: "Проверьте alias, IP/hostname и SSH-пользователя." },
+      { ok: false, message: "Проверьте alias, IP/hostname, SSH-порт и пользователя." },
       { status: 400 },
     );
   }
 
+  const sshKeyPath = configuredPrivateKeyPath();
+  if (!existsSync(sshKeyPath)) {
+    return NextResponse.json({ ok: false, message: "Ключ узла управления не найден. Настройте HCP_SSH_PRIVATE_KEY_PATH." }, { status: 400 });
+  }
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "hcp-inventory-"));
-  const inventoryPath = path.join(tmpDir, "inventory.ini");
-  const sshKeyPath = process.env.HCP_SSH_PRIVATE_KEY_PATH ?? path.join(os.homedir(), ".ssh", "hcp-control");
-  const sshKeyOption = existsSync(sshKeyPath) ? ` ansible_ssh_private_key_file=${sshKeyPath}` : "";
+  const inventoryPath = path.join(tmpDir, "inventory.json");
   writeFileSync(
     inventoryPath,
-    `[preflight]\n${alias} ansible_host=${address} ansible_port=${port} ansible_user=${user} ansible_become=${become ? "true" : "false"} ansible_python_interpreter=/usr/bin/python3${sshKeyOption}\n`,
+    JSON.stringify({ all: { hosts: { [alias]: {
+      ansible_host: address, ansible_port: port, ansible_user: user, ansible_become: false,
+      ansible_python_interpreter: "/usr/bin/python3", ansible_ssh_private_key_file: sshKeyPath,
+    } } } }),
+    { mode: 0o600 },
   );
 
   try {
-    const ssh = await runAnsible([alias, "-m", "ping"], inventoryPath);
+    const ssh = await runAnsible([alias, "-m", "raw", "-a", "true"], inventoryPath);
     const setup = ssh.ok
       ? await runAnsible([alias, "-m", "setup", "-a", "filter=ansible_distribution*,ansible_python*"], inventoryPath)
       : { ok: false, stdout: "", stderr: "SSH ping failed." };
     const sudo = ssh.ok && become
-      ? await runAnsible([alias, "-b", "-m", "command", "-a", "whoami"], inventoryPath)
+      ? await runAnsible([alias, "-b", "-e", "ansible_become=true", "-m", "command", "-a", "whoami"], inventoryPath)
       : { ok: !become, stdout: become ? "" : "skipped", stderr: "" };
 
     const osMatch = setup.stdout.match(/"ansible_distribution":\s*"([^"]+)"/);

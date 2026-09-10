@@ -8,6 +8,7 @@
     "build": "next build",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
+    "test:http": "node tests/http-smoke.mjs",
     "start": "next start",
     "start:lan": "next start --hostname 0.0.0.0"
   },

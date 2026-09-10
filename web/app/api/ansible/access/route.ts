@@ -26,6 +26,9 @@ export async function POST(request: Request) {
   const operation = body?.operation;
   const address = typeof body?.address === "string" ? body.address.trim() : "";
   const port = normalizeSshPort(body?.port);
+  if (port === null) {
+    return NextResponse.json({ ok: false, error: "bad_port", message: "SSH-порт должен быть целым числом от 1 до 65535." }, { status: 400 });
+  }
   if (!isSafeSshHostAddress(address)) {
     return NextResponse.json({ ok: false, error: "bad_address", message: "Укажите корректный IP-адрес или hostname." }, { status: 400 });
   }

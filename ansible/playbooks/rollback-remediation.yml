@@ -1,56 +1,17 @@
 ---
-- name: Roll back a firewall remediation from its protected backup
+- name: Restore and reload a verified backup on its original host
   hosts: linux_hosts
   become: true
   gather_facts: false
-
-  vars:
-    hcp_remote_backup_root: /var/lib/hcp-backups
-
   tasks:
-    - name: Validate rollback parameters
+    - name: Validate rollback operation
       ansible.builtin.assert:
         that:
           - transaction_id is defined
-          - transaction_id is match('^[A-Za-z0-9_.:-]{8,160}$')
-          - remediation_action is defined
           - remediation_action in ['closePort', 'blockIp']
-        fail_msg: "Недопустимые параметры отката remediation."
+          - not ansible_check_mode
 
-    - name: Define transaction backup file
-      ansible.builtin.set_fact:
-        hcp_transaction_backup_file: "{{ hcp_remote_backup_root }}/{{ transaction_id }}/firewall-state.tar.gz"
-
-    - name: Check backup archive exists
-      ansible.builtin.stat:
-        path: "{{ hcp_transaction_backup_file }}"
-      register: hcp_backup_archive
-
-    - name: Stop when backup archive is missing
-      ansible.builtin.assert:
-        that: hcp_backup_archive.stat.exists
-        fail_msg: "Архив резервной копии не найден на целевом хосте. Откат остановлен."
-
-    - name: Restore firewall configuration from backup
-      ansible.builtin.command:
-        argv:
-          - tar
-          - -xzf
-          - "{{ hcp_transaction_backup_file }}"
-          - -C
-          - /
-      changed_when: true
-
-    - name: Reload UFW after rollback when installed
-      ansible.builtin.command: ufw reload
-      changed_when: false
-      failed_when: false
-
-    - name: Reload firewalld after rollback when installed
-      ansible.builtin.command: firewall-cmd --reload
-      changed_when: false
-      failed_when: false
-
-    - name: Report successful rollback
-      ansible.builtin.debug:
-        msg: "Откат {{ transaction_id }} применен из {{ hcp_transaction_backup_file }}"
+    - name: Restore configuration and verify firewall activation
+      ansible.builtin.include_tasks: ../tasks/firewall-operation.yml
+      vars:
+        hcp_firewall_argv: "{{ ['rollback', '--transaction', transaction_id] }}"

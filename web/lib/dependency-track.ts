@@ -6,7 +6,9 @@ import { getStateDir } from "@/lib/ansible-control";
 import type { Finding } from "@/types";
 
 type VulnerabilityReport = {
+  inventoryHost?: string;
   hostname?: string;
+  mode?: string;
   os?: string;
   vulnerabilityScan?: {
     sbomFile?: unknown;
@@ -26,7 +28,7 @@ function configuration() {
   }
   try {
     const url = new URL(baseUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("protocol");
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password || url.search || url.hash) throw new Error("protocol");
     return { configured: true as const, baseUrl: url.toString().replace(/\/$/, ""), apiKey };
   } catch {
     throw new Error("HCP_DEPENDENCY_TRACK_URL должен быть корректным HTTP(S) URL.");
@@ -75,10 +77,18 @@ export async function syncDependencyTrack({ hostAlias, vulnerabilityReportId }: 
     };
   }
   const { report, sbomFile, sbomPath } = readVulnerabilityReport(vulnerabilityReportId);
+  if (report.inventoryHost !== hostAlias || report.mode !== "vulnerabilities") {
+    throw new Error("CVE-отчёт не принадлежит выбранному хосту. Сначала выполните CVE-аудит этого хоста.");
+  }
   const sbom = readFileSync(sbomPath);
+  const document = JSON.parse(sbom.toString("utf8")) as { bomFormat?: string; components?: unknown[] };
+  if (document.bomFormat !== "CycloneDX" || !Array.isArray(document.components) || document.components.length === 0) {
+    throw new Error("SBOM не содержит компонентов CycloneDX для анализа. Повторите сбор пакетов хоста.");
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 45_000);
   let response: Response;
+  let responseText: string;
   try {
     response = await fetch(`${settings.baseUrl}/api/v1/bom`, {
       method: "PUT",
@@ -90,13 +100,24 @@ export async function syncDependencyTrack({ hostAlias, vulnerabilityReportId }: 
         bom: sbom.toString("base64"),
       }),
       signal: controller.signal,
+      redirect: "error",
     });
+    responseText = await response.text();
   } finally {
     clearTimeout(timer);
   }
-  const responseText = await response.text();
   if (!response.ok) {
     throw new Error(`Dependency-Track вернул ${response.status}: ${responseText.slice(0, 240)}`);
+  }
+  let token: string;
+  try {
+    const payload = JSON.parse(responseText) as { token?: unknown };
+    if (typeof payload.token !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(payload.token)) {
+      throw new Error("missing token");
+    }
+    token = payload.token;
+  } catch {
+    throw new Error("Dependency-Track не вернул токен обработки SBOM. Проверьте URL API-сервера и ответ сервиса.");
   }
 
   const runId = `run-${new Date().toISOString().replace(/[-:.]/g, "")}-${randomUUID().slice(0, 8)}`;
@@ -107,12 +128,12 @@ export async function syncDependencyTrack({ hostAlias, vulnerabilityReportId }: 
     title: "CycloneDX SBOM передан в Dependency-Track",
     category: "Компоненты и CVE",
     risk: "info",
-    status: "passed",
+    status: "manual",
     source: "dependency_track",
-    description: "Dependency-Track принял SBOM и выполнит собственный асинхронный анализ компонентов. Этот отчёт не дублирует CVE из Trivy.",
+    description: "Dependency-Track принял SBOM в очередь. Завершение анализа и отсутствие уязвимостей этим ответом не подтверждены.",
     recommendation: "Откройте проект хоста в Dependency-Track после завершения обработки и используйте его verdict как независимое доказательство по компонентам.",
     remediationAvailable: false,
-    evidence: `sourceCveReport=${vulnerabilityReportId}; sbom=${sbomFile}; response=${responseText.slice(0, 500) || "accepted"}`,
+    evidence: `sourceCveReport=${vulnerabilityReportId}; sbom=${sbomFile}; processingToken=${token}`,
   }];
   const output = {
     schemaVersion: 1,
@@ -124,7 +145,7 @@ export async function syncDependencyTrack({ hostAlias, vulnerabilityReportId }: 
     os: report.os ?? null,
     profileId: "dependency-track",
     mode: "dependency-track",
-    scanner: { source: "dependency_track", endpoint: settings.baseUrl, sbomFile, sourceCveReport: vulnerabilityReportId },
+    scanner: { source: "dependency_track", endpoint: settings.baseUrl, sbomFile, sourceCveReport: vulnerabilityReportId, processingToken: token, analysisStatus: "pending", partial: true },
     summary: summary(findings),
     findings,
     events: [],

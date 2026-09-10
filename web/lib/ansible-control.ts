@@ -1,10 +1,11 @@
-import { execFile } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
 import { getReportsDir } from "@/lib/ansible-reports";
-import { ansibleSshArgs } from "@/lib/ssh-access";
+import { ansibleSshArgs, configuredPrivateKeyPath } from "@/lib/ssh-access";
+import { getInventoryHost, getInventoryTargetHosts } from "@/lib/inventory";
 import {
   appendIncident as appendStoredIncident,
   readIncidents as readStoredIncidents,
@@ -24,6 +25,7 @@ export const playbooks = {
   sshCryptoAudit: { file: "ssh-crypto-audit.yml", timeout: 180_000, kind: "audit", requiresLimit: true },
   networkPortScan: { file: "nmap-scan.yml", timeout: 300_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   lynisTemporaryAudit: { file: "lynis-temporary-audit.yml", timeout: 1_200_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
+  openScapAudit: { file: "openscap-audit.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   closePort: { file: "close-port.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   blockIp: { file: "block-ip.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   backupRemediation: { file: "backup-remediation.yml", timeout: 240_000, kind: "audit", requiresLimit: true, internal: true },
@@ -48,7 +50,7 @@ export function reportIdForRun({
   limit?: string;
   reportRunId: string | null;
 }) {
-  if (!limit || limit.includes(",") || !reportRunId) {
+  if (!limit || limit.includes(",") || !reportRunId || !inventoryHostExists(limit)) {
     return null;
   }
 
@@ -60,6 +62,7 @@ export function reportIdForRun({
     sshCryptoAudit: "ssh-audit",
     networkPortScan: "nmap",
     lynisTemporaryAudit: "lynis",
+    openScapAudit: "openscap",
   };
   const type = typeByAction[action];
   return type ? `${limit}-${type}-${reportRunId}` : null;
@@ -76,11 +79,11 @@ export function getStateDir(repoRoot = getRepoRoot()) {
 }
 
 export function isPlaybookAction(value: unknown): value is PlaybookAction {
-  return typeof value === "string" && value in playbooks;
+  return typeof value === "string" && Object.hasOwn(playbooks, value);
 }
 
 export function isSafeLimit(value: unknown): value is string {
-  return typeof value === "string" && /^[a-zA-Z0-9_.:-]+(,[a-zA-Z0-9_.:-]+)*$/.test(value);
+  return typeof value === "string" && /^[a-zA-Z0-9_][a-zA-Z0-9_.-]*(,[a-zA-Z0-9_][a-zA-Z0-9_.-]*)*$/.test(value);
 }
 
 export function isSafeServiceName(value: unknown): value is string {
@@ -154,34 +157,27 @@ export function appendIncident(record: Omit<IncidentRecord, "id" | "createdAt">)
 }
 
 export function inventoryHostExists(alias: string) {
+  try { return Boolean(getInventoryHost(alias)); } catch { return false; }
+}
+
+export function inventoryHostConnection(alias: string) {
+  if (!getInventoryHost(alias)) throw new Error("Укажите точный alias существующего хоста, не совпадающий с именем группы.");
   const inventoryPath = path.join(getRepoRoot(), "ansible", "inventory.ini");
-  if (!existsSync(inventoryPath)) {
-    return false;
-  }
-  return readFileSync(inventoryPath, "utf8").split("\n").some((rawLine) => {
-    const line = rawLine.trim();
-    return Boolean(line) && !line.startsWith("#") && !line.startsWith("[") && line.split(/\s+/, 1)[0] === alias;
+  const output = execFileSync("ansible-inventory", ["-i", inventoryPath, "--host", alias], {
+    cwd: getRepoRoot(), encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024,
+    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
   });
+  const variables = JSON.parse(output) as Record<string, unknown>;
+  const address = variables.ansible_host ?? variables.ansible_ssh_host ?? alias;
+  const port = Number(variables.ansible_port ?? variables.ansible_ssh_port ?? 22);
+  if (typeof address !== "string" || !address || address.includes("{{") || !Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Не удалось однозначно определить адрес и порт SSH из inventory.");
+  }
+  return { address, port, user: typeof variables.ansible_user === "string" ? variables.ansible_user : undefined };
 }
 
 export function inventoryHostAddress(alias: string) {
-  const inventoryPath = path.join(getRepoRoot(), "ansible", "inventory.ini");
-  if (!existsSync(inventoryPath)) {
-    return null;
-  }
-  for (const rawLine of readFileSync(inventoryPath, "utf8").split("\n")) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#") || line.startsWith("[")) {
-      continue;
-    }
-    const tokens = line.split(/\s+/);
-    if (tokens[0] !== alias) {
-      continue;
-    }
-    const address = tokens.find((token) => token.startsWith("ansible_host="))?.slice("ansible_host=".length);
-    return address ?? alias;
-  }
-  return null;
+  return inventoryHostExists(alias) ? inventoryHostConnection(alias).address : null;
 }
 
 export async function runAnsiblePlaybook({
@@ -206,6 +202,10 @@ export async function runAnsiblePlaybook({
   }
 
   const selected = playbooks[action];
+  const targets = (limit ?? "linux_hosts").split(",").flatMap((target) => getInventoryTargetHosts(target));
+  if (!targets.some((host) => host.groups.includes("linux_hosts"))) {
+    throw Object.assign(new Error("В выбранной цели нет хостов группы linux_hosts; проверка не запущена."), { code: "inventory_target_missing" });
+  }
   const playbookPath = path.join(repoRoot, "ansible", "playbooks", selected.file);
   const args = ["-i", inventoryPath, playbookPath, "-e", `audit_profile=${profileId}`];
   if (process.env.HCP_REPORTS_DIR) {
@@ -215,8 +215,8 @@ export async function runAnsiblePlaybook({
   if (reportRunId) {
     args.push("-e", `report_run_id=${reportRunId}`);
   }
-  for (const [key, value] of Object.entries(extraVars)) {
-    args.push("-e", `${key}=${value}`);
+  if (Object.keys(extraVars).length) {
+    args.push("-e", JSON.stringify(extraVars));
   }
   if (limit) {
     args.push("--limit", limit);
@@ -230,7 +230,7 @@ export async function runAnsiblePlaybook({
     cwd: repoRoot,
     timeout: selected.timeout,
     maxBuffer: 1024 * 1024 * 8,
-    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_SSH_ARGS: ansibleSshArgs() },
+    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_SSH_ARGS: ansibleSshArgs(), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
   });
 
   return { ...result, command, repoRoot, reportRunId };

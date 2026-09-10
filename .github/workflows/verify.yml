@@ -25,12 +25,15 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+      - run: npm run test:http
+      - run: python3 -m unittest discover -s ../ansible/tests -v
 
   ansible:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ansible
+      - run: sudo python3 -m unittest discover -s deployment/tests -v
       - run: |
           for playbook in ansible/playbooks/*.yml; do
             ansible-playbook -i ansible/inventory.example.ini "$playbook" --syntax-check
@@ -41,3 +44,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build --tag hardening-control-platform:test .
+
+  lab:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - run: ./deployment/lab/up.sh
+      - name: Exercise real SSH, Ansible, Nmap, Lynis and Trivy
+        run: python3 deployment/lab/verify.py --online
+      - name: Check temporary Lynis cleanup
+        run: |
+          docker compose -f deployment/lab/docker-compose.yml exec -T lab-target python3 -c 'import glob; assert not glob.glob("/tmp/hcp-lynis-*")'
+      - name: Check persistent state after container restart
+        run: |
+          docker compose -f deployment/lab/docker-compose.yml restart hcp
+          docker compose -f deployment/lab/docker-compose.yml up -d --wait --wait-timeout 180 hcp
+          python3 deployment/lab/verify.py --check-persistence
+      - name: Save acceptance protocol
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: lab-verification
+          path: .lab/verification.json
+          if-no-files-found: warn
+      - name: Show service logs on failure
+        if: failure()
+        run: docker compose -f deployment/lab/docker-compose.yml logs --no-color --tail=150
+      - name: Stop lab
+        if: always()
+        run: docker compose -f deployment/lab/docker-compose.yml down

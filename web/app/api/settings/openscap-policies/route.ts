@@ -36,7 +36,8 @@ function assertKnownInventoryGroup(groupName: string) {
 }
 
 export async function GET() {
-  return NextResponse.json(payload());
+  try { return NextResponse.json(payload()); }
+  catch (error) { return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "Не удалось прочитать политики." }, { status: 400 }); }
 }
 
 export async function POST(request: Request) {

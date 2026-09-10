@@ -13,11 +13,14 @@ services:
       HCP_AUTH_SECRET: ${HCP_AUTH_SECRET:?Set HCP_AUTH_SECRET in .env}
       HCP_AUDIT_HMAC_KEY: ${HCP_AUDIT_HMAC_KEY:?Set HCP_AUDIT_HMAC_KEY in .env}
       HCP_SSH_PRIVATE_KEY_PATH: /home/node/.ssh/hcp-control
+      ANSIBLE_PRIVATE_KEY_FILE: /home/node/.ssh/hcp-control
+      ANSIBLE_CONFIG: /app/ansible.cfg
       HCP_KNOWN_HOSTS_PATH: /var/lib/hcp/known_hosts
       ANSIBLE_SSH_ARGS: -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/var/lib/hcp/known_hosts
       HCP_REPORTS_DIR: /var/lib/hcp/reports
       HCP_STATE_DIR: /var/lib/hcp
       HCP_TRIVY_MODE: ${HCP_TRIVY_MODE:-online}
+      HCP_TRIVY_MAX_DB_AGE_HOURS: ${HCP_TRIVY_MAX_DB_AGE_HOURS:-168}
       HCP_TRIVY_CACHE_DIR: /var/lib/hcp/trivy-cache
       HCP_TRIVY_DB_REPOSITORY: ${HCP_TRIVY_DB_REPOSITORY:-}
       HCP_TRIVY_JAVA_DB_REPOSITORY: ${HCP_TRIVY_JAVA_DB_REPOSITORY:-}
@@ -26,6 +29,7 @@ services:
       HCP_DEPENDENCY_TRACK_URL: ${HCP_DEPENDENCY_TRACK_URL:-}
       HCP_DEPENDENCY_TRACK_API_KEY: ${HCP_DEPENDENCY_TRACK_API_KEY:-}
       HCP_SCHEDULE_API_KEY: ${HCP_SCHEDULE_API_KEY:-}
+      HCP_SCHEDULE_PROFILE: ${HCP_SCHEDULE_PROFILE:-basic_linux}
       HCP_SCHEDULE_LIMIT: ${HCP_SCHEDULE_LIMIT:-linux_hosts}
       HCP_SCHEDULE_DEEP_LIMIT: ${HCP_SCHEDULE_DEEP_LIMIT:-linux_hosts}
       HCP_CORRELATION_MAX_AGE_HOURS: ${HCP_CORRELATION_MAX_AGE_HOURS:-168}
@@ -33,9 +37,20 @@ services:
       HCP_CONTROL_IPS: ${HCP_CONTROL_IPS:-}
     volumes:
       - hcp-runtime:/var/lib/hcp
-      - ./ansible/inventory.ini:/app/ansible/inventory.ini
+      - type: bind
+        source: ./ansible/inventory.ini
+        target: /run/secrets/inventory.ini
+        read_only: true
+        bind:
+          create_host_path: false
       - ./secrets/hcp-control:/run/secrets/hcp-control:ro
       - ./secrets/known_hosts:/run/secrets/known_hosts:ro
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      start_period: 60s
+      retries: 8
 
   # Dependency-Track runs only with the explicit profile, so the usual HCP
   # installation keeps its smallest attack surface and resource footprint.
@@ -47,7 +62,9 @@ services:
     environment:
       POSTGRES_DB: dtrack
       POSTGRES_USER: dtrack
-      POSTGRES_PASSWORD: ${HCP_DEPENDENCY_TRACK_DB_PASSWORD:?Set HCP_DEPENDENCY_TRACK_DB_PASSWORD in .env}
+      # Empty password is rejected by PostgreSQL on startup, but must not prevent
+      # interpolation of the base HCP stack when this optional profile is off.
+      POSTGRES_PASSWORD: ${HCP_DEPENDENCY_TRACK_DB_PASSWORD:-}
     volumes:
       - dependency-track-postgres:/var/lib/postgresql/data
     healthcheck:
@@ -57,7 +74,7 @@ services:
       retries: 12
 
   dependency-track-api:
-    image: dependencytrack/apiserver:latest
+    image: dependencytrack/apiserver:4.14.3
     profiles: ["dependency-track"]
     restart: unless-stopped
     depends_on:
@@ -68,21 +85,24 @@ services:
       ALPINE_DATABASE_URL: jdbc:postgresql://dependency-track-postgres:5432/dtrack
       ALPINE_DATABASE_DRIVER: org.postgresql.Driver
       ALPINE_DATABASE_USERNAME: dtrack
-      ALPINE_DATABASE_PASSWORD: ${HCP_DEPENDENCY_TRACK_DB_PASSWORD:?Set HCP_DEPENDENCY_TRACK_DB_PASSWORD in .env}
+      ALPINE_DATABASE_PASSWORD: ${HCP_DEPENDENCY_TRACK_DB_PASSWORD:-}
+    volumes:
+      - dependency-track-data:/data
     ports:
       - "${HCP_DEPENDENCY_TRACK_API_BIND_ADDRESS:-127.0.0.1}:${HCP_DEPENDENCY_TRACK_API_PORT:-8081}:8080"
 
   dependency-track-frontend:
-    image: dependencytrack/frontend:latest
+    image: dependencytrack/frontend:4.14.3
     profiles: ["dependency-track"]
     restart: unless-stopped
     depends_on:
       - dependency-track-api
     environment:
-      API_BASE_URL: http://localhost:${HCP_DEPENDENCY_TRACK_API_PORT:-8081}
+      API_BASE_URL: ${HCP_DEPENDENCY_TRACK_PUBLIC_API_URL:-http://localhost:8081}
     ports:
       - "${HCP_DEPENDENCY_TRACK_BIND_ADDRESS:-127.0.0.1}:${HCP_DEPENDENCY_TRACK_PORT:-8080}:8080"
 
 volumes:
   hcp-runtime:
   dependency-track-postgres:
+  dependency-track-data:

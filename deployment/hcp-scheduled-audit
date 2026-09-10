@@ -13,11 +13,11 @@ case "$HCP_SCHEDULE_PROFILE" in
 esac
 
 case "$HCP_SCHEDULE_LIMIT" in
-  *[!A-Za-z0-9_.:-]*|"") echo "HCP_SCHEDULE_LIMIT must be one inventory host or group." >&2; exit 64 ;;
+  *[!A-Za-z0-9_.-]*|"") echo "HCP_SCHEDULE_LIMIT must be one inventory host or group." >&2; exit 64 ;;
 esac
 
 case "$HCP_SCHEDULE_DEEP_LIMIT" in
-  *[!A-Za-z0-9_.:-]*|"") echo "HCP_SCHEDULE_DEEP_LIMIT must be one inventory host or group." >&2; exit 64 ;;
+  *[!A-Za-z0-9_.-]*|"") echo "HCP_SCHEDULE_DEEP_LIMIT must be one inventory host or group." >&2; exit 64 ;;
 esac
 
 case "$HCP_SCHEDULE_TASKS" in
@@ -47,18 +47,28 @@ run_packages() {
       headers: { "content-type": "application/json", "x-hcp-schedule-key": process.env.HCP_SCHEDULE_API_KEY },
       body: JSON.stringify({ reportRunId: process.env.REPORT_RUN_ID }),
     }).then(async (response) => {
-      const body = await response.text();
-      if (!response.ok) throw new Error(`${response.status}: ${body}`);
-      process.stdout.write(`${body}\n`);
+      const body = await response.json();
+      if (!response.ok || body.ok !== true || body.partial === true) throw new Error(`${response.status}: ${JSON.stringify(body)}`);
+      process.stdout.write(`${JSON.stringify(body)}\n`);
     }).catch((error) => { console.error(`Scheduled CVE scan failed: ${error.message}`); process.exit(1); });
   '
 }
 
 run_openscap() {
-  ansible-playbook -i /app/ansible/inventory.ini /app/ansible/playbooks/openscap-audit.yml \
-    --limit "$HCP_SCHEDULE_DEEP_LIMIT" \
-    -e "hcp_reports_dir=${HCP_REPORTS_DIR:-/var/lib/hcp/reports}" \
-    -e "report_run_id=$REPORT_RUN_ID"
+  : "${HCP_SCHEDULE_API_KEY:?Set HCP_SCHEDULE_API_KEY before scheduling OpenSCAP scans.}"
+  export HCP_SCHEDULE_DEEP_LIMIT
+  node -e '
+    const endpoint = `http://127.0.0.1:${process.env.PORT || "3000"}/api/internal/scheduled/openscap`;
+    fetch(endpoint, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-hcp-schedule-key": process.env.HCP_SCHEDULE_API_KEY },
+      body: JSON.stringify({ reportRunId: process.env.REPORT_RUN_ID, limit: process.env.HCP_SCHEDULE_DEEP_LIMIT }),
+    }).then(async (response) => {
+      const body = await response.json();
+      if (!response.ok || body.ok !== true || body.partial === true) throw new Error(`${response.status}: ${JSON.stringify(body)}`);
+      process.stdout.write(`${JSON.stringify(body)}\n`);
+    }).catch((error) => { console.error(`Scheduled OpenSCAP failed: ${error.message}`); process.exit(1); });
+  '
 }
 
 run_tasks() {
