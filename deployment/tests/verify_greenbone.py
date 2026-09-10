@@ -372,7 +372,7 @@ def main():
         nvt = wait_for("official feeds and scanner/manager VT caches", feeds_ready,
                        3600 if args.include_advisory_feeds else 1200, feed_diagnostics)
         family = nvt.findtext("family")
-        record("Actual official HTTP TRACE VT and fresh feed loaded", oid=TRACE_OID, name=nvt.findtext("name"), family=family)
+        record("Actual official HTTP TRACE VT and fresh feed loaded", oid=TRACE_OID, vtName=nvt.findtext("name"), family=family)
         # Upstream requires imported VTs and a Feed Import Owner before scan
         # configurations can be loaded. Rebuild only the official data objects
         # in this fresh manager, after both prerequisites are established.
