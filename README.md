@@ -184,6 +184,40 @@ dpkg -L ssg-debian | grep -- '-ds.xml$'
 
 Пакет [ssg-debian](https://packages.debian.org/bookworm/ssg-debian) зависит от выпуска Debian; в нём может отсутствовать content для вашей ОС. Выберите файл, соответствующий точному выпуску хоста, и выполните `oscap info /полный/путь/к/datastream.xml`. Если подходящего файла нет, установите проверенный выпуск [ComplianceAsCode/content](https://github.com/ComplianceAsCode/content/releases) с поддержкой этой ОС. Не подставляйте datastream другого выпуска ради успешного запуска.
 
+Для **целевой Ubuntu 24.04 VM** можно установить тот же официальный выпуск content, который прошёл отдельную проверку HCP в CI. Выполните на этой ВМ:
+
+```bash
+sudo apt update
+sudo apt install -y openscap-scanner curl python3
+export HCP_SSG_STAGE="$(mktemp -d)"
+curl --fail --location --retry 2 \
+  https://github.com/ComplianceAsCode/content/releases/download/v0.1.79/scap-security-guide-0.1.79.zip \
+  --output "$HCP_SSG_STAGE/ssg.zip"
+printf '%s  %s\n' \
+  946718cf6f88e7a976d7e2b4f01ceaba6af9b18cace37d2c8bbffa8b205dd3e8 \
+  "$HCP_SSG_STAGE/ssg.zip" | sha256sum --check --strict
+```
+
+Продолжайте только после результата `OK`:
+
+```bash
+python3 - <<'PY'
+import os
+from pathlib import Path, PurePosixPath
+from zipfile import ZipFile
+stage = Path(os.environ["HCP_SSG_STAGE"])
+with ZipFile(stage / "ssg.zip") as archive:
+    names = [name for name in archive.namelist() if PurePosixPath(name).name == "ssg-ubuntu2404-ds.xml"]
+    assert len(names) == 1, "В архиве нет однозначного datastream Ubuntu 24.04"
+    (stage / "ssg-ubuntu2404-ds.xml").write_bytes(archive.read(names[0]))
+PY
+sudo install -D -m 644 "$HCP_SSG_STAGE/ssg-ubuntu2404-ds.xml" \
+  /usr/local/share/hcp/scap/0.1.79/ssg-ubuntu2404-ds.xml
+oscap info /usr/local/share/hcp/scap/0.1.79/ssg-ubuntu2404-ds.xml
+```
+
+Используйте показанный `oscap info` профиль, соответствующий роли ВМ. Здесь устанавливается исходный официальный datastream; ограниченный профиль из шести правил создаётся только в CI. Для Debian и других выпусков Ubuntu нужен их собственный content. Первичное скачивание требует интернета; проверенный файл можно затем перенести на соответствующие ВМ изолированной сети.
+
 В рабочем режиме откройте «Политики» и назначьте проверенный datastream и точный ID профиля из `oscap info` для отдельной inventory-группы, например `scap_hosts`. При запуске OpenSCAP HCP фиксирует профиль, checksum и mtime datastream в отчёте. Для конкретного правила можно добавить временное согласованное исключение с причиной и датой окончания: оно показывается рядом с находкой, сохраняя исходный результат проверки и риск. Исключение не означает, что нарушение исправлено.
 
 Переменные `.env` остаются fallback для групп без записи в «Политиках» и прямого запуска playbook. Планировщик обращается к внутреннему API и применяет настройки и исключения из панели отдельно для каждого хоста:
