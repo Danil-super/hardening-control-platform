@@ -235,7 +235,11 @@ def main():
             for name in ("scap-data", "cert-bund-data", "dfn-cert-data"):
                 del stack["services"][name]
                 for service in stack["services"].values():
-                    service.get("depends_on", {}).pop(name, None)
+                    dependencies = service.get("depends_on", {})
+                    if isinstance(dependencies, dict):
+                        dependencies.pop(name, None)
+                    else:
+                        service["depends_on"] = [dependency for dependency in dependencies if dependency != name]
             protocol["limitations"].append("SCAP/CERT advisory databases are excluded from this network-VT acceptance")
         for service in stack["services"].values():
             if service.get("ports") or service.get("network_mode") or service.get("privileged"):
