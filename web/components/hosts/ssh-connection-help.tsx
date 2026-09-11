@@ -27,7 +27,7 @@ export function SshConnectionHelp(props: Props) {
         <KeyRound size={22} className="mt-0.5 shrink-0 text-sky-300" aria-hidden="true" />
         <div>
           <h3 id="connection-wizard-title" className="font-semibold text-white">Доступ по SSH</h3>
-          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">Если доступ платформе уже выдан, нажмите «Проверить подключение». Для первого подключения раскройте сведения о ключах ниже.</p>
+          <p className="mt-1 max-w-2xl text-sm leading-6 text-slate-400">Если доступ платформе уже выдан, нажмите «Проверить подключение». Для первого подключения используйте единый порядок: ключ платформы, режим sudo, подтверждение ключа сервера, проверка и сохранение.</p>
         </div>
       </div>
       <Button variant="secondary" onClick={props.onRefresh} disabled={Boolean(loading)} className="w-full sm:w-auto" title="Повторно прочитать текущий ключ платформы">

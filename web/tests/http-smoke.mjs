@@ -2,7 +2,7 @@
 // Does not claim to execute remote scanners or change any host's firewall.
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,12 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporary = mkdtempSync(path.join(os.tmpdir(), "hcp-http-smoke-"));
+const fixtureBin = path.join(temporary, "bin");
+const preflightFixture = path.join(temporary, "preflight-case");
+mkdirSync(fixtureBin);
+copyFileSync(path.join(webDir, "tests/fixtures/ansible-preflight.mjs"), path.join(fixtureBin, "ansible"));
+chmodSync(path.join(fixtureBin, "ansible"), 0o700);
+writeFileSync(preflightFixture, "ok");
 const reports = path.join(temporary, "reports");
 const sshKey = path.join(temporary, "fixture-key");
 execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", sshKey], { stdio: "ignore" });
@@ -49,6 +55,7 @@ async function start() {
   child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd: webDir, stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1",
+      PATH: `${fixtureBin}${path.delimiter}${process.env.PATH}`, HCP_PREFLIGHT_FIXTURE: preflightFixture,
       HCP_STATE_DIR: temporary, HCP_REPORTS_DIR: reports,
       HCP_ADMIN_PASSWORD: "http-smoke-password", HCP_AUTH_SECRET: "http-smoke-session-key",
       HCP_AUDIT_HMAC_KEY: "http-smoke-ledger-key", HCP_SCHEDULE_API_KEY: "http-smoke-schedule-key",
@@ -111,6 +118,37 @@ try {
   assert.equal(missingKey.ok, false);
   assert.equal(missingKey.error, "control_key_missing");
   renameSync(`${sshKey}.unavailable`, sshKey);
+  const preflightBody = { alias: "fixture-preflight", address: "192.0.2.10", user: "hcp-audit", port: 22, become: true };
+  for (const scenario of ["unknown-key", "sudo-password", "non-root", "ok", "disabled-sudo"]) {
+    writeFileSync(preflightFixture, scenario);
+    writeFileSync(`${preflightFixture}.calls`, "");
+    const result = await (await request("/api/ansible/hosts/preflight", {
+      method: "POST", body: { ...preflightBody, become: scenario !== "disabled-sudo" },
+    })).json();
+    const calls = readFileSync(`${preflightFixture}.calls`, "utf8").trim().split("\n");
+    assert.equal(typeof result.message, "string", JSON.stringify(result));
+    assert.equal(result.ok, ["ok", "disabled-sudo"].includes(scenario), scenario);
+    if (scenario === "unknown-key") {
+      assert.match(result.message, /Сохранить проверенный ключ/);
+      assert.equal(result.checks.python.state, "skipped");
+      assert.equal(result.checks.sudo.state, "skipped");
+      assert.equal(result.checks.os.state, "skipped");
+      assert.deepEqual(calls, ["ssh"]);
+    } else if (scenario === "sudo-password") {
+      assert.match(result.message, /sudo требует пароль/);
+      assert.equal(result.checks.sudo.state, "failed");
+    } else if (scenario === "disabled-sudo") {
+      assert.equal(result.checks.sudo.state, "disabled");
+      assert.equal(calls.includes("sudo"), false);
+      assert.equal(result.readiness.checks.find((check) => check.id === "baseline").state, "needs_setup");
+    } else if (scenario === "ok") {
+      assert.equal(result.checks.sudo.state, "passed");
+      assert.equal(result.readiness.checks.find((check) => check.id === "baseline").state, "ready");
+    }
+  }
+  const guidePage = await (await request("/guide", { auth: false })).text();
+  assert.match(guidePage, /ubuntu-astra-setup\.md#host-onboarding/);
+  assert.doesNotMatch(guidePage, /ssh-copy-id user@192\.168\.1\.10/);
   await request("/api/settings/vulnerability-data", { method: "PATCH", origin: "https://foreign.invalid", body: { mode: "online" }, status: 403 });
   const settings = await (await request("/api/settings/vulnerability-data", { method: "PATCH", body: { mode: "online" } })).json();
   assert.equal(settings.database.mode, "online");

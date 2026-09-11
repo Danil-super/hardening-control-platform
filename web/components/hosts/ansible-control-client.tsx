@@ -20,6 +20,7 @@ import { useActionResult, useFeedbackMessage, useNotify } from "@/components/ui/
 import { errorMessage, readApiResponse } from "@/lib/client-api";
 import { SshConnectionHelp } from "@/components/hosts/ssh-connection-help";
 import { copyText } from "@/lib/clipboard";
+import type { PreflightCheck } from "@/lib/preflight-result";
 
 type HealthPayload = {
   ansibleInstalled?: boolean;
@@ -94,9 +95,10 @@ type PreflightPayload = {
   readiness?: import("@/lib/host-readiness").HostReadiness | null;
   readinessError?: string | null;
   checks?: {
-    ssh: { ok: boolean; message: string };
-    python: { ok: boolean; message: string };
-    sudo: { ok: boolean; message: string };
+    ssh: PreflightCheck;
+    python: PreflightCheck;
+    sudo: PreflightCheck;
+    os?: PreflightCheck;
   };
   facts?: {
     os: string | null;
@@ -440,6 +442,10 @@ export function AnsibleControlClient() {
   }
 
   async function updateManualHost() {
+    if (!preflight?.ok || preflightFor !== connectionSignature) {
+      setRunResult({ ok: false, message: "Сначала проверьте подключение с выбранным режимом sudo, затем сохраните изменения." });
+      return;
+    }
     setLoading("updateHost");
     setRunResult(null);
     setFreshReportHref("");
@@ -804,7 +810,7 @@ export function AnsibleControlClient() {
             <Plus size={16} aria-hidden="true" />
             Добавить хост
           </Button> : <>
-          <Button variant="secondary" onClick={updateManualHost} disabled={Boolean(loading) || manualAlias !== editingHost || !manualAddress || !manualUser} className="w-full self-end">
+          <Button variant="secondary" onClick={updateManualHost} disabled={Boolean(loading) || manualAlias !== editingHost || !preflight?.ok || preflightFor !== connectionSignature} className="w-full self-end">
             Сохранить изменения
           </Button>
           <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || !editingHost} className="w-full self-end">
@@ -813,7 +819,12 @@ export function AnsibleControlClient() {
           <Button variant="secondary" onClick={() => { setEditingHost(""); setManualAlias(""); setManualAddress(""); setPreflight(null); }} disabled={Boolean(loading)} className="w-full self-end">Отменить редактирование</Button>
           </>}
         </fieldset>
-        <p className="mt-3 text-sm leading-6 text-slate-400">Сначала проверьте подключение. После успешной проверки станет доступна кнопка «Добавить хост».</p>
+        <p className="mt-3 text-sm leading-6 text-slate-400">Сначала проверьте подключение с выбранным режимом прав. После успешной проверки станет доступно сохранение. <a href="/guide#host-onboarding" className="text-sky-300 underline underline-offset-4">Единый порядок подключения</a></p>
+        <p className={`mt-2 rounded-lg border p-3 text-sm leading-6 ${manualBecome ? "border-slate-700 text-slate-300" : "border-amber-400/25 bg-amber-400/5 text-amber-100"}`}>
+          {manualBecome ? "sudo: HCP использует уже выданное повышение прав до root без пароля. Галочка не выдаёт права пользователю Astra."
+            : "Без sudo: будут использованы права пользователя SSH. У обычной учётной записи часть данных недоступна; для изменений firewall нужны права root."}
+          {" "}<a href="/guide#sudo-access" className="text-sky-300 underline underline-offset-4">Как настроить sudo</a>
+        </p>
         <SshConnectionHelp access={access} loading={accessLoading} message={accessMessage} address={manualAddress}
           command={installPublicKeyCommand} copied={copied} fingerprints={hostKeyScan?.fingerprints}
           trustedFingerprint={trustedFingerprint} onFingerprint={setTrustedFingerprint}
@@ -821,10 +832,10 @@ export function AnsibleControlClient() {
         {preflight && preflightFor === connectionSignature ? (
           <>
           <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
-            <CheckBadge label="SSH" ok={preflight.checks?.ssh.ok} text={preflight.checks?.ssh.message ?? preflight.message ?? ""} />
-            <CheckBadge label="Python" ok={preflight.checks?.python.ok} text={preflight.checks?.python.message ?? ""} />
-            <CheckBadge label="sudo" ok={preflight.checks?.sudo.ok} text={preflight.checks?.sudo.message ?? ""} />
-            <CheckBadge label="OS" ok={Boolean(preflight.facts?.os)} text={preflight.facts?.os ?? "не определена"} />
+            <CheckBadge label="SSH" check={preflight.checks?.ssh} fallback={preflight.message} />
+            <CheckBadge label="Python" check={preflight.checks?.python} />
+            <CheckBadge label="sudo" check={preflight.checks?.sudo} />
+            <CheckBadge label="ОС" check={preflight.checks?.os} />
           </div>
           {preflight.readiness ? (
             <section className="mt-3 rounded-md border border-slate-700 bg-slate-950/70 p-3" aria-label="Готовность к аудиту">
@@ -1193,21 +1204,28 @@ function StatusTile({
 
 function CheckBadge({
   label,
-  ok,
-  text,
+  check,
+  fallback,
 }: {
   label: string;
-  ok?: boolean;
-  text: string;
+  check?: PreflightCheck;
+  fallback?: string;
 }) {
+  const state = check?.state ?? "skipped";
+  const labels = { passed: "готово", failed: "ошибка", skipped: "не проверено", disabled: "отключено" };
+  const tones = { passed: "border-emerald-400/30 bg-emerald-500/10 text-emerald-100",
+    failed: "border-red-400/30 bg-red-500/10 text-red-100", skipped: "border-slate-700 bg-slate-900/50 text-slate-300",
+    disabled: "border-amber-400/25 bg-amber-400/5 text-amber-100" };
   return (
-    <div className={`rounded-md border p-3 ${
-      ok ? "border-emerald-400/30 bg-emerald-500/10" : "border-red-400/30 bg-red-500/10"
-    }`}>
-      <p className={ok ? "font-semibold text-emerald-100" : "font-semibold text-red-100"}>
-        {label}: {ok ? "готово" : "ошибка"}
+    <div className={`min-w-0 rounded-md border p-3 ${tones[state]}`}>
+      <p className="font-semibold">
+        {label}: {labels[state]}
       </p>
-      <p className="mt-1 break-words text-xs leading-5 text-slate-300">{text || "нет данных"}</p>
+      <p className="mt-1 break-words text-xs leading-5 text-slate-300">{check?.message || fallback || "Проверка не выполнялась."}</p>
+      {check?.details ? <details className="mt-2 text-xs text-slate-400">
+        <summary className="cursor-pointer text-sky-200">Технические подробности</summary>
+        <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-all">{check.details}</pre>
+      </details> : null}
     </div>
   );
 }

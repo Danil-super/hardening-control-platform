@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import { getRepoRoot } from "@/lib/ansible-control";
 import { ansibleSshArgs, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 import { assessHostReadiness, assessTargetPython, type HostReadiness } from "@/lib/host-readiness";
+import { summarizePreflight } from "@/lib/preflight-result";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -90,8 +91,9 @@ export async function POST(request: Request) {
     const setup = ssh.ok && pythonCompatibility.compatible !== false
       ? await runAnsible([alias, "-m", "setup", "-a", "filter=ansible_distribution*,ansible_python*"], inventoryPath, "setup")
       : { ok: false, stdout: "", stderr: ssh.ok ? pythonCompatibility.message : "Сначала требуется SSH-подключение.", data: null };
-    const sudo = ssh.ok && become
-      ? await runAnsible([alias, "-b", "-e", "ansible_become=true", "-m", "raw", "-a", "id -u"], inventoryPath, "sudo")
+    // Test a real elevated Python module, not only a whitelisted `sudo id`.
+    const sudo = setup.ok && become
+      ? await runAnsible([alias, "-b", "-e", "ansible_become=true", "-m", "command", "-a", "id -u"], inventoryPath, "sudo")
       : { ok: !become, stdout: become ? "" : "skipped", stderr: "", data: null };
     if (become && sudo.ok && sudo.data?.stdout?.trim() !== "0") sudo.ok = false;
 
@@ -110,15 +112,12 @@ export async function POST(request: Request) {
       }
     }
 
+    const os = readiness?.os ?? ([facts.ansible_distribution, facts.ansible_distribution_version].filter(Boolean).join(" ") || null);
     return NextResponse.json({
-      ok: ssh.ok && setup.ok && sudo.ok,
-      checks: {
-        ssh: { ok: ssh.ok, message: ssh.ok ? "SSH OK" : ssh.stderr || ssh.stdout },
-        python: { ok: setup.ok, message: setup.ok ? `Python ${targetPython}: модуль Ansible выполнен (${facts.ansible_python?.executable ?? "/usr/bin/python3"}).` : setup.stderr || setup.stdout },
-        sudo: { ok: sudo.ok, message: become ? (sudo.ok ? "Доступ root подтверждён" : sudo.stderr || sudo.stdout) : "sudo отключён" },
-      },
+      ...summarizePreflight({ ssh, setup, sudo, become, os,
+        pythonMessage: `Python ${targetPython}: модуль Ansible выполнен (${facts.ansible_python?.executable ?? "/usr/bin/python3"}).` }),
       facts: {
-        os: readiness?.os ?? ([facts.ansible_distribution, facts.ansible_distribution_version].filter(Boolean).join(" ") || null),
+        os,
         python: facts.ansible_python?.executable ?? null,
         pythonVersion: targetPython,
         ansibleCoreVersion: coreVersion,
