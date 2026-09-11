@@ -34,13 +34,13 @@ def main():
     parser.add_argument("--check-persistence", action="store_true")
     args = parser.parse_args()
     jar = http.cookiejar.CookieJar()
-    http = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
+    api_client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
     def request(endpoint, body=None, method=None, status=200):
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(BASE + endpoint, data=data, method=method or ("POST" if body is not None else "GET"),
                                      headers={"Origin": BASE, "Content-Type": "application/json"})
         try:
-            response = http.open(req, timeout=220)
+            response = api_client.open(req, timeout=220)
         except urllib.error.HTTPError as error:
             response = error
         payload = response.read().decode()
