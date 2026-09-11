@@ -56,7 +56,7 @@ HCP_TRIVY_JAVA_DB_REPOSITORY=registry.security.intra/trivy-java-db
 
 Основной поддерживаемый сценарий этого сборщика — пакеты ОС Debian/Ubuntu из dpkg. Результаты RPM помечаются частичными: сбор не подтверждает все сведения о source epoch, modularity и репозиториях. Библиотеки приложений и контейнерные образы требуют отдельного сбора SBOM и этим инвентарём не покрываются.
 
-Для Astra Linux сохраняется также точный выпуск из `/etc/astra_version` в инвентаре и свойстве SBOM `hcp:astra-version`. `ID_LIKE=debian` не подменяет экосистему Astra экосистемой Debian. Полнота CVE-аудита Astra остаётся неподтверждённой до проверки применимых данных производителя. Подготовка описана в [инструкции Astra](astra-lab.md).
+Для Astra Linux сохраняется также точный выпуск из `/etc/astra_version` в инвентаре и свойстве SBOM `hcp:astra-version`. `ID_LIKE=debian` не подменяет экосистему Astra экосистемой Debian. Для Astra предусмотрен отдельный [OVAL-аудит и встроенный конфигурационный профиль](astra-audit.md). Полнота охвата CVE остаётся свойством выбранной базы и не переносится с Debian; условия OVAL оценивает OpenSCAP. Подготовка описана в [инструкции Astra](astra-lab.md).
 
 ## 2. OpenSCAP и SCAP Security Guide
 

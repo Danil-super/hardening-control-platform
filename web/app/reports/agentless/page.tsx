@@ -55,6 +55,7 @@ function reportModeLabel(mode: string) {
   if (mode === "openscap") {
     return "OpenSCAP";
   }
+  if (mode === "astra-oval") return "Astra OVAL";
   if (mode === "greenbone") {
     return "Greenbone";
   }

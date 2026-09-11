@@ -76,13 +76,13 @@ export function assessHostReadiness(value: unknown): HostReadiness {
   const packages = Boolean(probe.tools["dpkg-query"] || probe.tools.rpm);
   checks.push({ id: "packages", title: "Инвентаризация пакетов", state: packages ? "ready" : "needs_setup",
     detail: packages ? "Доступен сбор установленных пакетов. Поддержка их CVE-базы оценивается отдельно." : "Не найдены dpkg-query или rpm." });
-  checks.push({ id: "cve", title: "CVE пакетов ОС", state: !packages ? "needs_setup" : !astra && ["debian", "ubuntu"].includes(id) && probe.tools["dpkg-query"] ? "ready" : "unsupported",
-    detail: astra ? "Полнота проверки пакетов Astra по базе производителя пока не поддерживается. Пустой результат Trivy не подтверждает отсутствие CVE."
+  checks.push({ id: "cve", title: "CVE пакетов ОС", state: !packages || astra ? "needs_setup" : ["debian", "ubuntu"].includes(id) && probe.tools["dpkg-query"] ? "ready" : "unsupported",
+    detail: astra ? "Назначьте OVAL-базу для группы в «Источниках» и запустите «Проверить CVE Astra по OVAL». Нужен OpenSCAP; применимость, свежесть базы и полнота выполнения проверяются при аудите."
       : ["debian", "ubuntu"].includes(id) ? "Поддерживается сбор dpkg. Версию ОС, полноту обработки и свежесть базы Trivy подтвердит сам аудит."
         : "Полнота CVE-сопоставления этого дистрибутива в HCP не подтверждена; требуется сверка с данными производителя." });
   checks.push({ id: "openscap", title: "Профиль OpenSCAP", state: "needs_setup",
     detail: [probe.tools.oscap ? "OpenSCAP обнаружен." : "OpenSCAP не найден на целевой машине.",
-      astra ? "В SSG 0.1.79 нет профиля Astra. Нужен проверенный профиль для этого выпуска ОС; профиль Ubuntu/Debian не подходит."
+      astra ? "В «Политиках» доступен профиль «Astra Linux — базовые проверки HCP». Он проверяет настройки с учётом возможностей хоста, требует SCE и не является сертификационным профилем."
         : "Назначьте в «Политиках» datastream и профиль для точного выпуска ОС. Наличие сканера не подтверждает применимость правил."].join(" ") });
   const ufw = probe.firewall.ufw;
   const firewalld = probe.firewall.firewalld;

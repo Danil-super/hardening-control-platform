@@ -30,6 +30,24 @@ def load_script(name):
 
 
 class TargetPythonTests(unittest.TestCase):
+    def test_oval_adapter_real_files_subprocess_and_incomplete_report(self):
+        module = load_script("hcp-oval-audit.py")
+        config = module.parse_config({"mode": "local", "releasePattern": "*"})
+        module.check_scope({"id": "astra", "astraVersion": "1.6.7.15", "architecture": "x86_64"}, config)
+        module.check_scope({"id": "astra", "astraVersion": "12.4-custom", "architecture": "aarch64"}, config)
+        with tempfile.TemporaryDirectory() as directory:
+            path = os.path.join(directory, "source.xml")
+            module.write_bytes(path, b"<root/>")
+            self.assertEqual(module.read_regular(path, 1024), b"<root/>")
+            self.assertEqual(module.safe_xml(b"<root/>").tag, "root")
+            code, stdout = module.run_oscap([sys.executable, "-c", "print('actual child')"], directory, 10, capture_stdout=True)
+            self.assertEqual(code, 0)
+            self.assertEqual(stdout.strip(), "actual child")
+        args = argparse.Namespace(inventory_host="legacy-target", run_id="test")
+        report = module.finish(module.empty_report(args, "No database"))
+        self.assertTrue(report["scanner"]["partial"])
+        self.assertIsNone(report["scanner"]["uniqueCveCount"])
+
     def test_oval_evidence_hashes_actual_files_and_handles_missing_package(self):
         module = load_script("hcp-host-readiness.py")
         with tempfile.TemporaryDirectory() as directory:

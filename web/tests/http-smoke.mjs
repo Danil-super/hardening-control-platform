@@ -28,6 +28,15 @@ writeFileSync(path.join(reports, `${reportId}.json`), JSON.stringify({
     category: "CVE пакеты", source: "trivy", risk: "info", status: "manual", recommendation: "Повторить аудит", remediationAvailable: false }],
 }));
 let child;
+const ovalReportId = "smoke-astra-oval-run-http";
+writeFileSync(path.join(reports, `${ovalReportId}.json`), JSON.stringify({
+  inventoryHost: "smoke", hostname: "fixture-host", createdAt: new Date().toISOString(), mode: "astra-oval", profileId: "astra-oval",
+  scanner: { available: true, partial: false, fullCveCoverage: false, uniqueCveCount: 1, definitionCount: 2, evaluatedDefinitionCount: 2,
+    version: "OpenSCAP HTTP fixture", hostIdentity: { astraVersion: "test-release" },
+    database: { generatedAt: new Date().toISOString(), sourceMode: "local", path: "/fixture/oval.xml", sha256: "a".repeat(64), checksumVerified: true, releasePattern: "*", freshness: "current", ageDays: 0 },
+    definitionResults: [{ id: "oval:fixture:def:1", title: "HTTP fixture only", class: "vulnerability", result: "true", cveIds: ["CVE-2099-999999"] }] },
+  findings: [], events: [],
+}));
 let output = "";
 let cookie = "";
 let checks = 0;
@@ -72,6 +81,7 @@ async function request(endpoint, { method = "GET", body, auth = true, origin = b
 try {
   await start();
   await request("/api/ansible/hosts", { auth: false, status: 401 });
+  await request("/api/settings/astra-oval", { auth: false, status: 401 });
   await request(`/reports/agentless/${reportId}`, { auth: false, status: 307 });
   await request("/reports/correlation/smoke", { auth: false, status: 307 });
   await request("/api/ansible/auth/login", { method: "POST", body: { password: "wrong" }, auth: false, status: 401 });
@@ -82,6 +92,15 @@ try {
   const settings = await (await request("/api/settings/vulnerability-data", { method: "PATCH", body: { mode: "online" } })).json();
   assert.equal(settings.database.mode, "online");
   assert.equal(settings.freshness.status, "missing");
+  const ovalSettings = await (await request("/api/settings/astra-oval")).json();
+  assert.deepEqual(ovalSettings.policies, []);
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid", body: {}, status: 403 });
+  await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "nonexistent-smoke-group", config: {} }, status: 400 });
+  const ovalPage = await (await request(`/reports/agentless/${ovalReportId}`)).text();
+  assert.match(ovalPage, /Результат OVAL-аудита Astra/);
+  assert.match(ovalPage, /Уникальных CVE обнаружено/);
+  assert.match(ovalPage, /CVE-2099-999999/);
+  assert.match(ovalPage, /test-release/);
   await request("/api/internal/scheduled/openscap", { method: "POST", body: {}, auth: false, status: 401 });
   const report = await (await request(`/api/ansible/reports/${reportId}`)).json();
   assert.equal(report.report.partial, true);

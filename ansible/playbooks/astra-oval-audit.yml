@@ -1,0 +1,135 @@
+---
+- name: Evaluate an explicitly selected OVAL database on Astra Linux
+  hosts: linux_hosts
+  gather_facts: false
+  become: true
+
+  vars:
+    scanner_report_dir: "{{ hcp_reports_dir | default(playbook_dir ~ '/../reports') }}"
+    report_suffix: "{{ (report_run_id | default('run-' ~ lookup('pipe', 'date -u +%Y%m%dT%H%M%S%N'))) | regex_replace('[^A-Za-z0-9_.:-]', '_') }}"
+    oval_config_value: "{{ hcp_oval_config | default({}) }}"
+    oval_settings: "{{ oval_config_value if oval_config_value is mapping else oval_config_value | from_json }}"
+    oval_config_json: "{{ oval_settings | to_json }}"
+    oval_report_path: "{{ scanner_report_dir }}/{{ inventory_hostname }}-astra-oval-{{ report_suffix }}.json"
+
+  tasks:
+    - name: Ensure report directory exists on the controller
+      ansible.builtin.file:
+        path: "{{ scanner_report_dir }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Prepare and evaluate selected OVAL without installing software
+      block:
+        - name: Allocate controller directory for an online source
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: hcp-oval-source-
+          register: oval_controller_dir
+          delegate_to: localhost
+          become: false
+          when: oval_settings.mode | default('local') == 'online'
+
+        - name: Download and verify online XML only on the controller
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ playbook_dir }}/../scripts/hcp-oval-audit.py"
+              - prepare
+              - --config
+              - "{{ oval_config_json }}"
+              - --output
+              - "{{ oval_controller_dir.path }}/database.xml"
+          register: oval_download
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          when: oval_settings.mode | default('local') == 'online'
+
+        - name: Stop on an unavailable online source without a local fallback
+          ansible.builtin.fail:
+            msg: "{{ (oval_download.stdout | from_json).error | default('Не удалось подготовить OVAL.') }}"
+          when:
+            - oval_settings.mode | default('local') == 'online'
+            - not ((oval_download.stdout | from_json).ok | default(false) | bool)
+
+        - name: Allocate temporary target directory
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: hcp-astra-oval-
+          register: oval_target_dir
+
+        - name: Copy read-only Python 3.5 compatible adapter
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../scripts/hcp-oval-audit.py"
+            dest: "{{ oval_target_dir.path }}/hcp-oval-audit.py"
+            mode: "0700"
+
+        - name: Transfer verified online XML to target
+          ansible.builtin.copy:
+            src: "{{ oval_controller_dir.path }}/database.xml"
+            dest: "{{ oval_target_dir.path }}/database.xml"
+            mode: "0600"
+          when: oval_settings.mode | default('local') == 'online'
+
+        - name: Validate and evaluate OVAL locally on target
+          ansible.builtin.command:
+            argv:
+              - "{{ ansible_python_interpreter | default('/usr/bin/python3') }}"
+              - "{{ oval_target_dir.path }}/hcp-oval-audit.py"
+              - evaluate
+              - --config
+              - "{{ oval_config_json }}"
+              - --input
+              - "{{ oval_target_dir.path ~ '/database.xml' if oval_settings.mode | default('local') == 'online' else '' }}"
+              - --inventory-host
+              - "{{ inventory_hostname }}"
+              - --run-id
+              - "{{ report_suffix }}"
+              - --output
+              - "{{ oval_target_dir.path }}/report.json"
+          changed_when: false
+
+        - name: Fetch normalized OVAL report including incomplete outcomes
+          ansible.builtin.fetch:
+            src: "{{ oval_target_dir.path }}/report.json"
+            dest: "{{ oval_report_path }}"
+            flat: true
+          no_log: true
+
+      rescue:
+        - name: Record preparation or transport failure as a partial audit
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ playbook_dir }}/../scripts/hcp-oval-audit.py"
+              - unavailable
+              - --inventory-host
+              - "{{ inventory_hostname }}"
+              - --run-id
+              - "{{ report_suffix }}"
+              - --reason
+              - "{{ ansible_failed_result.msg | default('Не удалось подготовить или получить результаты OVAL.') }}"
+              - --output
+              - "{{ oval_report_path }}"
+          delegate_to: localhost
+          become: false
+          changed_when: false
+
+      always:
+        - name: Remove temporary files from target
+          ansible.builtin.file:
+            path: "{{ oval_target_dir.path }}"
+            state: absent
+          when: oval_target_dir is defined and oval_target_dir.path is defined
+
+        - name: Remove downloaded source from controller
+          ansible.builtin.file:
+            path: "{{ oval_controller_dir.path }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+          when: oval_controller_dir is defined and oval_controller_dir.path is defined

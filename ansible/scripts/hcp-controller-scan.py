@@ -586,7 +586,7 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
                 risk="info",
                 status="manual",
                 source="openscap",
-                description="Соответствие SSG-профилю не подтверждено: результат OpenSCAP нельзя разобрать.",
+                description="Результат проверки профиля не подтверждён: отчёт OpenSCAP нельзя разобрать.",
                 recommendation="Проверьте выбранные datastream и профиль, затем повторите аудит.",
                 evidence=str(error),
             )],
@@ -625,6 +625,10 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
         status = "passed" if result == "pass" else ("failed" if result == "fail" else "manual")
         severity = element.get("severity") or severities.get(identifier, "")
         instance = child_text(element, "instance")
+        # SCE exports bounded, read-only observations through XCCDF imports.
+        # Preserve them alongside rule status instead of losing the evidence.
+        observations = [item.text or "" for item in element.iter()
+                        if local_name(item) == "check-import" and item.get("import-name") == "stdout"]
         finding_id = f"openscap_{identifier}"
         if instance:
             finding_id += "_" + hashlib.sha256(instance.encode()).hexdigest()[:12]
@@ -635,18 +639,19 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
             status=status,
             source="openscap",
             description=(
-                "Правило SSG не выполнено на момент проверки."
+                "Правило выбранного профиля не выполнено на момент проверки."
                 if status == "failed"
                 else "OpenSCAP подтвердил выполнение правила."
                 if status == "passed"
                 else "OpenSCAP не смог однозначно оценить правило; результат требует ручной проверки."
             ),
             recommendation=(
-                "Откройте описание правила в SSG, оцените влияние на роль сервера и внесите изменение отдельным approval-playbook."
+                "Откройте описание правила профиля, оцените влияние на роль сервера и внесите изменение отдельным согласованным действием."
                 if status != "passed"
                 else "Повторяйте проверку после изменения ОС или базовой конфигурации."
             ),
-            evidence=f"rule={identifier}; result={result or 'unknown'}; severity={severity or 'unknown'}; instance={instance}",
+            evidence=f"rule={identifier}; result={result or 'unknown'}; severity={severity or 'unknown'}; instance={instance}"
+                     + ("; observation=" + "\n".join(observations) if observations else ""),
         ))
 
     partial = not findings or args.exit_code not in {0, 2} or any(item["status"] == "manual" for item in findings)

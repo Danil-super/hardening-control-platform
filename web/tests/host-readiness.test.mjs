@@ -18,11 +18,11 @@ test("Astra derived from Debian never inherits verified CVE/SCAP prerequisites",
   probe.astraVersion = "1.7.6.15";
   const result = assessHostReadiness(probe);
   assert.equal(state(result, "packages"), "ready");
-  assert.equal(state(result, "cve"), "unsupported");
+  assert.equal(state(result, "cve"), "needs_setup");
   assert.equal(state(result, "openscap"), "needs_setup");
   assert.equal(result.astraVersion, "1.7.6.15");
   probe.osRelease.ID = "debian";
-  assert.equal(state(assessHostReadiness(probe), "cve"), "unsupported");
+  assert.equal(state(assessHostReadiness(probe), "cve"), "needs_setup");
 });
 
 test("Astra releases preserve exact identity and share capability-based checks", () => {
@@ -33,7 +33,7 @@ test("Astra releases preserve exact identity and share capability-based checks",
     const result = assessHostReadiness(probe);
     assert.equal(result.astraVersion, version);
     assert.equal(state(result, "packages"), "ready");
-    assert.equal(state(result, "cve"), "unsupported");
+    assert.equal(state(result, "cve"), "needs_setup");
     assert.equal(state(result, "openscap"), "needs_setup");
   }
 });

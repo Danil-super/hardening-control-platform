@@ -139,7 +139,8 @@ const auditActions = [
   { id: "sshCryptoAudit", label: "Проверить SSH-криптографию", icon: ShieldCheck, advanced: true },
   { id: "networkPortScan", label: "Проверить открытые порты", icon: Search, requiresConfirmation: true, advanced: true },
   { id: "lynisTemporaryAudit", label: "Запустить Lynis", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
-  { id: "openScapAudit", label: "Проверить SSG-профиль OpenSCAP", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
+  { id: "openScapAudit", label: "Проверить профиль OpenSCAP", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
+  { id: "astraOvalAudit", label: "Проверить CVE Astra по OVAL", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
 ] as const;
 
 const responseActions = [
@@ -519,7 +520,9 @@ export function AnsibleControlClient() {
     const confirmationText = action === "lynisTemporaryAudit"
       ? "Lynis будет временно передан на выбранную ВМ, выполнен с sudo, а его каталог и сырой отчет будут удалены. Продолжить?"
       : action === "openScapAudit"
-        ? "OpenSCAP выполнится на выбранной ВМ с заранее установленным SSG datastream. Запуск не меняет настройки, но может занять до 30 минут. Продолжить?"
+        ? "OpenSCAP проверит выбранный профиль на ВМ. Встроенный профиль HCP временно передаётся по SSH. Настройки не меняются; проверка может занять до 30 минут. Продолжить?"
+      : action === "astraOvalAudit"
+        ? "OpenSCAP проверит хост по OVAL-базе, назначенной его группе в «Источниках». Настройки хоста не меняются. Продолжить?"
       : action === "networkPortScan"
         ? "Nmap выполнит сетевую проверку top-100 TCP-портов выбранного хоста с control node. Продолжить?"
         : "Запустить проверку?";

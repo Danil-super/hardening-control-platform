@@ -24,7 +24,8 @@ function reportModeTitle(mode: string) {
   if (mode === "ssh-audit") return "Проверка криптографии SSH";
   if (mode === "nmap") return "Проверка открытых портов";
   if (mode === "lynis") return "Lynis: временный аудит без установки";
-  if (mode === "openscap") return "OpenSCAP: соответствие заданному SSG-профилю";
+  if (mode === "openscap") return "OpenSCAP: проверка выбранного профиля";
+  if (mode === "astra-oval") return "Astra: CVE по выбранной OVAL-базе";
   if (mode === "greenbone") return "Greenbone / OpenVAS: импорт сетевого отчёта";
   if (mode === "dependency-track") return "OWASP Dependency-Track: передача SBOM";
   return "SSH-аудит Ansible";
@@ -63,6 +64,9 @@ export default async function AgentlessReportDetailPage({
   const vulnerabilityScan = asRecord(raw.vulnerabilityScan);
   const trivyFreshness = asRecord(vulnerabilityScan.databaseFreshness);
   const scanner = asRecord(raw.scanner);
+  const ovalDatabase = asRecord(scanner.database);
+  const ovalIdentity = asRecord(scanner.hostIdentity);
+  const ovalDefinitions = Array.isArray(scanner.definitionResults) ? scanner.definitionResults.map(asRecord) : [];
   const vendorAssessment = asRecord(vulnerabilityScan.vendorAssessment);
   const vendorStatuses = Object.entries(asRecord(vendorAssessment.statuses))
     .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
@@ -176,13 +180,35 @@ export default async function AgentlessReportDetailPage({
         </section>
       ) : null}
 
+      {report.mode === "astra-oval" ? <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+        <h2 className="text-xl font-semibold text-white">Результат OVAL-аудита Astra</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-400">Оценка относится к определениям выбранного файла. Область выпуска задана администратором; подпись производителя и охват всех известных CVE не подтверждаются автоматически.</p>
+        <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+          <div><p className="text-slate-500">Уникальных CVE обнаружено</p><p className="mt-1 text-2xl font-semibold text-white">{textValue(scanner.uniqueCveCount)}</p></div>
+          <div><p className="text-slate-500">Определений в базе / результатов</p><p className="mt-1 text-slate-200">{textValue(scanner.definitionCount)} / {textValue(scanner.evaluatedDefinitionCount)}</p></div>
+          <div><p className="text-slate-500">Выпуск хоста / область базы</p><p className="mt-1 break-words text-slate-200">{textValue(ovalIdentity.astraVersion)} / {textValue(ovalDatabase.releasePattern)}</p></div>
+          <div><p className="text-slate-500">Сканер</p><p className="mt-1 break-words text-slate-200">{textValue(scanner.version)}</p></div>
+          <div><p className="text-slate-500">База сформирована</p><p className="mt-1 text-slate-200">{formatDate(typeof ovalDatabase.generatedAt === "string" ? ovalDatabase.generatedAt : null)}</p></div>
+          <div><p className="text-slate-500">Свежесть / возраст</p><p className="mt-1 text-slate-200">{{ current: "в пределах срока", stale: "устарела", future: "дата в будущем" }[String(ovalDatabase.freshness)] ?? "не подтверждена"} / {textValue(ovalDatabase.ageDays)} дн.</p></div>
+          <div className="min-w-0 sm:col-span-2"><p className="text-slate-500">Источник</p><p className="mt-1 break-all text-slate-200">{textValue(ovalDatabase.url ?? ovalDatabase.path)}</p></div>
+        </div>
+        <p className="mt-4 break-all text-xs leading-5 text-slate-400">SHA-256: {textValue(ovalDatabase.sha256)} · {ovalDatabase.checksumVerified === true ? "совпадает с заданным" : "доверенная сумма не подтверждена"}</p>
+        <p className="mt-3 text-sm leading-6 text-slate-400">CVE учитывается при истинном определении класса vulnerability. Результаты других классов сохраняются отдельно. Если база не содержит оценку критичности, CVSS и уровень риска не придумываются.</p>
+        {Array.isArray(scanner.partialReasons) && scanner.partialReasons.length ? <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-amber-100">{scanner.partialReasons.slice(0, 20).map((reason, index) => <li className="break-words" key={index}>{textValue(reason)}</li>)}{scanner.partialReasons.length > 20 ? <li>Остальные причины доступны в JSON.</li> : null}</ul> : null}
+        {ovalDefinitions.length ? <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-sky-200">Результаты определений ({ovalDefinitions.length})</summary>
+          <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[620px] text-left text-xs"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-2">Определение</th><th className="p-2">Класс</th><th className="p-2">Результат</th><th className="p-2">Связанные CVE</th></tr></thead>
+            <tbody>{ovalDefinitions.slice(0, 100).map((definition, index) => <tr key={index} className="border-b border-slate-800 text-slate-300"><td className="max-w-sm break-words p-2">{textValue(definition.id)}<br />{textValue(definition.title)}</td><td className="p-2">{textValue(definition.class)}</td><td className="p-2">{textValue(definition.result)}</td><td className="max-w-xs break-words p-2">{Array.isArray(definition.cveIds) ? definition.cveIds.join(", ") || "—" : "—"}</td></tr>)}</tbody>
+          </table></div><p className="mt-2 text-xs text-slate-500">Показаны первые {Math.min(100, ovalDefinitions.length)} определений. Полные результаты, условия и сведения о пакетах доступны в JSON. Ссылка на CVE сама по себе не означает её обнаружение.</p>
+        </details> : null}
+      </section> : null}
+
       {isOpenScapReport ? (
         <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
           <h2 className="text-xl font-semibold text-white">Параметры OpenSCAP</h2>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Профиль и datastream фиксируются в отчёте, чтобы результат можно было воспроизвести и сопоставить после обновления SSG.</p>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Профиль и контрольная сумма содержимого фиксируются для воспроизведения проверки. Профиль HCP для Astra охватывает базовые настройки и не является сертификационным.</p>
           <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
             <div><p className="text-slate-500">Группа политики</p><p className="mt-1 break-words text-slate-200">{textValue(scanner.policyGroup)}</p></div>
-            <div><p className="text-slate-500">SSG-профиль</p><p className="mt-1 break-all text-slate-200">{textValue(scanner.profile)}</p></div>
+            <div><p className="text-slate-500">Профиль</p><p className="mt-1 break-all text-slate-200">{textValue(scanner.profile)}</p></div>
             <div><p className="text-slate-500">Datastream</p><p className="mt-1 break-all text-slate-200">{textValue(scanner.datastream)}</p></div>
             <div><p className="text-slate-500">Контрольная сумма datastream</p><p className="mt-1 break-all text-slate-200">{textValue(scanner.datastreamChecksum)}</p><p className="mt-1 text-xs text-slate-500">Изменён: {fileModifiedDate(scanner.datastreamLastModified)}</p></div>
           </div>

@@ -26,6 +26,7 @@ export const playbooks = {
   networkPortScan: { file: "nmap-scan.yml", timeout: 300_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   lynisTemporaryAudit: { file: "lynis-temporary-audit.yml", timeout: 1_200_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   openScapAudit: { file: "openscap-audit.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
+  astraOvalAudit: { file: "astra-oval-audit.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   closePort: { file: "close-port.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   blockIp: { file: "block-ip.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   backupRemediation: { file: "backup-remediation.yml", timeout: 240_000, kind: "audit", requiresLimit: true, internal: true },
@@ -63,6 +64,7 @@ export function reportIdForRun({
     networkPortScan: "nmap",
     lynisTemporaryAudit: "lynis",
     openScapAudit: "openscap",
+    astraOvalAudit: "astra-oval",
   };
   const type = typeByAction[action];
   return type ? `${limit}-${type}-${reportRunId}` : null;

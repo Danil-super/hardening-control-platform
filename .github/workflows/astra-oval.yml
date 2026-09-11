@@ -1,0 +1,43 @@
+name: Standalone OVAL package adapter acceptance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/astra-oval.yml
+      - deployment/tests/verify_oval.py
+      - ansible/scripts/hcp-oval-audit.py
+      - ansible/playbooks/astra-oval-audit.yml
+      - ansible/tests/test_oval_audit.py
+  pull_request:
+    paths:
+      - .github/workflows/astra-oval.yml
+      - deployment/tests/verify_oval.py
+      - ansible/scripts/hcp-oval-audit.py
+      - ansible/playbooks/astra-oval-audit.yml
+      - ansible/tests/test_oval_audit.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  real-oval-package-probes:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install actual scanner on the disposable test runner
+        run: |
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends openscap-scanner ansible openssl
+      - name: Exercise real package predicates and strict definition class handling
+        run: |
+          python3 deployment/tests/verify_oval.py --output-dir "$RUNNER_TEMP/hcp-oval-evidence"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: standalone-oval-package-evidence
+          path: ${{ runner.temp }}/hcp-oval-evidence/
+          if-no-files-found: warn
+          retention-days: 14

@@ -2,6 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { validateAstraOvalConfig, type AstraOvalConfig } from "@/lib/astra-oval-config";
 
 type DatabaseGlobal = typeof globalThis & {
   hcpDatabase?: DatabaseSync;
@@ -56,6 +57,8 @@ export type OpenScapPolicy = {
   createdAt: string;
   updatedAt: string;
 };
+
+export type AstraOvalPolicy = { groupName: string; config: AstraOvalConfig; updatedAt: string };
 
 export type OpenScapException = {
   id: string;
@@ -138,6 +141,12 @@ function getDatabase() {
       datastream TEXT NOT NULL,
       profile TEXT NOT NULL,
       created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS astra_oval_policies (
+      group_name TEXT PRIMARY KEY,
+      config_json TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
 
@@ -298,6 +307,33 @@ export function listOpenScapPolicies() {
     .prepare("SELECT * FROM openscap_policies ORDER BY group_name COLLATE NOCASE ASC")
     .all()
     .map((row) => rowToOpenScapPolicy(row as Record<string, unknown>));
+}
+
+export function listAstraOvalPolicies(): AstraOvalPolicy[] {
+  return getDatabase().prepare("SELECT * FROM astra_oval_policies ORDER BY group_name COLLATE NOCASE ASC").all()
+    .map((row) => ({ groupName: String(row.group_name), config: validateAstraOvalConfig(JSON.parse(String(row.config_json))), updatedAt: String(row.updated_at) }));
+}
+
+export function upsertAstraOvalPolicy(groupName: string, value: unknown) {
+  assertOpenScapGroupName(groupName);
+  const config = validateAstraOvalConfig(value);
+  return inTransaction((database) => {
+    const updatedAt = new Date().toISOString();
+    database.prepare(`INSERT INTO astra_oval_policies (group_name, config_json, updated_at) VALUES (?, ?, ?)
+      ON CONFLICT(group_name) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`)
+      .run(groupName, JSON.stringify(config), updatedAt);
+    appendAuditEvent("astra_oval_policy_upserted", groupName, { groupName, config });
+    return { groupName, config, updatedAt };
+  });
+}
+
+export function deleteAstraOvalPolicy(groupName: string) {
+  assertOpenScapGroupName(groupName);
+  return inTransaction((database) => {
+    const result = database.prepare("DELETE FROM astra_oval_policies WHERE group_name = ?").run(groupName);
+    if (result.changes) appendAuditEvent("astra_oval_policy_deleted", groupName, { groupName });
+    return result.changes > 0;
+  });
 }
 
 export function upsertOpenScapPolicy(input: Pick<OpenScapPolicy, "groupName" | "datastream" | "profile">) {

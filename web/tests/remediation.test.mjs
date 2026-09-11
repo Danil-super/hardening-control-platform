@@ -6,7 +6,7 @@ import test, { after, beforeEach, afterEach } from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
 
 // Exercise real orchestration and SQLite state while replacing only remote I/O.
-const compiled = compileServerModules(["remediation", "state-store"]);
+const compiled = compileServerModules(["remediation", "state-store", "astra-oval-config"]);
 writeFileSync(path.join(compiled.directory, "ansible-control.mjs"), `
 export const control = { runs: [], failAction: null, failPost: false, missingReport: false, address: "192.0.2.20" };
 export const isSafeLimit = value => /^[A-Za-z0-9_-]+$/.test(value);

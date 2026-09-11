@@ -208,6 +208,17 @@ class ScannerAdaptersTest(unittest.TestCase):
         self.assertTrue(report["scanner"]["partial"])
         self.assertTrue(any(item["id"] == "openscap_incomplete" for item in report["findings"]))
 
+    def test_openscap_sce_observation_is_preserved_and_all_na_is_partial(self):
+        xml = '''<TestResult xmlns="http://checklists.nist.gov/xccdf/1.2"><rule-result idref="rule"><result>fail</result>
+          <check><check-import import-name="stdout">{"mode":"0o666","ownerUid":0}</check-import></check>
+          </rule-result></TestResult>'''
+        report = self.parse_file(xml, scanner.openscap_arf, exit_code=2)
+        self.assertIn('{"mode":"0o666","ownerUid":0}', report['findings'][0]['evidence'])
+        self.assertFalse(report['scanner']['partial'])
+        report = self.parse_file(xml.replace('<result>fail</result>', '<result>notapplicable</result>'), scanner.openscap_arf)
+        self.assertTrue(report['scanner']['partial'])
+        self.assertEqual(report['scanner']['ruleResultCounts'], {'notapplicable': 1})
+
     def test_openscap_rule_errors_are_partial(self):
         report = self.parse_file('<TestResult><rule-result idref="rule"><result>error</result></rule-result></TestResult>', scanner.openscap_arf)
         self.assertTrue(report["scanner"]["partial"])

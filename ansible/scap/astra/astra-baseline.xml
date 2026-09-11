@@ -1,0 +1,264 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Benchmark xmlns="http://checklists.nist.gov/xccdf/1.2" id="xccdf_org.hcp_benchmark_astra_baseline" xml:lang="ru-RU">
+  <status date="2026-09-11">draft</status>
+  <title>HCP: базовая конфигурация семейства Astra Linux</title>
+  <description>Авторский профиль HCP: 18 проверок конфигурации только для чтения. Применимость определяется семейством ОС и доступными средствами, без списка разрешённых выпусков. Это ограниченный базовый профиль, не сертификация Astra, CIS или ФСТЭК; он не оценивает CVE, всю политику мандатного доступа, ACL и полноту правил аудита. Требуются Python 3.5+, root, OpenSCAP с SCE. Недоступные наблюдения не считаются успешными проверками.</description>
+  <version>1.0.0</version>
+  <model system="urn:xccdf:scoring:default"/>
+  <Profile id="xccdf_org.hcp_profile_astra_baseline">
+    <title>Базовый профиль HCP для Astra Linux</title>
+    <description>Все 18 правил авторского профиля HCP. Проверка возможностей применяется отдельно к каждому правилу.</description>
+    <select idref="xccdf_org.hcp_rule_passwd_permissions" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_group_permissions" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_shadow_permissions" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_gshadow_permissions" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_root_account" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_unique_uid_zero" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_empty_local_passwords" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_ssh_root_login" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_ssh_empty_passwords" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_ssh_max_auth_tries" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_ssh_x11_forwarding" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_aslr" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_protected_hardlinks" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_protected_symlinks" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_ptrace_scope" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_kptr_restrict" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_dmesg_restrict" selected="true"/>
+    <select idref="xccdf_org.hcp_rule_auditd_running" selected="true"/>
+  </Profile>
+  <Value id="xccdf_org.hcp_value_passwd_permissions" type="string" hidden="true">
+    <title>Идентификатор проверки passwd_permissions</title>
+    <value>passwd_permissions</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_group_permissions" type="string" hidden="true">
+    <title>Идентификатор проверки group_permissions</title>
+    <value>group_permissions</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_shadow_permissions" type="string" hidden="true">
+    <title>Идентификатор проверки shadow_permissions</title>
+    <value>shadow_permissions</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_gshadow_permissions" type="string" hidden="true">
+    <title>Идентификатор проверки gshadow_permissions</title>
+    <value>gshadow_permissions</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_root_account" type="string" hidden="true">
+    <title>Идентификатор проверки root_account</title>
+    <value>root_account</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_unique_uid_zero" type="string" hidden="true">
+    <title>Идентификатор проверки unique_uid_zero</title>
+    <value>unique_uid_zero</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_empty_local_passwords" type="string" hidden="true">
+    <title>Идентификатор проверки empty_local_passwords</title>
+    <value>empty_local_passwords</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_ssh_root_login" type="string" hidden="true">
+    <title>Идентификатор проверки ssh_root_login</title>
+    <value>ssh_root_login</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_ssh_empty_passwords" type="string" hidden="true">
+    <title>Идентификатор проверки ssh_empty_passwords</title>
+    <value>ssh_empty_passwords</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_ssh_max_auth_tries" type="string" hidden="true">
+    <title>Идентификатор проверки ssh_max_auth_tries</title>
+    <value>ssh_max_auth_tries</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_ssh_x11_forwarding" type="string" hidden="true">
+    <title>Идентификатор проверки ssh_x11_forwarding</title>
+    <value>ssh_x11_forwarding</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_aslr" type="string" hidden="true">
+    <title>Идентификатор проверки aslr</title>
+    <value>aslr</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_protected_hardlinks" type="string" hidden="true">
+    <title>Идентификатор проверки protected_hardlinks</title>
+    <value>protected_hardlinks</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_protected_symlinks" type="string" hidden="true">
+    <title>Идентификатор проверки protected_symlinks</title>
+    <value>protected_symlinks</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_ptrace_scope" type="string" hidden="true">
+    <title>Идентификатор проверки ptrace_scope</title>
+    <value>ptrace_scope</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_kptr_restrict" type="string" hidden="true">
+    <title>Идентификатор проверки kptr_restrict</title>
+    <value>kptr_restrict</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_dmesg_restrict" type="string" hidden="true">
+    <title>Идентификатор проверки dmesg_restrict</title>
+    <value>dmesg_restrict</value>
+  </Value>
+  <Value id="xccdf_org.hcp_value_auditd_running" type="string" hidden="true">
+    <title>Идентификатор проверки auditd_running</title>
+    <value>auditd_running</value>
+  </Value>
+  <Rule id="xccdf_org.hcp_rule_passwd_permissions" severity="medium" selected="false">
+    <title>Права и владелец /etc/passwd</title>
+    <description>Обычный файл, владелец root, группа root; разрешены права не шире 0644.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_passwd_permissions" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_group_permissions" severity="medium" selected="false">
+    <title>Права и владелец /etc/group</title>
+    <description>Обычный файл, владелец root, группа root; разрешены права не шире 0644.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_group_permissions" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_shadow_permissions" severity="high" selected="false">
+    <title>Права и владелец /etc/shadow</title>
+    <description>Обычный файл, владелец root, группа root или shadow; разрешены права не шире 0640. Содержимое паролей не включается в отчёт.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_shadow_permissions" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_gshadow_permissions" severity="high" selected="false">
+    <title>Права и владелец /etc/gshadow</title>
+    <description>Обычный файл, владелец root, группа root или shadow; разрешены права не шире 0640. Отсутствие необязательного gshadow означает неприменимость.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_gshadow_permissions" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_root_account" severity="high" selected="false">
+    <title>UID и основная группа локального root</title>
+    <description>В /etc/passwd должна быть единственная запись root с UID 0 и GID 0. Удалённые источники учётных записей не проверяются.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_root_account" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_unique_uid_zero" severity="high" selected="false">
+    <title>Отсутствие других локальных учётных записей с UID 0</title>
+    <description>Единственная локальная запись с UID 0 должна называться root. Удалённые источники учётных записей не проверяются.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_unique_uid_zero" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_empty_local_passwords" severity="high" selected="false">
+    <title>Отсутствие пустых паролей в локальном shadow</title>
+    <description>В /etc/shadow не должно быть записей с пустым полем пароля. Заблокированные пароли допустимы; хэши не публикуются. PAM и удалённые источники не проверяются.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_empty_local_passwords" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_ssh_root_login" severity="high" selected="false">
+    <title>SSH: запрет входа root в глобальной конфигурации</title>
+    <description>Эффективная глобальная конфигурация sshd -T должна возвращать PermitRootLogin no. Условия Match для отдельных пользователей, адресов и портов этим правилом не оцениваются.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_ssh_root_login" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_ssh_empty_passwords" severity="high" selected="false">
+    <title>SSH: запрет пустых паролей в глобальной конфигурации</title>
+    <description>Эффективная глобальная конфигурация sshd -T должна возвращать PermitEmptyPasswords no. Условия Match не оцениваются.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_ssh_empty_passwords" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_ssh_max_auth_tries" severity="medium" selected="false">
+    <title>SSH: ограничение попыток в глобальной конфигурации</title>
+    <description>Эффективная глобальная конфигурация sshd -T должна ограничивать MaxAuthTries значением от 1 до 4. Условия Match не оцениваются.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_ssh_max_auth_tries" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_ssh_x11_forwarding" severity="medium" selected="false">
+    <title>SSH: отключение X11 в глобальной конфигурации</title>
+    <description>Эффективная глобальная конфигурация sshd -T должна возвращать X11Forwarding no. Если X11 нужен для работы, оформите обоснованное исключение. Условия Match не оцениваются.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_ssh_x11_forwarding" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_aslr" severity="medium" selected="false">
+    <title>Полная рандомизация адресного пространства</title>
+    <description>Текущее kernel.randomize_va_space должно быть равно 2. Проверяется работающая система; сохранение настройки после перезагрузки не оценивается.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_aslr" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_protected_hardlinks" severity="medium" selected="false">
+    <title>Защита жёстких ссылок</title>
+    <description>Текущее fs.protected_hardlinks должно быть равно 1. При отсутствии интерфейса в ядре правило неприменимо; невозможность прочитать значение означает неизвестный результат.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_protected_hardlinks" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_protected_symlinks" severity="medium" selected="false">
+    <title>Защита символических ссылок</title>
+    <description>Текущее fs.protected_symlinks должно быть равно 1. При отсутствии интерфейса в ядре правило неприменимо.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_protected_symlinks" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_ptrace_scope" severity="medium" selected="false">
+    <title>Ограничение ptrace средствами Yama</title>
+    <description>Текущее kernel.yama.ptrace_scope должно быть от 1 до 3. При отсутствии Yama правило неприменимо; механизмы мандатного контроля Astra этим правилом не оцениваются.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_ptrace_scope" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_kptr_restrict" severity="medium" selected="false">
+    <title>Ограничение раскрытия адресов ядра</title>
+    <description>Текущее kernel.kptr_restrict должно быть 1 или 2. При отсутствии интерфейса ядра правило неприменимо.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_kptr_restrict" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_dmesg_restrict" severity="medium" selected="false">
+    <title>Ограничение чтения журнала ядра</title>
+    <description>Текущее kernel.dmesg_restrict должно быть равно 1. При отсутствии интерфейса ядра правило неприменимо.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_dmesg_restrict" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+  <Rule id="xccdf_org.hcp_rule_auditd_running" severity="medium" selected="false">
+    <title>Работа службы аудита auditd</title>
+    <description>На системе с systemd проверяется активность auditd.service. Отсутствующая или неактивная служба означает несоответствие. Без поддерживаемого способа определения результат неизвестен. Полнота правил аудита не оценивается.</description>
+    <check system="http://open-scap.org/page/SCE">
+      <check-import import-name="stdout"/>
+      <check-export value-id="xccdf_org.hcp_value_auditd_running" export-name="check_id"/>
+      <check-content-ref href="check.py"/>
+    </check>
+  </Rule>
+</Benchmark>

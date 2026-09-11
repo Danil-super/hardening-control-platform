@@ -101,6 +101,7 @@ export function targetAliasFromReportFileName(fileName: string, profileId: strin
     nmap: "nmap",
     lynis: "lynis",
     openscap: "openscap",
+    "astra-oval": "astra-oval",
     greenbone: "greenbone",
     "dependency-track": "dependency-track",
   };

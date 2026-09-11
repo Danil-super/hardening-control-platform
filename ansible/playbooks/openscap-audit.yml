@@ -1,5 +1,5 @@
 ---
-- name: Evaluate a pre-installed OpenSCAP and SSG profile
+- name: Evaluate an explicit OpenSCAP policy or bundled Astra baseline
   hosts: linux_hosts
   gather_facts: false
   become: true
@@ -11,6 +11,7 @@
     # datastream from a host can produce a misleading compliance result.
     openscap_datastream: "{{ hcp_openscap_datastream | default(lookup('env', 'HCP_OPENSCAP_DATASTREAM'), true) }}"
     openscap_profile: "{{ hcp_openscap_profile | default(lookup('env', 'HCP_OPENSCAP_PROFILE'), true) }}"
+    openscap_builtin_astra: "{{ openscap_datastream == '/__hcp_builtin__/astra-baseline.xml' }}"
     openscap_policy_group: "{{ hcp_openscap_policy_group | default('environment', true) }}"
     openscap_raw_report: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-openscap-{{ report_suffix }}.xml"
 
@@ -53,12 +54,14 @@
       register: openscap_binary
       when: (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
 
-    - name: Check selected SSG datastream on target
+    - name: Check explicit OpenSCAP content on target
       ansible.builtin.stat:
         path: "{{ openscap_datastream }}"
         checksum_algorithm: sha256
       register: openscap_content
-      when: (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
+      when:
+        - (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
+        - not (openscap_builtin_astra | bool)
 
     - name: Explain unavailable OpenSCAP prerequisites
       ansible.builtin.command:
@@ -71,7 +74,7 @@
           - --run-id
           - "{{ report_suffix }}"
           - --reason
-          - "{{ 'oscap не установлен на целевом хосте.' if (openscap_binary.rc | default(1)) != 0 else 'SSG datastream не является доступным обычным файлом: ' ~ openscap_datastream }}"
+          - "{{ 'oscap не установлен на целевом хосте.' if (openscap_binary.rc | default(1)) != 0 else 'Контент OpenSCAP не является доступным обычным файлом: ' ~ openscap_datastream }}"
           - --profile
           - "{{ openscap_profile }}"
           - --datastream
@@ -85,7 +88,7 @@
       changed_when: false
       when:
         - (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
-        - (openscap_binary.rc | default(1)) != 0 or not (openscap_content.stat.isreg | default(false) | bool)
+        - (openscap_binary.rc | default(1)) != 0 or (not (openscap_builtin_astra | bool) and not (openscap_content.stat.isreg | default(false) | bool))
 
     - name: Run OpenSCAP and always remove temporary target files
       block:
@@ -95,7 +98,79 @@
             prefix: hcp-openscap-
           register: openscap_remote_dir
 
-        - name: Evaluate selected SSG profile
+        - name: Copy the bundled read-only Astra baseline into the temporary directory
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../scap/astra/{{ item.name }}"
+            dest: "{{ openscap_remote_dir.path }}/{{ item.name }}"
+            owner: root
+            group: root
+            mode: "{{ item.mode }}"
+          loop:
+            - {name: astra-baseline.xml, mode: "0600"}
+            - {name: check.py, mode: "0700"}
+          when: openscap_builtin_astra | bool
+
+        - name: Bundle the actual XCCDF and SCE script into one evaluated datastream
+          ansible.builtin.command:
+            argv:
+              - oscap
+              - ds
+              - sds-compose
+              - "{{ openscap_remote_dir.path }}/astra-baseline.xml"
+              - "{{ openscap_remote_dir.path }}/astra-baseline-ds.xml"
+          changed_when: false
+          failed_when: false
+          register: openscap_bundle
+          when: openscap_builtin_astra | bool
+
+        - name: Select the actual evaluation content
+          ansible.builtin.set_fact:
+            openscap_evaluation_content: "{{ openscap_remote_dir.path ~ '/astra-baseline-ds.xml' if (openscap_builtin_astra | bool) else openscap_datastream }}"
+
+        - name: Fingerprint the actual content including bundled SCE code
+          ansible.builtin.stat:
+            path: "{{ openscap_evaluation_content }}"
+            checksum_algorithm: sha256
+          register: openscap_evaluated_content
+
+        - name: Retain the exact compiled content only for explicitly requested audit evidence
+          ansible.builtin.fetch:
+            src: "{{ openscap_evaluation_content }}"
+            dest: "{{ openscap_raw_report }}.datastream.xml"
+            flat: true
+          no_log: true
+          when:
+            - openscap_builtin_astra | bool
+            - hcp_openscap_keep_arf | default(false) | bool
+            - openscap_evaluated_content.stat.isreg | default(false) | bool
+            - (openscap_bundle.rc | default(1)) == 0
+
+        - name: Explain a failed built-in content preparation
+          ansible.builtin.command:
+            argv:
+              - /usr/bin/python3
+              - "{{ playbook_dir }}/../scripts/hcp-controller-scan.py"
+              - openscap-unavailable
+              - --inventory-host
+              - "{{ inventory_hostname }}"
+              - --run-id
+              - "{{ report_suffix }}"
+              - --reason
+              - "Не удалось собрать встроенный профиль Astra: требуется OpenSCAP с поддержкой XCCDF, datastream и SCE."
+              - --profile
+              - "{{ openscap_profile }}"
+              - --datastream
+              - "{{ openscap_datastream }}"
+              - --policy-group
+              - "{{ openscap_policy_group }}"
+              - --output
+              - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
+          delegate_to: localhost
+          become: false
+          changed_when: false
+          when: not (openscap_evaluated_content.stat.isreg | default(false) | bool) or ((openscap_builtin_astra | bool) and (openscap_bundle.rc | default(1)) != 0)
+
+        - name: Evaluate the complete selected profile without remediation
           ansible.builtin.command:
             argv:
               - oscap
@@ -105,10 +180,13 @@
               - "{{ openscap_profile }}"
               - --results-arf
               - "{{ openscap_remote_dir.path }}/results.arf.xml"
-              - "{{ openscap_datastream }}"
+              - "{{ openscap_evaluation_content }}"
           changed_when: false
           failed_when: false
           register: openscap_run
+          when:
+            - openscap_evaluated_content.stat.isreg | default(false) | bool
+            - not (openscap_builtin_astra | bool) or (openscap_bundle.rc | default(1)) == 0
 
         - name: Check OpenSCAP ARF result
           ansible.builtin.stat:
@@ -144,14 +222,15 @@
               - --policy-group
               - "{{ openscap_policy_group }}"
               - --datastream-mtime
-              - "{{ openscap_content.stat.mtime | default('') | string }}"
+              - "{{ openscap_evaluated_content.stat.mtime | default('') | string }}"
               - --datastream-checksum
-              - "{{ 'sha256:' ~ openscap_content.stat.checksum if openscap_content.stat.checksum is defined else '' }}"
+              - "{{ 'sha256:' ~ openscap_evaluated_content.stat.checksum if openscap_evaluated_content.stat.checksum is defined else '' }}"
               - --output
               - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
           delegate_to: localhost
           become: false
           changed_when: false
+          when: openscap_run is defined and not (openscap_run.skipped | default(false) | bool)
       always:
         - name: Remove temporary OpenSCAP directory from target
           ansible.builtin.file:
@@ -171,4 +250,4 @@
       when:
         - (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
         - (openscap_binary.rc | default(1)) == 0
-        - openscap_content.stat.isreg | default(false) | bool
+        - (openscap_builtin_astra | bool) or (openscap_content.stat.isreg | default(false) | bool)

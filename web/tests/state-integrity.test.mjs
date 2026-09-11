@@ -9,7 +9,7 @@ import { promisify } from "node:util";
 import test, { after, beforeEach, afterEach } from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
 
-const compiled = compileServerModules(["state-store"]);
+const compiled = compileServerModules(["state-store", "astra-oval-config"]);
 const store = await import(compiled.url("state-store"));
 const execute = promisify(execFile);
 const oldDirectory = process.env.HCP_STATE_DIR;
