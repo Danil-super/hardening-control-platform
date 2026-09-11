@@ -13,7 +13,7 @@ test("unknown host key is one SSH failure with dependent checks skipped", () => 
   const result = summarizePreflight({ ...baseline(), ssh: { ok: false, stdout: 'No ED25519 host key is known for 192.0.2.10 and you have requested strict checking. Host key verification failed.', stderr: "" } });
   assert.equal(result.ok, false);
   assert.equal(result.checks.ssh.state, "failed");
-  assert.match(result.message, /Сохранить проверенный ключ/);
+  assert.match(result.message, /Подтвердить сервер/);
   for (const name of ["python", "sudo"]) assert.equal(result.checks[name].state, "skipped");
 });
 

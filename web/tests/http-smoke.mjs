@@ -84,7 +84,7 @@ async function request(endpoint, { method = "GET", body, auth = true, origin = b
     method, redirect: "manual", headers: { "Content-Type": "application/json", Origin: origin, ...(auth && cookie ? { Cookie: cookie } : {}) },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
-  assert.equal(response.status, status, `${method} ${endpoint}`);
+  assert.equal(response.status, status, `${method} ${endpoint}\n${response.status !== status ? output : ""}`);
   checks++;
   return response;
 }
@@ -105,7 +105,25 @@ try {
   assert.match(login.headers.get("set-cookie"), /Path=\//i);
   const hostsPage = await (await request("/hosts")).text();
   assert.match(hostsPage, /Управляемые хосты/);
-  assert.match(hostsPage, /Обновить сведения/);
+  assert.match(hostsPage, /Перечитать ключ/);
+  assert.doesNotMatch(hostsPage, /Обновить сведения/);
+  const networkPosition = hostsPage.indexOf('id="network-discovery"');
+  const sshPosition = hostsPage.indexOf('id="ssh-setup"');
+  const formPosition = hostsPage.indexOf('id="host-form"');
+  assert.ok(networkPosition > 0 && networkPosition < sshPosition && sshPosition < formPosition, "discovery, SSH preparation and form must appear in this order");
+  assert.match(hostsPage.slice(formPosition), /Проверить подключение/);
+  assert.match(hostsPage.slice(formPosition), /type="checkbox"[^>]*checked/);
+  assert.doesNotMatch(hostsPage.slice(sshPosition, formPosition), /<summary[^>]*>Разрешите вход/);
+  const suggestedNetwork = await (await request("/api/ansible/discover?address=192.168.56.17")).json();
+  assert.equal(suggestedNetwork.ok, true);
+  assert.equal(suggestedNetwork.defaultCidr, "192.168.56.0/24");
+  assert.equal(suggestedNetwork.candidates[0].origin, "target");
+  const siteSuggestion = await (await request("/api/ansible/discover?siteAddress=192.168.56.4")).json();
+  assert.equal(siteSuggestion.ok, true);
+  assert.equal(siteSuggestion.defaultCidr, "192.168.56.0/24");
+  assert.equal(siteSuggestion.candidates[0].origin, "site");
+  await request("/api/ansible/discover", { method: "POST", body: { cidr: "8.8.8.0/24" }, status: 400 });
+  await request("/api/ansible/discover", { method: "POST", body: { cidr: "192.168.0.0/16" }, status: 400 });
   const keyBefore = readFileSync(sshKey, "utf8");
   const firstKey = await (await request("/api/ansible/access")).json();
   const refreshedKey = await (await request("/api/ansible/access")).json();
@@ -129,7 +147,7 @@ try {
     assert.equal(typeof result.message, "string", JSON.stringify(result));
     assert.equal(result.ok, ["ok", "disabled-sudo"].includes(scenario), scenario);
     if (scenario === "unknown-key") {
-      assert.match(result.message, /Сохранить проверенный ключ/);
+      assert.match(result.message, /Подтвердить сервер/);
       assert.equal(result.checks.python.state, "skipped");
       assert.equal(result.checks.sudo.state, "skipped");
       assert.equal(result.checks.os.state, "skipped");

@@ -17,7 +17,7 @@ RUN cd web && npm run build
 FROM node:24-bookworm-slim AS runtime
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ansible ca-certificates lynis nmap openscap-scanner openssh-client python3 python3-venv util-linux \
+  && apt-get install -y --no-install-recommends ansible ca-certificates iproute2 iputils-ping lynis nmap openscap-scanner openssh-client python3 python3-venv util-linux \
   && rm -rf /var/lib/apt/lists/*
 
 # Debian bookworm packages ssh-audit 2.5, whose JSON omits recommendations and

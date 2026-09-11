@@ -17,8 +17,8 @@ const tones = {
 function Toast({ notice, dismiss }: { notice: Notice; dismiss: (id: number) => void }) {
   const [paused, setPaused] = useState(false);
   useEffect(() => {
-    if (paused || notice.tone === "error") return;
-    const timer = window.setTimeout(() => dismiss(notice.id), notice.tone === "success" ? 6000 : 10000);
+    if (paused) return;
+    const timer = window.setTimeout(() => dismiss(notice.id), 3000);
     return () => window.clearTimeout(timer);
   }, [notice, dismiss, paused]);
   const Icon = notice.tone === "success" ? CheckCircle2 : notice.tone === "info" ? Info : AlertCircle;

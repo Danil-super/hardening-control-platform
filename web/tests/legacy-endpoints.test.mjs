@@ -45,6 +45,7 @@ test("legacy builtin runner delegates to the managed action without inventing co
 
 test("discovery cannot bypass verified SSH onboarding", async () => {
   const route = load("app/api/ansible/discover/route.ts", {
+    "@/lib/network-discovery": load("lib/network-discovery.ts"),
     "node:child_process": { execFile: () => { throw new Error("discovery must reject before process spawn"); } },
     "node:net": { Socket: class { constructor() { throw new Error("discovery must reject before network scan"); } } },
   });
@@ -87,4 +88,23 @@ test("custom variable values remain one JSON value rather than injected Ansible 
     if (previousEnable === undefined) delete process.env.HCP_ENABLE_CUSTOM_AUDITS; else process.env.HCP_ENABLE_CUSTOM_AUDITS = previousEnable;
     if (previousProduction === undefined) delete process.env.HCP_PRODUCTION_MODE; else process.env.HCP_PRODUCTION_MODE = previousProduction;
   }
+});
+
+test("subnet suggestions remain available when both OS interface enumeration methods fail", async () => {
+  const route = load("app/api/ansible/discover/route.ts", {
+    "@/lib/network-discovery": load("lib/network-discovery.ts"),
+    "node:child_process": { execFile: () => { throw new Error("ip unavailable"); } },
+    "node:os": { networkInterfaces: () => { throw new Error("uv_interface_addresses denied"); } },
+    "node:fs": { existsSync: () => false },
+    "node:net": { Socket: class { constructor() { throw new Error("suggestions must not scan"); } } },
+  });
+  const response = await route.GET(new Request("http://localhost/api/ansible/discover?address=192.168.56.17"));
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.ok, true);
+  assert.equal(result.defaultCidr, "192.168.56.0/24");
+  const manual = await (await route.GET(new Request("http://localhost/api/ansible/discover"))).json();
+  assert.equal(manual.ok, true);
+  assert.equal(manual.defaultCidr, "");
+  assert.match(manual.message, /вручную/);
 });

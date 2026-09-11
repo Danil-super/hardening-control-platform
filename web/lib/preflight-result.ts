@@ -13,7 +13,7 @@ export function explainConnectionFailure(stage: "ssh" | "python" | "sudo", detai
       return "Ключ сервера изменился. Сверьте его с администратором Astra; сохранённое доверие автоматически не заменяется.";
     }
     if (/No .* host key is known|Host key verification failed/i.test(details)) {
-      return "Ключ сервера не подтверждён. Откройте «Доступ по SSH» → «Ключ сервера», сверьте отпечаток и нажмите «Сохранить проверенный ключ».";
+      return "Ключ сервера не подтверждён. В форме добавления найдите «Подтверждение сервера», вставьте отпечаток из доверенной консоли Astra и нажмите «Подтвердить сервер».";
     }
     if (/Permission denied.*publickey|Authentication failed/i.test(details)) {
       return "SSH не принял ключ платформы. Проверьте пользователя в форме и его authorized_keys на Astra.";
@@ -25,7 +25,7 @@ export function explainConnectionFailure(stage: "ssh" | "python" | "sudo", detai
   }
   if (stage === "sudo") {
     if (/Missing sudo password|a password is required|no password was provided/i.test(details)) {
-      return "sudo требует пароль. HCP не вводит его: администратор Astra должен разрешить пользователю SSH беспарольное повышение прав для Ansible.";
+      return "sudo требует пароль. Администратор Astra должен настроить доступ для пользователя SSH по инструкции в блоке «Первое подключение по SSH». Затем повторите проверку.";
     }
     if (/not in the sudoers|not allowed to execute|not allowed to run sudo/i.test(details)) {
       return "Пользователю SSH не разрешён этот запуск через sudo. Права на Astra должен настроить её администратор.";
