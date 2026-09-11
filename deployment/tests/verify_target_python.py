@@ -5,6 +5,7 @@ Compatible with Python 3.5 itself. This verifies Python APIs, not Astra services
 """
 import argparse
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
@@ -29,6 +30,20 @@ def load_script(name):
 
 
 class TargetPythonTests(unittest.TestCase):
+    def test_oval_evidence_hashes_actual_files_and_handles_missing_package(self):
+        module = load_script("hcp-host-readiness.py")
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "vendor.xml"
+            candidate.write_bytes(b"<oval_definitions/>")
+            result, consumed = module.fingerprint_candidate(str(candidate), 1024)
+            self.assertEqual(result["sha256"], hashlib.sha256(b"<oval_definitions/>").hexdigest())
+            self.assertEqual(consumed, len(b"<oval_definitions/>"))
+        with patch.object(module.shutil, "which", return_value="/usr/bin/dpkg-query"), \
+                patch.object(module.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, b"", b"dpkg-query: no packages found matching oval-db")):
+            report = module.collect_oval_metadata()
+        self.assertEqual(report["status"], "not_installed")
+        self.assertEqual(report["vulnerabilityAssessment"], "not_run")
+
     def test_readiness_decodes_real_child_output_without_locale_dependency(self):
         module = load_script("hcp-host-readiness.py")
         errors = []

@@ -1,8 +1,11 @@
 """Readiness behaviour tests: facts are never substituted for audit coverage."""
 
 import importlib.util
+import hashlib
+import os
 from pathlib import Path
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +22,101 @@ def completed(code=0, stdout="", stderr=""):
 
 
 class HostReadinessTests(unittest.TestCase):
+    def test_local_oval_metadata_hashes_package_files_without_claiming_cve_coverage(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = Path(directory) / "vendor.xml"
+            content = b"<oval_definitions/>"
+            candidate.write_bytes(content)
+            for selection in ("install", "hold"):
+                with self.subTest(selection=selection), patch.object(probe.shutil, "which", return_value="/usr/bin/dpkg-query"), \
+                        patch.object(probe, "run_query", side_effect=[
+                            completed(stdout=selection + " ok installed\t0.0.2.astra1\tall\n"),
+                            completed(stdout=str(candidate) + "\n" + str(candidate) + "\n/usr/share/doc/oval-db/README\n"),
+                        ]) as query:
+                    report = probe.collect_oval_metadata()
+                self.assertEqual(report["status"], "installed")
+                self.assertEqual(report["version"], "0.0.2.astra1")
+                self.assertEqual(report["candidateCount"], 1)
+                self.assertEqual(report["candidateFiles"][0]["sha256"], hashlib.sha256(content).hexdigest())
+                self.assertEqual(report["vendorSignature"], "not_checked")
+                self.assertEqual(report["releaseApplicability"], "not_checked")
+                self.assertEqual(report["vulnerabilityAssessment"], "not_run")
+                self.assertEqual(query.call_count, 2)
+                self.assertTrue(all(call[0][0][0] == "/usr/bin/dpkg-query" for call in query.call_args_list))
+                self.assertNotIn("<oval_definitions", str(report))
+
+    def test_local_oval_missing_package_is_distinct_from_database_failure(self):
+        cases = (
+            (completed(1, stderr="dpkg-query: no packages found matching oval-db\n"), "not_installed"),
+            (completed(1, stderr="dpkg-query: error: permission denied\n"), "unknown"),
+            (completed(0, stdout="deinstall ok config-files\t1.0\tall\n"), "not_installed"),
+            (completed(0, stdout="install reinstreq half-installed\t1.0\tall\n"), "unknown"),
+            (completed(0, stdout="unexpected metadata"), "unknown"),
+            (None, "unknown"),
+        )
+        for response, expected in cases:
+            with self.subTest(response=response), patch.object(probe.shutil, "which", return_value="/usr/bin/dpkg-query"), \
+                    patch.object(probe, "run_query", return_value=response) as query:
+                report = probe.collect_oval_metadata()
+            self.assertEqual(report["status"], expected)
+            self.assertEqual(report["candidateFiles"], [])
+            self.assertIsNone(report["version"])
+            self.assertEqual(query.call_count, 1)
+        with patch.object(probe.shutil, "which", return_value=None), patch.object(probe, "run_query") as query:
+            self.assertEqual(probe.collect_oval_metadata()["status"], "package_manager_unavailable")
+            query.assert_not_called()
+
+    def test_oval_fingerprints_reject_links_special_files_and_unbounded_reads(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            data = root / "data.xml"
+            data.write_bytes(b"abc")
+            link = root / "link.xml"
+            link.symlink_to(data)
+            fifo = root / "pipe.xml"
+            os.mkfifo(str(fifo))
+            for path in (link, fifo, root):
+                entry, consumed = probe.fingerprint_candidate(str(path), 100)
+                self.assertNotEqual(entry["status"], "hashed")
+                self.assertIsNone(entry["sha256"])
+                self.assertEqual(consumed, 0)
+            self.assertEqual(probe.fingerprint_candidate("relative.xml", 100)[0]["status"], "invalid_path")
+            self.assertEqual(probe.fingerprint_candidate(str(data), 2)[0]["status"], "skipped_budget_limit")
+            with patch.object(probe, "MAX_OVAL_FILE_BYTES", 2):
+                self.assertEqual(probe.fingerprint_candidate(str(data), 100)[0]["status"], "skipped_size_limit")
+            entry, consumed = probe.fingerprint_candidate(str(data), 3)
+            self.assertEqual((entry["status"], consumed), ("hashed", 3))
+
+    def test_oval_file_modified_during_read_has_no_accepted_digest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory) / "data.xml"
+            data.write_bytes(b"original")
+            fstat = os.fstat
+            calls = []
+            def snapshot(descriptor):
+                calls.append(descriptor)
+                if len(calls) == 2:
+                    data.write_bytes(b"changed by update")
+                return fstat(descriptor)
+            with patch.object(probe.os, "fstat", side_effect=snapshot):
+                entry, _ = probe.fingerprint_candidate(str(data), 100)
+            self.assertEqual(entry["status"], "changed_during_read")
+            self.assertIsNone(entry["sha256"])
+
+    def test_oval_inventory_exposes_truncation_and_total_byte_limit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            files = [Path(directory) / (str(index) + ".xml") for index in range(3)]
+            for candidate in files:
+                candidate.write_bytes(b"abc")
+            with patch.object(probe.shutil, "which", return_value="/usr/bin/dpkg-query"), \
+                    patch.object(probe, "run_query", side_effect=[completed(stdout="install ok installed\t1.0\tall\n"),
+                        completed(stdout="\n".join(str(path) for path in files))]), \
+                    patch.object(probe, "MAX_OVAL_FILES", 2), patch.object(probe, "MAX_OVAL_TOTAL_BYTES", 3):
+                report = probe.collect_oval_metadata()
+            self.assertEqual(report["candidateCount"], 3)
+            self.assertTrue(report["filesTruncated"])
+            self.assertEqual([entry["status"] for entry in report["candidateFiles"]], ["hashed", "skipped_budget_limit"])
+
     def test_astra_identity_is_preserved_without_executing_os_release(self):
         errors = []
         result = probe.parse_os_release(

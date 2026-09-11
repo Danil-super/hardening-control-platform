@@ -5,18 +5,24 @@ This is a readiness probe, not a vulnerability or compliance assessment.  It
 never installs tools, changes configuration, or contacts a network service.
 """
 
+import argparse
 import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
 import platform
 import shlex
 import shutil
+import stat
 import subprocess
 
 
 SCHEMA_VERSION = 1
 COMMAND_TIMEOUT = 5
+MAX_OVAL_FILES = 32
+MAX_OVAL_FILE_BYTES = 64 * 1024 * 1024
+MAX_OVAL_TOTAL_BYTES = 256 * 1024 * 1024
 SAFE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 OS_RELEASE_FIELDS = frozenset((
     "ID", "ID_LIKE", "NAME", "PRETTY_NAME", "VERSION_ID", "VERSION",
@@ -164,6 +170,99 @@ def netfilter_persistent_state(systemctl, errors):
     return "unknown"
 
 
+def fingerprint_candidate(path, byte_budget):
+    """Hash a bounded regular file; never parse or execute package content."""
+    entry = {"path": path, "status": "unreadable", "sha256": None}
+    consumed = 0
+    if not os.path.isabs(path) or ".." in path.split("/") or "\x00" in path:
+        entry["status"] = "invalid_path"
+        return entry, consumed
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(descriptor, "rb") as source:
+            before = os.fstat(source.fileno())
+            if not stat.S_ISREG(before.st_mode):
+                entry["status"] = "not_regular"
+                return entry, consumed
+            entry["bytes"] = before.st_size
+            if before.st_size > MAX_OVAL_FILE_BYTES:
+                entry["status"] = "skipped_size_limit"
+                return entry, consumed
+            if before.st_size > byte_budget:
+                entry["status"] = "skipped_budget_limit"
+                return entry, consumed
+            limit = min(MAX_OVAL_FILE_BYTES, byte_budget)
+            digest = hashlib.sha256()
+            while consumed <= limit:
+                block = source.read(min(1024 * 1024, limit - consumed + 1))
+                if not block:
+                    break
+                consumed += len(block)
+                digest.update(block)
+            after = os.fstat(source.fileno())
+            identity = lambda item: (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns, item.st_ctime_ns)
+            if consumed > limit or consumed != before.st_size or identity(before) != identity(after):
+                entry["status"] = "changed_during_read"
+                return entry, consumed
+            entry.update(status="hashed", sha256=digest.hexdigest())
+    except OSError:
+        # Includes missing files, unreadable paths and rejected symlinks.
+        pass
+    return entry, consumed
+
+
+def collect_oval_metadata():
+    """Describe local oval-db records without asserting vendor trust or CVEs."""
+    result = {
+        "package": "oval-db", "status": "unknown", "version": None,
+        "architecture": None, "candidateFiles": [], "candidateCount": 0,
+        "filesTruncated": False, "errors": [],
+        "vendorSignature": "not_checked", "releaseApplicability": "not_checked",
+        "vulnerabilityAssessment": "not_run",
+    }
+    binary = shutil.which("dpkg-query", path=SAFE_PATH)
+    if binary is None:
+        result["status"] = "package_manager_unavailable"
+        return result
+    package = run_query([binary, "-W", "-f=${Status}\t${Version}\t${Architecture}\n", "--", "oval-db"],
+                        result["errors"], "oval-db package")
+    if package is None:
+        return result
+    if package.returncode == 1 and "no packages found matching oval-db" in package.stderr:
+        result["status"] = "not_installed"
+        return result
+    fields = package.stdout.strip().split("\t")
+    if package.returncode != 0 or len(fields) != 3 or any(not value or len(value) > 256 or "\n" in value for value in fields):
+        result["errors"].append("oval-db: package metadata unavailable or malformed (exit {})".format(package.returncode))
+        return result
+    package_status = fields[0].split()
+    if len(package_status) != 3 or package_status[0] not in ("unknown", "install", "hold", "deinstall", "purge"):
+        result["errors"].append("oval-db: unrecognized package status")
+        return result
+    if package_status[1:] != ["ok", "installed"]:
+        result["status"] = "not_installed" if package_status[1] == "ok" and package_status[2] in ("config-files", "not-installed") else "unknown"
+        if result["status"] == "unknown":
+            result["errors"].append("oval-db: package is not in a confirmed installed state")
+        return result
+    result.update(status="installed", version=fields[1], architecture=fields[2])
+    files = run_query([binary, "-L", "--", "oval-db"], result["errors"], "oval-db files")
+    if files is None:
+        return result
+    if files.returncode != 0 or len(files.stdout) > 1024 * 1024:
+        result["errors"].append("oval-db: package file list unavailable or exceeds the size limit")
+        return result
+    # Suffixes identify candidates only; compressed bytes are hashed as stored.
+    candidates = sorted(set(path for path in files.stdout.splitlines()
+                            if path.lower().endswith((".xml", ".xml.gz", ".xml.bz2", ".xml.xz"))))
+    result.update(candidateCount=len(candidates), filesTruncated=len(candidates) > MAX_OVAL_FILES)
+    budget = MAX_OVAL_TOTAL_BYTES
+    for path in candidates[:MAX_OVAL_FILES]:
+        entry, consumed = fingerprint_candidate(path, max(0, budget))
+        budget -= consumed
+        result["candidateFiles"].append(entry)
+    return result
+
+
 def collect_readiness():
     errors = []
     os_release_text = read_text("/etc/os-release", errors)
@@ -198,5 +297,16 @@ def collect_readiness():
     }
 
 
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--include-oval-metadata", action="store_true",
+                        help="Include local oval-db package metadata and bounded file digests; does not run a CVE audit")
+    args = parser.parse_args()
+    report = collect_readiness()
+    if args.include_oval_metadata:
+        report["localOval"] = collect_oval_metadata()
+    print(json.dumps(report, ensure_ascii=True, sort_keys=True))
+
+
 if __name__ == "__main__":
-    print(json.dumps(collect_readiness(), ensure_ascii=True, sort_keys=True))
+    main()
