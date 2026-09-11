@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { AppShell } from "@/components/layout/app-shell";
+import { FeedbackProvider } from "@/components/ui/feedback";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,7 +16,7 @@ export default function RootLayout({
   return (
     <html lang="ru" className="h-full antialiased">
       <body className="min-h-full bg-slate-950 text-slate-100">
-        <AppShell>{children}</AppShell>
+        <FeedbackProvider><AppShell>{children}</AppShell></FeedbackProvider>
       </body>
     </html>
   );

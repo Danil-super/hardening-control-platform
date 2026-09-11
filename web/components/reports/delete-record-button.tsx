@@ -3,6 +3,8 @@
 import { Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import { useNotify } from "@/components/ui/feedback";
+import { readApiResponse, errorMessage } from "@/lib/client-api";
 import { Button } from "@/components/ui/button";
 
 type DeleteRecordButtonProps = {
@@ -14,6 +16,7 @@ type DeleteRecordButtonProps = {
 
 export function DeleteRecordButton({ endpoint, confirmation, body, label = "Удалить" }: DeleteRecordButtonProps) {
   const router = useRouter();
+  const notify = useNotify();
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
 
@@ -29,13 +32,16 @@ export function DeleteRecordButton({ endpoint, confirmation, body, label = "Уд
         headers: body ? { "Content-Type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       });
-      const payload = await response.json().catch(() => ({}));
+      const payload = await readApiResponse(response);
       if (!response.ok || !payload.ok) {
         throw new Error(payload.message ?? "Не удалось удалить запись.");
       }
+      notify(payload.message || "Запись удалена.", "success");
       router.refresh();
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Не удалось удалить запись.");
+      const message = errorMessage(cause, "Не удалось удалить запись. Проверьте соединение.");
+      setError(message);
+      notify(message, "error");
     } finally {
       setPending(false);
     }

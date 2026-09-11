@@ -4,9 +4,7 @@ import {
   AlertTriangle,
   Ban,
   CheckCircle2,
-  Copy,
   FileText,
-  KeyRound,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -16,8 +14,12 @@ import {
   Terminal,
   Upload,
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, LinkButton } from "@/components/ui/button";
+import { useActionResult, useFeedbackMessage, useNotify } from "@/components/ui/feedback";
+import { errorMessage, readApiResponse } from "@/lib/client-api";
+import { SshConnectionHelp } from "@/components/hosts/ssh-connection-help";
+import { copyText } from "@/lib/clipboard";
 
 type HealthPayload = {
   ansibleInstalled?: boolean;
@@ -192,12 +194,15 @@ function reportHref(fileName: string) {
 }
 
 export function AnsibleControlClient() {
+  const notify = useNotify();
+  const formRef = useRef<HTMLDetailsElement>(null);
+  const [editingHost, setEditingHost] = useState("");
   const [health, setHealth] = useState<HealthPayload | null>(null);
   const [hosts, setHosts] = useState<HostsPayload | null>(null);
   const [profileId, setProfileId] = useState("basic_linux");
   const [selectedAlias, setSelectedAlias] = useState("");
   const [loading, setLoading] = useState("");
-  const [runResult, setRunResult] = useState<RunPayload | null>(null);
+  const [runResult, setRunResult] = useActionResult<RunPayload>();
   const [freshReportHref, setFreshReportHref] = useState("");
   const [manualAlias, setManualAlias] = useState("");
   const [manualAddress, setManualAddress] = useState("");
@@ -219,7 +224,7 @@ export function AnsibleControlClient() {
   const [hostKeyScan, setHostKeyScan] = useState<HostKeyPayload | null>(null);
   const [trustedFingerprint, setTrustedFingerprint] = useState("");
   const [accessLoading, setAccessLoading] = useState("");
-  const [accessMessage, setAccessMessage] = useState("");
+  const [accessMessage, setAccessMessage] = useFeedbackMessage();
   const [copied, setCopied] = useState("");
   const [greenboneFile, setGreenboneFile] = useState<File | null>(null);
   const [greenboneMessage, setGreenboneMessage] = useState("");
@@ -239,6 +244,18 @@ export function AnsibleControlClient() {
     void loadControlKey();
   }, []);
 
+  useEffect(() => {
+    setHostKeyScan(null);
+    setTrustedFingerprint("");
+    setAccessMessage("");
+  }, [manualAddress, manualPort, setAccessMessage]);
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(""), 2500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
   const installPublicKeyCommand = useMemo(() => {
     if (!access?.publicKey) {
       return "";
@@ -247,7 +264,7 @@ export function AnsibleControlClient() {
     return `install -d -m 700 ~/.ssh && printf '%s\\n' '${quotedKey}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`;
   }, [access?.publicKey]);
 
-  async function refreshAll() {
+  async function refreshAll(announce = false) {
     setLoading("refresh");
     try {
       const [healthResponse, hostsResponse, remediationResponse] = await Promise.all([
@@ -255,18 +272,22 @@ export function AnsibleControlClient() {
         fetch("/api/ansible/hosts"),
         fetch("/api/ansible/remediations"),
       ]);
-      const nextHealth = await healthResponse.json();
-      const nextHosts = await hostsResponse.json();
-      const nextRemediations = await remediationResponse.json();
+      const nextHealth = await readApiResponse(healthResponse);
+      const nextHosts = await readApiResponse(hostsResponse);
+      const nextRemediations = await readApiResponse(remediationResponse);
+      if (!healthResponse.ok || !hostsResponse.ok || !remediationResponse.ok) {
+        throw new Error(nextHealth.message || nextHosts.message || nextRemediations.message || "Не удалось обновить данные.");
+      }
       setHealth(nextHealth);
       setHosts(nextHosts);
       setTransactions(nextRemediations.transactions ?? []);
       if (!selectedAlias && nextHosts.hosts?.[0]) {
         setSelectedAlias(nextHosts.hosts[0].alias);
       }
+      if (announce) notify("Данные хостов обновлены.", "success");
       return nextHosts as HostsPayload;
-    } catch {
-      setRunResult({ ok: false, message: "Не удалось обновить данные. Проверьте подключение к платформе и повторите запрос." });
+    } catch (error) {
+      setRunResult({ ok: false, message: errorMessage(error, "Не удалось обновить данные. Проверьте подключение к платформе и повторите запрос.") });
     } finally {
       setLoading("");
     }
@@ -274,29 +295,45 @@ export function AnsibleControlClient() {
 
   async function loadHosts() {
     const response = await fetch("/api/ansible/hosts");
-    const payload = await response.json();
+    const payload = await readApiResponse(response);
+    if (!response.ok) throw new Error(payload.message || "Не удалось загрузить хосты.");
     setHosts(payload);
     return payload as HostsPayload;
   }
 
   async function loadRemediations() {
     const response = await fetch("/api/ansible/remediations");
-    const payload = await response.json();
+    const payload = await readApiResponse(response);
+    if (!response.ok) throw new Error(payload.message || "Не удалось загрузить изменения.");
     setTransactions(payload.transactions ?? []);
   }
 
-  async function loadControlKey() {
-    setAccessLoading("key");
+  async function refreshRemediations() {
+    setLoading("remediations");
     try {
-      const response = await fetch("/api/ansible/access");
-      const payload = await response.json();
+      await loadRemediations();
+      notify("Список изменений обновлён.", "success");
+    } catch (error) {
+      notify(errorMessage(error, "Не удалось обновить список изменений."), "error");
+    } finally { setLoading(""); }
+  }
+
+  async function loadControlKey(announce = false) {
+    setAccessLoading("key");
+    setAccessMessage("");
+    try {
+      const response = await fetch("/api/ansible/access", { cache: "no-store" });
+      const payload = await readApiResponse(response);
       setAccess(payload);
       if (!payload.ok) {
         setAccessMessage(payload.message ?? "Не удалось получить публичный ключ узла управления.");
+      } else if (announce) {
+        setAccessMessage("Сведения обновлены. Показан текущий SSH-ключ платформы.", "success");
       }
-    } catch {
-      setAccess({ ok: false, message: "Не удалось связаться с мастером подключения." });
-      setAccessMessage("Не удалось связаться с мастером подключения.");
+    } catch (error) {
+      const message = errorMessage(error, "Не удалось получить SSH-ключ. Проверьте соединение с платформой.");
+      setAccess({ ok: false, message });
+      setAccessMessage(message);
     } finally {
       setAccessLoading("");
     }
@@ -304,8 +341,9 @@ export function AnsibleControlClient() {
 
   async function copyToClipboard(value: string, label: string) {
     try {
-      await navigator.clipboard.writeText(value);
+      await copyText(value);
       setCopied(label);
+      notify(label === "public-key" ? "Публичный ключ скопирован." : "Команда скопирована.", "success");
     } catch {
       setAccessMessage("Не удалось скопировать автоматически. Выделите значение и скопируйте вручную.");
     }
@@ -325,11 +363,11 @@ export function AnsibleControlClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ operation: "scan", address: manualAddress, port: manualPort }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       setHostKeyScan(payload);
-      setAccessMessage(payload.message ?? "");
-    } catch {
-      setAccessMessage("Не удалось получить fingerprint SSH-хоста.");
+      setAccessMessage(payload.message || (payload.ok ? "Ключи получены. Сверьте отпечаток с доверенным источником." : "Не удалось получить ключи сервера."), payload.ok ? "info" : "error");
+    } catch (error) {
+      setAccessMessage(errorMessage(error, "Не удалось получить fingerprint SSH-хоста."));
     } finally {
       setAccessLoading("");
     }
@@ -353,10 +391,10 @@ export function AnsibleControlClient() {
           expectedFingerprint: trustedFingerprint.trim(),
         }),
       });
-      const payload = await response.json();
-      setAccessMessage(payload.message ?? "");
-    } catch {
-      setAccessMessage("Не удалось сохранить проверенный SSH-ключ сервера.");
+      const payload = await readApiResponse(response);
+      setAccessMessage(payload.message || (payload.ok ? "Проверенный ключ сервера сохранён." : "Не удалось сохранить ключ сервера."), payload.ok ? "success" : "error");
+    } catch (error) {
+      setAccessMessage(errorMessage(error, "Не удалось сохранить проверенный SSH-ключ сервера."));
     } finally {
       setAccessLoading("");
     }
@@ -387,13 +425,15 @@ export function AnsibleControlClient() {
           become: manualBecome,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       setRunResult({ ok: payload.ok, action: "addHost", message: payload.message });
       if (payload.ok) {
         setSelectedAlias(manualAlias.trim());
         setManualAddress("");
         await refreshAll();
       }
+    } catch (error) {
+      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
     } finally {
       setLoading("");
     }
@@ -416,19 +456,21 @@ export function AnsibleControlClient() {
           become: manualBecome,
         }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       setRunResult({ ok: payload.ok, action: "updateHost", message: payload.message });
       if (payload.ok) {
         setSelectedAlias(manualAlias.trim());
         await refreshAll();
       }
+    } catch (error) {
+      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
     } finally {
       setLoading("");
     }
   }
 
   async function deleteSelectedHost() {
-    if (!selectedAlias || !window.confirm(`Удалить хост ${selectedAlias} из inventory?`)) {
+    if (!editingHost || !window.confirm(`Удалить хост ${editingHost} из inventory?`)) {
       return;
     }
     setLoading("deleteHost");
@@ -438,14 +480,19 @@ export function AnsibleControlClient() {
       const response = await fetch("/api/ansible/hosts", {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ alias: selectedAlias }),
+        body: JSON.stringify({ alias: editingHost }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       setRunResult({ ok: payload.ok, action: "deleteHost", message: payload.message });
       if (payload.ok) {
         setSelectedAlias("");
+        setEditingHost("");
+        setManualAlias("");
+        setManualAddress("");
         await refreshAll();
       }
+    } catch (error) {
+      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
     } finally {
       setLoading("");
     }
@@ -469,10 +516,15 @@ export function AnsibleControlClient() {
           become: manualBecome,
         }),
       });
-      setPreflight(await response.json());
+      const payload = await readApiResponse(response);
+      setPreflight(payload);
       setPreflightFor(checkedConnection);
-    } catch {
-      setPreflight({ ok: false, message: "Проверка подключения не завершена: нет ответа от платформы." });
+      notify(payload.message || (payload.ok ? "Подключение проверено. Можно добавить хост." : "Подключение не готово. Проверьте результаты ниже."), payload.ok ? "success" : "error");
+    } catch (error) {
+      const message = errorMessage(error, "Проверка подключения не завершена: нет ответа от платформы.");
+      setPreflight({ ok: false, message });
+      setPreflightFor(checkedConnection);
+      notify(message, "error");
     } finally {
       setLoading("");
     }
@@ -482,11 +534,14 @@ export function AnsibleControlClient() {
     setLoading("detect");
     try {
       const response = await fetch("/api/ansible/discover");
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       setDiscovery(payload);
       if (payload.defaultCidr) {
         setScanCidr(payload.defaultCidr);
       }
+      notify(payload.message || (payload.defaultCidr ? `Подсеть ${payload.defaultCidr} подставлена.` : "Подсеть не определена. Укажите её вручную."), payload.ok ? "info" : "error");
+    } catch (error) {
+      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
     } finally {
       setLoading("");
     }
@@ -500,7 +555,11 @@ export function AnsibleControlClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ cidr: scanCidr, sshUser: manualUser, become: manualBecome, addToInventory: false }),
       });
-      setDiscovery(await response.json());
+      const payload = await readApiResponse(response);
+      setDiscovery(payload);
+      notify(payload.message || (payload.ok ? `Поиск завершён. Найдено хостов: ${payload.found?.length ?? 0}.` : "Поиск не завершён."), payload.ok ? "success" : "error");
+    } catch (error) {
+      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
     } finally {
       setLoading("");
     }
@@ -547,6 +606,7 @@ export function AnsibleControlClient() {
           : {};
 
     setLoading(action);
+    notify(`Выполняется: ${actionMeta?.label ?? responseActions.find((item) => item.id === action)?.label ?? action}. Дождитесь результата.`, "info");
     setRunResult(null);
     setFreshReportHref("");
     try {
@@ -564,8 +624,8 @@ export function AnsibleControlClient() {
           extraVars,
         }),
       });
-      const payload = await response.json();
-      setRunResult(payload);
+      const payload = await readApiResponse(response);
+      if (action !== "packageInventory" || !payload.ok) setRunResult(payload);
       await loadHosts();
       await loadRemediations();
       if (payload.ok && action === "packageInventory") {
@@ -574,7 +634,7 @@ export function AnsibleControlClient() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ hostAlias: selectedAlias, reportId: payload.reportId }),
         });
-        const cvePayload = await cveResponse.json();
+        const cvePayload = await readApiResponse(cveResponse);
         let dependencyTrackMessage = "";
         let dependencyTrackFailed = false;
         if (cvePayload.ok && cvePayload.reportId && cvePayload.report?.vulnerabilityScan?.sbomFile) {
@@ -584,7 +644,7 @@ export function AnsibleControlClient() {
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ hostAlias: selectedAlias, vulnerabilityReportId: cvePayload.reportId }),
             });
-            const dependencyTrackPayload = await dependencyTrackResponse.json();
+            const dependencyTrackPayload = await readApiResponse(dependencyTrackResponse);
             dependencyTrackFailed = !dependencyTrackResponse.ok || !dependencyTrackPayload.ok;
             dependencyTrackMessage = dependencyTrackPayload.message ? ` ${dependencyTrackPayload.message}` : "";
           } catch {
@@ -611,8 +671,8 @@ export function AnsibleControlClient() {
       if (payload.ok && payload.postAuditReportId) {
         setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.postAuditReportId)}`);
       }
-    } catch {
-      setRunResult({ ok: false, action, message: "Ответ на запуск не получен. Проверьте журнал действий и отчёты перед повторным запуском." });
+    } catch (error) {
+      setRunResult({ ok: false, action, message: errorMessage(error, "Ответ на запуск не получен. Проверьте журнал действий и отчёты перед повторным запуском.") });
     } finally {
       setLoading("");
     }
@@ -621,6 +681,7 @@ export function AnsibleControlClient() {
   async function importGreenboneReport() {
     if (!selectedAlias || !greenboneFile) {
       setGreenboneMessage("Выберите хост и XML-файл отчёта Greenbone.");
+      notify("Выберите хост и XML-файл отчёта Greenbone.", "error");
       return;
     }
     setLoading("greenboneImport");
@@ -631,7 +692,7 @@ export function AnsibleControlClient() {
       form.set("hostAlias", selectedAlias);
       form.set("report", greenboneFile);
       const response = await fetch("/api/ansible/greenbone/import", { method: "POST", body: form });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       setGreenboneMessage(payload.message ?? "Не удалось импортировать отчёт Greenbone.");
       setRunResult({ ok: payload.ok, partial: payload.partial, action: "greenboneImport", message: payload.message });
       if (payload.ok && payload.reportId) {
@@ -639,6 +700,8 @@ export function AnsibleControlClient() {
         setGreenboneFile(null);
         await loadHosts();
       }
+    } catch (error) {
+      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
     } finally {
       setLoading("");
     }
@@ -657,15 +720,18 @@ export function AnsibleControlClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ confirmedHost: confirmedHost.trim() }),
       });
-      setRunResult(await response.json());
+      setRunResult(await readApiResponse(response));
       await loadRemediations();
       await loadHosts();
+    } catch (error) {
+      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
     } finally {
       setLoading("");
     }
   }
 
   function fillHostForm(host: ManagedHost) {
+    setEditingHost(host.alias);
     setSelectedAlias(host.alias);
     setManualAlias(host.alias);
     setManualAddress(host.address);
@@ -673,6 +739,11 @@ export function AnsibleControlClient() {
     setManualPort(String(host.port ?? 22));
     setManualGroup(host.groups[0] ?? "linux_hosts");
     setManualBecome(Boolean(host.become));
+    if (formRef.current) {
+      formRef.current.open = true;
+      formRef.current.scrollIntoView({ block: "start" });
+    }
+    notify(`Открыты настройки хоста ${host.alias}.`, "info");
   }
 
   const summary = hosts?.summary;
@@ -687,31 +758,31 @@ export function AnsibleControlClient() {
             Выберите хост, запустите аудит и просмотрите результат. Изменения firewall выполняются отдельно, с планом и откатом.
           </p>
         </div>
-        <Button variant="secondary" onClick={refreshAll} disabled={Boolean(loading)}>
+        <Button variant="secondary" onClick={() => refreshAll(true)} disabled={Boolean(loading)}>
           <RefreshCw size={16} className={loading === "refresh" ? "animate-spin" : ""} aria-hidden="true" />
           Обновить данные
         </Button>
       </header>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Сводка">
-        <StatusTile label="Ansible" value={health?.ansibleInstalled ? "Готов" : "Не готов"} good={health ? Boolean(health.ansibleInstalled) : undefined} />
-        <StatusTile label="Inventory" value={hosts?.inventoryReady ? "Готов" : "Не готов"} good={hosts ? Boolean(hosts.inventoryReady) : undefined} />
+        <StatusTile label="Ansible" value={!health ? "Проверяем…" : health.ansibleInstalled ? "Готов" : "Не готов"} good={health ? Boolean(health.ansibleInstalled) : undefined} />
+        <StatusTile label="Список хостов" value={!hosts ? "Загружаем…" : hosts.inventoryReady ? "Готов" : "Не готов"} good={hosts ? Boolean(hosts.inventoryReady) : undefined} />
         <StatusTile label="Хосты" value={summary?.total ?? 0} />
         <StatusTile label="Последние аудиты" value={summary?.withReports ?? 0} />
       </section>
 
-      <details className="group rounded-md border border-slate-800 bg-slate-950/70" open={!hosts?.hosts?.length}>
+      <details ref={formRef} className="group scroll-mt-6 rounded-xl border border-slate-800 bg-slate-950/70" open={!hosts?.hosts?.length || Boolean(editingHost)}>
         <summary className="flex cursor-pointer items-center justify-between gap-4 p-4 text-left">
           <span>
-            <span className="block text-base font-semibold text-white">Добавить или изменить хост</span>
-            <span className="mt-1 block text-sm text-slate-400">Укажите SSH-подключение, проверьте его и сохраните в inventory.</span>
+            <span className="block text-base font-semibold text-white">{editingHost ? `Настройки: ${editingHost}` : "Добавить хост"}</span>
+            <span className="mt-1 block text-sm text-slate-400">Укажите адрес и пользователя, проверьте подключение и сохраните хост.</span>
           </span>
           <span className="text-sm text-sky-200 group-open:hidden">Открыть</span>
           <span className="hidden text-sm text-slate-400 group-open:block">Свернуть</span>
         </summary>
         <div className="border-t border-slate-800 p-4">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-          <Field label="Имя хоста" value={manualAlias} onChange={setManualAlias} placeholder="web-01" />
+        <fieldset disabled={Boolean(loading) || Boolean(accessLoading)} className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
+          <Field label="Имя хоста" value={manualAlias} onChange={setManualAlias} placeholder="web-01" disabled={Boolean(editingHost)} />
           <Field label="IP-адрес или домен" value={manualAddress} onChange={setManualAddress} placeholder="192.168.1.10" />
           <Field label="Пользователь SSH" value={manualUser} onChange={setManualUser} placeholder="admin" />
           <Field label="Порт SSH" value={manualPort} onChange={setManualPort} placeholder="22" />
@@ -729,100 +800,24 @@ export function AnsibleControlClient() {
             <CheckCircle2 size={16} className={loading === "preflight" ? "animate-spin" : ""} aria-hidden="true" />
             Проверить подключение
           </Button>
-          <Button onClick={addManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="w-full self-end">
+          {!editingHost ? <Button onClick={addManualHost} disabled={Boolean(loading) || !preflight?.ok || preflightFor !== connectionSignature} className="w-full self-end" title={!preflight?.ok || preflightFor !== connectionSignature ? "Сначала проверьте подключение" : undefined}>
             <Plus size={16} aria-hidden="true" />
-            Добавить в inventory
-          </Button>
-          <Button variant="secondary" onClick={updateManualHost} disabled={Boolean(loading) || !manualAlias || !manualAddress || !manualUser} className="w-full self-end">
+            Добавить хост
+          </Button> : <>
+          <Button variant="secondary" onClick={updateManualHost} disabled={Boolean(loading) || manualAlias !== editingHost || !manualAddress || !manualUser} className="w-full self-end">
             Сохранить изменения
           </Button>
-          <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || !selectedAlias} className="w-full self-end">
+          <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || !editingHost} className="w-full self-end">
             Удалить хост
           </Button>
-        </div>
-        <section className="mt-4 rounded-md border border-sky-400/25 bg-sky-500/5 p-4" aria-labelledby="connection-wizard-title">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="flex gap-3">
-              <KeyRound size={20} className="mt-0.5 shrink-0 text-sky-200" aria-hidden="true" />
-              <div>
-                <h3 id="connection-wizard-title" className="font-semibold text-white">Мастер первого SSH-подключения</h3>
-                <p className="mt-1 max-w-3xl text-sm leading-5 text-slate-300">
-                  Пароли в платформу не вводятся и не сохраняются. Сначала добавьте ключ узла управления на хост, затем подтвердите SSH fingerprint через независимый канал.
-                </p>
-              </div>
-            </div>
-            <Button variant="secondary" onClick={loadControlKey} disabled={Boolean(accessLoading)}>
-              <RefreshCw size={16} className={accessLoading === "key" ? "animate-spin" : ""} aria-hidden="true" />
-              Обновить ключ
-            </Button>
-          </div>
-
-          {access?.ok && access.publicKey ? (
-            <ol className="mt-4 grid gap-3 lg:grid-cols-3">
-              <li className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
-                <p className="text-sm font-semibold text-white">1. Добавьте ключ на хост</p>
-                <p className="mt-1 text-xs leading-5 text-slate-400">
-                  Откройте консоль ВМ или используйте уже выданный временный доступ. Выполните команду только на выбранном целевом хосте.
-                </p>
-                <code className="mt-3 block break-all rounded bg-slate-900 p-2 text-xs text-sky-100">{access.publicKey}</code>
-                <Button variant="secondary" className="mt-2 w-full" onClick={() => copyToClipboard(access.publicKey ?? "", "public-key")}>
-                  <Copy size={15} aria-hidden="true" />
-                  {copied === "public-key" ? "Скопировано" : "Скопировать ключ"}
-                </Button>
-                <code className="mt-2 block break-all rounded bg-slate-900 p-2 text-xs text-slate-300">{installPublicKeyCommand}</code>
-                <Button variant="secondary" className="mt-2 w-full" onClick={() => copyToClipboard(installPublicKeyCommand, "install-command")}>
-                  <Copy size={15} aria-hidden="true" />
-                  {copied === "install-command" ? "Скопировано" : "Скопировать команду"}
-                </Button>
-              </li>
-
-              <li className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
-                <p className="text-sm font-semibold text-white">2. Подтвердите ключ сервера</p>
-                <p className="mt-1 text-xs leading-5 text-slate-400">
-                  Укажите выше адрес и порт SSH. Сверьте fingerprint с консолью гипервизора, панелью провайдера или утверждённым реестром ключей — не с результатом сканирования.
-                </p>
-                <Button variant="secondary" className="mt-3 w-full" onClick={scanHostFingerprint} disabled={Boolean(accessLoading) || !manualAddress}>
-                  <Search size={15} className={accessLoading === "scan" ? "animate-pulse" : ""} aria-hidden="true" />
-                  Получить fingerprint по сети
-                </Button>
-                {hostKeyScan?.fingerprints?.length ? (
-                  <div className="mt-2 space-y-1" aria-label="Неподтверждённые fingerprints">
-                    {hostKeyScan.fingerprints.map((item) => (
-                      <button
-                        key={`${item.algorithm}-${item.fingerprint}`}
-                        onClick={() => setTrustedFingerprint(item.fingerprint)}
-                        className="block w-full break-all rounded border border-amber-400/25 bg-amber-500/10 p-2 text-left text-xs text-amber-100"
-                        title="Подставить для сравнения после независимой проверки"
-                      >
-                        {item.algorithm}: {item.fingerprint}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                <Field label="Подтверждённый SHA256 fingerprint" value={trustedFingerprint} onChange={setTrustedFingerprint} placeholder="SHA256:…" />
-                <Button className="mt-2 w-full" onClick={trustScannedHostKey} disabled={Boolean(accessLoading) || !manualAddress || !trustedFingerprint}>
-                  <ShieldCheck size={15} className={accessLoading === "trust" ? "animate-pulse" : ""} aria-hidden="true" />
-                  Сохранить проверенный ключ
-                </Button>
-              </li>
-
-              <li className="rounded-md border border-slate-700 bg-slate-950/70 p-3">
-                <p className="text-sm font-semibold text-white">3. Проверьте и добавьте</p>
-                <p className="mt-1 text-xs leading-5 text-slate-400">
-                  Нажмите «Проверить подключение». Платформа проверит SSH, Python, sudo и предпосылки аудита. Для добавления достаточно рабочего подключения; подготовка сканеров показана отдельно.
-                </p>
-                <div className="mt-3 rounded bg-slate-900 p-2 text-xs leading-5 text-slate-300">
-                  Fingerprint узла управления: <span className="break-all text-sky-100">{access.fingerprint ?? "не определён"}</span>
-                </div>
-              </li>
-            </ol>
-          ) : (
-            <p className="mt-3 rounded-md border border-slate-700 bg-slate-950/70 p-3 text-sm text-slate-300">
-              {accessLoading === "key" ? "Загружается публичный ключ узла управления…" : access?.message ?? "Публичный ключ узла управления пока недоступен."}
-            </p>
-          )}
-          {accessMessage ? <p className="mt-3 text-sm text-amber-100" role="status">{accessMessage}</p> : null}
-        </section>
+          <Button variant="secondary" onClick={() => { setEditingHost(""); setManualAlias(""); setManualAddress(""); setPreflight(null); }} disabled={Boolean(loading)} className="w-full self-end">Отменить редактирование</Button>
+          </>}
+        </fieldset>
+        <p className="mt-3 text-sm leading-6 text-slate-400">Сначала проверьте подключение. После успешной проверки станет доступна кнопка «Добавить хост».</p>
+        <SshConnectionHelp access={access} loading={accessLoading} message={accessMessage} address={manualAddress}
+          command={installPublicKeyCommand} copied={copied} fingerprints={hostKeyScan?.fingerprints}
+          trustedFingerprint={trustedFingerprint} onFingerprint={setTrustedFingerprint}
+          onRefresh={() => void loadControlKey(true)} onCopy={copyToClipboard} onScan={scanHostFingerprint} onTrust={trustScannedHostKey} />
         {preflight && preflightFor === connectionSignature ? (
           <>
           <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
@@ -1110,7 +1105,7 @@ export function AnsibleControlClient() {
               <h2 className="text-lg font-semibold text-white">Последние изменения</h2>
               <p className="mt-1 text-sm text-slate-400">Резервную копию можно восстановить после применения или ошибки изменения.</p>
             </div>
-            <Button variant="secondary" onClick={loadRemediations} disabled={Boolean(loading)}>
+            <Button variant="secondary" onClick={refreshRemediations} disabled={Boolean(loading)}>
               <RefreshCw size={16} aria-hidden="true" />
               Обновить
             </Button>
@@ -1247,11 +1242,13 @@ function Field({
   value,
   onChange,
   placeholder,
+  disabled = false,
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  disabled?: boolean;
 }) {
   return (
     <label className="block min-w-0">
@@ -1260,6 +1257,7 @@ function Field({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
+        disabled={disabled}
         className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
       />
     </label>

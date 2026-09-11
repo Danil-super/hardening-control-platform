@@ -2,6 +2,8 @@
 
 import { CheckCircle2, FileCode2, Play, Plus, RefreshCw, Save, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useActionResult, useNotify } from "@/components/ui/feedback";
+import { readApiResponse, errorMessage } from "@/lib/client-api";
 import { Button } from "@/components/ui/button";
 
 type Variable = {
@@ -48,7 +50,8 @@ export function PlaybooksClient() {
   const [templateId, setTemplateId] = useState("audit-package");
   const [customPlaybooksEnabled, setCustomPlaybooksEnabled] = useState(false);
   const [loading, setLoading] = useState("");
-  const [result, setResult] = useState<{ ok?: boolean; message?: string; stdout?: string; stderr?: string; command?: string } | null>(null);
+  const [result, setResult] = useActionResult<{ ok?: boolean; message?: string; stdout?: string; stderr?: string; command?: string }>();
+  const notify = useNotify();
 
   const template = useMemo(
     () => templates.find((item) => item.id === templateId),
@@ -75,14 +78,18 @@ export function PlaybooksClient() {
     }
   }, [selectedId]);
 
-  async function loadPlaybooks() {
+  async function loadPlaybooks(announce = false) {
     setLoading("load");
     try {
       const response = await fetch("/api/ansible/playbooks");
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
+      if (!response.ok || !payload.ok) throw new Error(payload.message || "Не удалось загрузить сценарии.");
       setPlaybooks(payload.playbooks ?? []);
+      if (announce) notify("Список сценариев обновлён.", "success");
       setTemplates(payload.templates ?? []);
       setCustomPlaybooksEnabled(Boolean(payload.customPlaybooksEnabled));
+    } catch (error) {
+      setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
       setLoading("");
     }
@@ -93,7 +100,7 @@ export function PlaybooksClient() {
     setResult(null);
     try {
       const response = await fetch(`/api/ansible/playbooks/${encodeURIComponent(id)}`);
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       if (!payload.ok) {
         setResult(payload);
         return;
@@ -106,6 +113,8 @@ export function PlaybooksClient() {
       setRequiresLimit(playbook.requiresLimit);
       setVariablesJson(JSON.stringify(playbook.variables ?? [], null, 2));
       setRunVariables(Object.fromEntries((playbook.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])));
+    } catch (error) {
+      setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
       setLoading("");
     }
@@ -120,12 +129,14 @@ export function PlaybooksClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ id: newId, title: newTitle, templateId }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       setResult(payload);
       if (payload.ok) {
         await loadPlaybooks();
         setSelectedId(payload.playbook.id);
       }
+    } catch (error) {
+      setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
       setLoading("");
     }
@@ -155,12 +166,14 @@ export function PlaybooksClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title, kind, requiresLimit, variables, content }),
       });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       setResult(payload);
       if (payload.ok) {
         await loadPlaybooks();
         await openPlaybook(selected.id);
       }
+    } catch (error) {
+      setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
       setLoading("");
     }
@@ -175,7 +188,7 @@ export function PlaybooksClient() {
     setResult(null);
     try {
       const response = await fetch(`/api/ansible/playbooks/${encodeURIComponent(selected.id)}`, { method: "DELETE" });
-      const payload = await response.json();
+      const payload = await readApiResponse(response);
       setResult(payload);
       if (payload.ok) {
         setSelectedId("");
@@ -183,6 +196,8 @@ export function PlaybooksClient() {
         setContent("");
         await loadPlaybooks();
       }
+    } catch (error) {
+      setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
       setLoading("");
     }
@@ -196,7 +211,9 @@ export function PlaybooksClient() {
     setResult(null);
     try {
       const response = await fetch(`/api/ansible/playbooks/${encodeURIComponent(selected.id)}/syntax`, { method: "POST" });
-      setResult(await response.json());
+      setResult(await readApiResponse(response));
+    } catch (error) {
+      setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
       setLoading("");
     }
@@ -217,7 +234,9 @@ export function PlaybooksClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ limit, variables: runVariables }),
       });
-      setResult(await response.json());
+      setResult(await readApiResponse(response));
+    } catch (error) {
+      setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
       setLoading("");
     }
@@ -229,7 +248,7 @@ export function PlaybooksClient() {
         <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
           <div className="flex items-center justify-between border-b border-slate-800 p-4">
             <h1 className="text-lg font-semibold text-white">Playbook'и</h1>
-            <Button variant="secondary" onClick={loadPlaybooks} disabled={Boolean(loading)}>
+            <Button variant="secondary" onClick={() => loadPlaybooks(true)} disabled={Boolean(loading)}>
               <RefreshCw size={16} className={loading === "load" ? "animate-spin" : ""} aria-hidden="true" />
             </Button>
           </div>

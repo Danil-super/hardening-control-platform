@@ -12,7 +12,7 @@ export async function POST(request: Request) {
       {
         ok: false,
         error: "auth_not_configured",
-        message: "Задайте HCP_ADMIN_PASSWORD в web/.env.local и перезапустите сайт.",
+        message: "Пароль администратора не настроен. Задайте HCP_ADMIN_PASSWORD в настройках развёртывания и перезапустите платформу.",
       },
       { status: 503 },
     );

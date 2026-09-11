@@ -38,7 +38,7 @@ export async function proxy(request: NextRequest) {
         error: expectedToken ? "auth_required" : "auth_not_configured",
         message: expectedToken
           ? "Требуется вход администратора."
-          : "Задайте HCP_ADMIN_PASSWORD в web/.env.local и перезапустите сайт.",
+          : "Пароль администратора не настроен. Задайте HCP_ADMIN_PASSWORD в настройках развёртывания и перезапустите платформу.",
       },
       { status: expectedToken ? 401 : 503 },
     );

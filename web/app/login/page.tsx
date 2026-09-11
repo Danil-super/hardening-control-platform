@@ -1,8 +1,7 @@
 import { LoginForm } from "@/components/auth/login-form";
-
-function normalizeNextPath(value: string | undefined) {
-  return value?.startsWith("/") && !value.startsWith("//") ? value : "/hosts";
-}
+import { normalizeNextPath } from "@/lib/client-navigation";
+import { ShieldCheck } from "lucide-react";
+import Link from "next/link";
 
 export default async function LoginPage({
   searchParams,
@@ -13,24 +12,16 @@ export default async function LoginPage({
   const nextPath = normalizeNextPath(params.next);
 
   return (
-    <div className="mx-auto grid max-w-5xl gap-6 lg:grid-cols-[minmax(0,1fr)_420px]">
-      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-6">
-        <p className="text-xs font-semibold uppercase text-sky-200">Локальное управление</p>
-        <h1 className="mt-4 text-3xl font-semibold text-white">Защита Ansible-панели</h1>
-        <p className="mt-4 text-sm leading-6 text-slate-400">
-          Вход нужен для страниц и API, которые управляют inventory, запускают аудит, открывают реальные отчеты и
-          выполняют response-playbook'и.
+    <div className="mx-auto w-full max-w-md space-y-7">
+      <section className="text-center">
+        <span className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-sky-300/25 bg-sky-400/10 text-sky-300"><ShieldCheck size={30} aria-hidden="true" /></span>
+        <h1 className="mt-5 text-3xl font-semibold tracking-tight text-white">Контроль безопасности</h1>
+        <p className="mt-3 text-sm leading-6 text-slate-400">
+          Аудит Linux-хостов, отчёты и управление изменениями в одном месте.
         </p>
-        <div className="mt-5 rounded-md border border-slate-800 bg-slate-900/70 p-4">
-          <p className="text-sm font-semibold text-white">Первичная настройка</p>
-          <p className="mt-2 text-sm leading-6 text-slate-400">
-            Создайте `web/.env.local` по примеру `web/.env.example`, задайте `HCP_ADMIN_PASSWORD` и перезапустите
-            `npm run dev`.
-          </p>
-        </div>
       </section>
-
       <LoginForm nextPath={nextPath} />
+      <p className="text-center text-sm text-slate-400">Нужна помощь? <Link href="/guide" className="text-sky-300 underline-offset-4 hover:underline">Открыть инструкцию</Link></p>
     </div>
   );
 }

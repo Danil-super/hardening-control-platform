@@ -1,22 +1,33 @@
 "use client";
 
 import { LogOut } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useNotify } from "@/components/ui/feedback";
 
 export function LogoutButton({ className = "" }: { className?: string }) {
-  const router = useRouter();
+  const [pending, setPending] = useState(false);
+  const notify = useNotify();
 
   async function logout() {
-    await fetch("/api/ansible/auth/logout", { method: "POST" });
-    router.push("/login");
-    router.refresh();
+    if (pending) return;
+    setPending(true);
+    try {
+      const response = await fetch("/api/ansible/auth/logout", { method: "POST" });
+      if (!response.ok) throw new Error("logout_failed");
+      const session = await fetch("/api/ansible/session", { cache: "no-store" });
+      if (session.status !== 401) throw new Error("session_not_cleared");
+      window.location.replace("/login");
+    } catch {
+      notify("Не удалось выйти. Проверьте соединение и повторите попытку.", "error");
+      setPending(false);
+    }
   }
 
   return (
-    <Button type="button" variant="secondary" onClick={logout} className={`w-full ${className}`}>
+    <Button type="button" variant="secondary" onClick={logout} disabled={pending} className={className}>
       <LogOut size={16} aria-hidden="true" />
-      Выйти
+      {pending ? "Выходим…" : "Выйти"}
     </Button>
   );
 }

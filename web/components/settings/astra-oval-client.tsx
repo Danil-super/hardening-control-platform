@@ -1,6 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useFeedbackMessage } from "@/components/ui/feedback";
+import { readApiResponse, errorMessage } from "@/lib/client-api";
 import { Button } from "@/components/ui/button";
 import type { AstraOvalConfig } from "@/lib/astra-oval-config";
 
@@ -15,16 +17,16 @@ export function AstraOvalClient() {
   const [config, setConfig] = useState<AstraOvalConfig>(initial);
   const [architectures, setArchitectures] = useState("");
   const [busy, setBusy] = useState(true);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useFeedbackMessage();
   const update = (values: Partial<AstraOvalConfig>) => setConfig((previous) => ({ ...previous, ...values }));
 
   useEffect(() => {
     let active = true;
     fetch("/api/settings/astra-oval", { cache: "no-store" }).then(async (response) => {
-      const payload = await response.json() as Payload;
+      const payload = await readApiResponse(response) as Payload;
       if (!response.ok || !payload.ok) throw new Error(payload.message ?? "Не удалось прочитать источники OVAL.");
       if (active) setData(payload);
-    }).catch((error) => { if (active) setMessage(error instanceof Error ? error.message : "Ошибка загрузки."); })
+    }).catch((error) => { if (active) setMessage(errorMessage(error, "Ошибка загрузки. Проверьте соединение.")); })
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, []);
@@ -34,10 +36,10 @@ export function AstraOvalClient() {
     try {
       const response = await fetch("/api/settings/astra-oval", { method, headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ groupName, config: { ...config, architectures: architectures.split(/[\s,]+/).filter(Boolean) } }) });
-      const payload = await response.json() as Payload;
+      const payload = await readApiResponse(response) as Payload;
       if (!response.ok || !payload.ok) throw new Error(payload.message ?? "Не удалось сохранить источник.");
-      setData(payload); setMessage(payload.message ?? "Сохранено.");
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Ошибка сохранения."); }
+      setData(payload); setMessage(payload.message ?? (method === "DELETE" ? "Источник удалён." : "Источник сохранён."), "success");
+    } catch (error) { setMessage(errorMessage(error, "Ошибка сохранения. Проверьте соединение.")); }
     finally { setBusy(false); }
   }
 
@@ -82,7 +84,7 @@ export function AstraOvalClient() {
         <p className="font-semibold text-slate-100">{policy.groupName} · {policy.config.mode === "local" ? "локальная база" : "HTTPS-база"} · выпуск {policy.config.releasePattern}</p>
         <p className="mt-1 break-all text-slate-400">{policy.config.mode === "local" ? policy.config.path : policy.config.url}</p>
         <div className="mt-3 flex flex-wrap gap-3">
-          <Button variant="secondary" disabled={busy} onClick={() => { setGroup(policy.groupName); setConfig(policy.config); setArchitectures(policy.config.architectures.join(", ")); setMessage("Источник открыт для редактирования в форме выше."); }}>Изменить</Button>
+          <Button variant="secondary" disabled={busy} onClick={() => { setGroup(policy.groupName); setConfig(policy.config); setArchitectures(policy.config.architectures.join(", ")); setMessage("Источник открыт для редактирования в форме выше.", "info"); document.getElementById("astra-oval-title")?.scrollIntoView({ block: "start" }); }}>Изменить</Button>
           <Button variant="secondary" disabled={busy} onClick={() => void saveOrRemove("DELETE", policy.groupName)}>Удалить</Button>
         </div>
       </div>)}

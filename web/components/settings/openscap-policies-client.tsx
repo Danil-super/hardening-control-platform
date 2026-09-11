@@ -2,6 +2,8 @@
 
 import { CheckCircle2, FileWarning, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { useFeedbackMessage } from "@/components/ui/feedback";
+import { readApiResponse, errorMessage } from "@/lib/client-api";
 import { Button } from "@/components/ui/button";
 import { ASTRA_BASELINE_DATASTREAM, ASTRA_BASELINE_PROFILE } from "@/lib/scap-presets";
 
@@ -46,7 +48,7 @@ export function OpenScapPoliciesClient() {
   const [settings, setSettings] = useState<SettingsPayload | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useFeedbackMessage();
   const [policyGroup, setPolicyGroup] = useState("linux_hosts");
   const [preset, setPreset] = useState("custom");
   const [datastream, setDatastream] = useState("/usr/share/xml/scap/ssg/content/ssg-ubuntu2204-ds.xml");
@@ -56,17 +58,19 @@ export function OpenScapPoliciesClient() {
   const [reason, setReason] = useState("");
   const [expiresAt, setExpiresAt] = useState(dateValueInFuture);
 
-  async function load() {
+  async function load(announce = false) {
     setLoading(true);
     try {
       const response = await fetch("/api/settings/openscap-policies", { cache: "no-store" });
-      const payload = await response.json() as SettingsPayload;
+      const payload = await readApiResponse(response) as SettingsPayload;
+      if (!response.ok || !payload.ok) throw new Error(payload.message || "Не удалось получить настройки.");
       setSettings(payload);
       const firstGroup = payload.inventoryGroups?.[0] ?? "linux_hosts";
       setPolicyGroup((current) => payload.inventoryGroups?.includes(current) ? current : firstGroup);
       setExceptionGroup((current) => payload.inventoryGroups?.includes(current) ? current : firstGroup);
-    } catch {
-      setMessage("Не удалось загрузить политики OpenSCAP.");
+      if (announce) setMessage("Сведения обновлены.", "success");
+    } catch (error) {
+      setMessage(errorMessage(error, "Не удалось загрузить политики OpenSCAP."));
     } finally {
       setLoading(false);
     }
@@ -85,12 +89,13 @@ export function OpenScapPoliciesClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const payload = await response.json() as SettingsPayload;
+      const payload = await readApiResponse(response) as SettingsPayload;
+      if (!response.ok || !payload.ok) throw new Error(payload.message || "Не удалось получить настройки.");
       setSettings(payload);
-      setMessage(payload.message ?? (payload.ok ? "Настройка сохранена." : "Не удалось сохранить настройку."));
+      setMessage(payload.message ?? (payload.ok ? "Настройка сохранена." : "Не удалось сохранить настройку."), payload.ok ? "success" : "error");
       return Boolean(payload.ok);
-    } catch {
-      setMessage("Не удалось сохранить настройку OpenSCAP.");
+    } catch (error) {
+      setMessage(errorMessage(error, "Не удалось сохранить настройку OpenSCAP."));
       return false;
     } finally {
       setSaving(false);
@@ -106,11 +111,12 @@ export function OpenScapPoliciesClient() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-      const payload = await response.json() as SettingsPayload;
+      const payload = await readApiResponse(response) as SettingsPayload;
+      if (!response.ok || !payload.ok) throw new Error(payload.message || "Не удалось получить настройки.");
       setSettings(payload);
-      setMessage(payload.message ?? (payload.ok ? "Настройка удалена." : "Не удалось удалить настройку."));
-    } catch {
-      setMessage("Не удалось удалить настройку OpenSCAP.");
+      setMessage(payload.message ?? (payload.ok ? "Настройка удалена." : "Не удалось удалить настройку."), payload.ok ? "success" : "error");
+    } catch (error) {
+      setMessage(errorMessage(error, "Не удалось удалить настройку OpenSCAP."));
     } finally {
       setSaving(false);
     }
@@ -126,7 +132,7 @@ export function OpenScapPoliciesClient() {
           <h1 className="mt-2 text-3xl font-semibold text-white">OpenSCAP и исключения</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Выберите встроенный профиль Astra или собственный SCAP-профиль для группы. Временное исключение остаётся видимым в отчёте и не скрывает риск.</p>
         </div>
-        <Button variant="secondary" onClick={load} disabled={loading || saving}><RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" />Обновить</Button>
+        <Button variant="secondary" onClick={() => load(true)} disabled={loading || saving}><RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" />Обновить</Button>
       </header>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5" aria-labelledby="profile-title">

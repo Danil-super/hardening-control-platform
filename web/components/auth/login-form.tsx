@@ -1,67 +1,74 @@
 "use client";
 
-import { LockKeyhole, LogIn } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { Eye, EyeOff, LoaderCircle, LockKeyhole, LogIn } from "lucide-react";
 import { FormEvent, useState } from "react";
 import { Button } from "@/components/ui/button";
+import { useFeedbackMessage } from "@/components/ui/feedback";
+import { signIn } from "@/lib/client-navigation";
 
 export function LoginForm({ nextPath = "/hosts" }: { nextPath?: string }) {
-  const router = useRouter();
   const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useFeedbackMessage();
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (loading) return;
     setLoading(true);
     setMessage("");
 
     try {
-      const response = await fetch("/api/ansible/auth/login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+      await signIn(password, nextPath, {
+        request: fetch,
+        navigate: (path) => window.location.replace(path),
       });
-      const payload = await response.json();
-      if (!payload.ok) {
-        setMessage(payload.message ?? "Не удалось выполнить вход.");
-        return;
-      }
-
-      router.replace(nextPath);
-      router.refresh();
-    } finally {
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Не удалось выполнить вход.");
       setLoading(false);
     }
   }
 
   return (
-    <form onSubmit={submit} className="rounded-md border border-slate-800 bg-slate-950/80 p-5">
+    <form onSubmit={submit} aria-busy={loading} className="rounded-2xl border border-slate-700/70 bg-slate-950/80 p-6 shadow-2xl sm:p-8">
       <div className="flex items-center gap-3">
         <LockKeyhole size={22} className="text-sky-200" aria-hidden="true" />
         <h2 className="text-xl font-semibold text-white">Вход администратора</h2>
       </div>
 
       <label className="mt-5 block">
-        <span className="text-xs font-semibold uppercase text-slate-500">Пароль</span>
+        <span className="text-sm font-medium text-slate-300">Пароль</span>
+        <span className="relative mt-2 block">
         <input
-          type="password"
+          type={showPassword ? "text" : "password"}
+          name="password"
+          required
+          autoFocus
+          disabled={loading}
+          aria-invalid={Boolean(message)}
+          aria-describedby={message ? "login-error" : undefined}
           value={password}
           onChange={(event) => setPassword(event.target.value)}
           autoComplete="current-password"
-          className="mt-2 h-11 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
+          className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 pl-3 pr-12 text-base text-slate-100 focus:border-sky-300 focus:outline-none focus:ring-2 focus:ring-sky-300/20"
         />
+        <button type="button" onClick={() => setShowPassword((value) => !value)}
+          aria-label={showPassword ? "Скрыть пароль" : "Показать пароль"} aria-pressed={showPassword}
+          className="absolute inset-y-0 right-0 rounded-lg px-3 text-slate-400 hover:text-white focus-visible:outline-2 focus-visible:outline-sky-300">
+          {showPassword ? <EyeOff size={19} aria-hidden="true" /> : <Eye size={19} aria-hidden="true" />}
+        </button>
+        </span>
       </label>
 
       {message ? (
-        <div className="mt-4 rounded-md border border-red-400/30 bg-red-500/10 p-3 text-sm leading-6 text-red-100">
+        <div id="login-error" className="mt-4 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm leading-6 text-red-100">
           {message}
         </div>
       ) : null}
 
-      <Button type="submit" disabled={loading || !password} className="mt-5 w-full">
-        <LogIn size={16} aria-hidden="true" />
-        {loading ? "Проверка..." : "Войти"}
+      <Button type="submit" disabled={loading || !password} className="mt-6 min-h-12 w-full">
+        {loading ? <LoaderCircle size={18} className="animate-spin" aria-hidden="true" /> : <LogIn size={18} aria-hidden="true" />}
+        {loading ? "Входим…" : "Войти"}
       </Button>
     </form>
   );

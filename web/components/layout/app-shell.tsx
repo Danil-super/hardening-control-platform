@@ -1,4 +1,7 @@
+"use client";
+
 import { BookOpen, Database, FileText, Server, Shield, SlidersHorizontal } from "lucide-react";
+import { usePathname } from "next/navigation";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { LogoutButton } from "@/components/auth/logout-button";
@@ -12,6 +15,9 @@ const navItems = [
 ];
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  if (pathname === "/login") return <main className="flex min-h-dvh items-center bg-[radial-gradient(ellipse_at_top,#123449_0,#08111f_55%,#050b14_100%)] px-4 py-12">{children}</main>;
+  const active = (href: string) => pathname === href || pathname.startsWith(`${href}/`);
   return (
     <div className="min-h-screen bg-[radial-gradient(circle_at_top_left,#164e63_0,#08111f_36%,#050b14_100%)]">
       <aside className="fixed inset-y-0 left-0 hidden w-72 border-r border-slate-800/80 bg-slate-950/90 p-5 backdrop-blur lg:block">
@@ -33,7 +39,8 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className="flex items-center gap-3 rounded-md px-3 py-2 text-sm text-slate-300 transition hover:bg-slate-900 hover:text-white"
+                aria-current={active(item.href) ? "page" : undefined}
+                className={`flex items-center gap-3 rounded-xl px-3 py-3 text-sm transition ${active(item.href) ? "bg-sky-400/10 font-semibold text-sky-200 ring-1 ring-inset ring-sky-400/20" : "text-slate-400 hover:bg-slate-900 hover:text-white"}`}
               >
                 <Icon size={18} aria-hidden="true" />
                 {item.label}
@@ -43,7 +50,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="absolute inset-x-5 bottom-5">
-          <LogoutButton />
+          <LogoutButton className="w-full" />
         </div>
       </aside>
 
@@ -61,7 +68,8 @@ export function AppShell({ children }: { children: ReactNode }) {
               <Link
                 key={item.href}
                 href={item.href}
-                className="rounded-md border border-slate-800 bg-slate-900 px-2 py-2 text-center text-xs text-slate-200"
+                aria-current={active(item.href) ? "page" : undefined}
+                className={`rounded-lg border px-2 py-2 text-center text-xs ${active(item.href) ? "border-sky-400/40 bg-sky-400/10 text-sky-200" : "border-slate-800 bg-slate-900 text-slate-300"}`}
               >
                 {item.label}
               </Link>

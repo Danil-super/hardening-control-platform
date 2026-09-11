@@ -1,8 +1,8 @@
 // Exercises the production Next server with isolated state and explicit fixtures.
 // Does not claim to execute remote scanners or change any host's firewall.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, execFileSync } from "node:child_process";
+import { mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -12,6 +12,8 @@ import { setTimeout as delay } from "node:timers/promises";
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const temporary = mkdtempSync(path.join(os.tmpdir(), "hcp-http-smoke-"));
 const reports = path.join(temporary, "reports");
+const sshKey = path.join(temporary, "fixture-key");
+execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", sshKey], { stdio: "ignore" });
 mkdirSync(reports);
 const probe = createServer();
 await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
@@ -51,7 +53,7 @@ async function start() {
       HCP_ADMIN_PASSWORD: "http-smoke-password", HCP_AUTH_SECRET: "http-smoke-session-key",
       HCP_AUDIT_HMAC_KEY: "http-smoke-ledger-key", HCP_SCHEDULE_API_KEY: "http-smoke-schedule-key",
       HCP_TRIVY_MODE: "offline", HCP_TRIVY_CACHE_DIR: path.join(temporary, "trivy-cache"),
-      HCP_SSH_PRIVATE_KEY_PATH: path.join(temporary, "absent-key"), HCP_PRODUCTION_MODE: "true" },
+      HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_PRODUCTION_MODE: "true" },
   });
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (value) => { output = (output + value).slice(-12000); });
   for (let attempt = 0; attempt < 160; attempt++) {
@@ -83,6 +85,7 @@ async function request(endpoint, { method = "GET", body, auth = true, origin = b
 try {
   await start();
   await request("/api/ansible/hosts", { auth: false, status: 401 });
+  await request("/api/ansible/session", { auth: false, status: 401 });
   await request("/api/settings/astra-oval", { auth: false, status: 401 });
   await request(`/reports/agentless/${reportId}`, { auth: false, status: 307 });
   await request("/reports/correlation/smoke", { auth: false, status: 307 });
@@ -90,6 +93,24 @@ try {
   const login = await request("/api/ansible/auth/login", { method: "POST", body: { password: "http-smoke-password" }, auth: false });
   cookie = login.headers.get("set-cookie").split(";", 1)[0];
   assert.match(cookie, /^hcp_admin_session=/);
+  await request("/api/ansible/session");
+  assert.match(login.headers.get("set-cookie"), /HttpOnly/i);
+  assert.match(login.headers.get("set-cookie"), /Path=\//i);
+  const hostsPage = await (await request("/hosts")).text();
+  assert.match(hostsPage, /Управляемые хосты/);
+  assert.match(hostsPage, /Обновить сведения/);
+  const keyBefore = readFileSync(sshKey, "utf8");
+  const firstKey = await (await request("/api/ansible/access")).json();
+  const refreshedKey = await (await request("/api/ansible/access")).json();
+  assert.equal(firstKey.ok, true);
+  assert.match(firstKey.fingerprint, /^SHA256:/);
+  assert.equal(firstKey.publicKey, refreshedKey.publicKey);
+  assert.equal(readFileSync(sshKey, "utf8"), keyBefore, "reading the public key must never rotate the private key");
+  renameSync(sshKey, `${sshKey}.unavailable`);
+  const missingKey = await (await request("/api/ansible/access", { status: 400 })).json();
+  assert.equal(missingKey.ok, false);
+  assert.equal(missingKey.error, "control_key_missing");
+  renameSync(`${sshKey}.unavailable`, sshKey);
   await request("/api/settings/vulnerability-data", { method: "PATCH", origin: "https://foreign.invalid", body: { mode: "online" }, status: 403 });
   const settings = await (await request("/api/settings/vulnerability-data", { method: "PATCH", body: { mode: "online" } })).json();
   assert.equal(settings.database.mode, "online");
@@ -125,7 +146,9 @@ try {
   assert.equal(persisted.database.mode, "online");
   await request(`/api/ansible/reports/${reportId}`);
   await request("/reports/agentless");
-  await request("/api/ansible/auth/logout", { method: "POST" });
+  const logout = await request("/api/ansible/auth/logout", { method: "POST" });
+  assert.match(logout.headers.get("set-cookie"), /Max-Age=0/i);
+  assert.doesNotMatch(logout.headers.get("set-cookie"), /;\s*Secure/i, "HTTP deployment must be able to clear its session cookie");
   cookie = "";
   await request("/api/ansible/hosts", { status: 401 });
   console.log(`PASS ${checks} HTTP checks: auth, CSRF, report rendering, source selection and restart persistence (isolated fixtures)`);
