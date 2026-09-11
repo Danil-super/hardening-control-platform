@@ -588,7 +588,7 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
                 source="openscap",
                 description="Результат проверки профиля не подтверждён: отчёт OpenSCAP нельзя разобрать.",
                 recommendation="Проверьте выбранные datastream и профиль, затем повторите аудит.",
-                evidence=str(error),
+                evidence=str(error) + ("\nOpenSCAP stderr: " + str(args.reason)[:2000] if getattr(args, "reason", None) else ""),
             )],
             available=True,
             profile=args.profile,

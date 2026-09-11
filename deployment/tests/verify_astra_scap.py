@@ -86,6 +86,10 @@ def playbook(work, content, phase):
         normalized = reports / (HOST + "-openscap-" + phase + ".json")
         if normalized.is_file():
             print(normalized.read_text()[:16000])
+        diagnostics = Path(str(raw) + ".diagnostics.json")
+        if diagnostics.is_file():
+            print(diagnostics.read_text()[:36000])
+            diagnostics.rename(work / ("artifacts/" + phase + ".diagnostics.json"))
         raise AssertionError("OpenSCAP did not produce ARF; inspect actual preparation/evaluation diagnostics above")
     visible = work / ("artifacts/" + phase + ".arf.xml")
     raw.rename(visible)

@@ -221,6 +221,19 @@
             path: "{{ openscap_remote_dir.path }}/results.arf.xml"
           register: openscap_arf
 
+        - name: Preserve native scanner failure diagnostics with explicitly requested raw evidence
+          ansible.builtin.copy:
+            content: "{{ {'exitCode': openscap_run.rc | default(none), 'stdout': (openscap_run.stdout | default(''))[:16000], 'stderr': (openscap_run.stderr | default(''))[:16000]} | to_nice_json }}"
+            dest: "{{ openscap_raw_report }}.diagnostics.json"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+          when:
+            - hcp_openscap_keep_arf | default(false) | bool
+            - openscap_run is defined and not (openscap_run.skipped | default(false) | bool)
+            - (openscap_run.rc | default(1)) not in [0, 2] or not (openscap_arf.stat.exists | default(false) | bool)
+
         - name: Retrieve OpenSCAP ARF only when it was created
           ansible.builtin.fetch:
             src: "{{ openscap_remote_dir.path }}/results.arf.xml"
@@ -243,6 +256,8 @@
               - "{{ report_suffix }}"
               - --exit-code
               - "{{ openscap_run.rc | default(1) | string }}"
+              - --reason
+              - "{{ (openscap_run.stderr | default(''))[:2000] }}"
               - --profile
               - "{{ openscap_profile }}"
               - --datastream
