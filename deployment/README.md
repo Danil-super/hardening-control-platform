@@ -11,7 +11,7 @@
 При запуске без Docker установите поддерживаемый SSH-сканер на управляющей машине:
 
 ```bash
-sudo apt-get install python3-venv
+sudo apt-get install python3-venv python3-paramiko openssh-client
 sudo python3 -m venv /opt/hcp-tools/ssh-audit
 sudo /opt/hcp-tools/ssh-audit/bin/pip install --only-binary=:all: ssh-audit==3.3.0
 ```
@@ -23,23 +23,19 @@ cp .env.production.example .env
 cp ansible/inventory.example.ini ansible/inventory.ini
 mkdir -p secrets
 chmod 700 secrets
-ssh-keygen -t ed25519 -N '' -f secrets/hcp-control -C hcp-control
 install -m 600 /dev/null secrets/known_hosts
-chmod 600 .env secrets/hcp-control
+chmod 600 .env secrets/known_hosts
 ```
 
-Перед добавлением ключей хостов в `secrets/known_hosts` сверяйте fingerprint через консоль или доверенный канал. Например, после проверки fingerprint:
+Для каждого нового хоста используйте [парольную настройку через сайт](../docs/ubuntu-astra-setup.md#host-onboarding): подтвердите ключ сервера через доверенный канал, введите одноразовый SSH-пароль и нажмите «Создать ключ и настроить доступ». HCP создаёт отдельную пару для каждой машины; приватные файлы хранятся в `/var/lib/hcp/ssh-host-keys` с правами `600`. На целевой хост передаётся только публичная часть. Для этого используется системный `/usr/bin/python3` с Paramiko на управляющей машине; Docker-образ содержит зависимость.
 
-```bash
-ssh-keyscan -H 192.168.56.101 192.168.56.102 >> secrets/known_hosts
-chmod 600 secrets/known_hosts
-```
+Парольная форма доступна через HTTPS или localhost. Для собственного TLS reverse proxy прочитайте условия `HCP_TRUSTED_TLS_PROXY` в [основной инструкции](../docs/ubuntu-astra-setup.md#host-onboarding). Старый `secrets/hcp-control` поддерживается только для ранее подключённых хостов и при новой установке не требуется.
 
-После запуска этот начальный файл переносится в постоянный volume. Для новых хостов используйте «Мастер первого SSH-подключения» в `/hosts`: он показывает публичный ключ узла управления, сохраняет только независимо подтверждённый ключ сервера и не принимает пароль от SSH. Не редактируйте `known_hosts` внутри контейнера вручную.
-
-Заполните `.env` уникальными `HCP_ADMIN_PASSWORD`, `HCP_AUTH_SECRET`, `HCP_AUDIT_HMAC_KEY` и `HCP_SCHEDULE_API_KEY`, затем настройте начальные хосты в `ansible/inventory.ini`. `HCP_AUDIT_HMAC_KEY` защищает hash-chain журнал от незаметного пересчёта при изменении SQLite-файла; `HCP_SCHEDULE_API_KEY` разрешает внутренним заданиям обращаться к API. Парольная фраза SSH-ключа не поддерживается без ssh-agent, поэтому используется отдельный незашифрованный ключ с правами 600.
+Заполните `.env` уникальными `HCP_ADMIN_PASSWORD`, `HCP_AUTH_SECRET`, `HCP_AUDIT_HMAC_KEY` и `HCP_SCHEDULE_API_KEY`. `HCP_AUDIT_HMAC_KEY` защищает журнал от незаметного пересчёта после изменения SQLite; `HCP_SCHEDULE_API_KEY` разрешает внутренним заданиям обращаться к API. Новые хосты добавляйте через панель.
 
 ## Запуск
+
+Один постоянный том рассчитан на один экземпляр HCP. Не запускайте несколько веб-контейнеров с общим runtime.
 
 ```bash
 docker compose config --quiet
@@ -47,7 +43,7 @@ docker compose up -d --build --wait --wait-timeout 180
 docker compose logs -f hcp
 ```
 
-Откройте `http://127.0.0.1:3000` на control node либо используйте SSH-туннель. Отчёты, SQLite, журнал, `known_hosts` и рабочий inventory сохраняются в volume `hcp-runtime`. Файл `ansible/inventory.ini` — только начальный seed; рабочая копия `/var/lib/hcp/inventory.ini` связана с `/app/ansible/inventory.ini` и доступна пользователю `node` для сохранения через панель. Последующие изменения seed не заменяют рабочую копию.
+Откройте `http://127.0.0.1:3000` на control node либо используйте SSH-туннель. Отчёты, SQLite, журнал, `known_hosts`, индивидуальные ключи `ssh-host-keys` и рабочий inventory сохраняются в volume `hcp-runtime`. Файл `ansible/inventory.ini` — только начальный seed; рабочая копия `/var/lib/hcp/inventory.ini` связана с `/app/ansible/inventory.ini` и доступна пользователю `node` для сохранения через панель. Последующие изменения seed не заменяют рабочую копию.
 
 Первый прогон выполните по [инструкции стенда](lab/README.md): она разделяет быстрые контейнерные проверки и полноценные испытания на ВМ.
 
@@ -116,7 +112,7 @@ Environment=HCP_DEEP_SCHEDULE_TASKS=packages,openscap
 ## Обязательные меры перед эксплуатацией
 
 - Используйте отдельный SSH-ключ и отдельного технического пользователя. Полный набор текущих Ansible-проверок требует удалённого Python с `sudo` без пароля: подготовка такого доступа даёт широкие привилегии, поэтому control node должен администрироваться как привилегированный узел.
-- Фиксируйте SSH host keys через мастер или начальный `secrets/known_hosts`; в репозитории включена строгая проверка ключей и после запуска ключи хранятся в persistent volume.
+- Фиксируйте SSH host keys через подтверждение сервера или начальный `secrets/known_hosts`; в репозитории включена строгая проверка ключей и после запуска ключи хранятся в persistent volume.
 - Ограничьте доступ к панели VPN или reverse proxy с TLS. Не меняйте `HCP_BIND_ADDRESS` на `0.0.0.0` без firewall и TLS.
 - Сохраните резервную копию рабочего inventory из volume и всего Docker volume; автоматическая ротация отчётов пока не реализована.
 - Response-действия панели ограничены обратимыми firewall-операциями. Перед применением обязательно выполните dry-run и проверьте созданную резервную копию; обновления пакетов и управление сервисами выполняйте по отдельной ручной процедуре.

@@ -15,7 +15,7 @@ install_key() {
   destination_path="$2"
   mode="$3"
 
-  if [ -r "$source_path" ]; then
+  if [ -f "$source_path" ] && [ -r "$source_path" ]; then
     mkdir -p "$runtime_ssh_dir"
     chmod 700 "$runtime_ssh_dir"
     cp "$source_path" "$destination_path"
@@ -26,16 +26,23 @@ install_key() {
   fi
 }
 
-if [ ! -f /run/secrets/hcp-control ]; then
-  echo "Missing SSH key: create secrets/hcp-control before starting HCP." >&2
-  exit 64
+# Shared keys are a compatibility path for existing installations. New hosts
+# receive individual keys in the persistent /var/lib/hcp/ssh-host-keys directory.
+# One HCP instance owns this state volume. A stopped container cannot retain
+# enrollment requests; release their stale controller-side directory locks.
+for bootstrap_lock in /var/lib/hcp/ssh-host-keys/*/.bootstrap-lock; do
+  if [ -d "$bootstrap_lock" ]; then rmdir "$bootstrap_lock"; fi
+done
+legacy_key_source="/run/secrets/hcp-control"
+if [ ! -f "$legacy_key_source" ]; then legacy_key_source="/run/hcp-legacy-secrets/hcp-control"; fi
+if [ -f "$legacy_key_source" ]; then
+  install_key "$legacy_key_source" "$runtime_ssh_dir/hcp-control" "600"
+  if ! ssh-keygen -y -P '' -f "$runtime_ssh_dir/hcp-control" > "$runtime_ssh_dir/hcp-control.pub" 2>/dev/null; then
+    echo "The configured legacy SSH key is invalid or requires a passphrase." >&2
+    exit 64
+  fi
+  chmod 644 "$runtime_ssh_dir/hcp-control.pub"
 fi
-install_key "/run/secrets/hcp-control" "$runtime_ssh_dir/hcp-control" "600"
-if ! ssh-keygen -y -P '' -f "$runtime_ssh_dir/hcp-control" > "$runtime_ssh_dir/hcp-control.pub" 2>/dev/null; then
-  echo "HCP requires a valid dedicated SSH key without a passphrase (no ssh-agent is configured)." >&2
-  exit 64
-fi
-chmod 644 "$runtime_ssh_dir/hcp-control.pub"
 
 # Use the bind-mounted inventory only as an initial seed. Runtime edits belong
 # to the node-owned persistent volume, independent of the host user's UID.
@@ -60,7 +67,8 @@ if [ "$known_hosts_path" != "$runtime_ssh_dir/known_hosts" ]; then
 fi
 
 if [ "$is_root" = "true" ]; then
-  chown node:node /var/lib/hcp/inventory.ini "$runtime_ssh_dir/hcp-control.pub"
+  chown node:node /var/lib/hcp/inventory.ini
+  if [ -f "$runtime_ssh_dir/hcp-control.pub" ]; then chown node:node "$runtime_ssh_dir/hcp-control.pub"; fi
   exec setpriv --reuid=node --regid=node --init-groups "$@"
 fi
 

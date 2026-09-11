@@ -34,7 +34,7 @@ class EntrypointTest(unittest.TestCase):
         (self.root / "etc/group").write_text("root:x:0:\nnode:x:1000:\n")
         (self.root / "dev/null").touch()
         (self.root / "dev/null").chmod(0o666)
-        for name in ("sh", "id", "mkdir", "chown", "chmod", "cp", "ssh-keygen", "ln", "rm", "dirname", "setpriv", "cat"):
+        for name in ("sh", "id", "mkdir", "chown", "chmod", "cp", "ssh-keygen", "ln", "rm", "dirname", "setpriv", "cat", "rmdir"):
             binary = shutil.which(name)
             if not binary:
                 self.skipTest(f"missing {name}")
@@ -89,11 +89,24 @@ class EntrypointTest(unittest.TestCase):
         self.assertIn("operator-added-host", (self.root / "var/lib/hcp/inventory.ini").read_text())
         self.assertEqual((self.root / "var/lib/hcp/known_hosts").read_text(), "operator-confirmed-key\n")
 
-    def test_missing_key_is_an_actionable_startup_error(self):
+    def test_new_installation_starts_without_a_shared_key(self):
         self.key.unlink()
         result = self.start()
-        self.assertEqual(result.returncode, 64)
-        self.assertIn("Missing SSH key", result.stderr)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.root / "home/node/.ssh/hcp-control").exists())
+
+    def test_restart_preserves_individual_keys_and_releases_stale_enrollment_lock(self):
+        key_dir = self.root / "var/lib/hcp/ssh-host-keys" / ("a" * 64)
+        key_dir.mkdir(parents=True)
+        key = key_dir / "id_ed25519"
+        key.write_text("private-fixture-preserved")
+        key.chmod(0o600)
+        (key_dir / ".bootstrap-lock").mkdir()
+        result = self.start()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(key.read_text(), "private-fixture-preserved")
+        self.assertEqual(key.stat().st_mode & 0o777, 0o600)
+        self.assertFalse((key_dir / ".bootstrap-lock").exists())
 
     def test_passphrase_key_is_rejected_without_interactive_prompt(self):
         self.key.unlink()
@@ -101,7 +114,7 @@ class EntrypointTest(unittest.TestCase):
         subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "test-passphrase", "-f", str(self.key)], check=True)
         result = self.start()
         self.assertEqual(result.returncode, 64)
-        self.assertIn("without a passphrase", result.stderr)
+        self.assertIn("passphrase", result.stderr)
 
 
 if __name__ == "__main__":

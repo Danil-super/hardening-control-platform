@@ -7,6 +7,7 @@ import { NextResponse } from "next/server";
 import { getRepoRoot } from "@/lib/ansible-control";
 import { ansibleSshArgs, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 import { assessHostReadiness, assessTargetPython, type HostReadiness } from "@/lib/host-readiness";
+import { connectionPrivateKey, HostCredentialError } from "@/lib/host-credentials";
 import { summarizePreflight } from "@/lib/preflight-result";
 
 export const dynamic = "force-dynamic";
@@ -59,9 +60,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const sshKeyPath = configuredPrivateKeyPath();
+  let sshKeyPath: string;
+  try { sshKeyPath = connectionPrivateKey({ alias, address, user, port }, body?.credentialId); }
+  catch (error) { return NextResponse.json({ ok: false, message: error instanceof HostCredentialError ? error.message : "Ключ подключения недоступен." }, { status: 400 }); }
   if (!existsSync(sshKeyPath)) {
-    return NextResponse.json({ ok: false, message: "Ключ узла управления не найден. Настройте HCP_SSH_PRIVATE_KEY_PATH." }, { status: 400 });
+    return NextResponse.json({ ok: false, message: "SSH-ключ не найден. Сначала нажмите «Создать ключ и настроить доступ» в форме этого хоста." }, { status: 400 });
   }
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "hcp-inventory-"));
   const inventoryPath = path.join(tmpDir, "inventory.json");

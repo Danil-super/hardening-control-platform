@@ -34,6 +34,7 @@ services:
       HCP_SCHEDULE_DEEP_LIMIT: ${HCP_SCHEDULE_DEEP_LIMIT:-linux_hosts}
       HCP_CORRELATION_MAX_AGE_HOURS: ${HCP_CORRELATION_MAX_AGE_HOURS:-168}
       HCP_PRODUCTION_MODE: "true"
+      HCP_TRUSTED_TLS_PROXY: ${HCP_TRUSTED_TLS_PROXY:-false}
       HCP_CONTROL_IPS: ${HCP_CONTROL_IPS:-}
     volumes:
       - hcp-runtime:/var/lib/hcp
@@ -43,7 +44,7 @@ services:
         read_only: true
         bind:
           create_host_path: false
-      - ./secrets/hcp-control:/run/secrets/hcp-control:ro
+      - ./secrets:/run/hcp-legacy-secrets:ro
       - ./secrets/known_hosts:/run/secrets/known_hosts:ro
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

@@ -1,3 +1,5 @@
 ---
 audit_profile: basic_linux
-ansible_ssh_private_key_file: "{{ lookup('env', 'HCP_SSH_PRIVATE_KEY_PATH') | default(lookup('env', 'HOME') ~ '/.ssh/hcp-control', true) }}"
+# Per-host credentials take precedence; the shared key remains a migration
+# fallback for existing inventories only. No password is stored in inventory.
+ansible_ssh_private_key_file: "{{ ((lookup('env', 'HCP_STATE_DIR') | default(inventory_dir, true)) ~ '/ssh-host-keys/' ~ hcp_ssh_credential_id ~ '/id_ed25519') if hcp_ssh_credential_id is defined else (lookup('env', 'HCP_SSH_PRIVATE_KEY_PATH') | default(lookup('env', 'HOME') ~ '/.ssh/hcp-control', true)) }}"

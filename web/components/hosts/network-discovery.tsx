@@ -20,9 +20,9 @@ export function NetworkDiscovery({ cidr, result, loading, onCidr, onDetect, onSc
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
         <h2 id="network-discovery-title" className="text-lg font-semibold text-white">1. Сканирование сети</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-400">Найдите машины с открытым SSH-портом 22 в своей подсети. Если адрес уже известен, переходите к подготовке SSH ниже.</p>
+        <p className="mt-2 text-sm leading-6 text-slate-400">Найдите машины с открытым SSH-портом 22 в своей подсети. Если адрес уже известен, переходите к подключению SSH ниже.</p>
       </div>
-      <a href="#ssh-setup" className="text-sm text-sky-300 underline underline-offset-4">Адрес уже известен</a>
+      <a href="#host-form" className="text-sm text-sky-300 underline underline-offset-4">Адрес уже известен</a>
     </div>
     <div className="mt-4 flex flex-wrap items-end gap-3">
       <label className="block min-w-0 text-sm text-slate-300">Подсеть целевых хостов

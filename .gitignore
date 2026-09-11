@@ -26,3 +26,5 @@ ansible/reports/*.json
 ansible/playbooks/custom/*
 !ansible/playbooks/custom/.gitkeep
 .lab/
+
+ansible/ssh-host-keys/

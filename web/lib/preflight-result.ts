@@ -16,7 +16,7 @@ export function explainConnectionFailure(stage: "ssh" | "python" | "sudo", detai
       return "Ключ сервера не подтверждён. В форме добавления найдите «Подтверждение сервера», вставьте отпечаток из доверенной консоли Astra и нажмите «Подтвердить сервер».";
     }
     if (/Permission denied.*publickey|Authentication failed/i.test(details)) {
-      return "SSH не принял ключ платформы. Проверьте пользователя в форме и его authorized_keys на Astra.";
+      return "SSH не принял ключ этого подключения. Проверьте пользователя в форме и его authorized_keys на Astra.";
     }
     if (/Connection refused|timed out|No route to host|unreachable/i.test(details)) {
       return "Нет SSH-подключения. Проверьте адрес, порт и доступность Astra из контейнера HCP.";
@@ -25,7 +25,7 @@ export function explainConnectionFailure(stage: "ssh" | "python" | "sudo", detai
   }
   if (stage === "sudo") {
     if (/Missing sudo password|a password is required|no password was provided/i.test(details)) {
-      return "sudo требует пароль. Администратор Astra должен настроить доступ для пользователя SSH по инструкции в блоке «Первое подключение по SSH». Затем повторите проверку.";
+      return "sudo требует пароль. В блоке «Вход по паролю и отдельный SSH-ключ» можно явно разрешить sudo без пароля, если у учётной записи уже есть административные права. Затем повторите проверку.";
     }
     if (/not in the sudoers|not allowed to execute|not allowed to run sudo/i.test(details)) {
       return "Пользователю SSH не разрешён этот запуск через sudo. Права на Astra должен настроить её администратор.";

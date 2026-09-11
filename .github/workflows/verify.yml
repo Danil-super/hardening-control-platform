@@ -51,6 +51,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: ./deployment/lab/up.sh
+      - name: Enroll two real SSH hosts with separate keys
+        run: python3 deployment/lab/verify-ssh-enrollment.py
       - name: Exercise real SSH, Ansible, Nmap, Lynis and Trivy
         run: python3 deployment/lab/verify.py --online
       - name: Check temporary Lynis cleanup
@@ -61,6 +63,7 @@ jobs:
           docker compose -f deployment/lab/docker-compose.yml restart hcp
           docker compose -f deployment/lab/docker-compose.yml up -d --wait --wait-timeout 180 hcp
           python3 deployment/lab/verify.py --check-persistence
+          python3 deployment/lab/verify-ssh-enrollment.py --check-persistence
       - name: Save acceptance protocol
         if: always()
         uses: actions/upload-artifact@v4
@@ -68,6 +71,7 @@ jobs:
           name: lab-verification
           path: |
             .lab/verification.json
+            .lab/ssh-enrollment.json
             .lab/reports/*.json
           if-no-files-found: warn
       - name: Show service logs on failure
@@ -75,4 +79,6 @@ jobs:
         run: docker compose -f deployment/lab/docker-compose.yml logs --no-color --tail=150
       - name: Stop lab
         if: always()
-        run: docker compose -f deployment/lab/docker-compose.yml down
+        run: |
+          docker rm -f hcp-enrollment-target || true
+          docker compose -f deployment/lab/docker-compose.yml down

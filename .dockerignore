@@ -12,6 +12,7 @@ ansible/incidents.json
 ansible/scheduler.json
 ansible/*.sqlite*
 ansible/reports
+ansible/ssh-host-keys
 ansible/playbooks/custom
 secrets
 *.log

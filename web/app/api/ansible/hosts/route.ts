@@ -4,6 +4,7 @@ import path from "node:path";
 import { NextResponse } from "next/server";
 import { getReportsDir, listAnsibleReports } from "@/lib/ansible-reports";
 import { isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
+import { HostCredentialError, credentialKeyPath, publicCredentialSummary, validateHostCredential } from "@/lib/host-credentials";
 import { hasActiveRemediationForHost } from "@/lib/state-store";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,7 @@ type InventoryHost = {
   become: boolean | null;
   groups: string[];
   raw: string;
+  credentialId: string | null;
   lastReport: HostReport | null;
   reportCount: number;
 };
@@ -125,6 +127,7 @@ function readInventoryHosts(inventoryPath: string) {
     if (existing) {
       if (values.has("ansible_host")) existing.address = address;
       if (values.has("ansible_user")) existing.user = values.get("ansible_user") ?? null;
+      if (values.has("hcp_ssh_credential_id")) existing.credentialId = values.get("hcp_ssh_credential_id") ?? null;
       if (values.has("ansible_port")) existing.port = normalizePort(values.get("ansible_port")) ?? 22;
       if (values.has("ansible_become")) existing.become = parseBoolean(values.get("ansible_become"));
       if (!existing.groups.includes(currentGroup)) existing.groups.push(currentGroup);
@@ -138,6 +141,7 @@ function readInventoryHosts(inventoryPath: string) {
       become: parseBoolean(values.get("ansible_become")),
       groups: [currentGroup],
       raw: line,
+      credentialId: values.get("hcp_ssh_credential_id") ?? null,
       lastReport: null,
       reportCount: 0,
     });
@@ -152,14 +156,16 @@ function hostLine({
   port,
   user,
   become,
+  credentialId,
 }: {
   alias: string;
   address: string;
   port: number;
   user: string;
   become: boolean;
+  credentialId: string | null;
 }) {
-  return `${alias} ansible_host=${address} ansible_port=${port} ansible_user=${user} ansible_become=${become ? "true" : "false"}`;
+  return `${alias} ansible_host=${address} ansible_port=${port} ansible_user=${user} ansible_become=${become ? "true" : "false"}${credentialId ? ` hcp_ssh_credential_id=${credentialId} ansible_ssh_private_key_file=${JSON.stringify(credentialKeyPath(credentialId))}` : ""}`;
 }
 
 function removeHostLine(lines: string[], alias: string) {
@@ -270,7 +276,7 @@ export async function GET() {
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
   const reportsPath = getReportsDir(repoRoot);
-  const hosts = attachReports(readInventoryHosts(inventoryPath), reportsPath);
+  const hosts = attachReports(readInventoryHosts(inventoryPath), reportsPath).map((host) => ({ ...host, ...publicCredentialSummary(host.credentialId) }));
 
   const withReports = hosts.filter((host) => host.lastReport).length;
   const becomeEnabled = hosts.filter((host) => host.become).length;
@@ -354,7 +360,11 @@ export async function POST(request: Request) {
     );
   }
 
-  const newLine = hostLine({ alias, address, port, user, become });
+  const credentialId = typeof body?.credentialId === "string" && body.credentialId ? body.credentialId : null;
+  if (!credentialId && body?.legacyAccess !== true) return NextResponse.json({ ok: false, message: "Сначала настройте отдельный SSH-ключ этого хоста." }, { status: 400 });
+  try { if (credentialId) validateHostCredential(credentialId, { alias, address, port, user }); }
+  catch (error) { return NextResponse.json({ ok: false, message: error instanceof HostCredentialError ? error.message : "Ключ хоста недоступен." }, { status: 400 }); }
+  const newLine = hostLine({ alias, address, port, user, become, credentialId });
   const lines = current.split("\n");
   saveInventory(inventoryPath, insertHostLine(lines, group, newLine));
 
@@ -369,6 +379,7 @@ export async function POST(request: Request) {
       port,
       become,
       groups: [group],
+      ...publicCredentialSummary(credentialId),
     },
   });
 }
@@ -410,18 +421,22 @@ export async function PUT(request: Request) {
     );
   }
 
+  const credentialId = typeof body?.credentialId === "string" && body.credentialId ? body.credentialId : existing.credentialId;
+  try { if (credentialId) validateHostCredential(credentialId, { alias, address, port, user }); }
+  catch (error) { return NextResponse.json({ ok: false, message: error instanceof HostCredentialError ? error.message : "Ключ хоста недоступен." }, { status: 400 }); }
+
   const removed = removeHostLine(current.split("\n"), alias);
   const nextLines = insertHostLine(
     removed.lines,
     group,
-    hostLine({ alias, address, port, user, become }),
+    hostLine({ alias, address, port, user, become, credentialId }),
   );
   saveInventory(inventoryPath, nextLines);
 
   return NextResponse.json({
     ok: true,
     message: "Хост обновлен.",
-    host: { alias, address, user, port, become, groups: [group] },
+    host: { alias, address, user, port, become, groups: [group], ...publicCredentialSummary(credentialId) },
   });
 }
 

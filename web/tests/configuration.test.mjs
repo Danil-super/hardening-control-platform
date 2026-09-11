@@ -57,7 +57,7 @@ test("host onboarding uses verified SSH host keys and persists them", () => {
   assert.match(accessRoute, /operation === "trust"/);
   assert.match(access, /host_key_mismatch/);
   assert.match(access, /StrictHostKeyChecking=yes/);
-  assert.match(hosts, /SshConnectionHelp/);
+  assert.match(hosts, /SshCredentialSetup/);
   assert.match(hosts, /Сначала успешно проверьте это SSH-подключение/);
   assert.match(compose, /HCP_KNOWN_HOSTS_PATH: \/var\/lib\/hcp\/known_hosts/);
 });

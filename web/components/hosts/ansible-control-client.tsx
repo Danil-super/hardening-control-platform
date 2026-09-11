@@ -18,9 +18,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, LinkButton } from "@/components/ui/button";
 import { useActionResult, useFeedbackMessage, useNotify } from "@/components/ui/feedback";
 import { errorMessage, readApiResponse } from "@/lib/client-api";
-import { SshConnectionHelp, HostServerTrust } from "@/components/hosts/ssh-connection-help";
+import { HostServerTrust } from "@/components/hosts/ssh-connection-help";
 import { copyText } from "@/lib/clipboard";
 import { NetworkDiscovery, type DiscoveryPayload } from "@/components/hosts/network-discovery";
+import { SshCredentialSetup, type CredentialSetupResult, type SetupSecrets } from "@/components/hosts/ssh-credential-setup";
 import type { PreflightCheck } from "@/lib/preflight-result";
 
 type HealthPayload = {
@@ -66,6 +67,10 @@ type ManagedHost = {
   become: boolean | null;
   groups: string[];
   reportCount: number;
+  credentialId?: string | null;
+  credentialFingerprint?: string | null;
+  credentialPublicKey?: string | null;
+  credentialReady?: boolean;
   lastReport: {
     fileName: string;
     createdAt: string | null;
@@ -105,13 +110,6 @@ type PreflightPayload = {
     os: string | null;
     python: string | null;
   };
-};
-
-type AccessPayload = {
-  ok?: boolean;
-  publicKey?: string;
-  fingerprint?: string | null;
-  message?: string;
 };
 
 type HostKeyPayload = {
@@ -215,7 +213,8 @@ export function AnsibleControlClient() {
   const [changeReason, setChangeReason] = useState("");
   const [confirmedHost, setConfirmedHost] = useState("");
   const [transactions, setTransactions] = useState<RemediationTransaction[]>([]);
-  const [access, setAccess] = useState<AccessPayload | null>(null);
+  const [manualCredentialId, setManualCredentialId] = useState<string | null>(null);
+  const [credentialResult, setCredentialResult] = useState<CredentialSetupResult | null>(null);
   const [hostKeyScan, setHostKeyScan] = useState<HostKeyPayload | null>(null);
   const [trustedFingerprint, setTrustedFingerprint] = useState("");
   const [serverTrusted, setServerTrusted] = useState(false);
@@ -231,13 +230,12 @@ export function AnsibleControlClient() {
   );
 
   const connectionSignature = useMemo(
-    () => [manualAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo"].join("\u0000"),
-    [manualAddress, manualAlias, manualBecome, manualPort, manualUser],
+    () => [manualAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", manualCredentialId ?? "legacy"].join("\u0000"),
+    [manualAddress, manualAlias, manualBecome, manualPort, manualUser, manualCredentialId],
   );
 
   useEffect(() => {
     void refreshAll();
-    void loadControlKey();
   }, []);
 
   useEffect(() => {
@@ -252,14 +250,6 @@ export function AnsibleControlClient() {
     const timer = window.setTimeout(() => setCopied(""), 2500);
     return () => window.clearTimeout(timer);
   }, [copied]);
-
-  const installPublicKeyCommand = useMemo(() => {
-    if (!access?.publicKey) {
-      return "";
-    }
-    const quotedKey = access.publicKey.replaceAll("'", "'\"'\"'");
-    return `install -d -m 700 ~/.ssh && touch ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys && (grep -qxF -- '${quotedKey}' ~/.ssh/authorized_keys || printf '\\n%s\\n' '${quotedKey}' >> ~/.ssh/authorized_keys)`;
-  }, [access?.publicKey]);
 
   async function refreshAll(announce = false) {
     setLoading("refresh");
@@ -313,27 +303,6 @@ export function AnsibleControlClient() {
     } catch (error) {
       notify(errorMessage(error, "Не удалось обновить список изменений."), "error");
     } finally { setLoading(""); }
-  }
-
-  async function loadControlKey(announce = false) {
-    setAccessLoading("key");
-    setAccessMessage("");
-    try {
-      const response = await fetch("/api/ansible/access", { cache: "no-store" });
-      const payload = await readApiResponse(response);
-      setAccess(payload);
-      if (!payload.ok) {
-        setAccessMessage(payload.message ?? "Не удалось получить публичный ключ узла управления.");
-      } else if (announce) {
-        setAccessMessage("Текущий ключ загружен повторно. Новый ключ не создавался.", "success");
-      }
-    } catch (error) {
-      const message = errorMessage(error, "Не удалось получить SSH-ключ. Проверьте соединение с платформой.");
-      setAccess({ ok: false, message });
-      setAccessMessage(message);
-    } finally {
-      setAccessLoading("");
-    }
   }
 
   async function copyToClipboard(value: string, label: string) {
@@ -400,7 +369,7 @@ export function AnsibleControlClient() {
   }
 
   async function addManualHost() {
-    if (!preflight?.ok || preflightFor !== connectionSignature) {
+    if (!manualCredentialId || !preflight?.ok || preflightFor !== connectionSignature) {
       setRunResult({
         ok: false,
         action: "addHost",
@@ -422,6 +391,7 @@ export function AnsibleControlClient() {
           port: manualPort,
           group: manualGroup,
           become: manualBecome,
+          credentialId: manualCredentialId,
         }),
       });
       const payload = await readApiResponse(response);
@@ -457,6 +427,7 @@ export function AnsibleControlClient() {
           port: manualPort,
           group: manualGroup,
           become: manualBecome,
+          credentialId: manualCredentialId,
         }),
       });
       const payload = await readApiResponse(response);
@@ -501,12 +472,45 @@ export function AnsibleControlClient() {
     }
   }
 
-  async function checkPreflight() {
+  async function setupHostCredential(secrets: SetupSecrets) {
+    setLoading("bootstrap");
+    setPreflight(null); setPreflightFor("");
+    try {
+      const response = await fetch("/api/ansible/hosts/bootstrap", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ alias: manualAlias, address: manualAddress, user: manualUser, port: manualPort,
+          credentialId: manualCredentialId, ...secrets, confirmRootAccess: secrets.configureSudo }),
+      });
+      const payload = await readApiResponse(response);
+      if (!payload.ok) {
+        setCredentialResult((previous) => ({ ...previous, ok: false, message: payload.message }));
+        notify(payload.message || "Настройка SSH не завершена.", "error");
+        return;
+      }
+      setManualCredentialId(payload.credentialId);
+      setCredentialResult(payload);
+      notify(payload.message, payload.sudo?.requested && !payload.sudo.ready ? "warning" : "success");
+      await checkPreflight(payload.credentialId);
+    } catch (error) {
+      const message = errorMessage(error, "Настройка SSH не завершена. Повторная попытка продолжит работу с тем же ключом.");
+      setCredentialResult((previous) => ({ ...previous, ok: false, message }));
+      notify(message, "error");
+    } finally {
+      secrets.password = ""; secrets.sudoPassword = "";
+      setLoading("");
+    }
+  }
+
+  function invalidateCredential() {
+    setManualCredentialId(null); setCredentialResult(null); setPreflight(null); setPreflightFor("");
+  }
+
+  async function checkPreflight(credentialId = manualCredentialId) {
     setLoading("preflight");
     setRunResult(null);
     setPreflight(null);
     setPreflightFor("");
-    const checkedConnection = connectionSignature;
+    const checkedConnection = [manualAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", credentialId ?? "legacy"].join("\u0000");
     try {
       const response = await fetch("/api/ansible/hosts/preflight", {
         method: "POST",
@@ -517,6 +521,7 @@ export function AnsibleControlClient() {
           user: manualUser,
           port: manualPort,
           become: manualBecome,
+          credentialId,
         }),
       });
       const payload = await readApiResponse(response);
@@ -735,6 +740,7 @@ export function AnsibleControlClient() {
 
   function startNewHost(address = "", alias = "") {
     setEditingHost("");
+    invalidateCredential();
     setManualAlias(alias);
     setManualAddress(address);
     setManualUser("");
@@ -747,7 +753,11 @@ export function AnsibleControlClient() {
   }
 
   function fillHostForm(host: ManagedHost) {
+    if (loading || accessLoading) return;
     setEditingHost(host.alias);
+    setManualCredentialId(host.credentialId ?? null);
+    setCredentialResult(host.credentialId && host.credentialReady ? { ok: true, credentialId: host.credentialId, publicKey: host.credentialPublicKey, fingerprint: host.credentialFingerprint } : null);
+    setPreflight(null); setPreflightFor("");
     setSelectedAlias(host.alias);
     setManualAlias(host.alias);
     setManualAddress(host.address);
@@ -789,22 +799,19 @@ export function AnsibleControlClient() {
       <NetworkDiscovery cidr={scanCidr} result={discovery} loading={loading || accessLoading}
         onCidr={setScanCidr} onDetect={detectNetwork} onScan={scanNetwork} onChoose={startNewHost} />
 
-      <SshConnectionHelp access={access} loading={accessLoading} command={installPublicKeyCommand}
-        user={manualUser} copied={copied} onRefresh={() => void loadControlKey(true)} onCopy={copyToClipboard} />
-
       <section id="host-form" ref={formRef} className="scroll-mt-6 rounded-xl border border-slate-800 bg-slate-950/70 p-4 sm:p-5" aria-labelledby="host-form-title">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 id="host-form-title" className="text-lg font-semibold text-white">{editingHost ? `3. Настройки хоста: ${editingHost}` : "3. Добавление хоста"}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">Укажите пользователя, которому выдали доступ на Astra, подтвердите сервер и проверьте подключение.</p>
+            <h2 id="host-form-title" className="text-lg font-semibold text-white">{editingHost ? `2. Подключение хоста: ${editingHost}` : "2. Подключение хоста по SSH"}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-400">Укажите параметры Astra, подтвердите сервер и войдите по паролю. Для каждого хоста HCP создаст отдельную ключевую пару.</p>
           </div>
           {editingHost ? <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)}>Добавить другой хост</Button> : null}
         </div>
         <fieldset disabled={Boolean(loading) || Boolean(accessLoading)} className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-          <Field label="Имя хоста" value={manualAlias} onChange={setManualAlias} placeholder="web-01" disabled={Boolean(editingHost)} />
-          <Field label="IP-адрес или домен" value={manualAddress} onChange={setManualAddress} placeholder="192.168.1.10" />
-          <Field label="Пользователь SSH" value={manualUser} onChange={setManualUser} placeholder="admin" />
-          <Field label="Порт SSH" value={manualPort} onChange={setManualPort} placeholder="22" />
+          <Field label="Имя хоста" value={manualAlias} onChange={(value) => { setManualAlias(value); invalidateCredential(); }} placeholder="web-01" disabled={Boolean(editingHost)} />
+          <Field label="IP-адрес или домен" value={manualAddress} onChange={(value) => { setManualAddress(value); invalidateCredential(); }} placeholder="192.168.1.10" />
+          <Field label="Пользователь SSH" value={manualUser} onChange={(value) => { setManualUser(value); invalidateCredential(); }} placeholder="admin" />
+          <Field label="Порт SSH" value={manualPort} onChange={(value) => { setManualPort(value); invalidateCredential(); }} placeholder="22" />
           <Field label="Группа inventory" value={manualGroup} onChange={setManualGroup} placeholder="linux_hosts" />
           <label className="flex h-10 min-w-0 items-center gap-2 self-end rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-200">
             <input
@@ -817,18 +824,21 @@ export function AnsibleControlClient() {
           </label>
         </fieldset>
         <p className={`mt-3 rounded-lg border p-3 text-sm leading-6 ${manualBecome ? "border-slate-700 text-slate-300" : "border-amber-400/25 bg-amber-400/5 text-amber-100"}`}>
-          {manualBecome ? "sudo включён: рекомендуемый режим для аудита и изменений. Требуется выданный на Astra доступ без пароля — настройка показана в шаге 2 выше."
+          {manualBecome ? "sudo включён: рекомендуемый режим для аудита и изменений. Доступ без пароля можно настроить ниже при наличии административных прав."
             : "Без sudo: ограниченный режим. Защищённые данные могут быть недоступны, изменения firewall требуют root."}
         </p>
         <HostServerTrust address={manualAddress} port={manualPort} loading={accessLoading || loading} message={accessMessage}
           trusted={serverTrusted} fingerprints={hostKeyScan?.fingerprints} trustedFingerprint={trustedFingerprint}
           onFingerprint={(value) => { setTrustedFingerprint(value); setServerTrusted(false); }} onScan={scanHostFingerprint} onTrust={trustScannedHostKey} onCopy={copyToClipboard} />
+        <SshCredentialSetup key={[manualAlias, manualAddress, manualUser, manualPort].join("|")}
+          loading={Boolean(loading) || Boolean(accessLoading)} canConnect={Boolean(manualAlias && manualAddress && manualUser && manualPort)}
+          result={credentialResult} legacy={Boolean(editingHost && !manualCredentialId)} onSetup={setupHostCredential} />
         <div className="mt-5 flex flex-wrap gap-3">
-          <Button variant="secondary" onClick={checkPreflight} disabled={Boolean(loading) || Boolean(accessLoading) || !manualAlias || !manualAddress || !manualUser} className="w-full sm:w-auto">
+          <Button variant="secondary" onClick={() => void checkPreflight()} disabled={Boolean(loading) || Boolean(accessLoading) || !manualAlias || !manualAddress || !manualUser} className="w-full sm:w-auto">
             <CheckCircle2 size={16} className={loading === "preflight" ? "animate-spin" : ""} aria-hidden="true" />
             Проверить подключение
           </Button>
-          {!editingHost ? <Button onClick={addManualHost} disabled={Boolean(loading) || Boolean(accessLoading) || !preflight?.ok || preflightFor !== connectionSignature} className="w-full sm:w-auto" title={!preflight?.ok || preflightFor !== connectionSignature ? "Сначала проверьте подключение" : undefined}>
+          {!editingHost ? <Button onClick={addManualHost} disabled={Boolean(loading) || Boolean(accessLoading) || !manualCredentialId || !preflight?.ok || preflightFor !== connectionSignature} className="w-full sm:w-auto" title={!preflight?.ok || preflightFor !== connectionSignature ? "Сначала проверьте подключение" : undefined}>
             <Plus size={16} aria-hidden="true" />
             Добавить хост
           </Button> : <>
@@ -841,7 +851,7 @@ export function AnsibleControlClient() {
           <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)} className="w-full sm:w-auto">Отменить редактирование</Button>
           </>}
         </div>
-        <p className="mt-3 text-sm leading-6 text-slate-400">Сначала нажмите «Проверить подключение». После успешной проверки станет доступно сохранение хоста.</p>
+        <p className="mt-3 text-sm leading-6 text-slate-400">После установки ключа проверка выполняется автоматически. Её можно повторить кнопкой «Проверить подключение». Успешный результат разрешает сохранение хоста.</p>
         {preflight && preflightFor === connectionSignature ? (
           <>
           <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
