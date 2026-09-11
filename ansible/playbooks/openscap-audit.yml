@@ -156,7 +156,7 @@
               - --run-id
               - "{{ report_suffix }}"
               - --reason
-              - "Не удалось собрать встроенный профиль Astra: требуется OpenSCAP с поддержкой XCCDF, datastream и SCE."
+              - "{{ 'Не удалось собрать встроенный профиль Astra. oscap ds sds-compose: exit=' ~ (openscap_bundle.rc | default('unknown') | string) ~ '; ' ~ ((openscap_bundle.stderr | default(''))[:2000]) }}"
               - --profile
               - "{{ openscap_profile }}"
               - --datastream

@@ -79,6 +79,12 @@ def playbook(work, content, phase):
     assert process.returncode == 0
     assert set(Path("/tmp").glob("hcp-openscap-*")) == before, "Target temporary content was not cleaned"
     raw = reports / ("." + HOST + "-openscap-" + phase + ".xml")
+    if not raw.is_file():
+        print(process.stdout[-16000:])
+        normalized = reports / (HOST + "-openscap-" + phase + ".json")
+        if normalized.is_file():
+            print(normalized.read_text()[:16000])
+        raise AssertionError("OpenSCAP did not produce ARF; inspect actual preparation/evaluation diagnostics above")
     visible = work / ("artifacts/" + phase + ".arf.xml")
     raw.rename(visible)
     report = json.loads((reports / (HOST + "-openscap-" + phase + ".json")).read_text())
