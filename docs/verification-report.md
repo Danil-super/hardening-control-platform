@@ -47,7 +47,21 @@
 
 [Проверка старого Python](https://github.com/Danil-super/hardening-control-platform/actions/runs/34578221368) выполнила все 6 сценариев на настоящем Python 3.5.10, включая чтение файлов и работу нового OVAL-адаптера с неполными результатами. [Артефакт](https://github.com/Danil-super/hardening-control-platform/actions/runs/34578221368/artifacts/10190497024) фиксирует интерпретатор и результаты. [Основная CI ffd2c72](https://github.com/Danil-super/hardening-control-platform/actions/runs/34578221274) успешно завершила `web`, `ansible`, `container`, `lab`, включая синтаксис всех 14 плейбуков и реальную лабораторию SSH.
 
+## Встроенный профиль Astra: настоящий OpenSCAP и проверка нарушения
+
+[Прогон ece7979](https://github.com/Danil-super/hardening-control-platform/actions/runs/34580156875) успешно выполнил оба задания: `real-openscap-engine` и `real-python35`. Исправлена выявленная настоящим движком ошибка: экспортируемые XCCDF-значения теперь явно задают `operator="equals"`, отсутствие которого вызывало аварийное завершение SCE в OpenSCAP 1.3.9.
+
+На одноразовой Ubuntu 24.04 исходный профиль корректно вернул **18 notapplicable**. Отдельная явно изменённая фикстура идентификации выполнила весь профиль: **13 pass, 1 fail, 4 unknown**. Это успешная проверка исполнения, а не утверждение о соответствии системы: неизвестные результаты сохранены и требуют выяснения доступности наблюдений. Использованы 17 SCE-правил, одно нативное OVAL-правило и нативное CPE-условие семейства; валидация исходного XML и собранного datastream включена.
+
+Настоящая смена прав отдельного временного файла дала **pass → fail → pass после восстановления**. Проверены совпадение исходного ARF с отчётом HCP, сохранение вывода SCE, контрольная сумма datastream вместе с кодом проверок, очистка временных каталогов и неизменность идентичности рабочей ОС. Никакого переключателя фиктивной Astra в боевой код не добавлено. Второе задание выполнило неизменённый SCE-модуль на настоящем Python 3.5.10.
+
+[Артефакт профиля](https://github.com/Danil-super/hardening-control-platform/actions/runs/34580156875/artifacts/10191283253) содержит 21 файл с ARF, отчётами HCP, datastream, результатом приёмки и журналами. SHA-256 архива по журналу загрузки: `6c2eb2260df1f0c7179dea09d9382dd2bcce4ffbda6188cd89dfe8a2b12db9a3`. **Это проверка движка и интеграции на Ubuntu с контролируемым образцом; настоящая Astra, её база производителя, все редакции и архитектуры этим прогоном не проверены.**
+
+Повторные локальные проверки: 99 Python-тестов и 79 веб-тестов успешны. В [основной CI того же коммита](https://github.com/Danil-super/hardening-control-platform/actions/runs/34580156784) успешно завершены задания `web` (типы, тесты, production-сборка и HTTP) и `ansible` (entrypoint и синтаксис плейбуков).
+
 ## Разные выпуски Astra и реальный Python 3.5
+
+Повторная проверка на [коммите fb1609e](https://github.com/Danil-super/hardening-control-platform/commit/fb1609ec790973f95d13c66e8f95b82d1e348a53), добавившем исключение явно чужих платформ и отображение неизвестной критичности, также успешна: [OVAL с настоящим пакетным probe](https://github.com/Danil-super/hardening-control-platform/actions/runs/34579241304), [Python 3.5](https://github.com/Danil-super/hardening-control-platform/actions/runs/34579241198) и [все четыре задания основной CI](https://github.com/Danil-super/hardening-control-platform/actions/runs/34579241093). OVAL-артефакт [10190923431](https://github.com/Danil-super/hardening-control-platform/actions/runs/34579241304/artifacts/10190923431) имеет SHA-256 `48b549154a6fe9e390e02986a35e72f9fa8245eda5edcdc33a735de39c9506b4`. Проверяемый XML остаётся явно синтетическим.
 
 Подключение не ограничивается одним номером выпуска Astra: сохраняется точное значение `/etc/astra_version`, а доступность проверок определяется по фактическим возможностям машины. До передачи Python-модулей мастер через SSH/raw читает версию интерпретатора и сравнивает её с установленным ansible-core. Несовместимый Python получает объяснение; неизвестная версия Ansible требует успешного запуска модуля. Тесты охватывают сохранение разных номеров Astra и несовместимость старого Python с новым Ansible.
 
