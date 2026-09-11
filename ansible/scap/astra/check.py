@@ -36,7 +36,6 @@ SSH_CHECKS = {
     "ssh_x11_forwarding": ("x11forwarding", ("no",)),
 }
 SYSCTL_CHECKS = {
-    "aslr": ("kernel.randomize_va_space", (2,)),
     "protected_hardlinks": ("fs.protected_hardlinks", (1,)),
     "protected_symlinks": ("fs.protected_symlinks", (1,)),
     "ptrace_scope": ("kernel.yama.ptrace_scope", (1, 2, 3)),

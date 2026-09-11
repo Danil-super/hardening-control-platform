@@ -66,6 +66,65 @@ class OvalAuditTests(unittest.TestCase):
         self.assertEqual(len(report['scanner']['definitionResults']), 5)
         self.assertFalse(report['scanner']['partial'])
 
+    def test_foreign_platforms_never_confirm_astra_cve_even_with_true_package_result(self):
+        for platform in ('Ubuntu 24.04', 'Debian GNU/Linux 12', 'Red Hat Enterprise Linux 9',
+                         'cpe:/o:oracle:linux:8', 'CPE:2.3:O:MICROSOFT:WINDOWS_11:*:*:*:*:*:*:*',
+                         'cpe:2.3:o:apple:mac_os_x:14:*:*:*:*:*:*:*'):
+            with self.subTest(platform=platform):
+                raw = source().replace(b'<metadata>', ('<metadata><affected family="unix"><platform>' + platform
+                    + '</platform><product>fixture-package</product></affected>').encode())
+                report = oval.empty_report(arguments())
+                oval.parse_results(oval.safe_xml(results()), oval.source_definitions(oval.safe_xml(raw)), report)
+                report = oval.finish(report)
+                scanner = report['scanner']
+                self.assertTrue(scanner['partial'])
+                self.assertIsNone(scanner['uniqueCveCount'])
+                self.assertEqual(scanner['evaluatedVulnerabilityDefinitionCount'], 0)
+                self.assertEqual(scanner['excludedPlatformDefinitionCount'], 1)
+                self.assertEqual(scanner['resultCounts'], {'true': 1})
+                entry = scanner['definitionResults'][0]
+                self.assertEqual(entry['result'], 'true')
+                self.assertEqual(entry['affected'][0]['platforms'], [platform])
+                self.assertEqual(entry['affected'][0]['products'], ['fixture-package'])
+                self.assertEqual(entry['platformApplicability']['status'], 'foreign_platform')
+                self.assertFalse(any(item['status'] == 'failed' for item in report['findings']))
+                self.assertIn('CVE-2021-44228', report['findings'][0]['evidence'])
+
+    def test_foreign_false_is_not_used_as_a_clean_cve_assessment(self):
+        raw = source().replace(b'<metadata>', b'<metadata><affected family="unix"><platform>Debian</platform></affected>')
+        report = oval.empty_report(arguments())
+        oval.parse_results(oval.safe_xml(results(('false',))), oval.source_definitions(oval.safe_xml(raw)), report)
+        report = oval.finish(report)
+        self.assertTrue(report['scanner']['partial'])
+        self.assertIsNone(report['scanner']['uniqueCveCount'])
+        self.assertEqual(report['scanner']['resultCounts'], {'false': 1})
+
+    def test_astra_metadata_can_coexist_with_foreign_platforms_without_release_whitelist(self):
+        for astra in ('Astra Linux 1.6', 'Astra Linux 12.4-custom (Debian based)',
+                      'cpe:2.3:o:rusbitech:astra_linux:99:*:*:*:*:*:*:*'):
+            affected = [{'family': 'unix', 'platforms': ['Debian 12', astra], 'products': []}]
+            result = oval.platform_applicability(affected)
+            self.assertEqual(result['status'], 'astra_named')
+            self.assertEqual(result['vendorReleaseApplicability'], 'not_verified')
+
+    def test_unknown_platform_is_never_claimed_as_vendor_verified(self):
+        for platforms in ([], ['Linux'], ['HCP synthetic fixture']):
+            result = oval.platform_applicability([{'family': 'unix', 'platforms': platforms, 'products': []}])
+            self.assertEqual(result['status'], 'not_verified')
+            self.assertEqual(result['vendorReleaseApplicability'], 'not_verified')
+
+    def test_missing_or_unrecognized_severity_is_explicitly_unrated(self):
+        for severity, expected in (('', True), ('vendor-special', True), ('Important', False)):
+            raw = source().replace(b'</metadata>', ('<severity>' + severity + '</severity></metadata>').encode())
+            report = oval.empty_report(arguments())
+            oval.parse_results(oval.safe_xml(results()), oval.source_definitions(oval.safe_xml(raw)), report)
+            report = oval.finish(report)
+            failed = [item for item in report['findings'] if item['status'] == 'failed']
+            self.assertEqual(len(failed), 1)
+            self.assertEqual(failed[0]['severityUnknown'], expected)
+            self.assertEqual(report['scanner']['unratedVulnerabilityCount'], int(expected))
+            self.assertIsNone(failed[0]['vulnerability']['cvss'])
+
     def test_non_vulnerability_reference_never_becomes_cve(self):
         report = self.parse(('patch', 'compliance', 'inventory'), ('true',) * 3)
         self.assertIsNone(report['scanner']['uniqueCveCount'])

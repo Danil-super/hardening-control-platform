@@ -29,6 +29,12 @@ class AstraBaselineTests(unittest.TestCase):
         ids = set()
         for rule in rules:
             evaluation = rule.find(X + "check")
+            if rule.get("id") == "xccdf_org.hcp_rule_aslr":
+                self.assertEqual(evaluation.get("system"), "http://oval.mitre.org/XMLSchema/oval-definitions-5")
+                reference = evaluation.find(X + "check-content-ref")
+                self.assertEqual(reference.get("href"), "astra-platform-oval.xml")
+                self.assertEqual(reference.get("name"), "oval:org.hcp.astra:def:2")
+                continue
             ids.add(values[evaluation.find(X + "check-export").get("value-id")])
             self.assertEqual(evaluation.find(X + "check-content-ref").get("href"), "check.py")
             self.assertEqual(evaluation.find(X + "check-import").get("import-name"), "stdout")
@@ -42,18 +48,18 @@ class AstraBaselineTests(unittest.TestCase):
         for release in ('ID=debian\nID_LIKE=debian\n', 'ID=ubuntu\nID_LIKE=debian\n'):
             with patch.object(check, "read_text", return_value=release):
                 self.assertFalse(check.astra_identity())
-                self.assertEqual(check.evaluate("aslr")[0], check.NOT_APPLICABLE)
+                self.assertEqual(check.evaluate("protected_hardlinks")[0], check.NOT_APPLICABLE)
         with patch.object(check, "read_text", return_value="ID=astra\nID=debian\n"):
-            self.assertEqual(check.evaluate("aslr")[0], check.UNKNOWN)
+            self.assertEqual(check.evaluate("protected_hardlinks")[0], check.UNKNOWN)
 
     def test_unreadable_or_missing_observations_are_not_success(self):
         with patch.object(check, "astra_identity", return_value=True), patch.object(check.os, "geteuid", return_value=0):
             for error, expected in ((PermissionError(errno.EACCES, "denied"), check.UNKNOWN),
                                     (FileNotFoundError(errno.ENOENT, "missing"), check.NOT_APPLICABLE)):
                 with patch.object(check, "read_text", side_effect=error):
-                    self.assertEqual(check.evaluate("aslr")[0], expected)
+                    self.assertEqual(check.evaluate("protected_hardlinks")[0], expected)
             with patch.object(check, "read_text", return_value="unsupported"):
-                self.assertEqual(check.evaluate("aslr")[0], check.UNKNOWN)
+                self.assertEqual(check.evaluate("protected_hardlinks")[0], check.UNKNOWN)
         with patch.object(check, "astra_identity", return_value=True), patch.object(check.os, "geteuid", return_value=1000):
             self.assertEqual(check.evaluate("passwd_permissions")[0], check.UNKNOWN)
 

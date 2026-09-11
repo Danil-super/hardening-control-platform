@@ -35,7 +35,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends ansible openscap-scanner
       - name: Verify baseline semantics
         run: python3 -m unittest discover -s ansible/tests -p test_astra_scap.py -v
-      - name: Run real XCCDF validation and all rules through SCE and the production playbook
+      - name: Run real XCCDF validation and all rules through OVAL, SCE and the production playbook
         run: |
           sudo --preserve-env=GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
             /usr/bin/python3 deployment/tests/verify_astra_scap.py \
@@ -68,7 +68,7 @@ jobs:
             --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" \
             --env PYTHONDONTWRITEBYTECODE=1 --workdir /workspace \
             "$(cat python35-image.txt)" python -c \
-            'import runpy; c=runpy.run_path("ansible/scap/astra/check.py"); assert c["evaluate"]("aslr")[0] == 105; print("Python 3.5 real SCE module: non-Astra returns notapplicable")'
+            'import runpy; c=runpy.run_path("ansible/scap/astra/check.py"); assert c["evaluate"]("protected_hardlinks")[0] == 105; print("Python 3.5 real SCE module: non-Astra returns notapplicable")'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

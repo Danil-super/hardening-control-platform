@@ -28,10 +28,10 @@ const statusLabels: Record<FindingStatus, string> = {
   manual: "Вручную",
 };
 
-export function RiskBadge({ risk }: { risk: RiskLevel }) {
+export function RiskBadge({ risk, unknown = false }: { risk: RiskLevel; unknown?: boolean }) {
   return (
     <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold uppercase ${riskClasses[risk]}`}>
-      {riskLabels[risk]}
+      {unknown ? "Риск не оценён" : riskLabels[risk]}
     </span>
   );
 }

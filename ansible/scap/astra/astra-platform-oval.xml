@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<oval_definitions xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5"
+ xmlns:oval="http://oval.mitre.org/XMLSchema/oval-common-5"
+ xmlns:ind="http://oval.mitre.org/XMLSchema/oval-definitions-5#independent"
+ xmlns:unix="http://oval.mitre.org/XMLSchema/oval-definitions-5#unix">
+  <generator>
+    <oval:product_name>HCP authored Astra family baseline</oval:product_name>
+    <oval:product_version>1.0.0</oval:product_version>
+    <oval:schema_version>5.11.1</oval:schema_version>
+    <oval:timestamp>2026-09-11T00:00:00</oval:timestamp>
+  </generator>
+  <definitions>
+    <definition id="oval:org.hcp.astra:def:1" version="1" class="inventory">
+      <metadata>
+        <title>Astra operating-system family applicability</title>
+        <description>HCP family identity from os-release ID or ID_LIKE; no version or architecture whitelist. This is inventory applicability, not a vulnerability definition.</description>
+      </metadata>
+      <criteria>
+        <criterion test_ref="oval:org.hcp.astra:tst:1" comment="os-release identifies the Astra family"/>
+      </criteria>
+    </definition>
+    <definition id="oval:org.hcp.astra:def:2" version="1" class="compliance">
+      <metadata>
+        <title>Current full address-space randomization</title>
+        <description>Current kernel.randomize_va_space equals 2. Boot persistence and individual process exceptions are outside this check.</description>
+      </metadata>
+      <criteria>
+        <criterion test_ref="oval:org.hcp.astra:tst:2" comment="kernel.randomize_va_space equals 2"/>
+      </criteria>
+    </definition>
+  </definitions>
+  <tests>
+    <ind:textfilecontent54_test id="oval:org.hcp.astra:tst:1" version="1" check="at least one" check_existence="at_least_one_exists" comment="Astra family in os-release">
+      <ind:object object_ref="oval:org.hcp.astra:obj:1"/>
+    </ind:textfilecontent54_test>
+    <unix:sysctl_test id="oval:org.hcp.astra:tst:2" version="1" check="all" check_existence="all_exist" comment="Full ASLR">
+      <unix:object object_ref="oval:org.hcp.astra:obj:2"/>
+      <unix:state state_ref="oval:org.hcp.astra:ste:2"/>
+    </unix:sysctl_test>
+  </tests>
+  <objects>
+    <ind:textfilecontent54_object id="oval:org.hcp.astra:obj:1" version="1">
+      <ind:behaviors multiline="true"/>
+      <ind:filepath var_ref="oval:org.hcp.astra:var:1"/>
+      <ind:pattern operation="pattern match">^(?:ID=["']?astra["']?|ID_LIKE=["']?(?:[A-Za-z0-9_.-]+[ \t]+)*astra(?:[ \t]+[A-Za-z0-9_.-]+)*["']?)[ \t]*$</ind:pattern>
+      <ind:instance datatype="int" operation="greater than or equal">1</ind:instance>
+    </ind:textfilecontent54_object>
+    <unix:sysctl_object id="oval:org.hcp.astra:obj:2" version="1">
+      <unix:name>kernel.randomize_va_space</unix:name>
+    </unix:sysctl_object>
+  </objects>
+  <states>
+    <unix:sysctl_state id="oval:org.hcp.astra:ste:2" version="1">
+      <unix:value datatype="int">2</unix:value>
+    </unix:sysctl_state>
+  </states>
+  <variables>
+    <constant_variable id="oval:org.hcp.astra:var:1" version="1" datatype="string" comment="Standard OS identity locations">
+      <value>/etc/os-release</value>
+      <value>/usr/lib/os-release</value>
+    </constant_variable>
+  </variables>
+</oval_definitions>

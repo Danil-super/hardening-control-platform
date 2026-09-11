@@ -18,6 +18,7 @@ export type CorrelatedFinding = {
   title: string;
   category: string;
   risk: RiskLevel;
+  severityUnknown: boolean;
   status: Finding["status"];
   confidence: "observed" | "manual";
   sources: CorrelationEvidence[];
@@ -178,6 +179,7 @@ export function buildHostCorrelation(hostAlias: string) {
       title: group.identity.title,
       category: group.identity.category,
       risk: maxRisk(group.findings),
+      severityUnknown: maxRisk(group.findings) === "info" && group.findings.some((finding) => finding.severityUnknown),
       status,
       confidence,
       sources,

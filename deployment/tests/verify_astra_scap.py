@@ -58,7 +58,9 @@ def raw_results(path):
     results = {row.get("idref"): row.findtext(X + "result") for row in rows}
     evidence = {row.get("idref"): [entry.text or "" for entry in row.findall(".//" + X + "check-import")]
                 for row in rows}
-    assert all(evidence.values()), "Actual SCE stdout must be present in raw ARF"
+    for identifier, status in results.items():
+        if identifier != RULE_PREFIX + "aslr" and status not in {"notapplicable", "notselected"}:
+            assert any(entry.strip() for entry in evidence[identifier]), "Executed SCE stdout must be present in raw ARF"
     assert results.keys() == {node.get("id") for node in ET.parse(SOURCE / "astra-baseline.xml").findall(X + "Rule")}
     return results, evidence
 
@@ -100,7 +102,8 @@ def playbook(work, content, phase):
         native = results[identifier]
         assert finding["status"] == ("passed" if native == "pass" else "failed" if native == "fail" else "manual")
         # The production adapter must preserve bounded SCE observation details.
-        assert any(fragment.strip() in finding["evidence"] for fragment in evidence[identifier] if fragment.strip()), finding
+        if identifier != RULE_PREFIX + "aslr" and native not in {"notapplicable", "notselected"}:
+            assert any(fragment.strip() in finding["evidence"] for fragment in evidence[identifier] if fragment.strip()), finding
     if content == BUILTIN:
         evaluated = Path(str(raw) + ".datastream.xml")
         assert scanner["datastreamChecksum"] == "sha256:" + digest(evaluated)
@@ -114,8 +117,16 @@ def prepare_fixture(work):
     fixture = work / "identity-fixture"
     fixture.mkdir()
     shutil.copy2(SOURCE / "astra-baseline.xml", fixture / "astra-baseline.xml")
+    shutil.copy2(SOURCE / "astra-cpe-dictionary.xml", fixture / "astra-cpe-dictionary.xml")
     identity = fixture / "os-release"
     identity.write_text('ID=astra\nVERSION_ID="controlled-identity-fixture-not-a-real-Astra-VM"\n')
+    oval = ET.parse(SOURCE / "astra-platform-oval.xml")
+    namespace = "{http://oval.mitre.org/XMLSchema/oval-definitions-5}"
+    variable = oval.find(namespace + "variables/" + namespace + "constant_variable")
+    for value in variable.findall(namespace + "value"):
+        variable.remove(value)
+    ET.SubElement(variable, namespace + "value").text = str(identity)
+    oval.write(fixture / "astra-platform-oval.xml", encoding="UTF-8", xml_declaration=True)
     passwd = fixture / "passwd"
     passwd.write_text("root:x:0:0:root:/root:/bin/sh\n")
     passwd.chmod(0o644)
@@ -131,6 +142,7 @@ def prepare_fixture(work):
     run(["oscap", "xccdf", "validate", str(fixture / "astra-baseline.xml")], work / "artifacts/fixture-validation.log")
     stream = fixture / "fixture-ds.xml"
     run(["oscap", "ds", "sds-compose", str(fixture / "astra-baseline.xml"), str(stream)], work / "artifacts/fixture-compose.log")
+    run(["oscap", "ds", "sds-add", str(fixture / "astra-cpe-dictionary.xml"), str(stream)], work / "artifacts/fixture-dictionary.log")
     run(["oscap", "ds", "sds-validate", str(stream)], work / "artifacts/fixture-ds-validation.log")
     return stream, passwd
 
@@ -148,6 +160,7 @@ def main():
     (work / "inventory.ini").write_text("[linux_hosts]\n" + HOST + " ansible_connection=local ansible_python_interpreter=/usr/bin/python3\n")
     run(["oscap", "--version"], work / "artifacts/oscap-version.txt")
     run(["oscap", "xccdf", "validate", str(SOURCE / "astra-baseline.xml")], work / "artifacts/original-validation.log")
+    run(["oscap", "oval", "validate", str(SOURCE / "astra-platform-oval.xml")], work / "artifacts/original-oval-validation.log")
     report, original, _ = playbook(work, BUILTIN, "original-ubuntu-notapplicable")
     assert set(original.values()) == {"notapplicable"}
     assert report["scanner"]["partial"] is True
@@ -172,6 +185,7 @@ def main():
         "realAstraHostVerified": False, "vendorOrCisCertification": False,
         "originalContentSha256": digest(SOURCE / "astra-baseline.xml"), "originalCheckSha256": digest(SOURCE / "check.py"),
         "fixtureDatastreamSha256": digest(stream), "selectedRules": 18,
+        "sceRules": 17, "nativeOvalRules": 1, "nativeCpeFamilyApplicability": True,
         "originalUbuntuCounts": dict(Counter(original.values())), "fixtureCounts": dict(Counter(baseline.values())),
         "permissionPassFailRestored": [baseline[control], negative[control], restored[control]],
         "nativeAndHcpResultsMatch": True, "compiledScriptCoveredByDatastreamChecksum": True,

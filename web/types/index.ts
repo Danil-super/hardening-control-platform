@@ -19,6 +19,7 @@ export type Finding = {
   title: string;
   category: string;
   risk: RiskLevel;
+  severityUnknown?: boolean;
   status: FindingStatus;
   source: FindingSource;
   description: string;

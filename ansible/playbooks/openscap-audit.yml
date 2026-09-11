@@ -108,6 +108,8 @@
           loop:
             - {name: astra-baseline.xml, mode: "0600"}
             - {name: check.py, mode: "0700"}
+            - {name: astra-platform-oval.xml, mode: "0600"}
+            - {name: astra-cpe-dictionary.xml, mode: "0600"}
           when: openscap_builtin_astra | bool
 
         - name: Bundle the actual XCCDF and SCE script into one evaluated datastream
@@ -122,6 +124,32 @@
           failed_when: false
           register: openscap_bundle
           when: openscap_builtin_astra | bool
+
+        - name: Add the native Astra family applicability dictionary
+          ansible.builtin.command:
+            argv: [oscap, ds, sds-add, astra-cpe-dictionary.xml, astra-baseline-ds.xml]
+            chdir: "{{ openscap_remote_dir.path }}"
+          changed_when: false
+          failed_when: false
+          register: openscap_dictionary
+          when:
+            - openscap_builtin_astra | bool
+            - (openscap_bundle.rc | default(1)) == 0
+
+        - name: Require schema validation of the complete native OVAL and SCE datastream
+          ansible.builtin.command:
+            argv: [oscap, ds, sds-validate, "{{ openscap_remote_dir.path }}/astra-baseline-ds.xml"]
+          changed_when: false
+          failed_when: false
+          register: openscap_bundle_validation
+          when:
+            - openscap_builtin_astra | bool
+            - (openscap_bundle.rc | default(1)) == 0
+            - (openscap_dictionary.rc | default(1)) == 0
+
+        - name: Record whether all content preparation gates passed
+          ansible.builtin.set_fact:
+            openscap_prepared: "{{ not (openscap_builtin_astra | bool) or ((openscap_bundle.rc | default(1)) == 0 and (openscap_dictionary.rc | default(1)) == 0 and (openscap_bundle_validation.rc | default(1)) == 0) }}"
 
         - name: Select the actual evaluation content
           ansible.builtin.set_fact:
@@ -143,7 +171,7 @@
             - openscap_builtin_astra | bool
             - hcp_openscap_keep_arf | default(false) | bool
             - openscap_evaluated_content.stat.isreg | default(false) | bool
-            - (openscap_bundle.rc | default(1)) == 0
+            - openscap_prepared | bool
 
         - name: Explain a failed built-in content preparation
           ansible.builtin.command:
@@ -156,7 +184,7 @@
               - --run-id
               - "{{ report_suffix }}"
               - --reason
-              - "{{ 'Не удалось собрать встроенный профиль Astra. oscap ds sds-compose: exit=' ~ (openscap_bundle.rc | default('unknown') | string) ~ '; ' ~ ((openscap_bundle.stderr | default(''))[:2000]) }}"
+              - "{{ 'Не удалось подготовить встроенный профиль Astra: compose=' ~ (openscap_bundle.rc | default('unknown') | string) ~ ', dictionary=' ~ (openscap_dictionary.rc | default('unknown') | string) ~ ', validation=' ~ (openscap_bundle_validation.rc | default('unknown') | string) ~ '; ' ~ (((openscap_bundle.stderr | default('')) ~ (openscap_dictionary.stderr | default('')) ~ (openscap_bundle_validation.stderr | default('')))[:2000]) }}"
               - --profile
               - "{{ openscap_profile }}"
               - --datastream
@@ -168,7 +196,7 @@
           delegate_to: localhost
           become: false
           changed_when: false
-          when: not (openscap_evaluated_content.stat.isreg | default(false) | bool) or ((openscap_builtin_astra | bool) and (openscap_bundle.rc | default(1)) != 0)
+          when: not (openscap_evaluated_content.stat.isreg | default(false) | bool) or not (openscap_prepared | bool)
 
         - name: Evaluate the complete selected profile without remediation
           ansible.builtin.command:
@@ -186,7 +214,7 @@
           register: openscap_run
           when:
             - openscap_evaluated_content.stat.isreg | default(false) | bool
-            - not (openscap_builtin_astra | bool) or (openscap_bundle.rc | default(1)) == 0
+            - openscap_prepared | bool
 
         - name: Check OpenSCAP ARF result
           ansible.builtin.stat:

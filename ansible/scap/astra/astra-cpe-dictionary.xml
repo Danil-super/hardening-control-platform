@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cpe-list xmlns="http://cpe.mitre.org/dictionary/2.0">
+  <cpe-item name="cpe:/o:hcp:astra_family">
+    <title xml:lang="en-US">HCP authored Astra family applicability identifier</title>
+    <check system="http://oval.mitre.org/XMLSchema/oval-definitions-5" href="astra-platform-oval.xml">oval:org.hcp.astra:def:1</check>
+  </cpe-item>
+</cpe-list>

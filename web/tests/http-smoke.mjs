@@ -35,7 +35,9 @@ writeFileSync(path.join(reports, `${ovalReportId}.json`), JSON.stringify({
     version: "OpenSCAP HTTP fixture", hostIdentity: { astraVersion: "test-release" },
     database: { generatedAt: new Date().toISOString(), sourceMode: "local", path: "/fixture/oval.xml", sha256: "a".repeat(64), checksumVerified: true, releasePattern: "*", freshness: "current", ageDays: 0 },
     definitionResults: [{ id: "oval:fixture:def:1", title: "HTTP fixture only", class: "vulnerability", result: "true", cveIds: ["CVE-2099-999999"] }] },
-  findings: [], events: [],
+  findings: [{ id: "fixture-oval", profileId: "astra-oval", title: "CVE-2099-999999", category: "packages",
+    source: "openscap", risk: "info", severityUnknown: true, status: "failed", description: "Контрольная находка без оценки поставщика",
+    recommendation: "Проверить бюллетень", remediationAvailable: false }], events: [],
 }));
 let output = "";
 let cookie = "";
@@ -101,6 +103,9 @@ try {
   assert.match(ovalPage, /Уникальных CVE обнаружено/);
   assert.match(ovalPage, /CVE-2099-999999/);
   assert.match(ovalPage, /test-release/);
+  assert.match(ovalPage, /Риск не оценён/);
+  const correlated = await (await request("/reports/correlation/smoke")).text();
+  assert.match(correlated, /Риск не оценён/);
   await request("/api/internal/scheduled/openscap", { method: "POST", body: {}, auth: false, status: 401 });
   const report = await (await request(`/api/ansible/reports/${reportId}`)).json();
   assert.equal(report.report.partial, true);

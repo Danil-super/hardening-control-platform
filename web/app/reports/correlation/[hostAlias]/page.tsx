@@ -1,6 +1,7 @@
 import { notFound } from "next/navigation";
 import { AlertTriangle, CheckCircle2, FileText, ShieldCheck } from "lucide-react";
 import { LinkButton } from "@/components/ui/button";
+import { RiskBadge } from "@/components/ui/badge";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { buildHostCorrelation } from "@/lib/audit-correlation";
 
@@ -23,13 +24,6 @@ function formatDate(value: string | null) {
   if (!value) return "нет даты";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
-}
-
-function riskTone(risk: string) {
-  if (risk === "high") return "border-red-400/40 bg-red-500/15 text-red-100";
-  if (risk === "medium") return "border-amber-400/40 bg-amber-500/15 text-amber-100";
-  if (risk === "low") return "border-sky-400/40 bg-sky-500/15 text-sky-100";
-  return "border-slate-700 bg-slate-900 text-slate-300";
 }
 
 export default async function HostCorrelationPage({ params }: { params: Promise<{ hostAlias: string }> }) {
@@ -88,7 +82,7 @@ export default async function HostCorrelationPage({ params }: { params: Promise<
                 <p className="mt-2 text-sm leading-6 text-slate-400">{finding.description}</p>
               </div>
               <div className="flex flex-wrap gap-2 text-xs font-semibold">
-                <span className={`rounded-md border px-2 py-1 ${riskTone(finding.risk)}`}>{finding.risk}</span>
+                <RiskBadge risk={finding.risk} unknown={finding.severityUnknown} />
                 <span className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2 py-1 text-sky-100">
                   {finding.confidence === "manual" ? "ручная оценка" : "обнаруженные признаки"}
                 </span>

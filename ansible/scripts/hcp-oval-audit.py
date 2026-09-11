@@ -350,12 +350,45 @@ def xml_evidence(node):
             'text': (node.text or '').strip(), 'children': [xml_evidence(n) for n in node]}
 
 
+def platform_applicability(affected):
+    """Reject obvious foreign OS metadata without inventing release support.
+
+    Labels are a conservative contradiction check, not evidence that unknown
+    platforms or a named Astra release are certified as applicable.
+    """
+    platforms = [label for group in affected for label in group['platforms']]
+    normalized = [re.sub(r'[_-]+', ' ', label.lower()) for label in platforms]
+    astra = any(re.search(r'\bastra(?:\s+linux)?\b|\bastralinux\b|астра(?:\s+линукс)?', label)
+                for label in normalized)
+    foreign = []
+    foreign_cpe_vendors = frozenset(('canonical', 'ubuntu', 'debian', 'redhat', 'centos',
+        'fedoraproject', 'suse', 'opensuse', 'oracle', 'rocky', 'rockylinux',
+        'almalinux', 'microsoft', 'apple'))
+    for original, label in zip(platforms, normalized):
+        cpe = re.match(r'^cpe(?::2\.3)?:/?o:([^:]+):', original.lower())
+        if (re.search(r'\b(?:ubuntu|debian|red\s*hat|rhel|centos|fedora|(?:open)?suse|'
+                      r'oracle\s+linux|rocky(?:\s+linux)?|alma(?:\s*linux)?|'
+                      r'windows|mac\s*os(?:\s*x)?|os\s+x|darwin)\b', label)
+                or (cpe and cpe.group(1) in foreign_cpe_vendors)):
+            foreign.append(original)
+    if foreign and not astra:
+        return {'status': 'foreign_platform', 'foreignPlatforms': foreign,
+                'vendorReleaseApplicability': 'not_verified'}
+    return {'status': 'astra_named' if astra else 'not_verified',
+            'foreignPlatforms': foreign, 'vendorReleaseApplicability': 'not_verified'}
+
+
 def definition_metadata(node):
     metadata = child(node, 'metadata')
     references = []
+    affected = []
     cves = set()
     if metadata is not None:
         for reference in metadata.iter():
+            if local_name(reference.tag) == 'affected':
+                affected.append({'family': reference.get('family'),
+                    'platforms': [node_text(n) for n in reference if local_name(n.tag) == 'platform'],
+                    'products': [node_text(n) for n in reference if local_name(n.tag) == 'product']})
             if local_name(reference.tag) == 'reference':
                 references.append(dict(reference.attrib))
                 identifier = reference.get('ref_id', '').upper()
@@ -365,7 +398,8 @@ def definition_metadata(node):
     return {'id': node.get('id'), 'version': node.get('version'), 'class': node.get('class', ''),
             'title': node_text(child(metadata, 'title')) if metadata is not None else '',
             'description': node_text(child(metadata, 'description')) if metadata is not None else '',
-            'references': references, 'cveIds': sorted(cves), 'vendorSeverity': severity or None,
+            'references': references, 'affected': affected, 'platformApplicability': platform_applicability(affected),
+            'cveIds': sorted(cves), 'vendorSeverity': severity or None,
             'criteria': xml_evidence(child(node, 'criteria'))}
 
 
@@ -405,6 +439,7 @@ def finish(report):
             'Уникальных CVE по истинным vulnerability-определениям: ' + (str(scanner['uniqueCveCount']) if scanner['uniqueCveCount'] is not None else 'оценка недоступна')
             + '; область выпуска заявлена администратором.'))
     findings = report['findings']
+    scanner['unratedVulnerabilityCount'] = sum(f['status'] == 'failed' and f.get('severityUnknown') is True for f in findings)
     report['summary'] = {'score': None, 'total': len(findings),
         'high': sum(f['risk'] == 'high' and f['status'] == 'failed' for f in findings),
         'medium': sum(f['risk'] == 'medium' and f['status'] == 'failed' for f in findings),
@@ -435,21 +470,30 @@ def parse_results(root, definitions, report):
     counts, positive_cves = {}, set()
     vulnerability_count = 0
     evaluated_vulnerability_count = 0
+    excluded_platform_count = 0
     for identifier, source in sorted(definitions.items()):
         entry = definition_metadata(source)
         result = mapped.get(identifier)
         status = result.get('result', '') if result is not None else 'missing'
         entry['result'] = status
+        foreign_platform = entry['platformApplicability']['status'] == 'foreign_platform'
         if entry['class'] == 'vulnerability':
             vulnerability_count += 1
-            if status in ('true', 'false'):
+            if status in ('true', 'false') and not foreign_platform:
                 evaluated_vulnerability_count += 1
         entry['resultCriteria'] = xml_evidence(child(result, 'criteria')) if result is not None else None
         scanner['definitionResults'].append(entry)
         counts[status] = counts.get(status, 0) + 1
         if status not in ('true', 'false', 'not applicable'):
             scanner['partialReasons'].append('Не завершено определение ' + identifier + ': ' + status)
-        if status == 'true' and entry['class'] == 'vulnerability':
+        if entry['class'] == 'vulnerability' and foreign_platform:
+            excluded_platform_count += 1
+            scanner['partialReasons'].append('Определение ' + identifier + ' указывает другую ОС; его результат исключён из CVE-оценки Astra.')
+            report['findings'].append(finding(identifier, 'OVAL: проверьте применимость к Astra — ' + (entry['title'] or identifier),
+                'manual', 'Метаданные определения указывают другую ОС. Результат OpenSCAP сохранён, но уязвимость Astra по нему не подтверждается.',
+                json.dumps({'definitionId': identifier, 'nativeResult': status, 'affected': entry['affected'],
+                            'referencedCveIds': entry['cveIds']}, ensure_ascii=False)))
+        elif status == 'true' and entry['class'] == 'vulnerability':
             positive_cves.update(entry['cveIds'])
             severity = (entry['vendorSeverity'] or '').lower()
             risk = {'critical': 'high', 'high': 'high', 'important': 'high', 'medium': 'medium',
@@ -458,6 +502,7 @@ def parse_results(root, definitions, report):
                 'failed', entry['description'] or 'OpenSCAP подтвердил условия vulnerability-определения OVAL.',
                 json.dumps({'definitionId': identifier, 'cveIds': entry['cveIds'], 'result': status,
                             'vendorSeverity': entry['vendorSeverity'], 'criteria': entry['resultCriteria']}, ensure_ascii=False), risk)
+            item['severityUnknown'] = risk == 'info'
             item['vulnerability'] = {'cveIds': entry['cveIds'], 'definitionId': identifier,
                 'severitySource': 'oval_metadata' if severity else 'not_provided', 'cvss': None}
             report['findings'].append(item)
@@ -469,10 +514,11 @@ def parse_results(root, definitions, report):
     scanner['definitionCount'] = len(definitions)
     scanner['vulnerabilityDefinitionCount'] = vulnerability_count
     scanner['evaluatedVulnerabilityDefinitionCount'] = evaluated_vulnerability_count
+    scanner['excludedPlatformDefinitionCount'] = excluded_platform_count
     if not vulnerability_count:
         scanner['partialReasons'].append('База не содержит vulnerability-определений: CVE-аудит не выполнен.')
     elif not evaluated_vulnerability_count:
-        scanner['partialReasons'].append('Ни одно vulnerability-определение не получило true/false; применимая CVE-оценка отсутствует.')
+        scanner['partialReasons'].append('Нет vulnerability-определений с допустимой областью и результатом true/false; применимая CVE-оценка отсутствует.')
     scanner['uniqueCveCount'] = len(positive_cves) if evaluated_vulnerability_count else None
     scanner['cveIds'] = sorted(positive_cves)
     scanner['evaluatedDefinitionCount'] = len(mapped)

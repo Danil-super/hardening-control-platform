@@ -5,13 +5,15 @@ import { RiskBadge, StatusBadge } from "@/components/ui/badge";
 import { LinkButton } from "@/components/ui/button";
 import type { Finding, RiskLevel } from "@/types";
 
-const riskFilters: Array<RiskLevel | "all"> = ["all", "high", "medium", "low", "info"];
-const riskFilterLabels: Record<RiskLevel | "all", string> = {
+type RiskFilter = RiskLevel | "all" | "unknown";
+const riskFilters: RiskFilter[] = ["all", "high", "medium", "low", "info", "unknown"];
+const riskFilterLabels: Record<RiskFilter, string> = {
   all: "Все риски",
   high: "Высокий",
   medium: "Средний",
   low: "Низкий",
   info: "Инфо",
+  unknown: "Риск не оценён",
 };
 
 const sourceLabels: Record<Finding["source"], string> = {
@@ -20,7 +22,7 @@ const sourceLabels: Record<Finding["source"], string> = {
   ssh_audit: "ssh-audit с control node",
   nmap: "Nmap с control node",
   lynis: "Временный запуск Lynis",
-  openscap: "OpenSCAP / SCAP Security Guide",
+  openscap: "OpenSCAP / OVAL / XCCDF",
   trivy: "Trivy",
   greenbone: "Greenbone / OpenVAS",
   dependency_track: "OWASP Dependency-Track",
@@ -54,7 +56,7 @@ export function FindingsExplorer({
   remediationLinkHref?: string;
   remediationLinkLabel?: string;
 }) {
-  const [risk, setRisk] = useState<RiskLevel | "all">("all");
+  const [risk, setRisk] = useState<RiskFilter>("all");
   const [category, setCategory] = useState("all");
 
   const categories = useMemo(
@@ -63,7 +65,7 @@ export function FindingsExplorer({
   );
 
   const filteredFindings = findings.filter((finding) => {
-    const riskMatch = risk === "all" || finding.risk === risk;
+    const riskMatch = risk === "all" || (risk === "unknown" ? finding.severityUnknown === true : !finding.severityUnknown && finding.risk === risk);
     const categoryMatch = category === "all" || finding.category === category;
     return riskMatch && categoryMatch;
   });
@@ -76,7 +78,7 @@ export function FindingsExplorer({
           <p className="mt-1 text-sm text-slate-400">Показано: {filteredFindings.length} из {findings.length}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {riskFilters.map((value) => (
+          {riskFilters.filter((value) => value !== "unknown" || findings.some((finding) => finding.severityUnknown)).map((value) => (
             <button
               key={value}
               onClick={() => setRisk(value)}
@@ -111,7 +113,7 @@ export function FindingsExplorer({
                 <h3 className="font-semibold text-white">{finding.title}</h3>
                 <p className="mt-1 leading-6 text-slate-400">{finding.description}</p>
               </div>
-              <div className="flex shrink-0 flex-wrap gap-2"><RiskBadge risk={finding.risk} /><StatusBadge status={finding.status} /></div>
+              <div className="flex shrink-0 flex-wrap gap-2"><RiskBadge risk={finding.risk} unknown={finding.severityUnknown} /><StatusBadge status={finding.status} /></div>
             </div>
             <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
               <div><dt className="text-slate-500">Категория</dt><dd className="mt-1 text-slate-200">{categoryLabel(finding.category)}</dd></div>

@@ -148,6 +148,7 @@ function isFinding(value: unknown): value is Finding {
   const item = value as Record<string, unknown>;
   return ["id", "title", "description", "recommendation", "category", "profileId"].every((key) => typeof item[key] === "string")
     && ["high", "medium", "low", "info"].includes(String(item.risk))
+    && (item.severityUnknown === undefined || typeof item.severityUnknown === "boolean")
     && ["failed", "passed", "manual", "fixed"].includes(String(item.status))
     && ["agentless", "custom", "ssh_audit", "nmap", "lynis", "openscap", "trivy", "greenbone", "dependency_track"].includes(String(item.source))
     && (item.evidence === undefined || typeof item.evidence === "string");

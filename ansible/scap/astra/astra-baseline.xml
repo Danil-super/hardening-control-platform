@@ -3,6 +3,7 @@
   <status date="2026-09-11">draft</status>
   <title>HCP: базовая конфигурация семейства Astra Linux</title>
   <description>Авторский профиль HCP: 18 проверок конфигурации только для чтения. Применимость определяется семейством ОС и доступными средствами, без списка разрешённых выпусков. Это ограниченный базовый профиль, не сертификация Astra, CIS или ФСТЭК; он не оценивает CVE, всю политику мандатного доступа, ACL и полноту правил аудита. Требуются Python 3.5+, root, OpenSCAP с SCE. Недоступные наблюдения не считаются успешными проверками.</description>
+  <platform idref="cpe:/o:hcp:astra_family"/>
   <version>1.0.0</version>
   <model system="urn:xccdf:scoring:default"/>
   <Profile id="xccdf_org.hcp_profile_astra_baseline">
@@ -70,10 +71,6 @@
   <Value id="xccdf_org.hcp_value_ssh_x11_forwarding" type="string" hidden="true">
     <title>Идентификатор проверки ssh_x11_forwarding</title>
     <value>ssh_x11_forwarding</value>
-  </Value>
-  <Value id="xccdf_org.hcp_value_aslr" type="string" hidden="true">
-    <title>Идентификатор проверки aslr</title>
-    <value>aslr</value>
   </Value>
   <Value id="xccdf_org.hcp_value_protected_hardlinks" type="string" hidden="true">
     <title>Идентификатор проверки protected_hardlinks</title>
@@ -201,10 +198,8 @@
   <Rule id="xccdf_org.hcp_rule_aslr" severity="medium" selected="false">
     <title>Полная рандомизация адресного пространства</title>
     <description>Текущее kernel.randomize_va_space должно быть равно 2. Проверяется работающая система; сохранение настройки после перезагрузки не оценивается.</description>
-    <check system="http://open-scap.org/page/SCE">
-      <check-import import-name="stdout"/>
-      <check-export value-id="xccdf_org.hcp_value_aslr" export-name="check_id"/>
-      <check-content-ref href="check.py"/>
+    <check system="http://oval.mitre.org/XMLSchema/oval-definitions-5">
+      <check-content-ref href="astra-platform-oval.xml" name="oval:org.hcp.astra:def:2"/>
     </check>
   </Rule>
   <Rule id="xccdf_org.hcp_rule_protected_hardlinks" severity="medium" selected="false">
