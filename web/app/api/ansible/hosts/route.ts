@@ -361,7 +361,7 @@ export async function POST(request: Request) {
   }
 
   const credentialId = typeof body?.credentialId === "string" && body.credentialId ? body.credentialId : null;
-  if (!credentialId && body?.legacyAccess !== true) return NextResponse.json({ ok: false, message: "Сначала настройте отдельный SSH-ключ этого хоста." }, { status: 400 });
+  if (!credentialId) return NextResponse.json({ ok: false, message: "Сначала настройте отдельный SSH-ключ этого хоста." }, { status: 400 });
   try { if (credentialId) validateHostCredential(credentialId, { alias, address, port, user }); }
   catch (error) { return NextResponse.json({ ok: false, message: error instanceof HostCredentialError ? error.message : "Ключ хоста недоступен." }, { status: 400 }); }
   const newLine = hostLine({ alias, address, port, user, become, credentialId });

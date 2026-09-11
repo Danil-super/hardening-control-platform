@@ -117,6 +117,7 @@ try {
   await request("/api/ansible/hosts/bootstrap", { method: "POST", body: {}, auth: false, status: 401 });
   await request("/api/ansible/hosts/bootstrap", { method: "POST", body: {}, origin: "https://foreign.invalid", status: 403 });
   await request("/api/ansible/hosts/bootstrap", { method: "POST", body: {}, status: 400 });
+  await request("/api/ansible/hosts", { method: "POST", body: { alias: "unenrolled", address: "192.0.2.21", user: "lab", port: 22, legacyAccess: true }, status: 400 });
   await request("/api/ansible/hosts/bootstrap", { method: "POST", body: { alias: "fixture", address: "192.0.2.10", port: 22, user: "lab", configureSudo: true }, status: 400 });
   const suggestedNetwork = await (await request("/api/ansible/discover?address=192.168.56.17")).json();
   assert.equal(suggestedNetwork.ok, true);

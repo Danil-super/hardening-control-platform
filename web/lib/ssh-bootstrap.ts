@@ -10,7 +10,13 @@ export function credentialTransportAllowed(request: Request) {
   if (origin.protocol === "https:" && (url.protocol === "https:" ||
     (process.env.HCP_TRUSTED_TLS_PROXY === "true" && request.headers.get("x-forwarded-proto") === "https"))) return true;
   const loopback = (name: string) => ["localhost", "127.0.0.1", "[::1]", "::1"].includes(name);
-  return origin.protocol === "http:" && loopback(origin.hostname) && loopback(url.hostname);
+  // Next's request URL can contain the container bind address (0.0.0.0).
+  // Host identifies the browser's authority; proxy.ts independently checks
+  // the session and matching Origin before reaching this route.
+  let authority: URL;
+  try { authority = new URL("http://" + (request.headers.get("host") ?? url.host)); }
+  catch { return false; }
+  return origin.protocol === "http:" && loopback(origin.hostname) && loopback(authority.hostname);
 }
 export async function readCredentialRequest(request: Request) {
   const reader = request.body?.getReader();

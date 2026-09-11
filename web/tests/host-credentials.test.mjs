@@ -76,6 +76,9 @@ test("password transport permits HTTPS or local loopback and requires explicit p
   assert.equal(credentialTransportAllowed(req("http://localhost:3000/api", "http://192.168.1.5:3000")), false);
   assert.equal(credentialTransportAllowed(req("https://hcp.example/api", "https://hcp.example")), true);
   assert.equal(credentialTransportAllowed(req("http://localhost:3000/api", "https://hcp.example", { "x-forwarded-proto": "https" })), false);
+  assert.equal(credentialTransportAllowed(req("http://0.0.0.0:3000/api", "http://127.0.0.1:3001", { host: "127.0.0.1:3001" })), true);
+  assert.equal(credentialTransportAllowed(req("http://0.0.0.0:3000/api", "http://192.168.1.5:3001", { host: "192.168.1.5:3001" })), false);
+  assert.equal(credentialTransportAllowed(req("http://127.0.0.1:3000/api", "http://127.0.0.1:3001", { host: "192.168.1.5:3001" })), false);
   process.env.HCP_TRUSTED_TLS_PROXY = "true";
   assert.equal(credentialTransportAllowed(req("http://localhost:3000/api", "https://hcp.example", { "x-forwarded-proto": "https" })), true);
   assert.equal(credentialTransportAllowed(req("http://localhost:3000/api", "http://hcp.example", { "x-forwarded-proto": "https" })), false);
