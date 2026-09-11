@@ -26,6 +26,9 @@ class AstraBaselineTests(unittest.TestCase):
         self.assertEqual({r.get("id") for r in rules}, {s.get("idref") for s in selects})
         self.assertTrue(all(s.get("selected") == "true" for s in selects))
         values = {v.get("id"): v.findtext(X + "value") for v in root.findall(X + "Value")}
+        # Although optional in XCCDF schema, missing operator makes OpenSCAP
+        # 1.3.9 abort inside sce_engine_eval_rule before running the script.
+        self.assertTrue(all(value.get("operator") == "equals" for value in root.findall(X + "Value")))
         ids = set()
         for rule in rules:
             evaluation = rule.find(X + "check")

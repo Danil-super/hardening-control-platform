@@ -28,71 +28,71 @@
     <select idref="xccdf_org.hcp_rule_dmesg_restrict" selected="true"/>
     <select idref="xccdf_org.hcp_rule_auditd_running" selected="true"/>
   </Profile>
-  <Value id="xccdf_org.hcp_value_passwd_permissions" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_passwd_permissions" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки passwd_permissions</title>
     <value>passwd_permissions</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_group_permissions" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_group_permissions" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки group_permissions</title>
     <value>group_permissions</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_shadow_permissions" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_shadow_permissions" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки shadow_permissions</title>
     <value>shadow_permissions</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_gshadow_permissions" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_gshadow_permissions" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки gshadow_permissions</title>
     <value>gshadow_permissions</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_root_account" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_root_account" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки root_account</title>
     <value>root_account</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_unique_uid_zero" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_unique_uid_zero" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки unique_uid_zero</title>
     <value>unique_uid_zero</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_empty_local_passwords" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_empty_local_passwords" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки empty_local_passwords</title>
     <value>empty_local_passwords</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_ssh_root_login" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_ssh_root_login" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки ssh_root_login</title>
     <value>ssh_root_login</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_ssh_empty_passwords" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_ssh_empty_passwords" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки ssh_empty_passwords</title>
     <value>ssh_empty_passwords</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_ssh_max_auth_tries" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_ssh_max_auth_tries" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки ssh_max_auth_tries</title>
     <value>ssh_max_auth_tries</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_ssh_x11_forwarding" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_ssh_x11_forwarding" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки ssh_x11_forwarding</title>
     <value>ssh_x11_forwarding</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_protected_hardlinks" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_protected_hardlinks" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки protected_hardlinks</title>
     <value>protected_hardlinks</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_protected_symlinks" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_protected_symlinks" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки protected_symlinks</title>
     <value>protected_symlinks</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_ptrace_scope" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_ptrace_scope" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки ptrace_scope</title>
     <value>ptrace_scope</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_kptr_restrict" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_kptr_restrict" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки kptr_restrict</title>
     <value>kptr_restrict</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_dmesg_restrict" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_dmesg_restrict" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки dmesg_restrict</title>
     <value>dmesg_restrict</value>
   </Value>
-  <Value id="xccdf_org.hcp_value_auditd_running" type="string" hidden="true">
+  <Value id="xccdf_org.hcp_value_auditd_running" type="string" operator="equals" hidden="true">
     <title>Идентификатор проверки auditd_running</title>
     <value>auditd_running</value>
   </Value>
