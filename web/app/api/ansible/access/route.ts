@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getControlPublicKey, isSafeSshHostAddress, normalizeSshPort, scanHostKeys, trustHostKey } from "@/lib/ssh-access";
+import { getControlPublicKey, hasSavedHostKey, isSafeSshHostAddress, normalizeSshPort, scanHostKeys, trustHostKey } from "@/lib/ssh-access";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -34,6 +34,12 @@ export async function POST(request: Request) {
   }
 
   try {
+    if (operation === "status") {
+      const trusted = await hasSavedHostKey(address, port);
+      return NextResponse.json({ ok: true, trusted,
+        message: trusted ? "Ключ сервера уже сохранён." : "Подтвердите сервер перед первым входом. Пароль ему ещё не передан." },
+        { headers: { "Cache-Control": "no-store" } });
+    }
     if (operation === "scan") {
       const candidates = await scanHostKeys(address, port);
       return NextResponse.json({

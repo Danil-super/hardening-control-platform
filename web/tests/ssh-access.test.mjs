@@ -66,3 +66,18 @@ test("a mismatched fingerprint and a changed hashed known-host key are refused",
   execFileSync("ssh-keygen", ["-H", "-f", process.env.HCP_KNOWN_HOSTS_PATH], { stdio: "ignore" });
   await assert.rejects(ssh.trustHostKey({ address: "192.0.2.10", port: 2222, expectedFingerprint: candidates[0].fingerprint }), { code: "host_key_conflict" });
 });
+
+
+test("saved server lookup is read-only and respects hashed hosts and nondefault ports", async () => {
+  assert.equal(await ssh.hasSavedHostKey("192.0.2.10", 2222), false);
+  const known = process.env.HCP_KNOWN_HOSTS_PATH;
+  writeFileSync(known, `[192.0.2.10]:2222 ${publicKey}\n`);
+  execFileSync("ssh-keygen", ["-H", "-f", known], { stdio: "pipe" });
+  const before = readFileSync(known, "utf8");
+  // Status must not attempt ssh-keyscan or change the file.
+  rmSync(path.join(directory, "bin/ssh-keyscan"));
+  assert.equal(await ssh.hasSavedHostKey("192.0.2.10", 2222), true);
+  assert.equal(await ssh.hasSavedHostKey("192.0.2.10", 22), false);
+  assert.equal(await ssh.hasSavedHostKey("192.0.2.11", 2222), false);
+  assert.equal(readFileSync(known, "utf8"), before);
+});

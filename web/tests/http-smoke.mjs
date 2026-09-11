@@ -105,18 +105,28 @@ try {
   assert.match(login.headers.get("set-cookie"), /Path=\//i);
   const hostsPage = await (await request("/hosts")).text();
   assert.match(hostsPage, /Управляемые хосты/);
-  assert.match(hostsPage, /Создать ключ и настроить доступ/);
+  assert.match(hostsPage, /Подключить хост/);
+  assert.doesNotMatch(hostsPage, /Создать ключ и настроить доступ/);
   assert.doesNotMatch(hostsPage, /Обновить сведения/);
   const networkPosition = hostsPage.indexOf('id="network-discovery"');
   const sshPosition = hostsPage.indexOf('id="ssh-setup"');
   const formPosition = hostsPage.indexOf('id="host-form"');
   assert.ok(networkPosition > 0 && networkPosition < formPosition && formPosition < sshPosition, "discovery precedes the host form and password/key setup");
-  assert.match(hostsPage.slice(formPosition), /Проверить подключение/);
+  assert.match(hostsPage.slice(formPosition), /Входить через терминал и создавать ключи вручную не нужно/);
+  assert.doesNotMatch(hostsPage.slice(formPosition), />Добавить хост<|>Сохранить изменения</);
   assert.match(hostsPage.slice(formPosition), /type="checkbox"[^>]*checked/);
   assert.match(hostsPage, /type="password"/);
+  const renderedButtons = Array.from(hostsPage.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g));
+  for (const label of ["Подтвердить сервер", "Скопировать команду", "Получить отпечатки по сети"]) {
+    const button = renderedButtons.find((match) => match[2].includes(label));
+    assert.ok(button, label);
+    assert.match(button[1], /type="button"/, `${label} must not submit the password form`);
+  }
   await request("/api/ansible/hosts/bootstrap", { method: "POST", body: {}, auth: false, status: 401 });
   await request("/api/ansible/hosts/bootstrap", { method: "POST", body: {}, origin: "https://foreign.invalid", status: 403 });
   await request("/api/ansible/hosts/bootstrap", { method: "POST", body: {}, status: 400 });
+  const unknownServer = await (await request("/api/ansible/access", { method: "POST", body: { operation: "status", address: "192.0.2.21", port: 2222 } })).json();
+  assert.equal(unknownServer.trusted, false);
   await request("/api/ansible/hosts", { method: "POST", body: { alias: "unenrolled", address: "192.0.2.21", user: "lab", port: 22, legacyAccess: true }, status: 400 });
   await request("/api/ansible/hosts/bootstrap", { method: "POST", body: { alias: "fixture", address: "192.0.2.10", port: 22, user: "lab", configureSudo: true }, status: 400 });
   const suggestedNetwork = await (await request("/api/ansible/discover?address=192.168.56.17")).json();

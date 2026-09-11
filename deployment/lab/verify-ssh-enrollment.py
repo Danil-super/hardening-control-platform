@@ -91,12 +91,14 @@ def main():
     run(["docker", "exec", SECOND, "/bin/sh", "-c", "printf 'lab ALL=(root) ALL\n' > /etc/sudoers.d/lab; chmod 440 /etc/sudoers.d/lab; visudo -c"])
     a = {"alias": "lab-insecure", "address": "lab-target", "user": "lab", "port": 22, "become": True}
     b = {"alias": "enrolled-second", "address": SECOND, "user": "lab", "port": 22, "become": True}
+    assert request("/api/ansible/access", {"operation": "status", "address": b["address"], "port": 22})["trusted"] is False
     unknown = request("/api/ansible/hosts/bootstrap", {**b, "password": PASSWORD}, status=400)
     assert unknown["error"] == "host_not_trusted", "Unexpected initial rejection: " + json.dumps(unknown)
     for host, container in [(a, target), (b, SECOND)]:
         public_key = run(["docker", "exec", container, "cat", "/etc/ssh/host_keys/ssh_host_ed25519_key.pub"]).stdout
         fingerprint = run(["ssh-keygen", "-lf", "-", "-E", "sha256"], text=public_key).stdout.split()[1]
         request("/api/ansible/access", {"operation": "trust", "address": host["address"], "port": 22, "expectedFingerprint": fingerprint})
+        assert request("/api/ansible/access", {"operation": "status", "address": host["address"], "port": 22})["trusted"] is True
     wrong = request("/api/ansible/hosts/bootstrap", {**a, "password": "wrong-fixture-password"}, status=400)
     assert wrong["error"] == "password_rejected", "Unexpected password rejection: " + json.dumps(wrong)
     result_a = request("/api/ansible/hosts/bootstrap", {**a, "password": PASSWORD})

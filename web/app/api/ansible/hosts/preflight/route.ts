@@ -64,7 +64,7 @@ export async function POST(request: Request) {
   try { sshKeyPath = connectionPrivateKey({ alias, address, user, port }, body?.credentialId); }
   catch (error) { return NextResponse.json({ ok: false, message: error instanceof HostCredentialError ? error.message : "Ключ подключения недоступен." }, { status: 400 }); }
   if (!existsSync(sshKeyPath)) {
-    return NextResponse.json({ ok: false, message: "SSH-ключ не найден. Сначала нажмите «Создать ключ и настроить доступ» в форме этого хоста." }, { status: 400 });
+    return NextResponse.json({ ok: false, message: "SSH-ключ не найден. Подключите этот хост по паролю через форму выше." }, { status: 400 });
   }
   const tmpDir = mkdtempSync(path.join(os.tmpdir(), "hcp-inventory-"));
   const inventoryPath = path.join(tmpDir, "inventory.json");

@@ -36,7 +36,7 @@ export async function POST(request: Request) {
     return response({ ok: true, credentialId: credential.id, publicKey: credential.publicKey, fingerprint: credential.fingerprint,
       sudo: result.sudo, message: result.sudo?.requested && !result.sudo.ready
         ? "Отдельный ключ установлен, вход по нему проверен. Настроить sudo не удалось: проверьте пароль sudo, права учётной записи и политику Astra."
-        : "Отдельный ключ установлен, вход по нему проверен. Пароль не сохранён. Можно проверить готовность и сохранить хост." });
+        : "Отдельный ключ установлен, вход по нему проверен. Пароль не сохранён. Выполняется проверка готовности хоста." });
   } catch (error) {
     const failure = error instanceof HostCredentialError ? error : null;
     // Only explicit, sanitized errors from our modules reach the client.

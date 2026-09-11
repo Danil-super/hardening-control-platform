@@ -129,6 +129,23 @@ function hostPattern(address: string, port: number) {
   return port === 22 ? address : `[${address}]:${port}`;
 }
 
+// Read saved trust only. This lookup never contacts a target or trusts a key
+// learned from the network; the SSH handshake still verifies the live key.
+export async function hasSavedHostKey(address: string, port: number) {
+  if (!isSafeSshHostAddress(address) || normalizeSshPort(port) === null) return false;
+  const knownHostsPath = getKnownHostsPath();
+  if (!existsSync(knownHostsPath)) return false;
+  try {
+    const result = await execFileAsync("ssh-keygen", ["-F", hostPattern(address, port), "-f", knownHostsPath], { timeout: 10_000, maxBuffer: 128 * 1024 });
+    const lines = result.stdout.split("\n").map((line) => line.trim());
+    if (lines.some((line) => line.startsWith("@revoked "))) return false;
+    return lines.some((line) => !line.startsWith("#") && !line.startsWith("@") && isPublicKey(line.split(/\s+/).slice(1).join(" ")));
+  } catch (error) {
+    if ((error as { code?: number }).code === 1) return false;
+    throw error;
+  }
+}
+
 export async function trustHostKey({
   address,
   port,

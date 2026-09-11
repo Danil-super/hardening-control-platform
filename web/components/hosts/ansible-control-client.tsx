@@ -22,6 +22,7 @@ import { HostServerTrust } from "@/components/hosts/ssh-connection-help";
 import { copyText } from "@/lib/clipboard";
 import { NetworkDiscovery, type DiscoveryPayload } from "@/components/hosts/network-discovery";
 import { SshCredentialSetup, type CredentialSetupResult, type SetupSecrets } from "@/components/hosts/ssh-credential-setup";
+import { connectAndSaveHost, defaultHostAlias } from "@/lib/host-onboarding";
 import type { PreflightCheck } from "@/lib/preflight-result";
 
 type HealthPayload = {
@@ -218,6 +219,7 @@ export function AnsibleControlClient() {
   const [hostKeyScan, setHostKeyScan] = useState<HostKeyPayload | null>(null);
   const [trustedFingerprint, setTrustedFingerprint] = useState("");
   const [serverTrusted, setServerTrusted] = useState(false);
+  const [trustExpanded, setTrustExpanded] = useState(false);
   const [accessLoading, setAccessLoading] = useState("");
   const [accessMessage, setAccessMessage] = useFeedbackMessage();
   const [copied, setCopied] = useState("");
@@ -229,9 +231,11 @@ export function AnsibleControlClient() {
     [hosts, selectedAlias],
   );
 
+  const connectionAlias = manualAlias.trim() || defaultHostAlias(manualAddress);
+
   const connectionSignature = useMemo(
-    () => [manualAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", manualCredentialId ?? "legacy"].join("\u0000"),
-    [manualAddress, manualAlias, manualBecome, manualPort, manualUser, manualCredentialId],
+    () => [connectionAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", manualCredentialId ?? "legacy"].join("\u0000"),
+    [manualAddress, connectionAlias, manualBecome, manualPort, manualUser, manualCredentialId],
   );
 
   useEffect(() => {
@@ -240,6 +244,7 @@ export function AnsibleControlClient() {
 
   useEffect(() => {
     setHostKeyScan(null);
+    setTrustExpanded(false);
     setServerTrusted(false);
     setTrustedFingerprint("");
     setAccessMessage("");
@@ -368,81 +373,6 @@ export function AnsibleControlClient() {
     }
   }
 
-  async function addManualHost() {
-    if (!manualCredentialId || !preflight?.ok || preflightFor !== connectionSignature) {
-      setRunResult({
-        ok: false,
-        action: "addHost",
-        message: "Сначала успешно проверьте это SSH-подключение. После изменения полей проверку нужно повторить.",
-      });
-      return;
-    }
-    setLoading("manualHost");
-    setRunResult(null);
-    setFreshReportHref("");
-    try {
-      const response = await fetch("/api/ansible/hosts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          alias: manualAlias,
-          address: manualAddress,
-          user: manualUser,
-          port: manualPort,
-          group: manualGroup,
-          become: manualBecome,
-          credentialId: manualCredentialId,
-        }),
-      });
-      const payload = await readApiResponse(response);
-      setRunResult({ ok: payload.ok, action: "addHost", message: payload.message });
-      if (payload.ok) {
-        setSelectedAlias(manualAlias.trim());
-        startNewHost();
-        await refreshAll();
-      }
-    } catch (error) {
-      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
-    } finally {
-      setLoading("");
-    }
-  }
-
-  async function updateManualHost() {
-    if (!preflight?.ok || preflightFor !== connectionSignature) {
-      setRunResult({ ok: false, message: "Сначала проверьте подключение с выбранным режимом sudo, затем сохраните изменения." });
-      return;
-    }
-    setLoading("updateHost");
-    setRunResult(null);
-    setFreshReportHref("");
-    try {
-      const response = await fetch("/api/ansible/hosts", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          alias: manualAlias,
-          address: manualAddress,
-          user: manualUser,
-          port: manualPort,
-          group: manualGroup,
-          become: manualBecome,
-          credentialId: manualCredentialId,
-        }),
-      });
-      const payload = await readApiResponse(response);
-      setRunResult({ ok: payload.ok, action: "updateHost", message: payload.message });
-      if (payload.ok) {
-        setSelectedAlias(manualAlias.trim());
-        await refreshAll();
-      }
-    } catch (error) {
-      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
-    } finally {
-      setLoading("");
-    }
-  }
-
   async function deleteSelectedHost() {
     if (!editingHost || !window.confirm(`Удалить хост ${editingHost} из inventory?`)) {
       return;
@@ -472,27 +402,40 @@ export function AnsibleControlClient() {
     }
   }
 
-  async function setupHostCredential(secrets: SetupSecrets) {
-    setLoading("bootstrap");
-    setPreflight(null); setPreflightFor("");
+  async function setupHostCredential(secrets: SetupSecrets, clearPasswords: () => void) {
+    setLoading("connect-trust");
+    setPreflight(null); setPreflightFor(""); setRunResult(null);
+    const connection = { alias: connectionAlias, address: manualAddress.trim(), user: manualUser.trim(), port: manualPort,
+      group: manualGroup, become: manualBecome, credentialId: manualCredentialId };
     try {
-      const response = await fetch("/api/ansible/hosts/bootstrap", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ alias: manualAlias, address: manualAddress, user: manualUser, port: manualPort,
-          credentialId: manualCredentialId, ...secrets, confirmRootAccess: secrets.configureSudo }),
+      const outcome = await connectAndSaveHost(connection, secrets, {
+        editing: Boolean(editingHost),
+        onStage: (stage) => { setLoading(`connect-${stage}`); if (stage !== "trust") setServerTrusted(true); },
+        onPasswordSubmit: clearPasswords,
+        onCredential: (payload) => { setManualCredentialId(payload.credentialId); setCredentialResult(payload); },
+        onPreflight: (payload, credentialId) => {
+          setPreflight(payload);
+          setPreflightFor([connectionAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", credentialId ?? "legacy"].join("\u0000"));
+        },
       });
-      const payload = await readApiResponse(response);
-      if (!payload.ok) {
-        setCredentialResult((previous) => ({ ...previous, ok: false, message: payload.message }));
-        notify(payload.message || "Настройка SSH не завершена.", "error");
+      if (!outcome.ok) {
+        const message = outcome.payload.message || "Подключение не завершено. Проверьте результат ниже и повторите попытку.";
+        if (outcome.stage === "trust" || ["host_not_trusted", "host_key_changed"].includes(outcome.payload.error)) {
+          setTrustExpanded(true); setServerTrusted(false);
+          setAccessMessage(message, "warning");
+        }
+        setCredentialResult((previous) => ({ ...previous, ok: false, message }));
+        notify(message, outcome.stage === "trust" ? "warning" : "error");
         return;
       }
-      setManualCredentialId(payload.credentialId);
-      setCredentialResult(payload);
-      notify(payload.message, payload.sudo?.requested && !payload.sudo.ready ? "warning" : "success");
-      await checkPreflight(payload.credentialId);
+      setRunResult({ ok: true, action: editingHost ? "updateHost" : "addHost",
+        message: editingHost ? `Подключение ${connection.alias} проверено и сохранено.` : `Хост ${connection.alias} подключён и добавлен в список. Можно запускать аудит.` });
+      if (!editingHost) startNewHost();
+      else setCredentialResult((previous) => ({ ...previous, ok: true, message: "Подключение проверено и сохранено." }));
+      await refreshAll();
+      setSelectedAlias(connection.alias);
     } catch (error) {
-      const message = errorMessage(error, "Настройка SSH не завершена. Повторная попытка продолжит работу с тем же ключом.");
+      const message = errorMessage(error, "Ответ не получен. Проверьте список хостов перед повторной попыткой; созданная пара сохраняется.");
       setCredentialResult((previous) => ({ ...previous, ok: false, message }));
       notify(message, "error");
     } finally {
@@ -510,13 +453,13 @@ export function AnsibleControlClient() {
     setRunResult(null);
     setPreflight(null);
     setPreflightFor("");
-    const checkedConnection = [manualAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", credentialId ?? "legacy"].join("\u0000");
+    const checkedConnection = [connectionAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", credentialId ?? "legacy"].join("\u0000");
     try {
       const response = await fetch("/api/ansible/hosts/preflight", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          alias: manualAlias,
+          alias: connectionAlias,
           address: manualAddress,
           user: manualUser,
           port: manualPort,
@@ -749,7 +692,7 @@ export function AnsibleControlClient() {
     setManualBecome(true);
     setPreflight(null);
     setPreflightFor("");
-    if (address) notify(`Адрес ${address} подставлен. Подготовьте SSH-доступ и заполните форму ниже.`, "info");
+    if (address) notify(`Адрес ${address} подставлен. Введите пользователя и пароль Astra ниже.`, "info");
   }
 
   function fillHostForm(host: ManagedHost) {
@@ -802,56 +745,46 @@ export function AnsibleControlClient() {
       <section id="host-form" ref={formRef} className="scroll-mt-6 rounded-xl border border-slate-800 bg-slate-950/70 p-4 sm:p-5" aria-labelledby="host-form-title">
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 id="host-form-title" className="text-lg font-semibold text-white">{editingHost ? `2. Подключение хоста: ${editingHost}` : "2. Подключение хоста по SSH"}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">Укажите параметры Astra, подтвердите сервер и войдите по паролю. Для каждого хоста HCP создаст отдельную ключевую пару.</p>
+            <h2 id="host-form-title" className="text-lg font-semibold text-white">{editingHost ? `2. Подключение: ${editingHost}` : "2. Подключение по паролю"}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-400">Вы вводите данные на сайте. HCP сам входит на Astra по паролю, затем настраивает ключ и сохраняет подключение.</p>
           </div>
           {editingHost ? <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)}>Добавить другой хост</Button> : null}
         </div>
-        <fieldset disabled={Boolean(loading) || Boolean(accessLoading)} className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
-          <Field label="Имя хоста" value={manualAlias} onChange={(value) => { setManualAlias(value); invalidateCredential(); }} placeholder="web-01" disabled={Boolean(editingHost)} />
-          <Field label="IP-адрес или домен" value={manualAddress} onChange={(value) => { setManualAddress(value); invalidateCredential(); }} placeholder="192.168.1.10" />
-          <Field label="Пользователь SSH" value={manualUser} onChange={(value) => { setManualUser(value); invalidateCredential(); }} placeholder="admin" />
-          <Field label="Порт SSH" value={manualPort} onChange={(value) => { setManualPort(value); invalidateCredential(); }} placeholder="22" />
-          <Field label="Группа inventory" value={manualGroup} onChange={setManualGroup} placeholder="linux_hosts" />
-          <label className="flex h-10 min-w-0 items-center gap-2 self-end rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-200">
-            <input
-              type="checkbox"
-              checked={manualBecome}
-              onChange={(event) => setManualBecome(event.target.checked)}
-              className="h-4 w-4 rounded border-slate-600 bg-slate-950"
-            />
-            Использовать sudo (рекомендуется)
-          </label>
+        <fieldset disabled={Boolean(loading) || Boolean(accessLoading)} className="grid min-w-0 gap-3 sm:grid-cols-2">
+          <Field label="Адрес Astra" value={manualAddress} onChange={(value) => { setManualAddress(value); invalidateCredential(); }} placeholder="192.168.1.10" />
+          <Field label="Пользователь Astra" value={manualUser} onChange={(value) => { setManualUser(value); invalidateCredential(); }} placeholder="Имя пользователя для входа по SSH" />
+          <details className="rounded-lg border border-slate-800 p-3 sm:col-span-2">
+            <summary className="cursor-pointer text-sm text-slate-300">Дополнительные параметры: имя, порт и права</summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+              <Field label="Имя в списке (необязательно)" value={manualAlias} onChange={(value) => { setManualAlias(value); invalidateCredential(); }} placeholder={defaultHostAlias(manualAddress) || "Определится по адресу"} disabled={Boolean(editingHost)} />
+              <Field label="Порт SSH" value={manualPort} onChange={(value) => { setManualPort(value); invalidateCredential(); }} placeholder="22" />
+              <Field label="Группа хостов" value={manualGroup} onChange={setManualGroup} placeholder="linux_hosts" />
+            </div>
+            <label className="mt-3 flex items-center gap-2 text-sm text-slate-200">
+              <input type="checkbox" checked={manualBecome} onChange={(event) => setManualBecome(event.target.checked)} className="h-4 w-4 rounded border-slate-600 bg-slate-950" />
+              Использовать sudo для аудита (рекомендуется)
+            </label>
+            <p className="mt-2 text-xs leading-5 text-slate-400">Если sudo требует пароль, настройте его в разделе ниже. Без sudo доступны только разрешённые пользователю данные.</p>
+          </details>
         </fieldset>
-        <p className={`mt-3 rounded-lg border p-3 text-sm leading-6 ${manualBecome ? "border-slate-700 text-slate-300" : "border-amber-400/25 bg-amber-400/5 text-amber-100"}`}>
-          {manualBecome ? "sudo включён: рекомендуемый режим для аудита и изменений. Доступ без пароля можно настроить ниже при наличии административных прав."
-            : "Без sudo: ограниченный режим. Защищённые данные могут быть недоступны, изменения firewall требуют root."}
-        </p>
-        <HostServerTrust address={manualAddress} port={manualPort} loading={accessLoading || loading} message={accessMessage}
-          trusted={serverTrusted} fingerprints={hostKeyScan?.fingerprints} trustedFingerprint={trustedFingerprint}
-          onFingerprint={(value) => { setTrustedFingerprint(value); setServerTrusted(false); }} onScan={scanHostFingerprint} onTrust={trustScannedHostKey} onCopy={copyToClipboard} />
-        <SshCredentialSetup key={[manualAlias, manualAddress, manualUser, manualPort].join("|")}
-          loading={Boolean(loading) || Boolean(accessLoading)} canConnect={Boolean(manualAlias && manualAddress && manualUser && manualPort)}
-          result={credentialResult} legacy={Boolean(editingHost && !manualCredentialId)} onSetup={setupHostCredential} />
-        <div className="mt-5 flex flex-wrap gap-3">
-          <Button variant="secondary" onClick={() => void checkPreflight()} disabled={Boolean(loading) || Boolean(accessLoading) || !manualAlias || !manualAddress || !manualUser} className="w-full sm:w-auto">
-            <CheckCircle2 size={16} className={loading === "preflight" ? "animate-spin" : ""} aria-hidden="true" />
-            Проверить подключение
-          </Button>
-          {!editingHost ? <Button onClick={addManualHost} disabled={Boolean(loading) || Boolean(accessLoading) || !manualCredentialId || !preflight?.ok || preflightFor !== connectionSignature} className="w-full sm:w-auto" title={!preflight?.ok || preflightFor !== connectionSignature ? "Сначала проверьте подключение" : undefined}>
-            <Plus size={16} aria-hidden="true" />
-            Добавить хост
-          </Button> : <>
-          <Button variant="secondary" onClick={updateManualHost} disabled={Boolean(loading) || Boolean(accessLoading) || manualAlias !== editingHost || !preflight?.ok || preflightFor !== connectionSignature} className="w-full sm:w-auto">
-            Сохранить изменения
-          </Button>
-          <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || !editingHost} className="w-full sm:w-auto">
-            Удалить хост
-          </Button>
-          <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)} className="w-full sm:w-auto">Отменить редактирование</Button>
-          </>}
-        </div>
-        <p className="mt-3 text-sm leading-6 text-slate-400">После установки ключа проверка выполняется автоматически. Её можно повторить кнопкой «Проверить подключение». Успешный результат разрешает сохранение хоста.</p>
+        <SshCredentialSetup key={[connectionAlias, manualAddress, manualUser, manualPort].join("|")}
+          loading={loading || accessLoading} canConnect={Boolean(connectionAlias && manualAddress.trim() && manualUser.trim() && manualPort)}
+          result={credentialResult} legacy={Boolean(editingHost && !manualCredentialId)} editing={Boolean(editingHost)} onSetup={setupHostCredential}>
+          <HostServerTrust address={manualAddress} port={manualPort} loading={accessLoading || loading} message={accessMessage}
+            expanded={trustExpanded} onExpanded={setTrustExpanded}
+            trusted={serverTrusted} fingerprints={hostKeyScan?.fingerprints} trustedFingerprint={trustedFingerprint}
+            onFingerprint={(value) => { setTrustedFingerprint(value); setServerTrusted(false); }} onScan={scanHostFingerprint} onTrust={trustScannedHostKey} onCopy={copyToClipboard} />
+        </SshCredentialSetup>
+        {editingHost ? <details className="mt-4 rounded-lg border border-slate-800 p-3">
+          <summary className="cursor-pointer text-sm text-slate-400">Дополнительные действия с хостом</summary>
+          <div className="mt-3 flex flex-wrap gap-3">
+            <Button variant="secondary" onClick={() => void checkPreflight()} disabled={Boolean(loading) || Boolean(accessLoading)}>
+              <CheckCircle2 size={16} aria-hidden="true" />Только проверить доступ
+            </Button>
+            <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || Boolean(accessLoading)}>Удалить хост</Button>
+            <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)}>Отменить редактирование</Button>
+          </div>
+        </details> : null}
         {preflight && preflightFor === connectionSignature ? (
           <>
           <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
