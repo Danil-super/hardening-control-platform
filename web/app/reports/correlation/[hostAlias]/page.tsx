@@ -43,7 +43,10 @@ export default async function HostCorrelationPage({ params }: { params: Promise<
             Только последние отчёты не старше {report.maxAgeHours} ч. Сводка объединяет совпадающие технические признаки, но не складывает CVSS и не заменяет подтверждение владельцем системы.
           </p>
         </div>
-        <LinkButton href={`/reports/agentless?host=${encodeURIComponent(report.hostAlias)}`} variant="secondary">Все исходные отчёты</LinkButton>
+        <div className="flex flex-wrap gap-2">
+          <LinkButton href={`/remediation-plan?host=${encodeURIComponent(report.hostAlias)}`}>План устранения</LinkButton>
+          <LinkButton href={`/reports/agentless?host=${encodeURIComponent(report.hostAlias)}`} variant="secondary">Все исходные отчёты</LinkButton>
+        </div>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">

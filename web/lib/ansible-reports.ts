@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Finding } from "@/types";
@@ -258,4 +259,19 @@ export function readAnsibleReport(reportId: string): AnsibleReportDetail | null 
     events: Array.isArray(parsed.events) ? parsed.events : [],
     raw: parsed,
   };
+}
+
+/** SHA-256 of the exact JSON file referenced by an audit decision/export. */
+export function hashAnsibleReport(reportId: string) {
+  const fileName = fileNameFromReportId(reportId);
+  if (!fileName) return null;
+  const reportsDir = getReportsDir();
+  const reportPath = path.join(reportsDir, fileName);
+  if (!reportPath.startsWith(reportsDir + path.sep) || !existsSync(reportPath)) return null;
+  try {
+    const data = readFileSync(reportPath);
+    return createHash("sha256").update(data).digest("hex");
+  } catch {
+    return null;
+  }
 }

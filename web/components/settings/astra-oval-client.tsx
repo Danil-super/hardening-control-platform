@@ -8,7 +8,7 @@ import type { AstraOvalConfig } from "@/lib/astra-oval-config";
 
 type Policy = { groupName: string; config: AstraOvalConfig; updatedAt: string };
 type Payload = { ok?: boolean; message?: string; inventoryGroups?: string[]; policies?: Policy[] };
-const initial: AstraOvalConfig = { mode: "local", path: "/usr/share/oval/db.xml", url: "", sha256: "", releasePattern: "*", architectures: [], maxAgeDays: 30 };
+const initial: AstraOvalConfig = { mode: "local", path: "/usr/share/oval/db.xml", url: "", sha256: "", releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "", sourceReference: "", sourceReviewedAt: null };
 const inputClass = "mt-1 w-full min-w-0 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-300";
 
 export function AstraOvalClient() {
@@ -61,9 +61,16 @@ export function AstraOvalClient() {
         <input className={inputClass} value={config.mode === "local" ? config.path : config.url} onChange={(event) => update(config.mode === "local" ? { path: event.target.value } : { url: event.target.value })} required placeholder={config.mode === "local" ? "/usr/share/oval/db.xml" : "https://mirror.example/oval/astra.xml"} />
         <span className="mt-1 block text-xs leading-5 text-slate-400">{config.mode === "local" ? "Используется файл на каждой ВМ. Интернет при проверке не нужен." : "Файл скачивает управляющая машина и временно передаёт по SSH. Проверяемой ВМ интернет не нужен. Требуется прямой адрес XML без авторизации и параметров запроса."}</span>
       </label>
-      <label className="min-w-0 text-sm text-slate-300 md:col-span-2">Ожидаемый SHA-256 {config.mode === "local" ? "(необязательно)" : "(обязательно)"}
-        <input className={inputClass} value={config.sha256} onChange={(event) => update({ sha256: event.target.value })} required={config.mode === "online"} pattern="[a-fA-F0-9]{64}" placeholder="64 шестнадцатеричных символа" />
-        <span className="mt-1 block text-xs leading-5 text-slate-400">Сверьте сумму по доверенному источнику. Совпадение SHA-256 подтверждает байты файла, но не подпись производителя.</span>
+      <label className="min-w-0 text-sm text-slate-300 md:col-span-2">Ожидаемый SHA-256
+        <input className={inputClass} value={config.sha256} onChange={(event) => update({ sha256: event.target.value })} required pattern="[a-fA-F0-9]{64}" placeholder="64 шестнадцатеричных символа" />
+        <span className="mt-1 block text-xs leading-5 text-slate-400">Обязателен и для локального XML: HCP сравнит его с выбранной доверенной копией. Совпадение подтверждает байты файла, но не подпись производителя.</span>
+      </label>
+      <label className="text-sm text-slate-300">Название доверенного источника
+        <input className={inputClass} value={config.sourceName} onChange={(event) => update({ sourceName: event.target.value })} required placeholder="Например, бюллетени производителя Astra" />
+      </label>
+      <label className="text-sm text-slate-300">Ссылка или ID источника
+        <input className={inputClass} value={config.sourceReference} onChange={(event) => update({ sourceReference: event.target.value })} required placeholder="URL, номер бюллетеня или ID внутреннего реестра" />
+        <span className="mt-1 block text-xs leading-5 text-slate-400">Эти сведения и время сохранения попадут в отчёт как основание оценки. HCP не выдаёт их за проверку подписи производителя.</span>
       </label>
       <label className="text-sm text-slate-300">Область применения: выпуск Astra
         <input className={inputClass} value={config.releasePattern} onChange={(event) => update({ releasePattern: event.target.value })} required placeholder="Например, 1.7.*" />
@@ -83,6 +90,7 @@ export function AstraOvalClient() {
       {(data.policies ?? []).map((policy) => <div key={policy.groupName} className="rounded-md border border-slate-800 p-3 text-sm">
         <p className="font-semibold text-slate-100">{policy.groupName} · {policy.config.mode === "local" ? "локальная база" : "HTTPS-база"} · выпуск {policy.config.releasePattern}</p>
         <p className="mt-1 break-all text-slate-400">{policy.config.mode === "local" ? policy.config.path : policy.config.url}</p>
+        <p className="mt-1 text-xs text-slate-500">Источник: {policy.config.sourceName || "не зафиксирован"} · {policy.config.sourceReference || "не зафиксирован"} · сверено: {policy.config.sourceReviewedAt ? new Date(policy.config.sourceReviewedAt).toLocaleString("ru-RU") : "нет"}</p>
         <div className="mt-3 flex flex-wrap gap-3">
           <Button variant="secondary" disabled={busy} onClick={() => { setGroup(policy.groupName); setConfig(policy.config); setArchitectures(policy.config.architectures.join(", ")); setMessage("Источник открыт для редактирования в форме выше.", "info"); document.getElementById("astra-oval-title")?.scrollIntoView({ block: "start" }); }}>Изменить</Button>
           <Button variant="secondary" disabled={busy} onClick={() => void saveOrRemove("DELETE", policy.groupName)}>Удалить</Button>

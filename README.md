@@ -29,7 +29,10 @@ sudo python3 ansible/scripts/hcp-host-readiness.py --include-oval-metadata > ast
 - OpenSCAP/SSG для подготовленных хостов, временный Lynis, Nmap и `ssh-audit`.
 - Импорт XML-отчёта Greenbone/OpenVAS и отправка SBOM в OWASP Dependency-Track.
 - Единая сводка по хосту: показывает совпадающие CVE/сетевые признаки из разных источников, свежесть доказательств и не складывает CVSS в произвольный балл.
+- План устранения: отдельная история решения, согласования заказчика, выполнения, принятого риска и подтверждения свежим повторным аудитом.
+- Итоговый PDF: серверный снимок области, доказательств, решений и хешей источников без паролей и приватных ключей.
 - Обратимые firewall-изменения: dry-run, причина, typed confirmation, backup и rollback.
+- Безопасное завершение работ: отзыв уникального SSH-ключа HCP на целевом хосте до удаления локальной пары и inventory.
 - SQLite с hash-chain журналом, история JSON-отчётов и systemd-расписание.
 
 ## Архитектура
@@ -426,5 +429,6 @@ docker compose exec --user node hcp /usr/local/bin/hcp-scheduled-audit
 - [Развёртывание](deployment/README.md)
 - [Ubuntu → Astra: единый порядок действий](docs/ubuntu-astra-setup.md)
 - [Бэкап HCP и восстановление на другой Ubuntu](docs/backup-restore.md)
+- [Завершение проекта и безопасный отзыв доступа](docs/project-closeout.md)
 - [Первый тестовый прогон: контейнер и полноценные ВМ](deployment/lab/README.md)
 - [Описание дипломного проекта](docs/diploma-description.md)

@@ -12,7 +12,7 @@ const store = await import(compiled.url("state-store"));
 const state = mkdtempSync(path.join(tmpdir(), "hcp-oval-settings-"));
 process.env.HCP_STATE_DIR = state;
 after(() => { delete process.env.HCP_STATE_DIR; rmSync(compiled.directory, { recursive: true, force: true }); rmSync(state, { recursive: true, force: true }); });
-const local = () => ({ mode: "local", path: "/usr/share/oval/db.xml", url: "", sha256: "", releasePattern: "*", architectures: [], maxAgeDays: 30 });
+const local = () => ({ mode: "local", path: "/usr/share/oval/db.xml", url: "", sha256: "a".repeat(64), releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "Реестр производителя", sourceReference: "ASTRA-OVAL-2026" });
 
 test("OVAL settings persist isolated sources for different Astra groups and survive edits", () => {
   store.upsertAstraOvalPolicy("astra-old", { ...local(), releasePattern: "1.6.*" });

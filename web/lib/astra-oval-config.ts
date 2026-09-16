@@ -6,6 +6,9 @@ export type AstraOvalConfig = {
   releasePattern: string;
   architectures: string[];
   maxAgeDays: number;
+  sourceName: string;
+  sourceReference: string;
+  sourceReviewedAt: string | null;
 };
 
 export function validateAstraOvalConfig(value: unknown): AstraOvalConfig {
@@ -17,6 +20,9 @@ export function validateAstraOvalConfig(value: unknown): AstraOvalConfig {
   const url = text("url");
   const sha256 = text("sha256").toLowerCase();
   const releasePattern = text("releasePattern");
+  const sourceName = text("sourceName");
+  const sourceReference = text("sourceReference");
+  const sourceReviewedAt = text("sourceReviewedAt");
   if (input.mode === "local" && (!file.startsWith("/") || file.length > 1024 || /[\x00-\x1f\x7f]/.test(file) || file.split("/").includes(".."))) {
     throw new Error("Укажите абсолютный путь к XML-базе на проверяемом хосте без переходов ..");
   }
@@ -29,6 +35,9 @@ export function validateAstraOvalConfig(value: unknown): AstraOvalConfig {
     if (!sha256) throw new Error("Для сетевой базы укажите ожидаемый SHA-256 из доверенного источника.");
   }
   if (sha256 && !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("SHA-256 должен содержать 64 шестнадцатеричных символа.");
+  if (sourceName && (sourceName.length > 160 || /[\x00-\x1f\x7f]/.test(sourceName))) throw new Error("Название источника OVAL содержит недопустимые символы.");
+  if (sourceReference && (sourceReference.length > 500 || /[\x00-\x1f\x7f]/.test(sourceReference))) throw new Error("Ссылка или идентификатор источника OVAL содержит недопустимые символы.");
+  if (sourceReviewedAt && !Number.isFinite(Date.parse(sourceReviewedAt))) throw new Error("Дата проверки источника OVAL имеет неверный формат.");
   if (!/^(?:\*|[A-Za-z0-9][A-Za-z0-9_.+-]{0,100}(?:\.\*)?)$/.test(releasePattern)) {
     throw new Error("Укажите точный выпуск, ветку с .* на конце или * для базы с собственными условиями применимости.");
   }
@@ -40,5 +49,13 @@ export function validateAstraOvalConfig(value: unknown): AstraOvalConfig {
     throw new Error("Допустимый возраст базы — целое число от 1 до 3650 дней.");
   }
   return { mode: input.mode, path: input.mode === "local" ? file : "", url: input.mode === "online" ? url : "", sha256,
-    releasePattern, architectures: [...new Set(input.architectures as string[])], maxAgeDays };
+    releasePattern, architectures: [...new Set(input.architectures as string[])], maxAgeDays, sourceName, sourceReference,
+    sourceReviewedAt: sourceReviewedAt ? new Date(sourceReviewedAt).toISOString() : null };
+}
+
+export function assertAstraOvalProvenance(config: AstraOvalConfig) {
+  if (!config.sha256) throw new Error("Для OVAL-базы Astra всегда укажите ожидаемый SHA-256 из доверенного источника.");
+  if (config.sourceName.length < 2 || config.sourceReference.length < 5) {
+    throw new Error("Зафиксируйте название и ссылку либо идентификатор доверенного источника OVAL.");
+  }
 }

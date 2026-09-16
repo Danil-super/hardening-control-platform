@@ -98,6 +98,8 @@ HCP_SCHEDULE_DEEP_LIMIT=package_audit_hosts
 
 После изменения выполните `docker compose up -d` и перезапустите оба timer. Внутренний `flock` блокирует параллельные плановые запуски.
 
+Перед завершением проекта остановите оба timer до отзыва SSH-ключей целевых хостов. Полная последовательность передачи отчётов и безопасного отзыва доступа приведена в [инструкции завершения проекта](../docs/project-closeout.md).
+
 Чтобы добавить OpenSCAP к глубокому запуску, создайте override `sudo systemctl edit hcp-deep-audit.service`:
 
 ```ini

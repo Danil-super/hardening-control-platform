@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 
@@ -125,4 +125,31 @@ export function publicCredentialSummary(id: string | null) {
     const value = readHostCredential(id);
     return { credentialId: id, credentialFingerprint: value.fingerprint, credentialPublicKey: value.publicKey, credentialReady: Boolean(value.verifiedAt && existsSync(credentialKeyPath(id))) };
   } catch { return { credentialId: id, credentialFingerprint: null, credentialPublicKey: null, credentialReady: false }; }
+}
+
+export function deleteHostCredential(id: string, identity: HostIdentity) {
+  // Read and validate before removal: an inventory mismatch must never delete
+  // another host's key material. A credential directory is intentionally
+  // narrow and may contain only files created by this module.
+  validateHostCredential(id, identity);
+  const directory = credentialDirectory(id);
+  const allowed = new Set(["id_ed25519", "id_ed25519.pub", "metadata.json"]);
+  for (const name of readdirSync(directory)) {
+    if (!allowed.has(name)) throw credentialError("Каталог SSH-ключа содержит неожиданный файл. Удалите доступ вручную после проверки хранилища.", "credential_unexpected_content");
+    const info = lstatSync(path.join(directory, name));
+    if (!info.isFile() || info.isSymbolicLink()) throw credentialError("Файл SSH-ключа имеет недопустимый тип.");
+  }
+  rmSync(directory, { recursive: true, force: false, maxRetries: 0 });
+}
+
+export function acquireHostCredentialCloseoutLock(id: string) {
+  // Keep the lock next to, rather than inside, the credential directory: the
+  // final local deletion can remain strict about its known contents.
+  credentialDirectory(id);
+  const lock = path.join(hostKeysDirectory(), `${id}.decommission-lock`);
+  const existing = lstatSync(lock, { throwIfNoEntry: false });
+  if (existing) throw credentialError("Завершение работ по этому хосту уже выполняется. Дождитесь результата.", "credential_busy");
+  try { mkdirSync(lock, { mode: 0o700 }); }
+  catch { throw credentialError("Завершение работ по этому хосту уже выполняется. Дождитесь результата.", "credential_busy"); }
+  return () => { try { rmSync(lock, { recursive: true, force: true }); } catch { /* no-op */ } };
 }

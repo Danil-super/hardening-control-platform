@@ -38,7 +38,8 @@ def results(statuses=('true',), extra='', duplicate=False):
 
 def config(raw=None, **values):
     current = {'mode': 'local', 'path': '/usr/share/oval/db.xml', 'releasePattern': '*',
-               'sha256': hashlib.sha256(raw).hexdigest() if raw else '', 'maxAgeDays': 30}
+               'sha256': hashlib.sha256(raw).hexdigest() if raw else '', 'maxAgeDays': 30,
+               'sourceName': 'Тестовый доверенный реестр', 'sourceReference': 'TEST-OVAL-1'}
     current.update(values)
     return oval.parse_config(current)
 

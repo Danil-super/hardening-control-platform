@@ -1,4 +1,5 @@
 import { getInventoryHost } from "@/lib/inventory";
+import { assertAstraOvalProvenance } from "@/lib/astra-oval-config";
 import { listAstraOvalPolicies, type AstraOvalPolicy } from "@/lib/state-store";
 
 export function selectAstraOvalPolicy(groups: string[], policies: AstraOvalPolicy[]) {
@@ -6,6 +7,7 @@ export function selectAstraOvalPolicy(groups: string[], policies: AstraOvalPolic
   if (specific.length > 1) throw new Error("Для хоста назначено несколько OVAL-баз через пересекающиеся группы. Оставьте одну подходящую базу.");
   const policy = specific[0] ?? policies.find((item) => item.groupName === "linux_hosts" && groups.includes("linux_hosts"));
   if (!policy) throw new Error("Назначьте OVAL-базу группе хоста на странице «Источники» → «CVE пакетов Astra».");
+  assertAstraOvalProvenance(policy.config);
   return policy;
 }
 

@@ -22,6 +22,7 @@ import { HostServerTrust } from "@/components/hosts/ssh-connection-help";
 import { copyText } from "@/lib/clipboard";
 import { NetworkDiscovery, type DiscoveryPayload } from "@/components/hosts/network-discovery";
 import { SshCredentialSetup, type CredentialSetupResult, type SetupSecrets } from "@/components/hosts/ssh-credential-setup";
+import { DecommissionHostDialog } from "@/components/hosts/decommission-host-dialog";
 import { connectAndSaveHost, defaultHostAlias } from "@/lib/host-onboarding";
 import type { PreflightCheck } from "@/lib/preflight-result";
 
@@ -226,6 +227,7 @@ export function AnsibleControlClient() {
   const [copied, setCopied] = useState("");
   const [greenboneFile, setGreenboneFile] = useState<File | null>(null);
   const [greenboneMessage, setGreenboneMessage] = useState("");
+  const [decommissionHost, setDecommissionHost] = useState<ManagedHost | null>(null);
 
   const selectedHost = useMemo(
     () => hosts?.hosts?.find((host) => host.alias === selectedAlias) ?? null,
@@ -371,35 +373,6 @@ export function AnsibleControlClient() {
       setAccessMessage(errorMessage(error, "Не удалось сохранить проверенный SSH-ключ сервера."));
     } finally {
       setAccessLoading("");
-    }
-  }
-
-  async function deleteSelectedHost() {
-    if (!editingHost || !window.confirm(`Удалить хост ${editingHost} из inventory?`)) {
-      return;
-    }
-    setLoading("deleteHost");
-    setRunResult(null);
-    setFreshReportHref("");
-    try {
-      const response = await fetch("/api/ansible/hosts", {
-        method: "DELETE",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ alias: editingHost }),
-      });
-      const payload = await readApiResponse(response);
-      setRunResult({ ok: payload.ok, action: "deleteHost", message: payload.message });
-      if (payload.ok) {
-        setSelectedAlias("");
-        setEditingHost("");
-        setManualAlias("");
-        setManualAddress("");
-        await refreshAll();
-      }
-    } catch (error) {
-      setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
-    } finally {
-      setLoading("");
     }
   }
 
@@ -775,7 +748,7 @@ export function AnsibleControlClient() {
             <Button variant="secondary" onClick={() => void checkPreflight()} disabled={Boolean(loading) || Boolean(accessLoading)}>
               <CheckCircle2 size={16} aria-hidden="true" />Только проверить доступ
             </Button>
-            <Button variant="danger" onClick={deleteSelectedHost} disabled={Boolean(loading) || Boolean(accessLoading)}>Удалить хост</Button>
+            <Button variant="danger" onClick={() => { const host = hosts?.hosts?.find((item) => item.alias === editingHost) ?? null; setDecommissionHost(host); }} disabled={Boolean(loading) || Boolean(accessLoading)}>Завершить работы по хосту</Button>
             <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)}>Отменить редактирование</Button>
           </div>
         </details> : null}
@@ -1084,6 +1057,10 @@ export function AnsibleControlClient() {
           )}
         </aside>
       </section>
+      {decommissionHost ? <DecommissionHostDialog host={decommissionHost} onClose={() => setDecommissionHost(null)} onCompleted={async () => {
+        setSelectedAlias(""); setEditingHost(""); setManualAlias(""); setManualAddress(""); setManualCredentialId(null); setCredentialResult(null);
+        await refreshAll(); notify("Доступ HCP к хосту отозван; отчёты и журнал сохранены.", "success");
+      }} /> : null}
     </div>
   );
 }

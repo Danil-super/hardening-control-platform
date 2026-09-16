@@ -2,7 +2,7 @@ import { createHmac, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { validateAstraOvalConfig, type AstraOvalConfig } from "@/lib/astra-oval-config";
+import { assertAstraOvalProvenance, validateAstraOvalConfig, type AstraOvalConfig } from "@/lib/astra-oval-config";
 
 type DatabaseGlobal = typeof globalThis & {
   hcpDatabase?: DatabaseSync;
@@ -36,6 +36,63 @@ export type RemediationTransaction = {
   preAuditReportId: string | null;
   postAuditReportId: string | null;
   error: string | null;
+};
+
+export const remediationPlanStatuses = ["discovered", "proposed", "agreed", "completed", "confirmed", "accepted_risk"] as const;
+export type RemediationPlanStatus = typeof remediationPlanStatuses[number];
+
+export type PlanEvidence = {
+  reportId: string;
+  findingId: string;
+  source: string;
+  mode: string;
+  createdAt: string | null;
+  evidence: string;
+  reportSha256: string;
+};
+
+export type RemediationPlanItem = {
+  id: string;
+  hostAlias: string;
+  findingKey: string;
+  title: string;
+  category: string;
+  risk: "high" | "medium" | "low" | "info";
+  description: string;
+  recommendation: string;
+  evidence: PlanEvidence[];
+  status: RemediationPlanStatus;
+  owner: string | null;
+  dueAt: string | null;
+  approvalReference: string | null;
+  implementationNote: string | null;
+  verificationReportId: string | null;
+  riskAcceptedUntil: string | null;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type RemediationPlanHistory = {
+  id: string;
+  planId: string;
+  createdAt: string;
+  fromStatus: RemediationPlanStatus | null;
+  toStatus: RemediationPlanStatus;
+  note: string | null;
+  approvalReference: string | null;
+  verificationReportId: string | null;
+  riskAcceptedUntil: string | null;
+};
+
+export type ProjectReportRecord = {
+  id: string;
+  createdAt: string;
+  hostAlias: string;
+  fileName: string;
+  pdfSha256: string;
+  snapshotSha256: string;
+  sourceManifestSha256: string;
+  subject: { clientName: string; projectName: string; period: string; specialist: string };
 };
 
 export type VulnerabilityDatabaseMode = "online" | "offline";
@@ -73,6 +130,10 @@ export type OpenScapException = {
 function getStateDirectory() {
   const repoRoot = path.resolve(process.cwd(), "..");
   return process.env.HCP_STATE_DIR ? path.resolve(process.env.HCP_STATE_DIR) : path.join(repoRoot, "ansible");
+}
+
+export function getHcpStateDirectory() {
+  return getStateDirectory();
 }
 
 function getDatabasePath() {
@@ -162,6 +223,57 @@ function getDatabase() {
     );
     CREATE INDEX IF NOT EXISTS openscap_exceptions_group_expiry
       ON openscap_exceptions(group_name, expires_at);
+
+    CREATE TABLE IF NOT EXISTS remediation_plan_items (
+      id TEXT PRIMARY KEY,
+      host_alias TEXT NOT NULL,
+      finding_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      category TEXT NOT NULL,
+      risk TEXT NOT NULL,
+      description TEXT NOT NULL,
+      recommendation TEXT NOT NULL,
+      evidence_json TEXT NOT NULL,
+      status TEXT NOT NULL,
+      owner TEXT,
+      due_at TEXT,
+      approval_reference TEXT,
+      implementation_note TEXT,
+      verification_report_id TEXT,
+      risk_accepted_until TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS remediation_plan_items_host_updated
+      ON remediation_plan_items(host_alias, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS remediation_plan_history (
+      id TEXT PRIMARY KEY,
+      plan_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      from_status TEXT,
+      to_status TEXT NOT NULL,
+      note TEXT,
+      approval_reference TEXT,
+      verification_report_id TEXT,
+      risk_accepted_until TEXT,
+      FOREIGN KEY(plan_id) REFERENCES remediation_plan_items(id)
+    );
+    CREATE INDEX IF NOT EXISTS remediation_plan_history_plan_created
+      ON remediation_plan_history(plan_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS project_reports (
+      id TEXT PRIMARY KEY,
+      created_at TEXT NOT NULL,
+      host_alias TEXT NOT NULL,
+      file_name TEXT NOT NULL UNIQUE,
+      pdf_sha256 TEXT NOT NULL,
+      snapshot_sha256 TEXT NOT NULL,
+      source_manifest_sha256 TEXT NOT NULL,
+      subject_json TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS project_reports_host_created
+      ON project_reports(host_alias, created_at DESC);
   `);
   // Preserve old signatures: their version is exposed by verification instead
   // of silently re-signing history with the stronger payload encoding.
@@ -317,13 +429,15 @@ export function listAstraOvalPolicies(): AstraOvalPolicy[] {
 export function upsertAstraOvalPolicy(groupName: string, value: unknown) {
   assertOpenScapGroupName(groupName);
   const config = validateAstraOvalConfig(value);
+  assertAstraOvalProvenance(config);
   return inTransaction((database) => {
     const updatedAt = new Date().toISOString();
+    const fixedConfig = { ...config, sourceReviewedAt: updatedAt };
     database.prepare(`INSERT INTO astra_oval_policies (group_name, config_json, updated_at) VALUES (?, ?, ?)
       ON CONFLICT(group_name) DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at`)
-      .run(groupName, JSON.stringify(config), updatedAt);
-    appendAuditEvent("astra_oval_policy_upserted", groupName, { groupName, config });
-    return { groupName, config, updatedAt };
+      .run(groupName, JSON.stringify(fixedConfig), updatedAt);
+    appendAuditEvent("astra_oval_policy_upserted", groupName, { groupName, config: fixedConfig });
+    return { groupName, config: fixedConfig, updatedAt };
   });
 }
 
@@ -622,4 +736,213 @@ export function listRemediationTransactions(limit = 50) {
     .prepare("SELECT * FROM remediation_transactions ORDER BY created_at DESC LIMIT ?")
     .all(limit)
     .map(rowToTransaction);
+}
+
+function planText(value: unknown, field: string, minimum = 1, maximum = 1200) {
+  if (typeof value !== "string") throw new Error(`Поле «${field}» должно быть текстом.`);
+  const result = value.trim();
+  if (result.length < minimum || result.length > maximum || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(result)) {
+    throw new Error(`Поле «${field}» должно содержать от ${minimum} до ${maximum} символов.`);
+  }
+  return result;
+}
+
+function planIdentifier(value: unknown, field: string, maximum = 180) {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_.:-]{1,180}$/.test(value) || value.length > maximum) {
+    throw new Error(`Поле «${field}» имеет недопустимый формат.`);
+  }
+  return value;
+}
+
+function nullablePlanText(value: unknown, field: string, minimum = 1, maximum = 1200) {
+  if (value === undefined || value === null || value === "") return null;
+  return planText(value, field, minimum, maximum);
+}
+
+function futurePlanDate(value: unknown, field: string, required = false) {
+  if (value === undefined || value === null || value === "") {
+    if (required) throw new Error(`Укажите дату для поля «${field}».`);
+    return null;
+  }
+  if (typeof value !== "string") throw new Error(`Укажите корректную дату для поля «${field}».`);
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || timestamp <= Date.now()) throw new Error(`Дата «${field}» должна быть в будущем.`);
+  if (timestamp > Date.now() + 1000 * 60 * 60 * 24 * 366 * 5) throw new Error(`Дата «${field}» не может быть далее пяти лет.`);
+  return new Date(timestamp).toISOString();
+}
+
+function planStatus(value: unknown): RemediationPlanStatus {
+  if (typeof value !== "string" || !remediationPlanStatuses.includes(value as RemediationPlanStatus)) {
+    throw new Error("Укажите поддерживаемый статус плана устранения.");
+  }
+  return value as RemediationPlanStatus;
+}
+
+function parsePlanEvidence(value: unknown): PlanEvidence[] {
+  if (!Array.isArray(value) || !value.length || value.length > 24) throw new Error("Для пункта плана нужны технические доказательства из отчёта.");
+  return value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Доказательство плана имеет неверный формат.");
+    const data = item as Record<string, unknown>;
+    const createdAt = data.createdAt === null ? null : typeof data.createdAt === "string" && Number.isFinite(Date.parse(data.createdAt)) ? data.createdAt : null;
+    return {
+      reportId: planIdentifier(data.reportId, "ID исходного отчёта"),
+      findingId: planIdentifier(data.findingId, "ID находки"),
+      source: planText(data.source, "источник", 1, 80),
+      mode: planText(data.mode, "тип отчёта", 1, 80),
+      createdAt,
+      evidence: planText(data.evidence || "Нет дополнительного технического доказательства.", "доказательство", 1, 4000),
+      reportSha256: typeof data.reportSha256 === "string" && /^[a-f0-9]{64}$/.test(data.reportSha256) ? data.reportSha256 : (() => { throw new Error("Не зафиксирована контрольная сумма исходного отчёта."); })(),
+    };
+  });
+}
+
+function rowToPlanItem(row: Record<string, unknown>): RemediationPlanItem {
+  return {
+    id: String(row.id), hostAlias: String(row.host_alias), findingKey: String(row.finding_key), title: String(row.title), category: String(row.category),
+    risk: row.risk as RemediationPlanItem["risk"], description: String(row.description), recommendation: String(row.recommendation),
+    evidence: parsePlanEvidence(JSON.parse(String(row.evidence_json))), status: planStatus(row.status),
+    owner: typeof row.owner === "string" ? row.owner : null, dueAt: typeof row.due_at === "string" ? row.due_at : null,
+    approvalReference: typeof row.approval_reference === "string" ? row.approval_reference : null,
+    implementationNote: typeof row.implementation_note === "string" ? row.implementation_note : null,
+    verificationReportId: typeof row.verification_report_id === "string" ? row.verification_report_id : null,
+    riskAcceptedUntil: typeof row.risk_accepted_until === "string" ? row.risk_accepted_until : null,
+    createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+  };
+}
+
+function rowToPlanHistory(row: Record<string, unknown>): RemediationPlanHistory {
+  return {
+    id: String(row.id), planId: String(row.plan_id), createdAt: String(row.created_at),
+    fromStatus: row.from_status === null ? null : planStatus(row.from_status), toStatus: planStatus(row.to_status),
+    note: typeof row.note === "string" ? row.note : null, approvalReference: typeof row.approval_reference === "string" ? row.approval_reference : null,
+    verificationReportId: typeof row.verification_report_id === "string" ? row.verification_report_id : null,
+    riskAcceptedUntil: typeof row.risk_accepted_until === "string" ? row.risk_accepted_until : null,
+  };
+}
+
+function addPlanHistory(database: DatabaseSync, input: Omit<RemediationPlanHistory, "id" | "createdAt">) {
+  const id = `plan_history_${randomUUID()}`;
+  const createdAt = new Date().toISOString();
+  database.prepare(`INSERT INTO remediation_plan_history
+    (id, plan_id, created_at, from_status, to_status, note, approval_reference, verification_report_id, risk_accepted_until)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(id, input.planId, createdAt, input.fromStatus, input.toStatus, input.note, input.approvalReference, input.verificationReportId, input.riskAcceptedUntil);
+  return { id, createdAt };
+}
+
+export function listRemediationPlanItems(hostAlias?: string) {
+  const rows = hostAlias
+    ? getDatabase().prepare("SELECT * FROM remediation_plan_items WHERE host_alias = ? ORDER BY updated_at DESC").all(hostAlias)
+    : getDatabase().prepare("SELECT * FROM remediation_plan_items ORDER BY updated_at DESC").all();
+  return rows.map((row) => rowToPlanItem(row as Record<string, unknown>));
+}
+
+export function getRemediationPlanItem(id: string) {
+  if (!/^plan_[a-f0-9-]{36}$/.test(id)) return null;
+  const row = getDatabase().prepare("SELECT * FROM remediation_plan_items WHERE id = ?").get(id);
+  return row ? rowToPlanItem(row as Record<string, unknown>) : null;
+}
+
+export function listRemediationPlanHistory(planId: string) {
+  if (!/^plan_[a-f0-9-]{36}$/.test(planId)) return [];
+  return getDatabase().prepare("SELECT * FROM remediation_plan_history WHERE plan_id = ? ORDER BY created_at ASC").all(planId)
+    .map((row) => rowToPlanHistory(row as Record<string, unknown>));
+}
+
+export function createRemediationPlanItem(input: Omit<RemediationPlanItem, "id" | "status" | "owner" | "dueAt" | "approvalReference" | "implementationNote" | "verificationReportId" | "riskAcceptedUntil" | "createdAt" | "updatedAt">) {
+  const hostAlias = planIdentifier(input.hostAlias, "хост", 96);
+  const findingKey = planIdentifier(input.findingKey, "ключ находки", 180);
+  const title = planText(input.title, "название", 1, 300);
+  const category = planText(input.category, "категория", 1, 120);
+  if (!["high", "medium", "low", "info"].includes(input.risk)) throw new Error("Укажите корректный уровень риска.");
+  const description = planText(input.description, "описание", 1, 3000);
+  const recommendation = planText(input.recommendation, "рекомендация", 1, 3000);
+  const evidence = parsePlanEvidence(input.evidence);
+  return inTransaction((database) => {
+    const existing = database.prepare(`SELECT * FROM remediation_plan_items WHERE host_alias = ? AND finding_key = ?
+      AND status NOT IN ('confirmed', 'accepted_risk') ORDER BY updated_at DESC LIMIT 1`).get(hostAlias, findingKey);
+    if (existing) return rowToPlanItem(existing as Record<string, unknown>);
+    const id = `plan_${randomUUID()}`;
+    const now = new Date().toISOString();
+    database.prepare(`INSERT INTO remediation_plan_items
+      (id, host_alias, finding_key, title, category, risk, description, recommendation, evidence_json, status, owner, due_at,
+       approval_reference, implementation_note, verification_report_id, risk_accepted_until, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`)
+      .run(id, hostAlias, findingKey, title, category, input.risk, description, recommendation, JSON.stringify(evidence), now, now);
+    addPlanHistory(database, { planId: id, fromStatus: null, toStatus: "discovered", note: "Пункт создан из свежих доказательств аудита.", approvalReference: null, verificationReportId: null, riskAcceptedUntil: null });
+    appendAuditEvent("remediation_plan_created", id, { hostAlias, findingKey, title, risk: input.risk, evidence: evidence.map(({ reportId, findingId, reportSha256 }) => ({ reportId, findingId, reportSha256 })) });
+    return getRemediationPlanItem(id);
+  });
+}
+
+const planTransitions: Record<RemediationPlanStatus, RemediationPlanStatus[]> = {
+  discovered: ["proposed"], proposed: ["agreed", "accepted_risk"], agreed: ["proposed", "completed", "accepted_risk"],
+  completed: ["agreed", "confirmed"], confirmed: [], accepted_risk: ["proposed"],
+};
+
+export function transitionRemediationPlanItem(id: string, update: {
+  status: RemediationPlanStatus; note?: unknown; owner?: unknown; dueAt?: unknown; approvalReference?: unknown;
+  verificationReportId?: unknown; riskAcceptedUntil?: unknown;
+}) {
+  return inTransaction((database) => {
+    const current = getRemediationPlanItem(id);
+    if (!current) throw new Error("Пункт плана устранения не найден.");
+    const status = planStatus(update.status);
+    if (!planTransitions[current.status].includes(status)) throw new Error("Этот переход статуса плана не разрешён.");
+    const note = nullablePlanText(update.note, "комментарий", 10, 2000);
+    const owner = nullablePlanText(update.owner, "ответственный", 2, 160) ?? current.owner;
+    const dueAt = update.dueAt === undefined ? current.dueAt : futurePlanDate(update.dueAt, "срок");
+    const approvalReference = update.approvalReference === undefined ? current.approvalReference : nullablePlanText(update.approvalReference, "ссылка на согласование", 3, 500);
+    const verificationReportId = update.verificationReportId === undefined ? current.verificationReportId : (update.verificationReportId ? planIdentifier(update.verificationReportId, "ID повторного отчёта") : null);
+    const riskAcceptedUntil = update.riskAcceptedUntil === undefined ? current.riskAcceptedUntil : futurePlanDate(update.riskAcceptedUntil, "срок принятого риска");
+    if (status === "proposed" && !note) throw new Error("Опишите предлагаемую меру и её возможный риск.");
+    if (status === "agreed" && (!note || !owner || !dueAt || !approvalReference)) throw new Error("Для согласования укажите комментарий, ответственного, срок и ссылку на внешний документ или тикет.");
+    if (status === "completed" && !note) throw new Error("Опишите фактически выполненную меру.");
+    if (status === "confirmed" && (!note || !verificationReportId)) throw new Error("Для подтверждения укажите результат повторного аудита и комментарий.");
+    if (status === "accepted_risk" && (!note || !owner || !approvalReference || !riskAcceptedUntil)) throw new Error("Для принятия риска укажите причину, согласовавшего, ссылку на документ и срок действия.");
+    const updatedAt = new Date().toISOString();
+    database.prepare(`UPDATE remediation_plan_items SET status = ?, owner = ?, due_at = ?, approval_reference = ?,
+      implementation_note = ?, verification_report_id = ?, risk_accepted_until = ?, updated_at = ? WHERE id = ?`)
+      .run(status, owner, dueAt, approvalReference, status === "completed" ? note : current.implementationNote,
+        verificationReportId, riskAcceptedUntil, updatedAt, id);
+    addPlanHistory(database, { planId: id, fromStatus: current.status, toStatus: status, note, approvalReference, verificationReportId, riskAcceptedUntil });
+    appendAuditEvent("remediation_plan_transition", id, { hostAlias: current.hostAlias, findingKey: current.findingKey, fromStatus: current.status, toStatus: status, note, owner, dueAt, approvalReference, verificationReportId, riskAcceptedUntil });
+    return getRemediationPlanItem(id);
+  });
+}
+
+function rowToProjectReport(row: Record<string, unknown>): ProjectReportRecord {
+  const subject = JSON.parse(String(row.subject_json)) as ProjectReportRecord["subject"];
+  return { id: String(row.id), createdAt: String(row.created_at), hostAlias: String(row.host_alias), fileName: String(row.file_name),
+    pdfSha256: String(row.pdf_sha256), snapshotSha256: String(row.snapshot_sha256), sourceManifestSha256: String(row.source_manifest_sha256), subject };
+}
+
+export function createProjectReportRecord(input: ProjectReportRecord) {
+  if (!/^project_report_[a-f0-9-]{36}$/.test(input.id)) throw new Error("Некорректный ID итогового отчёта.");
+  const hostAlias = planIdentifier(input.hostAlias, "хост", 96);
+  if (!/^project-report-[a-f0-9-]{36}\.pdf$/.test(input.fileName)) throw new Error("Некорректное имя итогового отчёта.");
+  for (const value of [input.pdfSha256, input.snapshotSha256, input.sourceManifestSha256]) if (!/^[a-f0-9]{64}$/.test(value)) throw new Error("Не зафиксирована контрольная сумма итогового отчёта.");
+  const subject = {
+    clientName: planText(input.subject.clientName, "заказчик", 2, 200), projectName: planText(input.subject.projectName, "проект", 2, 200),
+    period: planText(input.subject.period, "период", 2, 120), specialist: planText(input.subject.specialist, "специалист", 2, 200),
+  };
+  return inTransaction((database) => {
+    database.prepare(`INSERT INTO project_reports (id, created_at, host_alias, file_name, pdf_sha256, snapshot_sha256, source_manifest_sha256, subject_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run(input.id, input.createdAt, hostAlias, input.fileName, input.pdfSha256, input.snapshotSha256, input.sourceManifestSha256, JSON.stringify(subject));
+    appendAuditEvent("project_report_exported", input.id, { hostAlias, fileName: input.fileName, pdfSha256: input.pdfSha256, snapshotSha256: input.snapshotSha256, sourceManifestSha256: input.sourceManifestSha256 });
+    return getProjectReportRecord(input.id);
+  });
+}
+
+export function getProjectReportRecord(id: string) {
+  if (!/^project_report_[a-f0-9-]{36}$/.test(id)) return null;
+  const row = getDatabase().prepare("SELECT * FROM project_reports WHERE id = ?").get(id);
+  return row ? rowToProjectReport(row as Record<string, unknown>) : null;
+}
+
+export function listProjectReportRecords(hostAlias?: string) {
+  const rows = hostAlias ? getDatabase().prepare("SELECT * FROM project_reports WHERE host_alias = ? ORDER BY created_at DESC").all(hostAlias)
+    : getDatabase().prepare("SELECT * FROM project_reports ORDER BY created_at DESC").all();
+  return rows.map((row) => rowToProjectReport(row as Record<string, unknown>));
 }

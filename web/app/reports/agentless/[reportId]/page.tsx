@@ -182,7 +182,7 @@ export default async function AgentlessReportDetailPage({
 
       {report.mode === "astra-oval" ? <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
         <h2 className="text-xl font-semibold text-white">Результат OVAL-аудита Astra</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-400">Оценка относится к определениям выбранного файла. Область выпуска задана администратором; подпись производителя и охват всех известных CVE не подтверждаются автоматически.</p>
+        <p className="mt-2 text-sm leading-6 text-slate-400">Оценка относится только к определениям выбранной OVAL-базы. В отчёте зафиксированы реквизиты источника и контрольная сумма; подпись производителя и охват всех известных CVE платформа автоматически не подтверждает.</p>
         <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
           <div><p className="text-slate-500">Уникальных CVE обнаружено</p><p className="mt-1 text-2xl font-semibold text-white">{textValue(scanner.uniqueCveCount)}</p></div>
           <div><p className="text-slate-500">Определений в базе / результатов</p><p className="mt-1 text-slate-200">{textValue(scanner.definitionCount)} / {textValue(scanner.evaluatedDefinitionCount)}</p></div>
@@ -190,7 +190,10 @@ export default async function AgentlessReportDetailPage({
           <div><p className="text-slate-500">Сканер</p><p className="mt-1 break-words text-slate-200">{textValue(scanner.version)}</p></div>
           <div><p className="text-slate-500">База сформирована</p><p className="mt-1 text-slate-200">{formatDate(typeof ovalDatabase.generatedAt === "string" ? ovalDatabase.generatedAt : null)}</p></div>
           <div><p className="text-slate-500">Свежесть / возраст</p><p className="mt-1 text-slate-200">{{ current: "в пределах срока", stale: "устарела", future: "дата в будущем" }[String(ovalDatabase.freshness)] ?? "не подтверждена"} / {textValue(ovalDatabase.ageDays)} дн.</p></div>
-          <div className="min-w-0 sm:col-span-2"><p className="text-slate-500">Источник</p><p className="mt-1 break-all text-slate-200">{textValue(ovalDatabase.url ?? ovalDatabase.path)}</p></div>
+          <div className="min-w-0 sm:col-span-2"><p className="text-slate-500">Файл базы / URL</p><p className="mt-1 break-all text-slate-200">{textValue(ovalDatabase.url ?? ovalDatabase.path)}</p></div>
+          <div><p className="text-slate-500">Доверенный источник</p><p className="mt-1 break-words text-slate-200">{textValue(ovalDatabase.sourceName)}</p></div>
+          <div className="min-w-0 sm:col-span-2"><p className="text-slate-500">Реквизит источника</p><p className="mt-1 break-all text-slate-200">{textValue(ovalDatabase.sourceReference)}</p></div>
+          <div><p className="text-slate-500">Реквизиты сверены</p><p className="mt-1 text-slate-200">{formatDate(typeof ovalDatabase.sourceReviewedAt === "string" ? ovalDatabase.sourceReviewedAt : null)}</p></div>
         </div>
         <p className="mt-4 break-all text-xs leading-5 text-slate-400">SHA-256: {textValue(ovalDatabase.sha256)} · {ovalDatabase.checksumVerified === true ? "совпадает с заданным" : "доверенная сумма не подтверждена"}</p>
         <p className="mt-3 text-sm leading-6 text-slate-400">CVE учитывается при истинном определении класса vulnerability. Результаты других классов сохраняются отдельно. Если база не содержит оценку критичности, CVSS и уровень риска не придумываются.</p>

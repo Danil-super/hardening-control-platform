@@ -69,11 +69,16 @@ def parse_config(raw):
     config.setdefault('releasePattern', '')
     config.setdefault('architectures', [])
     config.setdefault('maxAgeDays', 30)
+    config.setdefault('sourceName', '')
+    config.setdefault('sourceReference', '')
+    config.setdefault('sourceReviewedAt', None)
     if config['mode'] not in ('local', 'online'):
         raise ValueError('Источник OVAL должен быть local или online.')
-    for name in ('path', 'url', 'sha256', 'releasePattern'):
+    for name in ('path', 'url', 'sha256', 'releasePattern', 'sourceName', 'sourceReference'):
         if not isinstance(config[name], str):
             raise ValueError('Поле ' + name + ' должно быть строкой.')
+    if config['sourceReviewedAt'] is not None and not isinstance(config['sourceReviewedAt'], str):
+        raise ValueError('Поле sourceReviewedAt должно быть строкой или null.')
     config['sha256'] = config['sha256'].lower()
     if config['sha256'] and not re.match(r'^[a-f0-9]{64}$', config['sha256']):
         raise ValueError('Ожидаемый SHA-256 должен содержать 64 шестнадцатеричных символа.')
@@ -86,6 +91,9 @@ def parse_config(raw):
         raise ValueError('Некорректный список архитектур OVAL.')
     if type(config['maxAgeDays']) is not int or not 1 <= config['maxAgeDays'] <= 3650:
         raise ValueError('Срок актуальности должен быть от 1 до 3650 дней.')
+    if (len(config['sourceName']) > 160 or len(config['sourceReference']) > 500
+            or any(ord(c) < 32 or ord(c) == 127 for c in config['sourceName'] + config['sourceReference'])):
+        raise ValueError('Реквизиты доверенного источника OVAL содержат недопустимые символы.')
     if config['mode'] == 'online':
         https_origin(config['url'])
         if not config['sha256']:
@@ -216,6 +224,8 @@ def source_metadata(root, raw, config, current_time=None):
             break
     if not config['sha256']:
         reasons.append('Ожидаемый SHA-256 не задан: целостность относительно доверенной копии не подтверждена.')
+    if not config['sourceName'] or not config['sourceReference']:
+        reasons.append('Не зафиксированы название и реквизит доверенного источника OVAL: происхождение базы не подтверждено.')
     timestamp = values.get('timestamp', '')
     age_days = None
     freshness = 'unknown'
@@ -242,6 +252,9 @@ def source_metadata(root, raw, config, current_time=None):
         'vendorSignature': 'not_checked', 'scopeAuthority': 'administrator_declared',
         'releasePattern': config['releasePattern'], 'architectures': config['architectures'],
         'vendorReleaseApplicability': 'not_verified',
+        'sourceName': config['sourceName'] or None,
+        'sourceReference': config['sourceReference'] or None,
+        'sourceReviewedAt': config['sourceReviewedAt'],
     }, reasons
 
 
