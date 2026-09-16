@@ -45,19 +45,19 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: true,
         fingerprints: candidates.map(({ fingerprint, algorithm }) => ({ fingerprint, algorithm })),
-        message: "Fingerprint получен по сети и пока не является доверенным. Сверьте его через консоль или доверенный канал.",
+        message: "Это отпечатки целевого сервера, полученные по сети. Для сверки возьмите отпечаток той же Astra из её консоли или доверенного реестра.",
       });
     }
     if (operation === "trust") {
       const expectedFingerprint = typeof body?.expectedFingerprint === "string" ? body.expectedFingerprint.trim() : "";
       if (!/^SHA256:[A-Za-z0-9+/=]{16,}$/.test(expectedFingerprint)) {
-        return NextResponse.json({ ok: false, error: "bad_fingerprint", message: "Вставьте fingerprint формата SHA256:… из доверенного источника." }, { status: 400 });
+        return NextResponse.json({ ok: false, error: "bad_fingerprint", message: "Скопируйте одно значение SHA256:… из консоли целевой Astra или доверенного реестра, без пробелов и остальной строки." }, { status: 400 });
       }
       const trusted = await trustHostKey({ address, port, expectedFingerprint });
       return NextResponse.json({
         ok: true,
         ...trusted,
-        message: trusted.alreadyTrusted ? "Этот SSH key уже был доверенным." : "SSH host key сохранён. Теперь можно выполнить проверку подключения.",
+        message: trusted.alreadyTrusted ? "Отпечаток совпал с уже сохранённым ключом сервера. Продолжите подключение." : "Отпечаток из доверенного источника совпал с ключом сервера по сети. Ключ сохранён; нажмите «Подключить хост» или «Сохранить подключение».",
       });
     }
     return NextResponse.json({ ok: false, error: "bad_operation", message: "Неизвестная операция мастера подключения." }, { status: 400 });

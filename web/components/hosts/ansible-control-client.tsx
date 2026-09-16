@@ -339,7 +339,7 @@ export function AnsibleControlClient() {
       setHostKeyScan(payload);
       setAccessMessage(payload.message || (payload.ok ? "Ключи получены. Сверьте отпечаток с доверенным источником." : "Не удалось получить ключи сервера."), payload.ok ? "info" : "error");
     } catch (error) {
-      setAccessMessage(errorMessage(error, "Не удалось получить fingerprint SSH-хоста."));
+      setAccessMessage(errorMessage(error, "Не удалось получить отпечаток ключа целевой Astra."));
     } finally {
       setAccessLoading("");
     }
@@ -347,7 +347,7 @@ export function AnsibleControlClient() {
 
   async function trustScannedHostKey() {
     if (!manualAddress || !trustedFingerprint) {
-      setAccessMessage("Укажите хост и вставьте fingerprint, подтверждённый через консоль или доверенный канал.");
+      setAccessMessage("Укажите хост и вставьте его отпечаток из доверенной консоли Astra или реестра.");
       return;
     }
     setServerTrusted(false);

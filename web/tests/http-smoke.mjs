@@ -118,7 +118,7 @@ try {
   assert.doesNotMatch(hostsPage.slice(formPosition), /Настройка sudo|Использовать sudo|Перейти к настройке sudo|Пароль sudo, если/);
   assert.match(hostsPage, /type="password"/);
   const renderedButtons = Array.from(hostsPage.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g));
-  for (const label of ["Подтвердить сервер", "Скопировать команду", "Получить отпечатки по сети"]) {
+  for (const label of ["Сверить и сохранить", "Скопировать команду", "Получить отпечатки по сети"]) {
     const button = renderedButtons.find((match) => match[2].includes(label));
     assert.ok(button, label);
     assert.match(button[1], /type="button"/, `${label} must not submit the password form`);
@@ -163,7 +163,7 @@ try {
     assert.equal(typeof result.message, "string", JSON.stringify(result));
     assert.equal(result.ok, ["ok", "disabled-sudo"].includes(scenario), scenario);
     if (scenario === "unknown-key") {
-      assert.match(result.message, /Подтвердить сервер/);
+      assert.match(result.message, /Сверить и сохранить/);
       assert.equal(result.checks.python.state, "skipped");
       assert.equal(result.checks.sudo.state, "skipped");
       assert.equal(result.checks.os.state, "skipped");

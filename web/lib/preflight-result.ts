@@ -13,7 +13,7 @@ export function explainConnectionFailure(stage: "ssh" | "python" | "sudo", detai
       return "Ключ сервера изменился. Сверьте его с администратором Astra; сохранённое доверие автоматически не заменяется.";
     }
     if (/No .* host key is known|Host key verification failed/i.test(details)) {
-      return "Ключ сервера не подтверждён. В форме добавления найдите «Подтверждение сервера», вставьте отпечаток из доверенной консоли Astra и нажмите «Подтвердить сервер».";
+      return "Ключ сервера не подтверждён. Раскройте «Проверка Astra перед первым входом», вставьте отпечаток из доверенной консоли этой Astra и нажмите «Сверить и сохранить».";
     }
     if (/Permission denied.*publickey|Authentication failed/i.test(details)) {
       return "SSH не принял ключ этого подключения. Проверьте пользователя в форме и его authorized_keys на Astra.";
