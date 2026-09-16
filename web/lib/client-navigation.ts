@@ -14,10 +14,13 @@ export async function signIn(password: string, nextPath: string, dependencies: {
   request: typeof fetch;
   navigate: (path: string) => void;
 }) {
+  // Invoke fetch as a standalone function. Calling dependencies.request(...)
+  // supplies the dependencies object as `this`, which browsers reject.
+  const { request } = dependencies;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await dependencies.request("/api/ansible/auth/login", {
+    const response = await request("/api/ansible/auth/login", {
       method: "POST", credentials: "same-origin", cache: "no-store", signal: controller.signal,
       headers: { "Content-Type": "application/json" }, body: JSON.stringify({ password }),
     });
@@ -25,7 +28,7 @@ export async function signIn(password: string, nextPath: string, dependencies: {
     if (!response.ok || payload?.ok !== true) {
       throw new Error(payload?.message || "Не удалось выполнить вход. Повторите попытку.");
     }
-    const session = await dependencies.request("/api/ansible/session", {
+    const session = await request("/api/ansible/session", {
       credentials: "same-origin", cache: "no-store", signal: controller.signal,
     });
     if (session.status === 401) {

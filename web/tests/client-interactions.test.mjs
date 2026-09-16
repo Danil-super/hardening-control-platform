@@ -9,6 +9,31 @@ const { readApiResponse } = await import(compiled.url("client-api"));
 const { copyText } = await import(compiled.url("clipboard"));
 after(() => rmSync(compiled.directory, { recursive: true, force: true }));
 
+test("login supports the browser fetch receiver contract for both authentication and session requests", async () => {
+  const calls = [];
+  let destination;
+  // Node fetch ignores its receiver. Browser Web IDL operations reject an
+  // arbitrary object as `this`, so an arrow-function stub misses this bug.
+  async function browserFetch(url, options) {
+    if (this !== undefined && this !== globalThis) throw new TypeError("Illegal invocation");
+    calls.push(url);
+    assert.equal(options.credentials, "same-origin");
+    if (url.endsWith("/login")) {
+      assert.equal(options.method, "POST");
+      assert.deepEqual(JSON.parse(options.body), { password: "fixture-only" });
+    } else {
+      assert.equal(options.body, undefined);
+    }
+    return Response.json({ ok: true });
+  }
+  await signIn("fixture-only", "/hosts", {
+    request: browserFetch,
+    navigate: (path) => { destination = path; },
+  });
+  assert.deepEqual(calls, ["/api/ansible/auth/login", "/api/ansible/session"]);
+  assert.equal(destination, "/hosts");
+});
+
 test("login waits for successful API response and then opens the intended page", async () => {
   let resolveRequest;
   let destination;
