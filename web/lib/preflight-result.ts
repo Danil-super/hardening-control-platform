@@ -25,7 +25,7 @@ export function explainConnectionFailure(stage: "ssh" | "python" | "sudo", detai
   }
   if (stage === "sudo") {
     if (/Missing sudo password|a password is required|no password was provided/i.test(details)) {
-      return "sudo требует пароль. В разделе «Настройка sudo» можно явно разрешить sudo без пароля, если у учётной записи уже есть административные права. Затем повторите подключение.";
+      return "Учётная запись требует пароль для повышения прав. Используйте root с разрешённым SSH-входом или администратора с настроенным беспарольным sudo.";
     }
     if (/not in the sudoers|not allowed to execute|not allowed to run sudo/i.test(details)) {
       return "Пользователю SSH не разрешён этот запуск через sudo. Права на Astra должен настроить её администратор.";

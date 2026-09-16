@@ -114,7 +114,8 @@ try {
   assert.ok(networkPosition > 0 && networkPosition < formPosition && formPosition < sshPosition, "discovery precedes the host form and password/key setup");
   assert.match(hostsPage.slice(formPosition), /Входить через терминал и создавать ключи вручную не нужно/);
   assert.doesNotMatch(hostsPage.slice(formPosition), />Добавить хост<|>Сохранить изменения</);
-  assert.match(hostsPage.slice(formPosition), /type="checkbox"[^>]*checked/);
+  assert.match(hostsPage.slice(formPosition), /Пароль администратора Astra/);
+  assert.doesNotMatch(hostsPage.slice(formPosition), /Настройка sudo|Использовать sudo|Перейти к настройке sudo|Пароль sudo, если/);
   assert.match(hostsPage, /type="password"/);
   const renderedButtons = Array.from(hostsPage.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g));
   for (const label of ["Подтвердить сервер", "Скопировать команду", "Получить отпечатки по сети"]) {
@@ -168,7 +169,7 @@ try {
       assert.equal(result.checks.os.state, "skipped");
       assert.deepEqual(calls, ["ssh"]);
     } else if (scenario === "sudo-password") {
-      assert.match(result.message, /sudo требует пароль/);
+      assert.match(result.message, /требует пароль для повышения прав/);
       assert.equal(result.checks.sudo.state, "failed");
     } else if (scenario === "disabled-sudo") {
       assert.equal(result.checks.sudo.state, "disabled");

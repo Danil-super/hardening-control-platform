@@ -4,7 +4,7 @@ import { LinkButton } from "@/components/ui/button";
 const manualUrl = "https://github.com/Danil-super/hardening-control-platform/blob/main/docs/ubuntu-astra-setup.md";
 const setupSteps = [
   "Выберите Astra в результатах сканирования или введите её адрес вручную.",
-  "Введите пользователя и пароль Astra прямо на сайте. Входить через терминал и создавать ключи вручную не нужно.",
+  "Введите логин и пароль администратора Astra прямо на сайте. Входить через терминал и создавать ключи вручную не нужно.",
   "Нажмите «Подключить хост». При первом входе форма может запросить подтверждение сервера перед отправкой пароля.",
   "HCP сам войдёт по паролю, создаст отдельную пару на Ubuntu, установит публичный ключ на Astra, проверит доступ и сохранит хост.",
   "Дождитесь сообщения об успешном подключении. Выберите хост и профиль, затем запустите аудит.",
@@ -68,22 +68,20 @@ export default function GuidePage() {
             <h2 className="text-xl font-semibold text-white">Где выполняются действия</h2>
             <dl className="mt-4 space-y-3 text-sm leading-6 text-slate-400">
               <div><dt className="font-semibold text-slate-200">На Ubuntu</dt><dd>Установка HCP, хранение индивидуальных приватных ключей, отчёты и резервные копии.</dd></div>
-              <div><dt className="font-semibold text-slate-200">На Astra</dt><dd>Работающий SSH и разрешённая учётная запись. HCP устанавливает ей только публичный ключ; настройка sudo выбирается отдельно.</dd></div>
+              <div><dt className="font-semibold text-slate-200">На Astra</dt><dd>Работающий SSH и учётная запись с административным доступом. HCP устанавливает ей публичный ключ и проверяет права.</dd></div>
               <div><dt className="font-semibold text-slate-200">На сайте</dt><dd>Выбор хоста, подтверждение сервера, пароль, установка ключа одной кнопкой и запуск аудита.</dd></div>
             </dl>
           </div>
           <p className="text-sm leading-6 text-slate-400">Сначала HCP входит на Astra по паролю. После этого для каждой машины создаёт свою пару. Приватный ключ остаётся на Ubuntu; на Astra передаётся только публичный. Перезапуск и повторное нажатие не меняют пару.</p>
-          <p className="text-sm leading-6 text-slate-400">SSH/sudo-пароли используются только во время текущей настройки и не сохраняются. Для первого входа нужен разрешённый парольный доступ; для настройки sudo — уже имеющиеся административные права.</p>
+          <p className="text-sm leading-6 text-slate-400">Пароль администратора используется только при первом подключении и не сохраняется. Затем HCP работает через индивидуальный ключ.</p>
         </aside>
       </section>
 
       <section id="sudo-access" className="scroll-mt-6 rounded-xl border border-sky-400/20 bg-sky-400/5 p-5">
-        <h2 className="text-xl font-semibold text-white">Если хост добавился без sudo</h2>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Оставьте существующую запись. Галочка «Использовать sudo» включает применение уже выданных прав и не меняет настройки Astra.</p>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Откройте «Настроить», в парольном блоке явно выберите настройку беспарольного sudo и при необходимости введите одноразовый пароль sudo. Это полные права root; настроить их может только пользователь с уже разрешённым административным доступом.</p>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Включите «Использовать sudo» в дополнительных параметрах и нажмите «Сохранить подключение»: настройка, проверка и сохранение выполнятся автоматически. HCP проверяет настоящий запуск модуля Ansible с правами root. Если учётной записи sudo запрещено, права выдаёт администратор Astra.</p>
-        <a href={`${manualUrl}#sudo-access`} className="mt-4 inline-block text-sm text-sky-300 underline underline-offset-4">Команды настройки sudo и разбор ошибок</a>
-        <p className="mt-4 text-sm leading-6 text-amber-100">Без sudo обычной учётной записи доступны только разрешённые ей данные. Сетевые Nmap/SSH-проверки выполняются на Ubuntu; защищённые данные и операции firewall требуют административных прав.</p>
+        <h2 className="text-xl font-semibold text-white">Административный доступ</h2>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Используйте root с разрешённым SSH-входом или администратора с настроенным беспарольным sudo. При подключении HCP проверяет выполнение модуля Ansible с правами root. Отдельных переключателей sudo в форме нет.</p>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Для существующего хоста откройте «Настроить», укажите административную учётную запись и нажмите «Сохранить подключение». Если меняется пользователь SSH, введите его пароль для установки отдельного ключа. История хоста сохраняется.</p>
+        <a href={`${manualUrl}#sudo-access`} className="mt-4 inline-block text-sm text-sky-300 underline underline-offset-4">Подготовка административной учётной записи</a>
       </section>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">

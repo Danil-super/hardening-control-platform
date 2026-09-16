@@ -203,7 +203,8 @@ export function AnsibleControlClient() {
   const [manualUser, setManualUser] = useState("");
   const [manualPort, setManualPort] = useState("22");
   const [manualGroup, setManualGroup] = useState("linux_hosts");
-  const [manualBecome, setManualBecome] = useState(true);
+  // The host form always verifies administrative access before saving.
+  const manualBecome = true;
   const [preflight, setPreflight] = useState<PreflightPayload | null>(null);
   const [preflightFor, setPreflightFor] = useState("");
   const [scanCidr, setScanCidr] = useState("");
@@ -689,7 +690,6 @@ export function AnsibleControlClient() {
     setManualUser("");
     setManualPort("22");
     setManualGroup("linux_hosts");
-    setManualBecome(true);
     setPreflight(null);
     setPreflightFor("");
     if (address) notify(`Адрес ${address} подставлен. Введите пользователя и пароль Astra ниже.`, "info");
@@ -707,7 +707,6 @@ export function AnsibleControlClient() {
     setManualUser(host.user ?? "");
     setManualPort(String(host.port ?? 22));
     setManualGroup(host.groups[0] ?? "linux_hosts");
-    setManualBecome(Boolean(host.become));
     if (formRef.current) {
       formRef.current.scrollIntoView({ block: "start" });
     }
@@ -752,19 +751,14 @@ export function AnsibleControlClient() {
         </div>
         <fieldset disabled={Boolean(loading) || Boolean(accessLoading)} className="grid min-w-0 gap-3 sm:grid-cols-2">
           <Field label="Адрес Astra" value={manualAddress} onChange={(value) => { setManualAddress(value); invalidateCredential(); }} placeholder="192.168.1.10" />
-          <Field label="Пользователь Astra" value={manualUser} onChange={(value) => { setManualUser(value); invalidateCredential(); }} placeholder="Имя пользователя для входа по SSH" />
+          <Field label="Администратор Astra" value={manualUser} onChange={(value) => { setManualUser(value); invalidateCredential(); }} placeholder="root или логин администратора" />
           <details className="rounded-lg border border-slate-800 p-3 sm:col-span-2">
-            <summary className="cursor-pointer text-sm text-slate-300">Дополнительные параметры: имя, порт и права</summary>
+            <summary className="cursor-pointer text-sm text-slate-300">Дополнительные параметры: имя, порт и группа</summary>
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
               <Field label="Имя в списке (необязательно)" value={manualAlias} onChange={(value) => { setManualAlias(value); invalidateCredential(); }} placeholder={defaultHostAlias(manualAddress) || "Определится по адресу"} disabled={Boolean(editingHost)} />
               <Field label="Порт SSH" value={manualPort} onChange={(value) => { setManualPort(value); invalidateCredential(); }} placeholder="22" />
               <Field label="Группа хостов" value={manualGroup} onChange={setManualGroup} placeholder="linux_hosts" />
             </div>
-            <label className="mt-3 flex items-center gap-2 text-sm text-slate-200">
-              <input type="checkbox" checked={manualBecome} onChange={(event) => setManualBecome(event.target.checked)} className="h-4 w-4 rounded border-slate-600 bg-slate-950" />
-              Использовать sudo для аудита (рекомендуется)
-            </label>
-            <p className="mt-2 text-xs leading-5 text-slate-400">Если sudo требует пароль, настройте его в разделе ниже. Без sudo доступны только разрешённые пользователю данные.</p>
           </details>
         </fieldset>
         <SshCredentialSetup key={[connectionAlias, manualAddress, manualUser, manualPort].join("|")}
@@ -790,7 +784,7 @@ export function AnsibleControlClient() {
           <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
             <CheckBadge label="SSH" check={preflight.checks?.ssh} fallback={preflight.message} />
             <CheckBadge label="Python" check={preflight.checks?.python} />
-            <CheckBadge label="sudo" check={preflight.checks?.sudo} />
+            <CheckBadge label="Права администратора" check={preflight.checks?.sudo} />
             <CheckBadge label="ОС" check={preflight.checks?.os} />
           </div>
           {preflight.readiness ? (
@@ -868,7 +862,7 @@ export function AnsibleControlClient() {
                     <td className="px-4 py-4 text-slate-300">
                       <span>{host.user ?? "не указан"}</span>
                       <span className={host.become ? "ml-2 text-emerald-200" : "ml-2 text-slate-500"}>
-                        {host.become ? "sudo" : "без sudo"}
+                        {host.become ? "административный режим" : "права учётной записи"}
                       </span>
                     </td>
                     <td className="px-4 py-4">
@@ -1133,7 +1127,6 @@ function CheckBadge({
         {label}: {labels[state]}
       </p>
       <p className="mt-1 break-words text-xs leading-5 text-slate-300">{check?.message || fallback || "Проверка не выполнялась."}</p>
-      {label === "sudo" && state === "failed" ? <a href="#ssh-setup" className="mt-2 inline-block text-xs text-sky-200 underline">Перейти к настройке sudo</a> : null}
       {check?.details ? <details className="mt-2 text-xs text-slate-400">
         <summary className="cursor-pointer text-sky-200">Технические подробности</summary>
         <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-all">{check.details}</pre>

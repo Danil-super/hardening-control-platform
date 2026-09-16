@@ -23,7 +23,7 @@ test("a real missing sudo password blocks privileged registration while retainin
   assert.equal(result.checks.ssh.state, "passed");
   assert.equal(result.checks.python.state, "passed");
   assert.equal(result.checks.sudo.state, "failed");
-  assert.match(result.message, /sudo требует пароль/);
+  assert.match(result.message, /требует пароль для повышения прав/);
   assert.match(result.checks.sudo.details, /Missing sudo password/);
 });
 
