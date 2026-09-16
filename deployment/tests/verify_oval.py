@@ -98,7 +98,9 @@ def verify_https_download(source, output):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         configuration = OVAL.parse_config({'mode': 'online', 'url': 'https://localhost:' + str(server.server_port) + '/database.xml',
-            'sha256': hashlib.sha256(source).hexdigest(), 'releasePattern': '*'})
+            'sha256': hashlib.sha256(source).hexdigest(), 'releasePattern': '*',
+            'sourceName': 'HCP synthetic acceptance fixture',
+            'sourceReference': 'deployment/tests/verify_oval.py: verify_https_download'})
         try:
             with patch.dict(os.environ, {'SSL_CERT_FILE': str(cert), 'NO_PROXY': 'localhost,127.0.0.1', 'no_proxy': 'localhost,127.0.0.1'}):
                 downloaded = OVAL.prepare(configuration, str(root / 'download.xml'))
@@ -167,7 +169,9 @@ def main():
     (output / 'native-stdout.txt').write_text(native.stdout)
     (output / 'native-stderr.txt').write_text(native.stderr)
     config = {'mode': 'local', 'path': str(source_path), 'sha256': hashlib.sha256(source).hexdigest(),
-              'releasePattern': '*', 'architectures': [], 'maxAgeDays': 30}
+              'releasePattern': '*', 'architectures': [], 'maxAgeDays': 30,
+              'sourceName': 'HCP synthetic acceptance fixture',
+              'sourceReference': 'deployment/tests/verify_oval.py: generated local fixture'}
     reports = []
     # Distinct family identifiers exercise routing, not OS compatibility claims.
     for release in ('1.6.7.15', '1.7.6', '1.8', '12.4-custom'):
