@@ -7,6 +7,16 @@ export type OnboardingSecrets = { password: string; sudoPassword: string; config
 export type OnboardingStage = "trust" | "bootstrap" | "preflight" | "save";
 type ApiPayload = Awaited<ReturnType<typeof readApiResponse>>;
 
+/**
+ * A password-based sudo session cannot be reused by scheduled audits.  On the
+ * first non-root connection, use the supplied password once to establish the
+ * HCP-managed non-interactive path; neither input is persisted.
+ */
+export function onboardingSecretsForUser(user: string, password: string, alternateSudoPassword = ""): OnboardingSecrets {
+  const configureSudo = Boolean(password) && user.trim() !== "root";
+  return { password, sudoPassword: configureSudo ? (alternateSudoPassword || password) : "", configureSudo };
+}
+
 export function defaultHostAlias(address: string) {
   return address.trim() ? `host-${address.trim().toLowerCase().replace(/[^a-z0-9_.-]/g, "-")}`.slice(0, 64) : "";
 }

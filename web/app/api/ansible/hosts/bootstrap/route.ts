@@ -25,6 +25,7 @@ export async function POST(request: Request) {
     if ([password, sudoPassword].some((value) => value.length > 1024 || /[\r\n\0]/.test(value))) return response({ ok: false, message: "Пароль должен быть одной строкой длиной до 1024 символов." }, 400);
     const configureSudo = body?.configureSudo === true;
     if (configureSudo && body?.confirmRootAccess !== true) return response({ ok: false, message: "Подтвердите выдачу этой учётной записи полных прав root без пароля." }, 400);
+    if (configureSudo && !password && !sudoPassword) return response({ ok: false, message: "Для настройки повышения прав введите пароль администратора Astra." }, 400);
     if (hasActiveRemediationForHost(identity.alias)) return response({ ok: false, message: "Дождитесь завершения изменения или отката на этом хосте." }, 409);
     const existingId = typeof body?.credentialId === "string" ? body.credentialId : null;
     const prepared = beginHostCredential(identity, existingId);

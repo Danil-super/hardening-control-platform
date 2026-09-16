@@ -31,13 +31,14 @@ export async function POST(request: Request) {
     const lockedCredential = validateHostCredential(host.credentialId, identity);
     if (!lockedCredential.publicKey || !lockedCredential.fingerprint) throw new HostCredentialError("Для этого хоста нет проверенного индивидуального публичного ключа.", "credential_unverified");
     appendAuditEvent("host_decommission_started", alias, { alias, address: host.address, port: host.port, user: host.user, credentialId: host.credentialId, fingerprint: credential.fingerprint });
-    await revokeHostSshAccess(identity, { keyPath: credentialKeyPath(host.credentialId), publicKey: lockedCredential.publicKey });
+    await revokeHostSshAccess(identity, { keyPath: credentialKeyPath(host.credentialId), publicKey: lockedCredential.publicKey, credentialId: host.credentialId });
     remoteRevoked = true;
     deleteHostCredential(host.credentialId, identity);
     removeInventoryCloseoutHost(alias);
     appendAuditEvent("host_decommission_completed", alias, { alias, address: host.address, port: host.port, credentialId: host.credentialId, fingerprint: lockedCredential.fingerprint, reportsRetained: true, hostTrustRetained: true });
-    return NextResponse.json({ ok: true, message: "Доступ HCP к хосту отозван: уникальный ключ удалён на цели, локальная пара и строка inventory удалены. Отчёты, история и доверенный ключ сервера сохранены." });
+    return NextResponse.json({ ok: true, message: "Доступ HCP к хосту отозван: уникальный ключ и созданное HCP правило sudoers удалены на цели, локальная пара и строка inventory удалены. Отчёты, история и доверенный ключ сервера сохранены." });
   } catch (error) {
+    if (error instanceof HostCredentialError && (error as HostCredentialError & { remoteRevoked?: boolean }).remoteRevoked) remoteRevoked = true;
     try { appendAuditEvent("host_decommission_failed", alias, { alias, remoteRevoked, code: error instanceof HostCredentialError ? error.code : "decommission_failed" }); } catch { /* keep the original outcome visible to the operator */ }
     const detail = error instanceof Error ? error.message : "Не удалось завершить работы по хосту.";
     const message = remoteRevoked

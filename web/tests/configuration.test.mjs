@@ -62,6 +62,16 @@ test("host onboarding uses verified SSH host keys and persists them", () => {
   assert.match(compose, /HCP_KNOWN_HOSTS_PATH: \/var\/lib\/hcp\/known_hosts/);
 });
 
+test("host closeout revokes the HCP-managed sudo rule together with its individual key", () => {
+  const revocation = read(path.join("ansible", "scripts", "hcp-ssh-revoke.py"));
+  const route = read(path.join("web", "app", "api", "ansible", "hosts", "decommission", "route.ts"));
+  assert.match(revocation, /zz-hcp-/);
+  assert.match(revocation, /NOPASSWD: ALL/);
+  assert.match(revocation, /unsafe_sudo_rule/);
+  assert.match(revocation, /keyRemoved/);
+  assert.match(route, /credentialId: host\.credentialId/);
+});
+
 test("CVE checking has an explicit Trivy-only isolated-network mode", () => {
   const scan = read(path.join("web", "lib", "vulnerability-scan.ts"));
   const stateStore = read(path.join("web", "lib", "state-store.ts"));

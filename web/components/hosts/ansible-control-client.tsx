@@ -736,7 +736,7 @@ export function AnsibleControlClient() {
         </fieldset>
         <SshCredentialSetup key={[connectionAlias, manualAddress, manualUser, manualPort].join("|")}
           loading={loading || accessLoading} canConnect={Boolean(connectionAlias && manualAddress.trim() && manualUser.trim() && manualPort)}
-          result={credentialResult} legacy={Boolean(editingHost && !manualCredentialId)} editing={Boolean(editingHost)} onSetup={setupHostCredential}>
+          result={credentialResult} legacy={Boolean(editingHost && !manualCredentialId)} editing={Boolean(editingHost)} user={manualUser} onSetup={setupHostCredential}>
           <HostServerTrust address={manualAddress} port={manualPort} loading={accessLoading || loading} message={accessMessage}
             expanded={trustExpanded} onExpanded={setTrustExpanded}
             trusted={serverTrusted} fingerprints={hostKeyScan?.fingerprints} trustedFingerprint={trustedFingerprint}

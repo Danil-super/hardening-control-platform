@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, CheckCircle2, LoaderCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import type { OnboardingSecrets } from "@/lib/host-onboarding";
+import { onboardingSecretsForUser, type OnboardingSecrets } from "@/lib/host-onboarding";
 
 export type CredentialSetupResult = {
   ok: boolean; credentialId?: string; publicKey?: string | null; fingerprint?: string | null; message?: string;
@@ -11,24 +11,27 @@ export type CredentialSetupResult = {
 };
 export type SetupSecrets = OnboardingSecrets;
 
-export function SshCredentialSetup({ loading, canConnect, result, legacy, editing, children, onSetup }: {
-  loading: string; canConnect: boolean; result: CredentialSetupResult | null; legacy: boolean; editing: boolean; children?: ReactNode;
+export function SshCredentialSetup({ loading, canConnect, result, legacy, editing, user, children, onSetup }: {
+  loading: string; canConnect: boolean; result: CredentialSetupResult | null; legacy: boolean; editing: boolean; user: string; children?: ReactNode;
   onSetup: (secrets: SetupSecrets, clearPasswords: () => void) => Promise<void>;
 }) {
   const [password, setPassword] = useState("");
+  const [sudoPassword, setSudoPassword] = useState("");
   const [secure, setSecure] = useState(false);
   const submitting = useRef(false);
   const existingAccess = Boolean(result?.credentialId || legacy);
+  const isRoot = user.trim() === "root";
   useEffect(() => {
     setSecure(window.location.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]", "::1"].includes(window.location.hostname));
   }, []);
   async function setup() {
     if (submitting.current || loading || !canConnect || (!password && !existingAccess) || (!secure && Boolean(password))) return;
     submitting.current = true;
-    // This form uses existing administrative access. Removing the sudo UI must
-    // not silently authorize a persistent NOPASSWD rule on the target.
-    const secrets = { password, sudoPassword: "", configureSudo: false };
-    try { await onSetup(secrets, () => setPassword("")); }
+    // A non-root account needs a non-interactive privilege path after the
+    // one-time password disappears.  The password is used only in this
+    // request to install the HCP-managed sudoers entry and is never stored.
+    const secrets = onboardingSecretsForUser(user, password, sudoPassword);
+    try { await onSetup(secrets, () => { setPassword(""); setSudoPassword(""); }); }
     finally { secrets.password = ""; secrets.sudoPassword = ""; submitting.current = false; }
   }
   const progress: Record<string, string> = {
@@ -44,7 +47,15 @@ export function SshCredentialSetup({ loading, canConnect, result, legacy, editin
           placeholder={existingAccess ? "Можно оставить пустым — ключ уже настроен" : "Пароль для входа на выбранный хост"}
           className="mt-2 block h-11 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-slate-100 focus:border-sky-300 focus:outline-none disabled:opacity-50" />
       </label>
-      <p className="max-w-2xl text-sm leading-6 text-slate-400">Используйте root или учётную запись с настроенным административным доступом. Входить через терминал и создавать ключи вручную не нужно.</p>
+      {!isRoot ? <details className="max-w-xl rounded-lg border border-slate-800 px-3 py-2">
+        <summary className="cursor-pointer text-sm text-slate-300">Пароль для повышения прав отличается от пароля SSH</summary>
+        <label className="mt-3 block text-sm font-medium text-slate-200">Пароль для повышения прав
+          <input type="password" autoComplete="off" value={sudoPassword} disabled={!secure} onChange={(event) => setSudoPassword(event.target.value)} maxLength={1024}
+            placeholder="Оставьте пустым, если пароль тот же"
+            className="mt-2 block h-11 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-slate-100 focus:border-sky-300 focus:outline-none disabled:opacity-50" />
+        </label>
+      </details> : null}
+      <p className="max-w-2xl text-sm leading-6 text-slate-400">Входить через терминал и создавать ключи вручную не нужно. Для пользователя не root HCP использует введённый пароль один раз, включает постоянное повышение прав для этой учётной записи и затем работает только по отдельному ключу. Пароль не сохраняется.</p>
       {!secure ? <p className="rounded-lg border border-amber-400/30 p-3 text-sm leading-6 text-amber-100">Для ввода пароля откройте HCP через HTTPS или http://127.0.0.1 с вашим портом на Ubuntu. С другого компьютера можно использовать SSH-туннель — порядок есть в инструкции.</p> : null}
       {children}
       <div className="rounded-lg bg-sky-400/5 p-4">

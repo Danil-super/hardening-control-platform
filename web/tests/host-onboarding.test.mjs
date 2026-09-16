@@ -3,10 +3,16 @@ import { after, test } from "node:test";
 import { rmSync } from "node:fs";
 import { compileServerModules } from "./_typescript-loader.mjs";
 const compiled = compileServerModules(["client-api", "host-onboarding"]);
-const { connectAndSaveHost } = await import(compiled.url("host-onboarding"));
+const { connectAndSaveHost, onboardingSecretsForUser } = await import(compiled.url("host-onboarding"));
 after(() => rmSync(compiled.directory, { recursive: true, force: true }));
 const connection = { alias: "astra-a", address: "192.0.2.10", user: "lab", port: "22", group: "linux_hosts", become: true, credentialId: null };
 const secrets = () => ({ password: "ssh-fixture-only", sudoPassword: "sudo-fixture-only", configureSudo: true });
+
+test("a normal sudo administrator uses the one-time password to prepare later key-only elevation", () => {
+  assert.deepEqual(onboardingSecretsForUser("astra-admin", "same-secret"), { password: "same-secret", sudoPassword: "same-secret", configureSudo: true });
+  assert.deepEqual(onboardingSecretsForUser("astra-admin", "ssh-secret", "sudo-secret"), { password: "ssh-secret", sudoPassword: "sudo-secret", configureSudo: true });
+  assert.deepEqual(onboardingSecretsForUser("root", "root-secret"), { password: "root-secret", sudoPassword: "", configureSudo: false });
+});
 
 test("one action installs an individual key then saves only after successful key preflight, without saving passwords", async () => {
   const calls = [], progress = [];
@@ -24,6 +30,8 @@ test("one action installs an individual key then saves only after successful key
       if (url.endsWith("/bootstrap")) {
         assert.equal(passwordSubmitted, true);
         assert.equal(body.password, "ssh-fixture-only");
+        assert.equal(body.sudoPassword, "sudo-fixture-only");
+        assert.equal(body.configureSudo, true);
         return Response.json({ ok: true, credentialId: "a".repeat(64) });
       }
       assert.equal(body.credentialId, "a".repeat(64));

@@ -27,24 +27,58 @@ class RevokeError(Exception):
 REMOTE_PROGRAM = r'''
 import json, os, pwd, re, stat, sys, tempfile
 
+key_removed = False
+
 def answer(value):
     sys.stdout.write(json.dumps(value, separators=(',', ':')))
     sys.stdout.flush()
 
 def fail(code):
-    answer({'ok': False, 'error': code})
+    answer({'ok': False, 'error': code, 'keyRemoved': key_removed})
     raise SystemExit(1)
 
 try:
     value = json.load(sys.stdin)
     user = value.get('user')
     public_key = value.get('publicKey')
+    credential_id = value.get('credentialId')
     if not isinstance(user, str) or not re.match(r'^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$', user):
         fail('bad_identity')
     if not isinstance(public_key, str) or not re.match(r'^ssh-ed25519 [A-Za-z0-9+/=]+(?: [^\r\n]*)?$', public_key):
         fail('bad_key')
+    if not isinstance(credential_id, str) or not re.match(r'^[a-f0-9]{64}$', credential_id):
+        fail('bad_identity')
     account = pwd.getpwnam(user)
     home = account.pw_dir
+    # A non-root onboarding may have created exactly this HCP-owned sudoers
+    # file.  Validate it before changing authorized_keys and remove only that
+    # exact file at closeout; never touch a customer's unrelated sudo policy.
+    sudo_rule_path = os.path.join('/etc/sudoers.d', 'zz-hcp-' + credential_id)
+    sudo_rule_text = (user + ' ALL=(root) NOPASSWD: ALL\n').encode('utf-8')
+    sudo_rule_info = None
+    try:
+        sudo_rule_info = os.lstat(sudo_rule_path)
+    except FileNotFoundError:
+        pass
+    except OSError:
+        fail('unsafe_sudo_rule')
+    if sudo_rule_info is not None:
+        if (stat.S_ISLNK(sudo_rule_info.st_mode) or not stat.S_ISREG(sudo_rule_info.st_mode)
+                or sudo_rule_info.st_uid != 0 or stat.S_IMODE(sudo_rule_info.st_mode) != 0o440
+                or sudo_rule_info.st_size != len(sudo_rule_text)):
+            fail('unsafe_sudo_rule')
+        flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
+        descriptor = os.open(sudo_rule_path, flags)
+        try:
+            current = os.fstat(descriptor)
+            if (not stat.S_ISREG(current.st_mode) or current.st_ino != sudo_rule_info.st_ino
+                    or current.st_size != len(sudo_rule_text)):
+                fail('unsafe_sudo_rule')
+            sudo_rule_raw = os.read(descriptor, len(sudo_rule_text) + 1)
+            if len(sudo_rule_raw) != len(sudo_rule_text) or sudo_rule_raw != sudo_rule_text:
+                fail('unsafe_sudo_rule')
+        finally:
+            os.close(descriptor)
     ssh_directory = os.path.join(home, '.ssh')
     authorized = os.path.join(ssh_directory, 'authorized_keys')
     ssh_info = os.lstat(ssh_directory)
@@ -104,13 +138,22 @@ try:
             os.close(descriptor)
         os.replace(temporary, authorized)
         temporary = None
+        key_removed = True
     finally:
         if temporary:
             try: os.unlink(temporary)
             except OSError: pass
         try: os.rmdir(lock)
         except OSError: pass
-    answer({'ok': True, 'status': 'removed'})
+    sudo_rule_status = 'not_present'
+    if sudo_rule_info is not None:
+        current = os.lstat(sudo_rule_path)
+        if (stat.S_ISLNK(current.st_mode) or not stat.S_ISREG(current.st_mode)
+                or current.st_ino != sudo_rule_info.st_ino):
+            fail('unsafe_sudo_rule')
+        os.unlink(sudo_rule_path)
+        sudo_rule_status = 'removed'
+    answer({'ok': True, 'status': 'removed', 'sudoRule': sudo_rule_status, 'keyRemoved': key_removed})
 except SystemExit:
     raise
 except KeyError:
@@ -138,13 +181,15 @@ def connect(config):
 
 
 def revoke(config):
+    if not isinstance(config.get('credentialId'), str) or not re.fullmatch(r'[a-f0-9]{64}', config['credentialId']):
+        raise RevokeError('bad_request')
     encoded = base64.b64encode(REMOTE_PROGRAM.encode('utf-8')).decode('ascii')
     python = "import base64;exec(compile(base64.b64decode(%r), '<hcp-key-revoke>', 'exec'))" % encoded
     command = "if [ \"$(id -u)\" = 0 ]; then exec python3 -c %s; else exec sudo -n -- python3 -c %s; fi" % (shlex.quote(python), shlex.quote(python))
     client = connect(config)
     try:
         stdin, stdout, stderr = client.exec_command('/bin/sh -c ' + shlex.quote(command), timeout=30, get_pty=False)
-        stdin.write(json.dumps({'user': config['user'], 'publicKey': config['publicKey']}) + '\n')
+        stdin.write(json.dumps({'user': config['user'], 'publicKey': config['publicKey'], 'credentialId': config['credentialId']}) + '\n')
         stdin.flush()
         stdin.channel.shutdown_write()
         output = stdout.read(65536).decode('utf-8', 'replace')

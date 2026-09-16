@@ -68,7 +68,15 @@ def main():
             assert saved["credentialFingerprint"] == host["fingerprint"]
             assert saved["credentialReady"]
             check_connection({key: host[key] for key in ["alias", "address", "user", "port", "credentialId", "become"]})
-        print("PASS Individual keys and real SSH/Ansible access survive HCP restart")
+        closing = next(host for host in protocol["hosts"] if host["alias"] == "enrolled-second")
+        closed = request("/api/ansible/hosts/decommission", {"alias": closing["alias"], "confirmation": closing["alias"]})
+        assert closed["ok"], closed
+        keys = run(["docker", "exec", SECOND, "cat", "/home/lab/.ssh/authorized_keys"]).stdout.splitlines()
+        assert closing["publicKey"] not in keys, "Closeout left the individual HCP key on the target"
+        rule_path = "/etc/sudoers.d/zz-hcp-" + closing["credentialId"]
+        assert run(["docker", "exec", SECOND, "/bin/sh", "-c", "test ! -e " + rule_path], check=False).returncode == 0, "Closeout left the HCP sudoers rule on the target"
+        assert all(host["alias"] != closing["alias"] for host in request("/api/ansible/hosts")["hosts"]), "Closeout left the host in inventory"
+        print("PASS Individual keys survive restart and closeout removes the HCP key plus managed sudoers rule")
         return
 
     networks = json.loads(run(["docker", "inspect", target, "--format", "{{json .NetworkSettings.Networks}}"]).stdout)
@@ -140,8 +148,8 @@ def main():
     logs = run(["docker", "logs", hcp])
     assert PASSWORD not in logs.stdout + logs.stderr
     protocol = {"passed": True, "scope": "Two disposable Debian OpenSSH containers; not Astra",
-                "checks": ["unknown server rejected before password authentication", "wrong password rejected", "unique per-host keys", "retry reuses the pair", "explicit sudo setup", "real Ansible without legacy key", "cross-host keys rejected", "no password in state or responses"],
-                "hosts": [{**a, "fingerprint": result_a["fingerprint"]}, {**b, "fingerprint": result_b["fingerprint"]}]}
+                "checks": ["unknown server rejected before password authentication", "wrong password rejected", "unique per-host keys", "retry reuses the pair", "password-based sudo setup", "real Ansible without legacy key", "cross-host keys rejected", "no password in state or responses", "closeout removes the managed key and sudoers rule"],
+                "hosts": [{**a, "fingerprint": result_a["fingerprint"], "publicKey": result_a["publicKey"]}, {**b, "fingerprint": result_b["fingerprint"], "publicKey": result_b["publicKey"]}]}
     PROTOCOL.write_text(json.dumps(protocol, indent=2) + "\n")
     print("PASS Password enrollment, unique keys, sudo, cross-host isolation and secret handling on two real SSH servers")
 

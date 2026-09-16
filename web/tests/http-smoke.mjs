@@ -115,7 +115,8 @@ try {
   assert.match(hostsPage.slice(formPosition), /Входить через терминал и создавать ключи вручную не нужно/);
   assert.doesNotMatch(hostsPage.slice(formPosition), />Добавить хост<|>Сохранить изменения</);
   assert.match(hostsPage.slice(formPosition), /Пароль администратора Astra/);
-  assert.doesNotMatch(hostsPage.slice(formPosition), /Настройка sudo|Использовать sudo|Перейти к настройке sudo|Пароль sudo, если/);
+  assert.match(hostsPage.slice(formPosition), /Пароль для повышения прав отличается от пароля SSH/);
+  assert.match(hostsPage.slice(formPosition), /использует введённый пароль один раз, включает постоянное повышение прав/);
   assert.match(hostsPage, /type="password"/);
   const renderedButtons = Array.from(hostsPage.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g));
   for (const label of ["Сверить и сохранить", "Скопировать команду", "Получить отпечатки по сети"]) {
