@@ -90,6 +90,15 @@ visudo -c >/dev/null 2>&1 || exit 75
 """ % (rule, destination, legacy_rule)
 
 
+def sudo_setup_failure(status):
+    """Return only stable local codes; never expose remote stderr or input."""
+    return {
+        74: "sudoers_unavailable",
+        75: "sudoers_validation_failed",
+        76: "sudoers_rule_conflict",
+    }.get(status, "sudo_elevation_rejected_or_policy")
+
+
 def run_remote(client, script, input_text=None, elevated=False):
     command = "/bin/sh -c " + shlex.quote(script)
     if elevated:
@@ -185,16 +194,16 @@ def enroll(config):
                                        elevated=uid.strip() != "0")
                 sudo_result["configured"] = status == 0
                 if status:
-                    sudo_result["error"] = "sudo_setup_failed"
+                    sudo_result["error"] = sudo_setup_failure(status)
             except Exception:
                 sudo_result["error"] = "sudo_setup_failed"
         try:
             status, root_uid = run_remote(key_client, "sudo -k -n id -u" if uid.strip() != "0" else "id -u")
             sudo_result["ready"] = status == 0 and root_uid.strip() == "0"
             if not sudo_result["ready"] and "error" not in sudo_result:
-                sudo_result["error"] = "sudo_check_failed"
+                sudo_result["error"] = "sudo_rule_not_effective"
         except Exception:
-            sudo_result["error"] = "sudo_check_failed"
+            sudo_result["error"] = "sudo_rule_not_effective"
         return {"ok": True, "publicKey": public_key, "fingerprint": fingerprint, "sudo": sudo_result}
     finally:
         if key_client:

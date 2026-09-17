@@ -33,6 +33,23 @@ export async function connectAndSaveHost(connection: HostConnection, secrets: On
   const request = options.request ?? fetch;
   const { alias, address, user, port, group, become } = connection;
   let credentialId = connection.credentialId;
+  // A retained individual key means only that SSH is ready.  It does not mean
+  // that the one-time sudo setup completed.  In particular, after a failed
+  // first attempt the form has a credentialId but must not silently fall
+  // through to an Ansible `sudo -n` preflight without the administrator
+  // password that is needed to repair the setup.
+  if (!options.editing && become && user.trim() !== "root" && !secrets.password) {
+    options.onStage?.("bootstrap");
+    return {
+      ok: false,
+      stage: "bootstrap" as const,
+      payload: {
+        ok: false,
+        error: "sudo_password_required",
+        message: "Ключ SSH уже сохранён, но для первого добавления HCP должен завершить настройку прав администратора. Введите пароль пользователя Astra и повторите подключение; новая ключевая пара не создаётся.",
+      } as ApiPayload,
+    };
+  }
   const send = async (url: string, body: object, method = "POST") => readApiResponse(await request(url, {
     method, credentials: "same-origin", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   }));

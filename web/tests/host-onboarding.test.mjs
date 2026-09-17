@@ -78,6 +78,21 @@ test("an unsuccessful bootstrap or sudo preflight never creates a host; a return
   }
 });
 
+test("a retained key cannot bypass the one-time sudo setup for a new non-root host", async () => {
+  const calls = [];
+  const result = await connectAndSaveHost({ ...connection, credentialId: "a".repeat(64) }, {
+    password: "", sudoPassword: "", configureSudo: false,
+  }, {
+    editing: false,
+    request: async (url) => { calls.push(url); assert.fail("a passwordless retry must not call preflight or save inventory"); },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.stage, "bootstrap");
+  assert.equal(result.payload.error, "sudo_password_required");
+  assert.match(result.payload.message, /новая ключевая пара не создаётся/);
+  assert.deepEqual(calls, []);
+});
+
 test("existing connections can be checked and updated without a password or key regeneration", async () => {
   for (const credentialId of [null, "a".repeat(64)]) {
     const calls = [];

@@ -74,6 +74,12 @@ class SshBootstrapTests(unittest.TestCase):
         self.assertIn("lab ALL=(root) NOPASSWD: ALL", rendered)
         self.assertIn("hcp_legacy_tmp", rendered)
 
+    def test_sudo_setup_failures_use_safe_stable_codes(self):
+        self.assertEqual(BOOTSTRAP.sudo_setup_failure(74), "sudoers_unavailable")
+        self.assertEqual(BOOTSTRAP.sudo_setup_failure(75), "sudoers_validation_failed")
+        self.assertEqual(BOOTSTRAP.sudo_setup_failure(76), "sudoers_rule_conflict")
+        self.assertEqual(BOOTSTRAP.sudo_setup_failure(1), "sudo_elevation_rejected_or_policy")
+
 
 if __name__ == "__main__":
     unittest.main()

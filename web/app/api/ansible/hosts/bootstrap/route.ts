@@ -9,6 +9,15 @@ export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 240;
 const response = (body: object, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
+const sudoFailureMessages: Record<string, string> = {
+  sudo_elevation_rejected_or_policy: "Вход по отдельному ключу подтверждён, но Astra не приняла одноразовое повышение прав sudo. Проверьте пароль sudo (он может отличаться от SSH) и политику этой учётной записи; пароль не сохранён.",
+  sudoers_unavailable: "Вход по отдельному ключу подтверждён, но на Astra недоступны visudo или каталог /etc/sudoers.d. HCP не изменял правила sudo; проверьте конфигурацию этой Astra.",
+  sudoers_validation_failed: "Вход по отдельному ключу подтверждён, но Astra не подтвердила синтаксис или действующую конфигурацию sudoers. HCP не оставил неподтверждённое правило.",
+  sudoers_rule_conflict: "Вход по отдельному ключу подтверждён, но существующее правило HCP для этого подключения имеет неожиданный вид. Оно не заменено автоматически; проверьте его через доверенную консоль.",
+  sudo_rule_not_effective: "Вход по отдельному ключу подтверждён, но после настройки Astra всё ещё не разрешает non-interactive sudo. Проверьте политику sudo, PAM или PARSEC для этой учётной записи.",
+  sudo_setup_failed: "Вход по отдельному ключу подтверждён, но Astra не разрешила завершить автоматическую настройку sudo. Пароль не сохранён. Повторите подключение; если пароль sudo отличается от SSH, укажите его в дополнительном поле.",
+  sudo_check_failed: "Вход по отдельному ключу подтверждён, но Astra всё ещё не разрешает non-interactive sudo. Проверьте политику sudo для этой учётной записи.",
+};
 
 export async function POST(request: Request) {
   if (!credentialTransportAllowed(request)) return response({ ok: false, error: "secure_transport_required",
@@ -33,11 +42,12 @@ export async function POST(request: Request) {
     const result = await runSshBootstrap(identity, { credentialId: prepared.credential.id, keyPath: prepared.keyPath, password, sudoPassword, configureSudo });
     const credential = markHostCredentialVerified(prepared.credential.id, identity, result.publicKey!, result.fingerprint!);
     if (configureSudo && !result.sudo?.ready) {
-      const error = result.sudo?.error === "sudo_check_failed" ? "sudo_check_failed" : "sudo_setup_failed";
+      const candidate = result.sudo?.error ?? "sudo_setup_failed";
+      const error = candidate in sudoFailureMessages ? candidate : "sudo_setup_failed";
       appendIncident({ action: "ssh-key-enrollment", kind: "system", status: "failed", profileId: "ssh-access", limit: identity.alias,
         message: `Отдельный ключ ${credential.fingerprint} установлен для ${identity.alias}, но автоматическая подготовка sudo не завершилась (${error}).` });
       return response({ ok: false, error, credentialId: credential.id, publicKey: credential.publicKey, fingerprint: credential.fingerprint, sudo: result.sudo,
-        message: "Вход по отдельному ключу подтверждён, но Astra не разрешила завершить автоматическую настройку sudo. Пароль не сохранён. Повторите подключение; если пароль sudo отличается от SSH, укажите его в дополнительном поле." }, 400);
+        message: sudoFailureMessages[error] }, 400);
     }
     appendIncident({ action: "ssh-key-enrollment", kind: "system", status: "success", profileId: "ssh-access", limit: identity.alias,
       message: `Отдельный ключ ${credential.fingerprint} установлен для ${identity.alias}; вход проверен. Настройка sudo запрошена: ${configureSudo ? "да" : "нет"}; sudo готово: ${result.sudo?.ready ? "да" : "нет"}.` });

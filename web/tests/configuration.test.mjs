@@ -78,6 +78,8 @@ test("password onboarding reports an incomplete automatic sudo setup before gene
   const onboarding = read(path.join("web", "lib", "host-onboarding.ts"));
   assert.match(bootstrap, /sudo_setup_failed/);
   assert.match(bootstrap, /sudo_check_failed/);
+  assert.match(bootstrap, /sudo_elevation_rejected_or_policy/);
+  assert.match(bootstrap, /sudo_rule_not_effective/);
   assert.match(onboarding, /credential\.credentialId/);
 });
 
