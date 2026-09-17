@@ -62,7 +62,7 @@ def main():
     # immutable config copied into the image; the real requiretty enrollment
     # below then proves the option works for an actual Ansible become run.
     config_file = run(["docker", "exec", "--user", "node", hcp, "cat", "/app/ansible.cfg"]).stdout
-    if not re.search(r"(?m)^pipelining\\s*=\\s*False\\s*$", config_file):
+    if not re.search(r"(?m)^pipelining\s*=\s*False\s*$", config_file):
         raise AssertionError("HCP must disable Ansible pipelining for non-interactive sudo")
     def check_connection(host):
         result = request("/api/ansible/hosts/preflight", host)
