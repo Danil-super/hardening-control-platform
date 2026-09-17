@@ -141,7 +141,10 @@ def main():
     b["credentialId"] = result_b["credentialId"]
     request("/api/ansible/hosts", {**a, "group": "linux_hosts"}, method="PUT")
     request("/api/ansible/hosts", {**b, "group": "linux_hosts"})
-    swapped = request("/api/ansible/hosts/preflight", {**b, "credentialId": a["credentialId"]}, status=400)
+    # The saved identity and the supplied key conflict.  A 409 makes the
+    # conflict explicit while still proving that a key from host A cannot be
+    # used for host B.
+    swapped = request("/api/ansible/hosts/preflight", {**b, "credentialId": a["credentialId"]}, status=409)
     assert not swapped["ok"]
     repeat = request("/api/ansible/hosts/bootstrap", {**a, "password": ""})
     assert repeat["credentialId"] == a["credentialId"] and repeat["fingerprint"] == result_a["fingerprint"]
