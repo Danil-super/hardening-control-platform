@@ -120,7 +120,10 @@ command -v sudo >/dev/null 2>&1 || exit 77
 hcp_err=$(mktemp /tmp/.hcp-sudo-error.XXXXXX 2>/dev/null) || exit 82
 hcp_out=$(mktemp /tmp/.hcp-sudo-output.XXXXXX 2>/dev/null) || exit 82
 hcp_tty_state=$(stty -g 2>/dev/null) || exit 78
-stty -echo 2>/dev/null || exit 78
+# Restore the target's original terminal settings in cleanup.  An explicit
+# EOF character lets the controller end the one password attempt even when a
+# wrong password would otherwise make sudo wait for further prompts on a PTY.
+stty -echo eof '^D' 2>/dev/null || exit 78
 printf '%%s\\n' %s
 LC_ALL=C LANG=C sudo -S -k -p '' -- /bin/sh -c %s >"$hcp_out" 2>"$hcp_err"
 status=$?
@@ -186,7 +189,10 @@ def run_password_sudo(client, root_script, password):
     marker_line = stdout.readline(256)
     marker = marker_line.decode("utf-8", "replace").strip() if isinstance(marker_line, bytes) else str(marker_line).strip()
     if marker == SUDO_READY_MARKER:
-        stdin.write(password + "\n")
+        # A PTY does not always translate shutdown_write into EOF for sudo.
+        # Send the canonical terminal EOF after exactly one password line so
+        # an invalid secret cannot leave the session waiting for retry prompts.
+        stdin.write(password + "\n\x04")
         stdin.flush()
     stdin.channel.shutdown_write()
     # Deliberately discard all pty output.  The remote wrapper returns only a

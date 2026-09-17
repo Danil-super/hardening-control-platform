@@ -83,10 +83,11 @@ class SshBootstrapTests(unittest.TestCase):
         self.assertTrue(client.calls[0]["get_pty"])
         wrapper = BOOTSTRAP.sudo_attempt_script("id -u")
         self.assertIn("stty -echo", wrapper)
+        self.assertIn("eof '^D'", wrapper)
         self.assertIn("sudo -S -k -p ''", wrapper)
         self.assertIn('>"$hcp_out" 2>"$hcp_err"', wrapper)
         self.assertNotIn("fixture-password", client.calls[0]["command"])
-        self.assertEqual(client.stdin.value, "fixture-password\n")
+        self.assertEqual(client.stdin.value, "fixture-password\n\x04")
         self.assertTrue(client.stdin.flushed)
         self.assertTrue(client.channel.closed_input)
 
@@ -96,7 +97,7 @@ class SshBootstrapTests(unittest.TestCase):
         client = _Client(stdout=BOOTSTRAP.SUDO_READY_MARKER + "\n", status=81)
         status = BOOTSTRAP.run_password_sudo(client, "id -u", "fixture-password")
         self.assertEqual(status, 81)
-        self.assertEqual(client.stdin.value, "fixture-password\n")
+        self.assertEqual(client.stdin.value, "fixture-password\n\x04")
         self.assertTrue(client.stdin.flushed)
 
     def test_password_sudo_never_writes_the_secret_without_the_safe_marker(self):
