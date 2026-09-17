@@ -179,7 +179,12 @@ def run_password_sudo(client, root_script, password):
     """Run the wrapper above and send its password only after echo is off."""
     command = "/bin/sh -c " + shlex.quote(sudo_attempt_script(root_script))
     stdin, stdout, stderr = client.exec_command(command, timeout=25, get_pty=True)
-    marker = stdout.readline(256).decode("utf-8", "replace").strip()
+    # Paramiko's ``read`` is bytes, while some supported releases return a
+    # text string specifically from ``readline``.  Normalise both forms before
+    # comparing the fixed marker; otherwise a valid sudo rejection is hidden
+    # behind an AttributeError and appears as a generic setup failure.
+    marker_line = stdout.readline(256)
+    marker = marker_line.decode("utf-8", "replace").strip() if isinstance(marker_line, bytes) else str(marker_line).strip()
     if marker == SUDO_READY_MARKER:
         stdin.write(password + "\n")
         stdin.flush()

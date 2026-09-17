@@ -45,7 +45,8 @@ class _Output:
         return value
 
     def readline(self, limit):
-        index = self.value.find(b"\n")
+        newline = b"\n" if isinstance(self.value, bytes) else "\n"
+        index = self.value.find(newline)
         if index >= 0:
             size = min(index + 1, limit)
         else:
@@ -88,6 +89,15 @@ class SshBootstrapTests(unittest.TestCase):
         self.assertEqual(client.stdin.value, "fixture-password\n")
         self.assertTrue(client.stdin.flushed)
         self.assertTrue(client.channel.closed_input)
+
+    def test_password_sudo_accepts_paramiko_text_readline(self):
+        # Paramiko 2.x can return a text line from ChannelFile.readline even
+        # though its bulk read remains bytes.
+        client = _Client(stdout=BOOTSTRAP.SUDO_READY_MARKER + "\n", status=81)
+        status = BOOTSTRAP.run_password_sudo(client, "id -u", "fixture-password")
+        self.assertEqual(status, 81)
+        self.assertEqual(client.stdin.value, "fixture-password\n")
+        self.assertTrue(client.stdin.flushed)
 
     def test_password_sudo_never_writes_the_secret_without_the_safe_marker(self):
         unavailable = _Client(stdout=b"", status=77)
