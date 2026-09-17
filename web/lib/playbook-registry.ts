@@ -274,7 +274,7 @@ export async function syntaxCheckPlaybook(playbook: RegisteredPlaybook) {
     cwd: repoRoot,
     timeout: 120_000,
     maxBuffer: 1024 * 1024 * 4,
-    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False" },
   });
 }
 
@@ -338,7 +338,7 @@ export async function runRegisteredPlaybook({
     cwd: repoRoot,
     timeout: playbook.timeout,
     maxBuffer: 1024 * 1024 * 8,
-    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False" },
   });
 
   appendIncident({

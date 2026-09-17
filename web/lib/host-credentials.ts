@@ -7,6 +7,10 @@ export type HostIdentity = { alias: string; address: string; user: string; port:
 export type HostCredential = HostIdentity & {
   version: 1; id: string; createdAt: string; verifiedAt: string | null;
   publicKey: string | null; fingerprint: string | null;
+  // Set only after HCP has proved the persistent non-interactive sudo path.
+  // Older credential metadata deliberately has no value and stays compatible
+  // once it is already bound to an existing inventory host.
+  sudoReadyAt?: string | null;
 };
 export class HostCredentialError extends Error {
   constructor(message: string, public code: string) { super(message); }
@@ -19,6 +23,9 @@ export function validHostIdentity(value: HostIdentity) {
     && !["all", "ungrouped", "preflight"].includes(value.alias)
     && /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$/.test(value.user)
     && isSafeSshHostAddress(value.address) && normalizeSshPort(value.port) === value.port;
+}
+function validOptionalTimestamp(value: unknown) {
+  return value === undefined || value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
 }
 export function hostKeysDirectory() {
   return path.join(path.resolve(process.env.HCP_STATE_DIR ?? path.join(process.cwd(), "..", "ansible")), "ssh-host-keys");
@@ -46,7 +53,9 @@ export function readHostCredential(id: string): HostCredential {
   let value: HostCredential;
   try { value = JSON.parse(readFileSync(path.join(credentialDirectory(id), "metadata.json"), "utf8")); }
   catch { throw credentialError("Ключ хоста не найден. Восстановите резервную копию или настройте новый доступ.", "credential_missing"); }
-  if (value.version !== 1 || value.id !== id || !validHostIdentity(value)) throw credentialError("Метаданные SSH-ключа повреждены.");
+  if (value.version !== 1 || value.id !== id || !validHostIdentity(value) || !validOptionalTimestamp(value.sudoReadyAt)) {
+    throw credentialError("Метаданные SSH-ключа повреждены.");
+  }
   return value;
 }
 export function validateHostCredential(id: string, identity: HostIdentity, requireVerified = true) {
@@ -77,7 +86,7 @@ export function beginHostCredential(identity: HostIdentity, existingId?: string 
     if (existsSync(path.join(credentialDirectory(id), "metadata.json"))) credential = validateHostCredential(id, identity, false);
     else {
       if (existingId) throw credentialError("Сохранённый ключ отсутствует. Восстановите его из резервной копии.", "credential_missing");
-      credential = { ...identity, version: 1, id, createdAt: new Date().toISOString(), verifiedAt: null, publicKey: null, fingerprint: null };
+      credential = { ...identity, version: 1, id, createdAt: new Date().toISOString(), verifiedAt: null, publicKey: null, fingerprint: null, sudoReadyAt: null };
       writeMetadata(credential);
     }
     if (credential.verifiedAt && !existsSync(credentialKeyPath(id))) throw credentialError("Сохранённый приватный ключ отсутствует. Восстановите его из резервной копии; повторная настройка не заменяет ключ автоматически.", "credential_missing");
@@ -91,6 +100,15 @@ export function markHostCredentialVerified(id: string, identity: HostIdentity, p
   const updated = { ...current, publicKey, fingerprint, verifiedAt: new Date().toISOString() };
   writeMetadata(updated);
   return updated;
+}
+export function markHostCredentialSudoReady(id: string, identity: HostIdentity) {
+  const current = validateHostCredential(id, identity);
+  const updated = { ...current, sudoReadyAt: new Date().toISOString() };
+  writeMetadata(updated);
+  return updated;
+}
+export function isHostCredentialSudoReady(id: string, identity: HostIdentity) {
+  return Boolean(validateHostCredential(id, identity).sudoReadyAt);
 }
 function savedCredentialId(alias: string) {
   const inventory = path.resolve(process.cwd(), "..", "ansible", "inventory.ini");

@@ -232,7 +232,7 @@ export async function runAnsiblePlaybook({
     cwd: repoRoot,
     timeout: selected.timeout,
     maxBuffer: 1024 * 1024 * 8,
-    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_SSH_ARGS: ansibleSshArgs(), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
+    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ANSIBLE_SSH_ARGS: ansibleSshArgs(), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
   });
 
   return { ...result, command, repoRoot, reportRunId };

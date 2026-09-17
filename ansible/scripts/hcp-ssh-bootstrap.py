@@ -99,6 +99,17 @@ def sudo_setup_failure(status):
     }.get(status, "sudo_elevation_rejected_or_policy")
 
 
+def sudo_readiness_script():
+    """Match the non-interactive sudo shape used for Ansible modules.
+
+    This receives neither a password nor a PTY.  A successful short `sudo id`
+    is not enough on a policy that distinguishes the shell/Python wrapper used
+    by Ansible from an individual command.
+    """
+    python_probe = "exec /usr/bin/python3 -c " + shlex.quote("import os; print(os.geteuid())")
+    return "exec sudo -H -S -k -n -u root -- /bin/sh -c " + shlex.quote(python_probe)
+
+
 def run_remote(client, script, input_text=None, elevated=False):
     command = "/bin/sh -c " + shlex.quote(script)
     if elevated:
@@ -198,12 +209,13 @@ def enroll(config):
             except Exception:
                 sudo_result["error"] = "sudo_setup_failed"
         try:
-            status, root_uid = run_remote(key_client, "sudo -k -n id -u" if uid.strip() != "0" else "id -u")
+            status, root_uid = run_remote(key_client, sudo_readiness_script() if uid.strip() != "0"
+                                          else "/usr/bin/python3 -c " + shlex.quote("import os; print(os.geteuid())"))
             sudo_result["ready"] = status == 0 and root_uid.strip() == "0"
             if not sudo_result["ready"] and "error" not in sudo_result:
-                sudo_result["error"] = "sudo_rule_not_effective"
+                sudo_result["error"] = "sudo_ansible_probe_failed"
         except Exception:
-            sudo_result["error"] = "sudo_rule_not_effective"
+            sudo_result["error"] = "sudo_ansible_probe_failed"
         return {"ok": True, "publicKey": public_key, "fingerprint": fingerprint, "sudo": sudo_result}
     finally:
         if key_client:

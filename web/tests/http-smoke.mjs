@@ -2,6 +2,7 @@
 // Does not claim to execute remote scanners or change any host's firewall.
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
@@ -153,7 +154,9 @@ try {
   assert.equal(missingKey.ok, false);
   assert.equal(missingKey.error, "control_key_missing");
   renameSync(`${sshKey}.unavailable`, sshKey);
-  const preflightBody = { alias: "fixture-preflight", address: "192.0.2.10", user: "hcp-audit", port: 22, become: true };
+  // Root is an intentional exception to the new non-root onboarding gate;
+  // the following fixture loop concentrates on preflight result rendering.
+  const preflightBody = { alias: "fixture-preflight", address: "192.0.2.10", user: "root", port: 22, become: true };
   for (const scenario of ["unknown-key", "sudo-password", "non-root", "ok", "disabled-sudo"]) {
     writeFileSync(preflightFixture, scenario);
     writeFileSync(`${preflightFixture}.calls`, "");
@@ -181,6 +184,38 @@ try {
       assert.equal(result.readiness.checks.find((check) => check.id === "baseline").state, "ready");
     }
   }
+  // A retained SSH key must not let an old browser bundle or a direct request
+  // skip the one-time non-interactive sudo preparation.  The fixture proves
+  // that Ansible is not started before the server-side gate answers.
+  const guardedIdentity = { alias: "guarded-preflight", address: "192.0.2.55", user: "hcp-audit", port: 22 };
+  const guardedCredentialId = createHash("sha256").update(JSON.stringify([
+    guardedIdentity.alias, guardedIdentity.address.toLowerCase(), guardedIdentity.user, guardedIdentity.port,
+  ])).digest("hex");
+  const guardedDirectory = path.join(temporary, "ssh-host-keys", guardedCredentialId);
+  mkdirSync(guardedDirectory, { recursive: true });
+  copyFileSync(sshKey, path.join(guardedDirectory, "id_ed25519"));
+  copyFileSync(`${sshKey}.pub`, path.join(guardedDirectory, "id_ed25519.pub"));
+  const guardedPublicKey = readFileSync(`${sshKey}.pub`, "utf8").trim();
+  const guardedFingerprint = execFileSync("ssh-keygen", ["-lf", `${sshKey}.pub`, "-E", "sha256"], { encoding: "utf8" }).split(/\s+/)[1];
+  const guardedMetadata = { ...guardedIdentity, version: 1, id: guardedCredentialId,
+    createdAt: new Date().toISOString(), verifiedAt: new Date().toISOString(), publicKey: guardedPublicKey,
+    fingerprint: guardedFingerprint, sudoReadyAt: null };
+  writeFileSync(path.join(guardedDirectory, "metadata.json"), JSON.stringify(guardedMetadata));
+  writeFileSync(preflightFixture, "ok");
+  writeFileSync(`${preflightFixture}.calls`, "");
+  const incompleteSudo = await (await request("/api/ansible/hosts/preflight", {
+    method: "POST", body: { ...guardedIdentity, become: true, credentialId: guardedCredentialId }, status: 409,
+  })).json();
+  assert.equal(incompleteSudo.error, "sudo_setup_incomplete");
+  assert.match(incompleteSudo.message, /Ansible-проверка не запускалась/);
+  assert.equal(readFileSync(`${preflightFixture}.calls`, "utf8"), "");
+  guardedMetadata.sudoReadyAt = new Date().toISOString();
+  writeFileSync(path.join(guardedDirectory, "metadata.json"), JSON.stringify(guardedMetadata));
+  const completedSudo = await (await request("/api/ansible/hosts/preflight", {
+    method: "POST", body: { ...guardedIdentity, become: true, credentialId: guardedCredentialId },
+  })).json();
+  assert.equal(completedSudo.ok, true);
+  assert.match(readFileSync(`${preflightFixture}.calls`, "utf8"), /sudo/);
   const guidePage = await (await request("/guide", { auth: false })).text();
   assert.match(guidePage, /ubuntu-astra-setup\.md#host-onboarding/);
   assert.doesNotMatch(guidePage, /ssh-copy-id user@192\.168\.1\.10/);

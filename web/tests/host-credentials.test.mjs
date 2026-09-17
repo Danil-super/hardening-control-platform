@@ -38,6 +38,10 @@ test("each host has its own actual key pair and only public metadata is returned
     assert.equal(credentials.connectionPrivateKey(identity(), ca.id), a.keyPath);
     assert.equal(statSync(a.keyPath).mode & 0o777, 0o600);
     assert.equal(statSync(path.dirname(a.keyPath)).mode & 0o777, 0o700);
+    assert.equal(credentials.isHostCredentialSudoReady(ca.id, identity()), false);
+    const elevated = credentials.markHostCredentialSudoReady(ca.id, identity());
+    assert.match(elevated.sudoReadyAt, /^\d{4}-\d{2}-\d{2}T/);
+    assert.equal(credentials.isHostCredentialSudoReady(ca.id, identity()), true);
     const summary = JSON.stringify(credentials.publicCredentialSummary(ca.id));
     assert.doesNotMatch(summary, /PRIVATE KEY|password|keyPath/);
     assert.doesNotMatch(readFileSync(path.join(path.dirname(a.keyPath), "metadata.json"), "utf8"), /PRIVATE KEY|password|keyPath/);

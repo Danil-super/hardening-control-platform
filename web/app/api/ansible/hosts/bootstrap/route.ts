@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { HostCredentialError, beginHostCredential, markHostCredentialVerified, validHostIdentity, type HostIdentity } from "@/lib/host-credentials";
+import { HostCredentialError, beginHostCredential, markHostCredentialSudoReady, markHostCredentialVerified, validHostIdentity, type HostIdentity } from "@/lib/host-credentials";
 import { normalizeSshPort } from "@/lib/ssh-access";
 import { credentialTransportAllowed, readCredentialRequest, runSshBootstrap } from "@/lib/ssh-bootstrap";
 import { appendIncident } from "@/lib/ansible-control";
@@ -15,6 +15,7 @@ const sudoFailureMessages: Record<string, string> = {
   sudoers_validation_failed: "Вход по отдельному ключу подтверждён, но Astra не подтвердила синтаксис или действующую конфигурацию sudoers. HCP не оставил неподтверждённое правило.",
   sudoers_rule_conflict: "Вход по отдельному ключу подтверждён, но существующее правило HCP для этого подключения имеет неожиданный вид. Оно не заменено автоматически; проверьте его через доверенную консоль.",
   sudo_rule_not_effective: "Вход по отдельному ключу подтверждён, но после настройки Astra всё ещё не разрешает non-interactive sudo. Проверьте политику sudo, PAM или PARSEC для этой учётной записи.",
+  sudo_ansible_probe_failed: "Вход по отдельному ключу подтверждён, но Astra не разрешает тот же non-interactive sudo-запуск, который нужен Ansible для аудита. HCP не запускает аудит до исправления этой политики.",
   sudo_setup_failed: "Вход по отдельному ключу подтверждён, но Astra не разрешила завершить автоматическую настройку sudo. Пароль не сохранён. Повторите подключение; если пароль sudo отличается от SSH, укажите его в дополнительном поле.",
   sudo_check_failed: "Вход по отдельному ключу подтверждён, но Astra всё ещё не разрешает non-interactive sudo. Проверьте политику sudo для этой учётной записи.",
 };
@@ -49,6 +50,7 @@ export async function POST(request: Request) {
       return response({ ok: false, error, credentialId: credential.id, publicKey: credential.publicKey, fingerprint: credential.fingerprint, sudo: result.sudo,
         message: sudoFailureMessages[error] }, 400);
     }
+    if (configureSudo && result.sudo?.ready) markHostCredentialSudoReady(credential.id, identity);
     appendIncident({ action: "ssh-key-enrollment", kind: "system", status: "success", profileId: "ssh-access", limit: identity.alias,
       message: `Отдельный ключ ${credential.fingerprint} установлен для ${identity.alias}; вход проверен. Настройка sudo запрошена: ${configureSudo ? "да" : "нет"}; sudo готово: ${result.sudo?.ready ? "да" : "нет"}.` });
     return response({ ok: true, credentialId: credential.id, publicKey: credential.publicKey, fingerprint: credential.fingerprint,

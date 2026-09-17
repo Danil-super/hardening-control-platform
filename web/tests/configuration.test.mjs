@@ -80,7 +80,21 @@ test("password onboarding reports an incomplete automatic sudo setup before gene
   assert.match(bootstrap, /sudo_check_failed/);
   assert.match(bootstrap, /sudo_elevation_rejected_or_policy/);
   assert.match(bootstrap, /sudo_rule_not_effective/);
+  assert.match(bootstrap, /sudo_ansible_probe_failed/);
   assert.match(onboarding, /credential\.credentialId/);
+});
+
+test("Ansible keeps the same non-interactive sudo contract as host onboarding", () => {
+  const config = read("ansible.cfg");
+  const bootstrap = read(path.join("ansible", "scripts", "hcp-ssh-bootstrap.py"));
+  const preflight = read(path.join("web", "app", "api", "ansible", "hosts", "preflight", "route.ts"));
+  assert.match(config, /pipelining\s*=\s*False/);
+  assert.match(config, /become_method\s*=\s*sudo/);
+  assert.match(config, /become_user\s*=\s*root/);
+  assert.match(config, /become_flags\s*=\s*-H -S -n/);
+  assert.match(bootstrap, /sudo_readiness_script/);
+  assert.match(bootstrap, /sudo -H -S -k -n -u root/);
+  assert.match(preflight, /sudo_setup_incomplete/);
 });
 
 test("CVE checking has an explicit Trivy-only isolated-network mode", () => {

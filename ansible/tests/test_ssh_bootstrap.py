@@ -74,6 +74,13 @@ class SshBootstrapTests(unittest.TestCase):
         self.assertIn("lab ALL=(root) NOPASSWD: ALL", rendered)
         self.assertIn("hcp_legacy_tmp", rendered)
 
+    def test_readiness_probe_matches_noninteractive_ansible_sudo_shape(self):
+        rendered = BOOTSTRAP.sudo_readiness_script()
+        self.assertIn("sudo -H -S -k -n -u root", rendered)
+        self.assertIn("/bin/sh -c", rendered)
+        self.assertIn("/usr/bin/python3", rendered)
+        self.assertIn("geteuid", rendered)
+
     def test_sudo_setup_failures_use_safe_stable_codes(self):
         self.assertEqual(BOOTSTRAP.sudo_setup_failure(74), "sudoers_unavailable")
         self.assertEqual(BOOTSTRAP.sudo_setup_failure(75), "sudoers_validation_failed")

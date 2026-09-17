@@ -7,7 +7,8 @@ import { NextResponse } from "next/server";
 import { getRepoRoot } from "@/lib/ansible-control";
 import { ansibleSshArgs, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 import { assessHostReadiness, assessTargetPython, type HostReadiness } from "@/lib/host-readiness";
-import { connectionPrivateKey, HostCredentialError } from "@/lib/host-credentials";
+import { connectionPrivateKey, HostCredentialError, isHostCredentialSudoReady } from "@/lib/host-credentials";
+import { readInventoryCloseoutHost } from "@/lib/inventory-closeout";
 import { summarizePreflight } from "@/lib/preflight-result";
 
 export const dynamic = "force-dynamic";
@@ -30,7 +31,7 @@ async function runAnsible(args: string[], inventoryPath: string, stage: string) 
       cwd: getRepoRoot(),
       timeout: 60_000,
       maxBuffer: 1024 * 1024 * 4,
-      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_SSH_ARGS: ansibleSshArgs(), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
+      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ANSIBLE_SSH_ARGS: ansibleSshArgs(), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
     });
     const data = JSON.parse(readFileSync(path.join(resultDir, args[0]), "utf8"));
     return { ok: data.failed !== true && data.unreachable !== true, stdout: result.stdout, stderr: result.stderr, data };
@@ -45,6 +46,18 @@ async function runAnsible(args: string[], inventoryPath: string, stage: string) 
   }
 }
 
+function sameInventoryConnection(host: { alias: string; address: string; user: string; port: number; credentialId: string | null }, identity: {
+  alias: string; address: string; user: string; port: number; credentialId: string | null;
+}) {
+  return host.alias === identity.alias && host.address.toLowerCase() === identity.address.toLowerCase()
+    && host.user === identity.user && host.port === identity.port && host.credentialId === identity.credentialId;
+}
+
+function incompleteSudoResponse() {
+  return NextResponse.json({ ok: false, error: "sudo_setup_incomplete",
+    message: "SSH-ключ создан, но HCP ещё не подтвердил постоянные права администратора. Введите пароль в форме подключения и нажмите «Подключить хост»; Ansible-проверка не запускалась." }, { status: 409 });
+}
+
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
   const alias = typeof body?.alias === "string" ? body.alias.trim() : "";
@@ -52,6 +65,7 @@ export async function POST(request: Request) {
   const user = typeof body?.user === "string" ? body.user.trim() : "";
   const port = normalizeSshPort(body?.port);
   const become = typeof body?.become === "boolean" ? body.become : true;
+  const credentialId = typeof body?.credentialId === "string" && body.credentialId ? body.credentialId : null;
 
   if (!isSafeAlias(alias) || !isSafeSshHostAddress(address) || !isSafeSshUser(user) || port === null) {
     return NextResponse.json(
@@ -60,8 +74,30 @@ export async function POST(request: Request) {
     );
   }
 
+  // This is enforced server-side as well as in the browser.  A cached old UI
+  // or direct request must never jump from an SSH-only credential straight to
+  // an Ansible `sudo -n` attempt.  Existing inventory hosts remain compatible
+  // with credentials created before this status was recorded.
+  if (become && user !== "root") {
+    try {
+      const inventoryHost = readInventoryCloseoutHost(alias);
+      if (inventoryHost) {
+        if (!sameInventoryConnection(inventoryHost, { alias, address, user, port, credentialId })) {
+          return NextResponse.json({ ok: false, error: "inventory_connection_mismatch",
+            message: "Сохранённое подключение с таким именем отличается от введённых данных. Откройте его через «Настроить» или укажите другой alias." }, { status: 409 });
+        }
+      } else if (!credentialId || !isHostCredentialSudoReady(credentialId, { alias, address, user, port })) {
+        return incompleteSudoResponse();
+      }
+    } catch (error) {
+      if (error instanceof HostCredentialError) return incompleteSudoResponse();
+      return NextResponse.json({ ok: false, error: "inventory_state_invalid",
+        message: "Не удалось безопасно подтвердить состояние подключения. Проверьте inventory и повторите настройку хоста." }, { status: 409 });
+    }
+  }
+
   let sshKeyPath: string;
-  try { sshKeyPath = connectionPrivateKey({ alias, address, user, port }, body?.credentialId); }
+  try { sshKeyPath = connectionPrivateKey({ alias, address, user, port }, credentialId); }
   catch (error) { return NextResponse.json({ ok: false, message: error instanceof HostCredentialError ? error.message : "Ключ подключения недоступен." }, { status: 400 }); }
   if (!existsSync(sshKeyPath)) {
     return NextResponse.json({ ok: false, message: "SSH-ключ не найден. Подключите этот хост по паролю через форму выше." }, { status: 400 });
