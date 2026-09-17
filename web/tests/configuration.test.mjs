@@ -82,6 +82,7 @@ test("password onboarding reports an incomplete automatic sudo setup before gene
   assert.match(bootstrap, /sudo_not_permitted/);
   assert.match(bootstrap, /sudoers_write_rejected/);
   assert.match(bootstrap, /sudo_safe_channel_failed/);
+  assert.match(bootstrap, /sudo_auth_timeout/);
   assert.match(bootstrap, /sudo_elevation_rejected_or_policy/);
   assert.match(bootstrap, /sudo_rule_not_effective/);
   assert.match(bootstrap, /sudo_ansible_probe_failed/);

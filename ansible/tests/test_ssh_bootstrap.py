@@ -84,6 +84,7 @@ class SshBootstrapTests(unittest.TestCase):
         wrapper = BOOTSTRAP.sudo_attempt_script("id -u")
         self.assertIn("stty -echo", wrapper)
         self.assertIn("eof '^D'", wrapper)
+        self.assertIn("timeout 12 sudo", wrapper)
         self.assertIn("sudo -S -k -p ''", wrapper)
         self.assertIn('>"$hcp_out" 2>"$hcp_err"', wrapper)
         self.assertNotIn("fixture-password", client.calls[0]["command"])
@@ -146,6 +147,7 @@ class SshBootstrapTests(unittest.TestCase):
             82: "sudo_pam_or_policy_rejected",
             83: "sudoers_write_rejected",
             84: "sudo_safe_channel_failed",
+            85: "sudo_auth_timeout",
         }.items():
             self.assertEqual(BOOTSTRAP.sudo_setup_failure(status), code)
         self.assertEqual(BOOTSTRAP.sudo_setup_failure(1), "sudo_elevation_rejected_or_policy")

@@ -125,17 +125,22 @@ hcp_tty_state=$(stty -g 2>/dev/null) || exit 78
 # wrong password would otherwise make sudo wait for further prompts on a PTY.
 stty -echo eof '^D' 2>/dev/null || exit 78
 printf '%%s\\n' %s
-LC_ALL=C LANG=C sudo -S -k -p '' -- /bin/sh -c %s >"$hcp_out" 2>"$hcp_err"
+if command -v timeout >/dev/null 2>&1; then
+  LC_ALL=C LANG=C timeout 12 sudo -S -k -p '' -- /bin/sh -c %s >"$hcp_out" 2>"$hcp_err"
+else
+  LC_ALL=C LANG=C sudo -S -k -p '' -- /bin/sh -c %s >"$hcp_out" 2>"$hcp_err"
+fi
 status=$?
 case "$status" in
   0|74|75|76) exit "$status" ;;
 esac
+if [ "$status" -eq 124 ]; then exit 85; fi
 if grep -qx %s "$hcp_out" >/dev/null 2>&1; then exit 83; fi
 if grep -Eqi 'not in the sudoers|not allowed to (execute|run sudo)|may not run sudo|not permitted to run sudo' "$hcp_err" >/dev/null 2>&1; then exit 80; fi
 if grep -Eqi 'must have a tty|no tty present|a terminal is required|no terminal is available' "$hcp_err" >/dev/null 2>&1; then exit 79; fi
 if grep -Eqi 'sorry, try again|incorrect password|authentication failure|authentication failed|a password is required|no password was provided' "$hcp_err" >/dev/null 2>&1; then exit 81; fi
 exit 82
-""" % (shlex.quote(SUDO_READY_MARKER), shlex.quote(root_script), shlex.quote(SUDO_ELEVATED_MARKER))
+""" % (shlex.quote(SUDO_READY_MARKER), shlex.quote(root_script), shlex.quote(root_script), shlex.quote(SUDO_ELEVATED_MARKER))
 
 
 def sudo_setup_failure(status):
@@ -152,6 +157,7 @@ def sudo_setup_failure(status):
         82: "sudo_pam_or_policy_rejected",
         83: "sudoers_write_rejected",
         84: "sudo_safe_channel_failed",
+        85: "sudo_auth_timeout",
     }.get(status, "sudo_elevation_rejected_or_policy")
 
 
@@ -203,7 +209,7 @@ def run_password_sudo(client, root_script, password):
     if marker != SUDO_READY_MARKER:
         # These three codes can be emitted before the marker.  Anything else
         # means a broken or unexpected remote channel and must fail closed.
-        return status if status in (77, 78, 82) else 84
+        return status if status in (77, 78, 82, 85) else 84
     return status
 
 
@@ -285,6 +291,8 @@ def enroll(config):
                 sudo_result["configured"] = status == 0
                 if status:
                     sudo_result["error"] = sudo_setup_failure(status)
+            except (socket.timeout, TimeoutError):
+                sudo_result["error"] = "sudo_auth_timeout"
             except Exception:
                 sudo_result["error"] = "sudo_setup_failed"
         try:
