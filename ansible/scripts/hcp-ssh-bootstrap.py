@@ -122,12 +122,14 @@ hcp_out=$(mktemp /tmp/.hcp-sudo-output.XXXXXX 2>/dev/null) || exit 82
 hcp_tty_state=$(stty -g 2>/dev/null) || exit 78
 stty -echo 2>/dev/null || exit 78
 printf '%%s\\n' %s
+IFS= read -r hcp_sudo_password || exit 82
 if command -v timeout >/dev/null 2>&1; then
-  LC_ALL=C LANG=C timeout 12 sudo -S -k -p '' -- /bin/sh -c %s >"$hcp_out" 2>"$hcp_err"
+  printf '%%s\\n' "$hcp_sudo_password" | LC_ALL=C LANG=C timeout 12 sudo -S -k -p '' -- /bin/sh -c %s >"$hcp_out" 2>"$hcp_err"
 else
-  LC_ALL=C LANG=C sudo -S -k -p '' -- /bin/sh -c %s >"$hcp_out" 2>"$hcp_err"
+  printf '%%s\\n' "$hcp_sudo_password" | LC_ALL=C LANG=C sudo -S -k -p '' -- /bin/sh -c %s >"$hcp_out" 2>"$hcp_err"
 fi
 status=$?
+unset hcp_sudo_password
 case "$status" in
   0|74|75|76) exit "$status" ;;
 esac
