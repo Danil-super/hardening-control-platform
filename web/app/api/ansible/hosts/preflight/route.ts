@@ -82,7 +82,13 @@ export async function POST(request: Request) {
     try {
       const inventoryHost = readInventoryCloseoutHost(alias);
       if (inventoryHost) {
-        if (!sameInventoryConnection(inventoryHost, { alias, address, user, port, credentialId })) {
+        // Existing connections can be checked by older callers that do not
+        // send the credential id.  In that case bind the request to the
+        // already saved id before comparing it.  An explicitly supplied
+        // foreign id still produces a conflict and can never select another
+        // host's key.
+        const comparedCredentialId = credentialId ?? inventoryHost.credentialId;
+        if (!sameInventoryConnection(inventoryHost, { alias, address, user, port, credentialId: comparedCredentialId })) {
           return NextResponse.json({ ok: false, error: "inventory_connection_mismatch",
             message: "Сохранённое подключение с таким именем отличается от введённых данных. Откройте его через «Настроить» или укажите другой alias." }, { status: 409 });
         }

@@ -217,6 +217,21 @@ try {
   })).json();
   assert.equal(completedSudo.ok, true);
   assert.match(readFileSync(`${preflightFixture}.calls`, "utf8"), /sudo/);
+  await request("/api/ansible/hosts", {
+    method: "POST", body: { ...guardedIdentity, become: true, group: "linux_hosts", credentialId: guardedCredentialId },
+  });
+  // A saved connection owns its individual key.  Older callers may omit the
+  // id, but an explicit id of another host remains a conflict.
+  writeFileSync(`${preflightFixture}.calls`, "");
+  const savedCredentialPreflight = await (await request("/api/ansible/hosts/preflight", {
+    method: "POST", body: { ...guardedIdentity, become: true },
+  })).json();
+  assert.equal(savedCredentialPreflight.ok, true);
+  assert.match(readFileSync(`${preflightFixture}.calls`, "utf8"), /sudo/);
+  const foreignSavedCredential = await (await request("/api/ansible/hosts/preflight", {
+    method: "POST", body: { ...guardedIdentity, become: true, credentialId: "f".repeat(64) }, status: 409,
+  })).json();
+  assert.equal(foreignSavedCredential.error, "inventory_connection_mismatch");
   const guidePage = await (await request("/guide", { auth: false })).text();
   assert.match(guidePage, /ubuntu-astra-setup\.md#host-onboarding/);
   assert.doesNotMatch(guidePage, /ssh-copy-id user@192\.168\.1\.10/);
