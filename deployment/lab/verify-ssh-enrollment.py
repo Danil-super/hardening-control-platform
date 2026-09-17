@@ -8,6 +8,7 @@ import argparse
 import http.cookiejar
 import json
 import os
+import re
 import subprocess
 import time
 import urllib.error
@@ -56,12 +57,12 @@ def main():
     target = run(COMPOSE + ["ps", "-q", "lab-target"]).stdout.strip()
     if not hcp or not target:
         raise AssertionError("Start the isolated lab first")
-    # ``False`` is Ansible's default, so --only-changed intentionally omits
-    # it even when /app/ansible.cfg is loaded.  Inspect the full value and
-    # its source instead: otherwise this acceptance check would fail before
-    # it reaches the real requiretty enrollment scenario.
-    effective_config = run(["docker", "exec", "--user", "node", hcp, "ansible-config", "dump"]).stdout
-    if "ANSIBLE_PIPELINING(/app/ansible.cfg) = False" not in effective_config:
+    # ``False`` is Ansible's default, so config-dump may omit it or format its
+    # source differently between supported Ansible releases.  Check the
+    # immutable config copied into the image; the real requiretty enrollment
+    # below then proves the option works for an actual Ansible become run.
+    config_file = run(["docker", "exec", "--user", "node", hcp, "cat", "/app/ansible.cfg"]).stdout
+    if not re.search(r"(?m)^pipelining\\s*=\\s*False\\s*$", config_file):
         raise AssertionError("HCP must disable Ansible pipelining for non-interactive sudo")
     def check_connection(host):
         result = request("/api/ansible/hosts/preflight", host)
