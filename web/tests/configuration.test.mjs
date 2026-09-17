@@ -78,6 +78,10 @@ test("password onboarding reports an incomplete automatic sudo setup before gene
   const onboarding = read(path.join("web", "lib", "host-onboarding.ts"));
   assert.match(bootstrap, /sudo_setup_failed/);
   assert.match(bootstrap, /sudo_check_failed/);
+  assert.match(bootstrap, /sudo_password_rejected/);
+  assert.match(bootstrap, /sudo_not_permitted/);
+  assert.match(bootstrap, /sudoers_write_rejected/);
+  assert.match(bootstrap, /sudo_safe_channel_failed/);
   assert.match(bootstrap, /sudo_elevation_rejected_or_policy/);
   assert.match(bootstrap, /sudo_rule_not_effective/);
   assert.match(bootstrap, /sudo_ansible_probe_failed/);
@@ -94,6 +98,8 @@ test("Ansible keeps the same non-interactive sudo contract as host onboarding", 
   assert.match(config, /become_flags\s*=\s*-H -S -n/);
   assert.match(bootstrap, /sudo_readiness_script/);
   assert.match(bootstrap, /sudo -H -S -k -n -u root/);
+  assert.match(bootstrap, /stty -echo/);
+  assert.match(bootstrap, /SUDO_READY_MARKER/);
   assert.match(preflight, /sudo_setup_incomplete/);
 });
 

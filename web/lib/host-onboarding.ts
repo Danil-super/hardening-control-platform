@@ -13,7 +13,11 @@ type ApiPayload = Awaited<ReturnType<typeof readApiResponse>>;
  * HCP-managed non-interactive path; neither input is persisted.
  */
 export function onboardingSecretsForUser(user: string, password: string, alternateSudoPassword = ""): OnboardingSecrets {
-  const configureSudo = Boolean(password) && user.trim() !== "root";
+  // After an interrupted first attempt the individual SSH key can already be
+  // valid.  In that state an Astra policy such as `rootpw` may require only
+  // the separate sudo password on retry; do not force the user to re-send an
+  // otherwise unnecessary SSH password.
+  const configureSudo = Boolean(password || alternateSudoPassword) && user.trim() !== "root";
   return { password, sudoPassword: configureSudo ? (alternateSudoPassword || password) : "", configureSudo };
 }
 
@@ -38,7 +42,19 @@ export async function connectAndSaveHost(connection: HostConnection, secrets: On
   // first attempt the form has a credentialId but must not silently fall
   // through to an Ansible `sudo -n` preflight without the administrator
   // password that is needed to repair the setup.
-  if (!options.editing && become && user.trim() !== "root" && !secrets.password) {
+  if (!options.editing && !credentialId && !secrets.password) {
+    options.onStage?.("bootstrap");
+    return {
+      ok: false,
+      stage: "bootstrap" as const,
+      payload: {
+        ok: false,
+        error: "password_required",
+        message: "Для первого подключения без сохранённого ключа введите пароль для входа по SSH.",
+      } as ApiPayload,
+    };
+  }
+  if (!options.editing && become && user.trim() !== "root" && !secrets.password && !secrets.sudoPassword) {
     options.onStage?.("bootstrap");
     return {
       ok: false,
@@ -46,7 +62,7 @@ export async function connectAndSaveHost(connection: HostConnection, secrets: On
       payload: {
         ok: false,
         error: "sudo_password_required",
-        message: "Ключ SSH уже сохранён, но для первого добавления HCP должен завершить настройку прав администратора. Введите пароль пользователя Astra и повторите подключение; новая ключевая пара не создаётся.",
+        message: "Ключ SSH уже сохранён, но HCP должен завершить настройку прав администратора. Введите пароль SSH или, если sudo запрашивает другой пароль, укажите его в дополнительном поле; новая ключевая пара не создаётся.",
       } as ApiPayload,
     };
   }

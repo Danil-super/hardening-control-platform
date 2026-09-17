@@ -11,6 +11,7 @@ const secrets = () => ({ password: "ssh-fixture-only", sudoPassword: "sudo-fixtu
 test("a normal sudo administrator uses the one-time password to prepare later key-only elevation", () => {
   assert.deepEqual(onboardingSecretsForUser("astra-admin", "same-secret"), { password: "same-secret", sudoPassword: "same-secret", configureSudo: true });
   assert.deepEqual(onboardingSecretsForUser("astra-admin", "ssh-secret", "sudo-secret"), { password: "ssh-secret", sudoPassword: "sudo-secret", configureSudo: true });
+  assert.deepEqual(onboardingSecretsForUser("astra-admin", "", "root-secret"), { password: "", sudoPassword: "root-secret", configureSudo: true });
   assert.deepEqual(onboardingSecretsForUser("root", "root-secret"), { password: "root-secret", sudoPassword: "", configureSudo: false });
 });
 
@@ -91,6 +92,32 @@ test("a retained key cannot bypass the one-time sudo setup for a new non-root ho
   assert.equal(result.payload.error, "sudo_password_required");
   assert.match(result.payload.message, /новая ключевая пара не создаётся/);
   assert.deepEqual(calls, []);
+});
+
+test("a retained individual key can finish sudo setup with a separate sudo password", async () => {
+  const calls = [];
+  const credentialId = "a".repeat(64);
+  const result = await connectAndSaveHost({ ...connection, credentialId }, {
+    password: "", sudoPassword: "root-fixture-only", configureSudo: true,
+  }, {
+    editing: false,
+    request: async (url, options) => {
+      const body = JSON.parse(options.body); calls.push(url);
+      if (url.endsWith("/access")) return Response.json({ ok: true, trusted: true });
+      if (url.endsWith("/bootstrap")) {
+        assert.equal(body.credentialId, credentialId);
+        assert.equal(body.password, "");
+        assert.equal(body.sudoPassword, "root-fixture-only");
+        assert.equal(body.configureSudo, true);
+        return Response.json({ ok: true, credentialId });
+      }
+      assert.doesNotMatch(options.body, /root-fixture-only/);
+      if (url.endsWith("/preflight")) return Response.json({ ok: true });
+      return Response.json({ ok: true });
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.deepEqual(calls, ["/api/ansible/access", "/api/ansible/hosts/bootstrap", "/api/ansible/hosts/preflight", "/api/ansible/hosts"]);
 });
 
 test("existing connections can be checked and updated without a password or key regeneration", async () => {

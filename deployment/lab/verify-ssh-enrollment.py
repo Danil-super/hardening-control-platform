@@ -18,6 +18,7 @@ COMPOSE = ["docker", "compose", "-f", "deployment/lab/docker-compose.yml"]
 SECOND = "hcp-enrollment-target"
 BASE = "http://127.0.0.1:3001"
 PASSWORD = "hcp-enrollment-fixture-password"
+WRONG_SUDO_PASSWORD = "wrong-sudo-fixture-password"
 PROTOCOL = Path(".lab/ssh-enrollment.json")
 
 
@@ -44,8 +45,8 @@ def main():
         except urllib.error.HTTPError as error:
             response = error
         payload = response.read().decode()
-        if PASSWORD in payload:
-            raise AssertionError("SSH password leaked in API response")
+        if any(secret in payload for secret in (PASSWORD, WRONG_SUDO_PASSWORD)):
+            raise AssertionError("SSH or sudo password leaked in API response")
         value = json.loads(payload)
         if response.status != status:
             raise AssertionError("Unexpected HTTP status for " + endpoint + ": " + str(response.status) + ": " + value.get("message", ""))
@@ -116,8 +117,18 @@ def main():
     wrong = request("/api/ansible/hosts/bootstrap", {**a, "password": "wrong-fixture-password"}, status=400)
     assert wrong["error"] == "password_rejected", "Unexpected password rejection: " + json.dumps(wrong)
     result_a = request("/api/ansible/hosts/bootstrap", {**a, "password": PASSWORD})
-    result_b = request("/api/ansible/hosts/bootstrap", {**b, "password": PASSWORD, "configureSudo": True, "confirmRootAccess": True})
+    rejected_sudo = request("/api/ansible/hosts/bootstrap", {**b, "password": PASSWORD, "sudoPassword": WRONG_SUDO_PASSWORD,
+                                                                "configureSudo": True, "confirmRootAccess": True}, status=400)
+    assert rejected_sudo["error"] == "sudo_password_rejected", "Unexpected sudo-password rejection: " + json.dumps(rejected_sudo)
+    assert rejected_sudo.get("credentialId") and rejected_sudo.get("publicKey"), "Failed sudo setup must retain the individual SSH key"
+    # The key is already proven at this point, so retry with only the separate
+    # sudo password. This covers Astra-style rootpw policies without making the
+    # operator re-send the SSH password.
+    result_b = request("/api/ansible/hosts/bootstrap", {**b, "credentialId": rejected_sudo["credentialId"], "password": "", "sudoPassword": PASSWORD,
+                                                          "configureSudo": True, "confirmRootAccess": True})
     assert result_a["ok"] and result_b["ok"]
+    assert result_b["credentialId"] == rejected_sudo["credentialId"]
+    assert result_b["publicKey"] == rejected_sudo["publicKey"]
     assert result_a["fingerprint"] != result_b["fingerprint"]
     assert result_a["publicKey"] != result_b["publicKey"]
     assert result_b["sudo"]["configured"] and result_b["sudo"]["ready"]
@@ -150,11 +161,12 @@ def main():
         run(["docker", "exec", hcp, "mv", "/home/node/.ssh/hcp-control.test-saved", "/home/node/.ssh/hcp-control"])
     # Inspect only HCP persistent state, never print it.
     script = "from pathlib import Path; import sys; needle=sys.stdin.buffer.read(); assert not any(needle in p.read_bytes() for p in Path('/var/lib/hcp').rglob('*') if p.is_file()), 'password in persistent state'"
-    run(["docker", "exec", "-i", hcp, "python3", "-c", script], text=PASSWORD)
+    for secret in (PASSWORD, WRONG_SUDO_PASSWORD):
+        run(["docker", "exec", "-i", hcp, "python3", "-c", script], text=secret)
     logs = run(["docker", "logs", hcp])
-    assert PASSWORD not in logs.stdout + logs.stderr
+    assert all(secret not in logs.stdout + logs.stderr for secret in (PASSWORD, WRONG_SUDO_PASSWORD))
     protocol = {"passed": True, "scope": "Two disposable Debian OpenSSH containers; not Astra",
-                "checks": ["unknown server rejected before password authentication", "wrong password rejected", "unique per-host keys", "retry reuses the pair", "password-based sudo setup with requiretty", "real Ansible without legacy key", "cross-host keys rejected", "no password in state or responses", "closeout removes the managed key and sudoers rule"],
+                "checks": ["unknown server rejected before password authentication", "wrong SSH password rejected", "wrong sudo password returns a safe exact error", "retry reuses the pair with a separate sudo password", "unique per-host keys", "password-based sudo setup with requiretty", "real Ansible without legacy key", "cross-host keys rejected", "no password in state or responses", "closeout removes the managed key and sudoers rule"],
                 "hosts": [{**a, "fingerprint": result_a["fingerprint"], "publicKey": result_a["publicKey"]}, {**b, "fingerprint": result_b["fingerprint"], "publicKey": result_b["publicKey"]}]}
     PROTOCOL.write_text(json.dumps(protocol, indent=2) + "\n")
     print("PASS Password enrollment, unique keys, sudo, cross-host isolation and secret handling on two real SSH servers")

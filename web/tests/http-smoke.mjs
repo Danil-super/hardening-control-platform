@@ -115,8 +115,9 @@ try {
   assert.ok(networkPosition > 0 && networkPosition < formPosition && formPosition < sshPosition, "discovery precedes the host form and password/key setup");
   assert.match(hostsPage.slice(formPosition), /Входить через терминал и создавать ключи вручную не нужно/);
   assert.doesNotMatch(hostsPage.slice(formPosition), />Добавить хост<|>Сохранить изменения</);
-  assert.match(hostsPage.slice(formPosition), /Пароль администратора Astra/);
-  assert.match(hostsPage.slice(formPosition), /Пароль для повышения прав отличается от пароля SSH/);
+  assert.match(hostsPage.slice(formPosition), /Пароль для входа по SSH/);
+  assert.match(hostsPage.slice(formPosition), /sudo запрашивает другой пароль/);
+  assert.match(hostsPage.slice(formPosition), /Пароль, который запрашивает sudo/);
   assert.match(hostsPage.slice(formPosition), /использует введённый пароль один раз, включает постоянное повышение прав/);
   assert.match(hostsPage, /type="password"/);
   const renderedButtons = Array.from(hostsPage.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g));

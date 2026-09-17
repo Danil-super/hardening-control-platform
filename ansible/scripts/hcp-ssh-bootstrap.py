@@ -18,6 +18,9 @@ from pathlib import Path
 
 logging.disable(logging.CRITICAL)
 
+SUDO_READY_MARKER = "__HCP_SUDO_READY__"
+SUDO_ELEVATED_MARKER = "__HCP_SUDO_ELEVATED__"
+
 class EnrollmentError(Exception):
     def __init__(self, code):
         self.code = code
@@ -52,6 +55,7 @@ def sudo_setup_script(user, credential_id):
     destination = shlex.quote("/etc/sudoers.d/zz-hcp-" + credential_id)
     return """set -eu
 [ "$(id -u)" = 0 ] || exit 73
+printf '%%s\\n' %s
 command -v visudo >/dev/null || exit 74
 [ -d /etc/sudoers.d ] || exit 74
 umask 077
@@ -87,7 +91,48 @@ else
   if ! visudo -c >/dev/null 2>&1; then rm -f "$hcp_rule_dest"; exit 75; fi
 fi
 visudo -c >/dev/null 2>&1 || exit 75
-""" % (rule, destination, legacy_rule)
+""" % (shlex.quote(SUDO_ELEVATED_MARKER), rule, destination, legacy_rule)
+
+
+def sudo_attempt_script(root_script):
+    """Run one password-fed sudo attempt without returning remote diagnostics.
+
+    A pty is needed for Astra installations with ``requiretty``.  Its output
+    must never be inspected by the controller because a misconfigured pty can
+    echo the password.  This wrapper disables echo *before* the controller is
+    told to send the password, captures all remote command output in mode-0600
+    temporary files, maps known sudo failures to exit codes, then deletes the
+    files.  The only output that crosses the SSH channel is a fixed marker.
+    """
+    return """set -u
+umask 077
+hcp_err=''
+hcp_out=''
+hcp_tty_state=''
+cleanup() {
+  if [ -n "$hcp_tty_state" ]; then stty "$hcp_tty_state" >/dev/null 2>&1 || :; fi
+  if [ -n "$hcp_err" ]; then rm -f -- "$hcp_err" >/dev/null 2>&1 || :; fi
+  if [ -n "$hcp_out" ]; then rm -f -- "$hcp_out" >/dev/null 2>&1 || :; fi
+}
+trap 'cleanup' EXIT
+trap 'exit 82' HUP INT TERM
+command -v sudo >/dev/null 2>&1 || exit 77
+hcp_err=$(mktemp /tmp/.hcp-sudo-error.XXXXXX 2>/dev/null) || exit 82
+hcp_out=$(mktemp /tmp/.hcp-sudo-output.XXXXXX 2>/dev/null) || exit 82
+hcp_tty_state=$(stty -g 2>/dev/null) || exit 78
+stty -echo 2>/dev/null || exit 78
+printf '%%s\\n' %s
+LC_ALL=C LANG=C sudo -S -k -p '' -- /bin/sh -c %s >"$hcp_out" 2>"$hcp_err"
+status=$?
+case "$status" in
+  0|74|75|76) exit "$status" ;;
+esac
+if grep -qx %s "$hcp_out" >/dev/null 2>&1; then exit 83; fi
+if grep -Eqi 'not in the sudoers|not allowed to (execute|run sudo)|may not run sudo|not permitted to run sudo' "$hcp_err" >/dev/null 2>&1; then exit 80; fi
+if grep -Eqi 'must have a tty|no tty present|a terminal is required|no terminal is available' "$hcp_err" >/dev/null 2>&1; then exit 79; fi
+if grep -Eqi 'sorry, try again|incorrect password|authentication failure|authentication failed|a password is required|no password was provided' "$hcp_err" >/dev/null 2>&1; then exit 81; fi
+exit 82
+""" % (shlex.quote(SUDO_READY_MARKER), shlex.quote(root_script), shlex.quote(SUDO_ELEVATED_MARKER))
 
 
 def sudo_setup_failure(status):
@@ -96,6 +141,14 @@ def sudo_setup_failure(status):
         74: "sudoers_unavailable",
         75: "sudoers_validation_failed",
         76: "sudoers_rule_conflict",
+        77: "sudo_unavailable",
+        78: "sudo_tty_unavailable",
+        79: "sudo_tty_required",
+        80: "sudo_not_permitted",
+        81: "sudo_password_rejected",
+        82: "sudo_pam_or_policy_rejected",
+        83: "sudoers_write_rejected",
+        84: "sudo_safe_channel_failed",
     }.get(status, "sudo_elevation_rejected_or_policy")
 
 
@@ -110,17 +163,9 @@ def sudo_readiness_script():
     return "exec sudo -H -S -k -n -u root -- /bin/sh -c " + shlex.quote(python_probe)
 
 
-def run_remote(client, script, input_text=None, elevated=False):
+def run_remote(client, script):
     command = "/bin/sh -c " + shlex.quote(script)
-    if elevated:
-        command = "sudo -S -k -p '' -- " + command
-    # Astra may enforce sudo's requiretty policy.  Request a pseudo-terminal
-    # only for this one password-fed sudo step; regular SSH key commands remain
-    # non-interactive.
-    stdin, stdout, stderr = client.exec_command(command, timeout=25, get_pty=bool(elevated))
-    if input_text is not None:
-        stdin.write(input_text + "\n")
-        stdin.flush()
+    stdin, stdout, stderr = client.exec_command(command, timeout=25, get_pty=False)
     stdin.channel.shutdown_write()
     # No remote output is returned to the API: even error strings may contain
     # secrets or attacker-controlled content. Small commands have bounded output.
@@ -128,6 +173,27 @@ def run_remote(client, script, input_text=None, elevated=False):
     stderr.read(65536)
     status = stdout.channel.recv_exit_status()
     return status, output
+
+
+def run_password_sudo(client, root_script, password):
+    """Run the wrapper above and send its password only after echo is off."""
+    command = "/bin/sh -c " + shlex.quote(sudo_attempt_script(root_script))
+    stdin, stdout, stderr = client.exec_command(command, timeout=25, get_pty=True)
+    marker = stdout.readline(256).decode("utf-8", "replace").strip()
+    if marker == SUDO_READY_MARKER:
+        stdin.write(password + "\n")
+        stdin.flush()
+    stdin.channel.shutdown_write()
+    # Deliberately discard all pty output.  The remote wrapper returns only a
+    # status code; no password or remote diagnostic becomes API/log data.
+    stdout.read(65536)
+    stderr.read(65536)
+    status = stdout.channel.recv_exit_status()
+    if marker != SUDO_READY_MARKER:
+        # These three codes can be emitted before the marker.  Anything else
+        # means a broken or unexpected remote channel and must fail closed.
+        return status if status in (77, 78, 82) else 84
+    return status
 
 
 def connect(config, password=None, key_path=None):
@@ -200,9 +266,11 @@ def enroll(config):
             raise EnrollmentError("key_login_failed")
         if config.get("configureSudo"):
             try:
-                status, _ = run_remote(key_client, sudo_setup_script(config["user"], config["credentialId"]),
-                                       input_text=(config.get("sudoPassword") or config.get("password") or "") if uid.strip() != "0" else None,
-                                       elevated=uid.strip() != "0")
+                if uid.strip() == "0":
+                    status, _ = run_remote(key_client, sudo_setup_script(config["user"], config["credentialId"]))
+                else:
+                    status = run_password_sudo(key_client, sudo_setup_script(config["user"], config["credentialId"]),
+                                               config.get("sudoPassword") or config.get("password") or "")
                 sudo_result["configured"] = status == 0
                 if status:
                     sudo_result["error"] = sudo_setup_failure(status)

@@ -10,6 +10,14 @@ export const runtime = "nodejs";
 export const maxDuration = 240;
 const response = (body: object, status = 200) => NextResponse.json(body, { status, headers: { "Cache-Control": "no-store" } });
 const sudoFailureMessages: Record<string, string> = {
+  sudo_password_rejected: "Вход по отдельному ключу подтверждён, но sudo не принял переданный пароль. Введите в поле «Пароль, который запрашивает sudo» тот пароль, который успешно проходит команду sudo в Astra; он может отличаться от пароля SSH или быть паролем root. HCP его не сохраняет.",
+  sudo_not_permitted: "Вход по отдельному ключу подтверждён, но этой учётной записи Astra не разрешено выполнять sudo. Нужна учётная запись, для которой sudo разрешён политикой Astra.",
+  sudo_tty_required: "Вход по отдельному ключу подтверждён, но Astra требует терминал для sudo даже в одноразовом HCP-сеансе. HCP уже запросил терминал; проверьте правило requiretty или PAM-политику этой учётной записи.",
+  sudo_tty_unavailable: "Вход по отдельному ключу подтверждён, но Astra не предоставила терминал, необходимый для одноразового sudo-сеанса. HCP не передавала пароль без безопасного терминала.",
+  sudo_unavailable: "Вход по отдельному ключу подтверждён, но на Astra не найден sudo. Для полного аудита и харденинга используйте root с разрешённым SSH-входом либо установите и настройте sudo по политике организации.",
+  sudo_pam_or_policy_rejected: "Вход по отдельному ключу подтверждён, но Astra отклонила одноразовый sudo-сеанс до запуска команды администратора. Проверьте PAM, состояние учётной записи и локальную политику sudo; пароль не сохранён.",
+  sudoers_write_rejected: "Вход по отдельному ключу и повышение прав sudo подтверждены, но Astra не разрешила HCP записать проверенное правило в /etc/sudoers.d. Это ограничение файловой системы или политики PARSEC; HCP не оставил непроверенное правило.",
+  sudo_safe_channel_failed: "Вход по отдельному ключу подтверждён, но безопасный канал одноразового sudo-сеанса завершился неожиданно. HCP не передала пароль либо не применяла правило; повторите подключение после проверки связи.",
   sudo_elevation_rejected_or_policy: "Вход по отдельному ключу подтверждён, но Astra не приняла одноразовое повышение прав sudo. Проверьте пароль sudo (он может отличаться от SSH) и политику этой учётной записи; пароль не сохранён.",
   sudoers_unavailable: "Вход по отдельному ключу подтверждён, но на Astra недоступны visudo или каталог /etc/sudoers.d. HCP не изменял правила sudo; проверьте конфигурацию этой Astra.",
   sudoers_validation_failed: "Вход по отдельному ключу подтверждён, но Astra не подтвердила синтаксис или действующую конфигурацию sudoers. HCP не оставил неподтверждённое правило.",
@@ -35,7 +43,7 @@ export async function POST(request: Request) {
     if ([password, sudoPassword].some((value) => value.length > 1024 || /[\r\n\0]/.test(value))) return response({ ok: false, message: "Пароль должен быть одной строкой длиной до 1024 символов." }, 400);
     const configureSudo = body?.configureSudo === true;
     if (configureSudo && body?.confirmRootAccess !== true) return response({ ok: false, message: "Подтвердите выдачу этой учётной записи полных прав root без пароля." }, 400);
-    if (configureSudo && !password && !sudoPassword) return response({ ok: false, message: "Для настройки повышения прав введите пароль администратора Astra." }, 400);
+    if (configureSudo && !password && !sudoPassword) return response({ ok: false, message: "Для настройки повышения прав введите пароль SSH или пароль, который запрашивает sudo." }, 400);
     if (hasActiveRemediationForHost(identity.alias)) return response({ ok: false, message: "Дождитесь завершения изменения или отката на этом хосте." }, 409);
     const existingId = typeof body?.credentialId === "string" ? body.credentialId : null;
     const prepared = beginHostCredential(identity, existingId);

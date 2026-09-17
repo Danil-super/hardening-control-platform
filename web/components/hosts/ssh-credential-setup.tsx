@@ -20,18 +20,23 @@ export function SshCredentialSetup({ loading, canConnect, result, legacy, editin
   const [secure, setSecure] = useState(false);
   const submitting = useRef(false);
   const existingAccess = Boolean(result?.credentialId || legacy);
+  const savedIndividualKey = Boolean(result?.credentialId);
   const isRoot = user.trim() === "root";
-  // A key retained after a failed first attempt proves SSH only.  Until the
-  // host is saved, a non-root account must submit its password so HCP can
-  // finish the one-time non-interactive sudo setup.  Existing saved hosts may
-  // still be checked without a password.
+  // A key retained after a failed first attempt proves SSH only. Until the
+  // host is saved, a non-root account must submit the password accepted by
+  // sudo so HCP can finish the one-time non-interactive setup. Existing saved
+  // hosts may still be checked without a password.
   const needsInitialPrivilegeSetup = !editing && !isRoot && result?.sudo?.ready !== true;
-  const passwordRequired = !existingAccess || needsInitialPrivilegeSetup;
+  const sshPasswordRequired = !editing && !savedIndividualKey;
+  const oneTimeSudoPasswordRequired = needsInitialPrivilegeSetup;
+  const passwordsReady = sshPasswordRequired
+    ? Boolean(password)
+    : !oneTimeSudoPasswordRequired || Boolean(password || sudoPassword);
   useEffect(() => {
     setSecure(window.location.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]", "::1"].includes(window.location.hostname));
   }, []);
   async function setup() {
-    if (submitting.current || loading || !canConnect || (passwordRequired && !password) || (!secure && Boolean(password))) return;
+    if (submitting.current || loading || !canConnect || !passwordsReady || (!secure && Boolean(password || sudoPassword))) return;
     submitting.current = true;
     // A non-root account needs a non-interactive privilege path after the
     // one-time password disappears.  The password is used only in this
@@ -48,18 +53,19 @@ export function SshCredentialSetup({ loading, canConnect, result, legacy, editin
   };
   return <form id="ssh-setup" onSubmit={(event) => { event.preventDefault(); void setup(); }} className="mt-4 scroll-mt-6">
     <fieldset disabled={Boolean(loading)} className="space-y-4">
-      <label className="block max-w-xl text-sm font-medium text-slate-200">Пароль администратора Astra
+      <label className="block max-w-xl text-sm font-medium text-slate-200">Пароль для входа по SSH
         <input type="password" autoComplete="off" value={password} disabled={!secure} onChange={(event) => setPassword(event.target.value)} maxLength={1024}
-          placeholder={needsInitialPrivilegeSetup && existingAccess ? "Введите пароль для завершения настройки прав" : existingAccess ? "Можно оставить пустым — ключ уже настроен" : "Пароль для входа на выбранный хост"}
+          placeholder={needsInitialPrivilegeSetup && savedIndividualKey ? "Ключ уже сохранён — можно оставить пустым, если укажете пароль sudo ниже" : existingAccess ? "Можно оставить пустым — ключ уже настроен" : "Пароль для входа на выбранный хост"}
           className="mt-2 block h-11 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-slate-100 focus:border-sky-300 focus:outline-none disabled:opacity-50" />
       </label>
       {!isRoot ? <details className="max-w-xl rounded-lg border border-slate-800 px-3 py-2">
-        <summary className="cursor-pointer text-sm text-slate-300">Пароль для повышения прав отличается от пароля SSH</summary>
-        <label className="mt-3 block text-sm font-medium text-slate-200">Пароль для повышения прав
+        <summary className="cursor-pointer text-sm text-slate-300">sudo запрашивает другой пароль</summary>
+        <label className="mt-3 block text-sm font-medium text-slate-200">Пароль, который запрашивает sudo
           <input type="password" autoComplete="off" value={sudoPassword} disabled={!secure} onChange={(event) => setSudoPassword(event.target.value)} maxLength={1024}
-            placeholder="Оставьте пустым, если пароль тот же"
+            placeholder="Оставьте пустым, если пароль тот же, что у SSH"
             className="mt-2 block h-11 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-slate-100 focus:border-sky-300 focus:outline-none disabled:opacity-50" />
         </label>
+        <p className="mt-2 text-xs leading-5 text-slate-400">На отдельных Astra sudo может запрашивать пароль root, а не пароль пользователя SSH. Введите сюда именно тот пароль, который принимает команда sudo в терминале. Если ключ этого хоста уже сохранён, для повторной настройки sudo достаточно этого поля.</p>
       </details> : null}
       <p className="max-w-2xl text-sm leading-6 text-slate-400">Входить через терминал и создавать ключи вручную не нужно. Для пользователя не root HCP использует введённый пароль один раз, включает постоянное повышение прав для этой учётной записи и затем работает только по отдельному ключу. Пароль не сохраняется.</p>
       {!secure ? <p className="rounded-lg border border-amber-400/30 p-3 text-sm leading-6 text-amber-100">Для ввода пароля откройте HCP через HTTPS или http://127.0.0.1 с вашим портом на Ubuntu. С другого компьютера можно использовать SSH-туннель — порядок есть в инструкции.</p> : null}
@@ -77,7 +83,7 @@ export function SshCredentialSetup({ loading, canConnect, result, legacy, editin
         <p className="mt-2 text-xs leading-5 text-slate-400">У каждого хоста своя пара. Приватный ключ остаётся на Ubuntu. Пароль не сохраняется.</p>
       </div>
       {legacy ? <p className="text-sm leading-6 text-amber-100">Этот хост использует прежний общий ключ. Чтобы перейти на отдельную пару, введите пароль выше и сохраните подключение.</p> : null}
-      <Button type="submit" disabled={Boolean(loading) || !canConnect || (passwordRequired && !password) || (!secure && Boolean(password))} className="w-full sm:w-auto">
+      <Button type="submit" disabled={Boolean(loading) || !canConnect || !passwordsReady || (!secure && Boolean(password || sudoPassword))} className="w-full sm:w-auto">
         {loading ? <LoaderCircle size={18} className="animate-spin" aria-hidden="true" /> : <ArrowRight size={18} aria-hidden="true" />}
         {progress[loading] ?? (loading ? "Подождите…" : editing ? "Сохранить подключение" : "Подключить хост")}
       </Button>
