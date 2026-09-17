@@ -59,7 +59,7 @@ test("an unknown server is not sent a password and the UI need not clear its pas
   assert.deepEqual(calls, ["/api/ansible/access"]);
 });
 
-test("rejected password or unsuccessful sudo preflight never creates a host; an installed key is retained for retry", async () => {
+test("an unsuccessful bootstrap or sudo preflight never creates a host; a returned individual key is retained for retry", async () => {
   for (const rejectedStage of ["bootstrap", "preflight"]) {
     let retainedKey = false, checks = 0;
     const result = await connectAndSaveHost(connection, secrets(), { editing: false,
@@ -73,7 +73,7 @@ test("rejected password or unsuccessful sudo preflight never creates a host; an 
     });
     assert.equal(result.stage, rejectedStage);
     assert.equal(result.ok, false);
-    assert.equal(retainedKey, rejectedStage === "preflight");
+    assert.equal(retainedKey, true);
     assert.equal(checks, rejectedStage === "preflight" ? 1 : 0);
   }
 });

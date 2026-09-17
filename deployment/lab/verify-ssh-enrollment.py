@@ -96,7 +96,10 @@ def main():
         run(["docker", "exec", "-i", container, "chpasswd"], text="lab:" + PASSWORD + "\n")
         run(["docker", "exec", container, "/bin/sh", "-c", "printf '\nMatch User lab\n  PasswordAuthentication yes\n' >> /etc/ssh/sshd_config; /usr/sbin/sshd -t"])
         run(["docker", "kill", "--signal", "HUP", container])
-    run(["docker", "exec", SECOND, "/bin/sh", "-c", "printf 'lab ALL=(root) ALL\n' > /etc/sudoers.d/lab; chmod 440 /etc/sudoers.d/lab; visudo -c"])
+    # Model a hardened target where sudo requires a terminal.  HCP must use a
+    # PTY once during enrollment and create its per-user !requiretty override
+    # for later non-interactive Ansible jobs.
+    run(["docker", "exec", SECOND, "/bin/sh", "-c", "printf 'Defaults:lab requiretty\nlab ALL=(root) ALL\n' > /etc/sudoers.d/lab; chmod 440 /etc/sudoers.d/lab; visudo -c"])
     a = {"alias": "lab-insecure", "address": "lab-target", "user": "lab", "port": 22, "become": True}
     b = {"alias": "enrolled-second", "address": SECOND, "user": "lab", "port": 22, "become": True}
     assert request("/api/ansible/access", {"operation": "status", "address": b["address"], "port": 22})["trusted"] is False
@@ -148,7 +151,7 @@ def main():
     logs = run(["docker", "logs", hcp])
     assert PASSWORD not in logs.stdout + logs.stderr
     protocol = {"passed": True, "scope": "Two disposable Debian OpenSSH containers; not Astra",
-                "checks": ["unknown server rejected before password authentication", "wrong password rejected", "unique per-host keys", "retry reuses the pair", "password-based sudo setup", "real Ansible without legacy key", "cross-host keys rejected", "no password in state or responses", "closeout removes the managed key and sudoers rule"],
+                "checks": ["unknown server rejected before password authentication", "wrong password rejected", "unique per-host keys", "retry reuses the pair", "password-based sudo setup with requiretty", "real Ansible without legacy key", "cross-host keys rejected", "no password in state or responses", "closeout removes the managed key and sudoers rule"],
                 "hosts": [{**a, "fingerprint": result_a["fingerprint"], "publicKey": result_a["publicKey"]}, {**b, "fingerprint": result_b["fingerprint"], "publicKey": result_b["publicKey"]}]}
     PROTOCOL.write_text(json.dumps(protocol, indent=2) + "\n")
     print("PASS Password enrollment, unique keys, sudo, cross-host isolation and secret handling on two real SSH servers")

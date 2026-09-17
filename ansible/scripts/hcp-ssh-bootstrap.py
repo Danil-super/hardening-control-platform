@@ -42,9 +42,13 @@ grep -qxF -- %s "$HOME/.ssh/authorized_keys" || printf '\\n%%s\\n' %s >> "$HOME/
 def sudo_setup_script(user, credential_id):
     if not re.fullmatch(r"[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}", user) or not re.fullmatch(r"[a-f0-9]{64}", credential_id):
         raise EnrollmentError("bad_identity")
-    # Refuse collisions; validate the entire sudoers configuration. An existing
-    # matching rule is reused. No unrelated sudoers file is overwritten.
-    rule = shlex.quote(user + " ALL=(root) NOPASSWD: ALL\n")
+    # A hardened target may require a TTY for sudo.  HCP jobs are intentionally
+    # non-interactive, so its narrowly named per-user rule also disables that
+    # one constraint for this account.  The legacy one-line rule is accepted
+    # only to upgrade an earlier HCP enrolment; no unrelated sudoers file is
+    # overwritten.
+    rule = shlex.quote("Defaults:" + user + " !requiretty\n" + user + " ALL=(root) NOPASSWD: ALL\n")
+    legacy_rule = shlex.quote(user + " ALL=(root) NOPASSWD: ALL\n")
     destination = shlex.quote("/etc/sudoers.d/zz-hcp-" + credential_id)
     return """set -eu
 [ "$(id -u)" = 0 ] || exit 73
@@ -52,12 +56,30 @@ command -v visudo >/dev/null || exit 74
 [ -d /etc/sudoers.d ] || exit 74
 umask 077
 hcp_rule_tmp=$(mktemp /etc/sudoers.d/.hcp-rule.XXXXXX)
-trap 'rm -f "$hcp_rule_tmp"' EXIT HUP INT TERM
+hcp_legacy_tmp=''
+trap 'rm -f "$hcp_rule_tmp" "$hcp_legacy_tmp"' EXIT HUP INT TERM
 printf '%%s' %s > "$hcp_rule_tmp"
 visudo -cf "$hcp_rule_tmp" >/dev/null 2>&1 || exit 75
 hcp_rule_dest=%s
 if [ -e "$hcp_rule_dest" ] || [ -L "$hcp_rule_dest" ]; then
-  [ ! -L "$hcp_rule_dest" ] && cmp -s "$hcp_rule_tmp" "$hcp_rule_dest" || exit 76
+  [ ! -L "$hcp_rule_dest" ] && [ -f "$hcp_rule_dest" ] || exit 76
+  [ "$(stat -c '%%u:%%a' "$hcp_rule_dest")" = '0:440' ] || exit 76
+  if cmp -s "$hcp_rule_tmp" "$hcp_rule_dest"; then
+    :
+  else
+    hcp_legacy_tmp=$(mktemp /etc/sudoers.d/.hcp-legacy.XXXXXX)
+    printf '%%s' %s > "$hcp_legacy_tmp"
+    cmp -s "$hcp_legacy_tmp" "$hcp_rule_dest" || exit 76
+    chown root:root "$hcp_rule_tmp"
+    chmod 440 "$hcp_rule_tmp"
+    mv "$hcp_rule_tmp" "$hcp_rule_dest"
+    if ! visudo -c >/dev/null 2>&1; then
+      chown root:root "$hcp_legacy_tmp"
+      chmod 440 "$hcp_legacy_tmp"
+      mv "$hcp_legacy_tmp" "$hcp_rule_dest"
+      exit 75
+    fi
+  fi
 else
   chown root:root "$hcp_rule_tmp"
   chmod 440 "$hcp_rule_tmp"
@@ -65,14 +87,17 @@ else
   if ! visudo -c >/dev/null 2>&1; then rm -f "$hcp_rule_dest"; exit 75; fi
 fi
 visudo -c >/dev/null 2>&1 || exit 75
-""" % (rule, destination)
+""" % (rule, destination, legacy_rule)
 
 
 def run_remote(client, script, input_text=None, elevated=False):
     command = "/bin/sh -c " + shlex.quote(script)
     if elevated:
         command = "sudo -S -k -p '' -- " + command
-    stdin, stdout, stderr = client.exec_command(command, timeout=25, get_pty=False)
+    # Astra may enforce sudo's requiretty policy.  Request a pseudo-terminal
+    # only for this one password-fed sudo step; regular SSH key commands remain
+    # non-interactive.
+    stdin, stdout, stderr = client.exec_command(command, timeout=25, get_pty=bool(elevated))
     if input_text is not None:
         stdin.write(input_text + "\n")
         stdin.flush()
@@ -166,6 +191,8 @@ def enroll(config):
         try:
             status, root_uid = run_remote(key_client, "sudo -k -n id -u" if uid.strip() != "0" else "id -u")
             sudo_result["ready"] = status == 0 and root_uid.strip() == "0"
+            if not sudo_result["ready"] and "error" not in sudo_result:
+                sudo_result["error"] = "sudo_check_failed"
         except Exception:
             sudo_result["error"] = "sudo_check_failed"
         return {"ok": True, "publicKey": public_key, "fingerprint": fingerprint, "sudo": sudo_result}

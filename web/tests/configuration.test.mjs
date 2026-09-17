@@ -67,9 +67,18 @@ test("host closeout revokes the HCP-managed sudo rule together with its individu
   const route = read(path.join("web", "app", "api", "ansible", "hosts", "decommission", "route.ts"));
   assert.match(revocation, /zz-hcp-/);
   assert.match(revocation, /NOPASSWD: ALL/);
+  assert.match(revocation, /!requiretty/);
   assert.match(revocation, /unsafe_sudo_rule/);
   assert.match(revocation, /keyRemoved/);
   assert.match(route, /credentialId: host\.credentialId/);
+});
+
+test("password onboarding reports an incomplete automatic sudo setup before generic preflight", () => {
+  const bootstrap = read(path.join("web", "app", "api", "ansible", "hosts", "bootstrap", "route.ts"));
+  const onboarding = read(path.join("web", "lib", "host-onboarding.ts"));
+  assert.match(bootstrap, /sudo_setup_failed/);
+  assert.match(bootstrap, /sudo_check_failed/);
+  assert.match(onboarding, /credential\.credentialId/);
 });
 
 test("CVE checking has an explicit Trivy-only isolated-network mode", () => {

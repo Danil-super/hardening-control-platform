@@ -48,7 +48,14 @@ export async function connectAndSaveHost(connection: HostConnection, secrets: On
         configureSudo: secrets.configureSudo, confirmRootAccess: secrets.configureSudo,
       });
       secrets.password = ""; secrets.sudoPassword = "";
-      if (!credential.ok) return { ok: false, stage: "bootstrap" as const, payload: credential };
+      // The individual key may already be verified even when the next step
+      // (for example, automatic sudo preparation) is rejected.  Keep that
+      // exact credential in the form so a retry repairs the same connection
+      // rather than creating another key pair.
+      if (!credential.ok) {
+        if (typeof credential.credentialId === "string" && credential.credentialId) options.onCredential?.(credential);
+        return { ok: false, stage: "bootstrap" as const, payload: credential };
+      }
       credentialId = credential.credentialId;
       options.onCredential?.(credential);
     }

@@ -32,6 +32,13 @@ export async function POST(request: Request) {
     release = prepared.release;
     const result = await runSshBootstrap(identity, { credentialId: prepared.credential.id, keyPath: prepared.keyPath, password, sudoPassword, configureSudo });
     const credential = markHostCredentialVerified(prepared.credential.id, identity, result.publicKey!, result.fingerprint!);
+    if (configureSudo && !result.sudo?.ready) {
+      const error = result.sudo?.error === "sudo_check_failed" ? "sudo_check_failed" : "sudo_setup_failed";
+      appendIncident({ action: "ssh-key-enrollment", kind: "system", status: "failed", profileId: "ssh-access", limit: identity.alias,
+        message: `Отдельный ключ ${credential.fingerprint} установлен для ${identity.alias}, но автоматическая подготовка sudo не завершилась (${error}).` });
+      return response({ ok: false, error, credentialId: credential.id, publicKey: credential.publicKey, fingerprint: credential.fingerprint, sudo: result.sudo,
+        message: "Вход по отдельному ключу подтверждён, но Astra не разрешила завершить автоматическую настройку sudo. Пароль не сохранён. Повторите подключение; если пароль sudo отличается от SSH, укажите его в дополнительном поле." }, 400);
+    }
     appendIncident({ action: "ssh-key-enrollment", kind: "system", status: "success", profileId: "ssh-access", limit: identity.alias,
       message: `Отдельный ключ ${credential.fingerprint} установлен для ${identity.alias}; вход проверен. Настройка sudo запрошена: ${configureSudo ? "да" : "нет"}; sudo готово: ${result.sudo?.ready ? "да" : "нет"}.` });
     return response({ ok: true, credentialId: credential.id, publicKey: credential.publicKey, fingerprint: credential.fingerprint,

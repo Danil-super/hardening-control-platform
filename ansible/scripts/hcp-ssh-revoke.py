@@ -53,8 +53,14 @@ try:
     # A non-root onboarding may have created exactly this HCP-owned sudoers
     # file.  Validate it before changing authorized_keys and remove only that
     # exact file at closeout; never touch a customer's unrelated sudo policy.
+    # The legacy one-line form is accepted solely for clean closeout of an
+    # earlier HCP release.
     sudo_rule_path = os.path.join('/etc/sudoers.d', 'zz-hcp-' + credential_id)
-    sudo_rule_text = (user + ' ALL=(root) NOPASSWD: ALL\n').encode('utf-8')
+    sudo_rule_texts = [
+        ('Defaults:' + user + ' !requiretty\n' + user + ' ALL=(root) NOPASSWD: ALL\n').encode('utf-8'),
+        (user + ' ALL=(root) NOPASSWD: ALL\n').encode('utf-8'),
+    ]
+    sudo_rule_sizes = set(len(item) for item in sudo_rule_texts)
     sudo_rule_info = None
     try:
         sudo_rule_info = os.lstat(sudo_rule_path)
@@ -65,17 +71,17 @@ try:
     if sudo_rule_info is not None:
         if (stat.S_ISLNK(sudo_rule_info.st_mode) or not stat.S_ISREG(sudo_rule_info.st_mode)
                 or sudo_rule_info.st_uid != 0 or stat.S_IMODE(sudo_rule_info.st_mode) != 0o440
-                or sudo_rule_info.st_size != len(sudo_rule_text)):
+                or sudo_rule_info.st_size not in sudo_rule_sizes):
             fail('unsafe_sudo_rule')
         flags = os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0)
         descriptor = os.open(sudo_rule_path, flags)
         try:
             current = os.fstat(descriptor)
             if (not stat.S_ISREG(current.st_mode) or current.st_ino != sudo_rule_info.st_ino
-                    or current.st_size != len(sudo_rule_text)):
+                    or current.st_size not in sudo_rule_sizes):
                 fail('unsafe_sudo_rule')
-            sudo_rule_raw = os.read(descriptor, len(sudo_rule_text) + 1)
-            if len(sudo_rule_raw) != len(sudo_rule_text) or sudo_rule_raw != sudo_rule_text:
+            sudo_rule_raw = os.read(descriptor, max(sudo_rule_sizes) + 1)
+            if sudo_rule_raw not in sudo_rule_texts:
                 fail('unsafe_sudo_rule')
         finally:
             os.close(descriptor)
