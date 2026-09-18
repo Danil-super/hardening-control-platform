@@ -27,6 +27,10 @@ def main():
         parser.error("--url must be an HTTP(S) URL without credentials")
     origin = f"{parts.scheme}://{parts.netloc}"
     password = os.environ.get("HCP_LAB_PASSWORD", "lab-only-password")
+    # This public value exists only in the disposable lab configured by
+    # verify-ssh-enrollment.py.  Production callers must supply the password
+    # in the UI for each on-demand sudo action; it is never stored.
+    sudo_password = os.environ.get("HCP_LAB_SUDO_PASSWORD", "hcp-enrollment-fixture-password")
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     protocol = {"startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), "host": args.host, "checks": [],
                 "limitations": ["Firewall apply/rollback requires a VM", "Greenbone and Dependency-Track require separate services",
@@ -46,7 +50,10 @@ def main():
         except urllib.error.HTTPError as error:
             response = error
         status = response.code
-        payload = json.loads(response.read())
+        raw = response.read()
+        if any(secret.encode() in raw for secret in (password, sudo_password) if secret):
+            raise AssertionError("HCP returned a lab credential in an API response")
+        payload = json.loads(raw)
         if status != expected:
             raise AssertionError(f"{endpoint}: expected HTTP {expected}, got {status}: {payload.get('message', '')}")
         return payload
@@ -57,7 +64,8 @@ def main():
 
     def run(action):
         result = request("/api/ansible/run", {"action": action, "limit": args.host,
-                         "profileId": "basic_linux", "confirmAudit": True})
+                         "profileId": "basic_linux", "confirmAudit": True,
+                         "sudoPassword": sudo_password})
         if result.get("ok") is not True:
             raise AssertionError(f"{action}: {result.get('message')}")
         return result
@@ -124,6 +132,7 @@ def main():
             preflight = request("/api/ansible/hosts/preflight", {
                 "alias": host["alias"], "address": host["address"], "user": host["user"],
                 "port": host.get("port", 22), "become": host.get("become", True),
+                "sudoPassword": sudo_password,
             })
             if not preflight.get("ok") or not preflight.get("readiness"):
                 raise AssertionError(f"Readiness collection failed: {preflight.get('readinessError') or preflight.get('checks')}")
