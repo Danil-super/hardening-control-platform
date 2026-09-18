@@ -146,9 +146,11 @@ test("operator can select an online or local Trivy database in the interface", (
   const shell = read(path.join("web", "components", "layout", "app-shell.tsx"));
   const proxy = read(path.join("web", "proxy.ts"));
   assert.match(route, /setVulnerabilityDatabaseMode/);
+  assert.match(route, /refreshTrivyDatabase/);
   assert.match(route, /Greenbone \/ OpenVAS/);
   assert.match(screen, /Локальная база/);
   assert.match(screen, /Сетевая база/);
+  assert.match(screen, /Загрузить базу Trivy/);
   assert.match(shell, /data-sources/);
   assert.match(proxy, /api\/settings/);
 });
