@@ -95,6 +95,8 @@ test("Ansible supplies a one-time sudo secret through a protected extra-vars fil
   const config = read("ansible.cfg");
   const bootstrap = read(path.join("ansible", "scripts", "hcp-ssh-bootstrap.py"));
   const preflight = read(path.join("web", "app", "api", "ansible", "hosts", "preflight", "route.ts"));
+  const control = read(path.join("web", "lib", "ansible-control.ts"));
+  const sshAccess = read(path.join("web", "lib", "ssh-access.ts"));
   assert.match(config, /pipelining\s*=\s*False/);
   assert.match(config, /become_method\s*=\s*sudo/);
   assert.match(config, /become_user\s*=\s*root/);
@@ -105,7 +107,10 @@ test("Ansible supplies a one-time sudo secret through a protected extra-vars fil
   assert.match(bootstrap, /SUDO_READY_MARKER/);
   assert.match(preflight, /sudo_setup_incomplete/);
   assert.match(preflight, /ansible_become_password/);
-  assert.match(preflight, / -tt/);
+  assert.match(preflight, /ansibleSshEnvironment/);
+  assert.match(control, /ansibleSshEnvironment/);
+  assert.match(sshAccess, /ANSIBLE_SSH_EXTRA_ARGS/);
+  assert.match(sshAccess, /ANSIBLE_SSH_ARGS: ansibleSshArgs\(\)/);
 });
 
 test("CVE checking has an explicit Trivy-only isolated-network mode", () => {

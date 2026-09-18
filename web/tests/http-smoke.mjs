@@ -249,6 +249,8 @@ try {
   assert.equal(onDemandMissingPassword.error, "sudo_password_required");
   assert.equal(readFileSync(`${preflightFixture}.calls`, "utf8"), "");
   const onDemandPassword = "on-demand-sudo-fixture";
+  writeFileSync(preflightFixture, "tty-transfer");
+  writeFileSync(`${preflightFixture}.calls`, "");
   const onDemandPreflight = await (await request("/api/ansible/hosts/preflight", {
     method: "POST", body: { ...guardedIdentity, become: true, sudoPassword: onDemandPassword },
   })).json();

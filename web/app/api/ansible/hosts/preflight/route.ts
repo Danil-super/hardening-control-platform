@@ -5,7 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server";
 import { getRepoRoot } from "@/lib/ansible-control";
-import { ansibleSshArgs, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
+import { ansibleSshEnvironment, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 import { assessHostReadiness, assessTargetPython, type HostReadiness } from "@/lib/host-readiness";
 import { connectionPrivateKey, hostCredentialSudoMode, HostCredentialError, isHostCredentialSudoReady } from "@/lib/host-credentials";
 import { readInventoryCloseoutHost } from "@/lib/inventory-closeout";
@@ -29,6 +29,30 @@ function redactSecret(value: string | undefined, secret: string) {
   return secret && value ? value.split(secret).join("[скрыто]") : value ?? "";
 }
 
+type AnsibleTreeResult = {
+  failed?: boolean;
+  unreachable?: boolean;
+  stdout?: string;
+  ansible_facts?: Record<string, any>;
+  [key: string]: unknown;
+};
+
+function readAnsibleTreeResult(resultDir: string, alias: string): AnsibleTreeResult | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(path.join(resultDir, alias), "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as AnsibleTreeResult : null;
+  } catch {
+    return null;
+  }
+}
+
+function treeFailureDetails(data: AnsibleTreeResult | null) {
+  if (!data) return "";
+  return ["msg", "stderr", "module_stderr", "exception", "stdout", "module_stdout"]
+    .flatMap((key) => typeof data[key] === "string" ? [data[key]] : [])
+    .join("\n");
+}
+
 async function runAnsible(args: string[], inventoryPath: string, stage: string, becomePassword = "") {
   const resultDir = path.join(path.dirname(inventoryPath), stage);
   let secretDirectory = "";
@@ -48,20 +72,26 @@ async function runAnsible(args: string[], inventoryPath: string, stage: string, 
       cwd: getRepoRoot(),
       timeout: 60_000,
       maxBuffer: 1024 * 1024 * 4,
-      // Some hardened Astra policies require a terminal for sudo.  Request a
-      // TTY only for the password-bearing elevated step; SSH/key/Python
-      // probes stay non-interactive.
-      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ANSIBLE_SSH_ARGS: `${ansibleSshArgs()}${becomePassword ? " -tt" : ""}`, ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
+      // Some hardened Astra policies require a terminal for sudo.  Keep that
+      // TTY exclusive to ssh itself: transfer programs must remain protocol
+      // clean so Ansible can upload its Python module through sftp/scp.
+      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ...ansibleSshEnvironment({ useTty: Boolean(becomePassword) }), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
     });
-    const data = JSON.parse(readFileSync(path.join(resultDir, args[0]), "utf8"));
+    const data = readAnsibleTreeResult(resultDir, args[0]);
+    if (!data) throw new Error("Ansible не вернул структурированный результат проверки.");
     return { ok: data.failed !== true && data.unreachable !== true, stdout: redactSecret(result.stdout, becomePassword), stderr: redactSecret(result.stderr, becomePassword), data };
   } catch (error) {
     const output = error as { stdout?: string; stderr?: string; message?: string };
+    // A failed Ansible module still writes a --tree result.  Preserve its safe
+    // diagnostic text so the interface identifies the real blocker instead
+    // of incorrectly blaming a valid sudo password.
+    const data = readAnsibleTreeResult(resultDir, args[0]);
+    const details = [output.stderr, output.stdout, output.message, treeFailureDetails(data)].filter(Boolean).join("\n");
     return {
       ok: false,
       stdout: redactSecret(output.stdout, becomePassword),
-      stderr: redactSecret(output.stderr ?? output.message, becomePassword),
-      data: null,
+      stderr: redactSecret(details, becomePassword),
+      data,
     };
   } finally {
     if (secretDirectory) rmSync(secretDirectory, { recursive: true, force: true });
@@ -199,7 +229,7 @@ export async function POST(request: Request) {
         const probe = await runAnsible([alias, ...(become ? ["-b", "-e", "ansible_become=true"] : []),
           "-m", "command", "-a", JSON.stringify({ argv: ["/usr/bin/python3", "-c", source] })], inventoryPath, "readiness", onDemandSudo ? sudoPassword : "");
         if (!probe.ok) throw new Error("Не удалось собрать сведения о готовности. Проверьте доступ к системным командам на хосте.");
-        readiness = assessHostReadiness(JSON.parse(probe.data.stdout));
+        readiness = assessHostReadiness(JSON.parse(probe.data?.stdout ?? ""));
       } catch (error) {
         readinessError = error instanceof Error ? error.message : "Проверка готовности не завершена.";
       }
@@ -207,7 +237,7 @@ export async function POST(request: Request) {
 
     const os = readiness?.os ?? ([facts.ansible_distribution, facts.ansible_distribution_version].filter(Boolean).join(" ") || null);
     return NextResponse.json({
-      ...summarizePreflight({ ssh, setup, sudo, become, os,
+      ...summarizePreflight({ ssh, setup, sudo, become, os, sudoMode: onDemandSudo ? "on_demand" : null,
         pythonMessage: `Python ${targetPython}: модуль Ansible выполнен (${facts.ansible_python?.executable ?? "/usr/bin/python3"}).` }),
       facts: {
         os,

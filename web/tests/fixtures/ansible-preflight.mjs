@@ -20,8 +20,12 @@ if (stage === "python-version") data.stdout = "HCP_PYTHON=3.11.2\n";
 if (stage === "setup") data.ansible_facts = { ansible_distribution: "Astra fixture", ansible_distribution_version: "fixture", ansible_python: { executable: "/usr/bin/python3" } };
 if (stage === "sudo") {
   const elevatedModule = args[args.indexOf("-m") + 1] === "command" && args.includes("ansible_become=true");
+  const sharedTty = /(?:^|\s)-tt(?:\s|$)/.test(process.env.ANSIBLE_SSH_ARGS ?? "");
+  const sshOnlyTty = /(?:^|\s)-tt(?:\s|$)/.test(process.env.ANSIBLE_SSH_EXTRA_ARGS ?? "");
   data = !elevatedModule ? { failed: true, msg: "Fixture requires an elevated Ansible module, not just raw sudo" }
     : scenario === "sudo-password" ? { failed: true, msg: "Missing sudo password" }
+    : scenario === "tty-transfer" && sharedTty ? { failed: true, msg: "sftp transfer mechanism failed" }
+    : scenario === "tty-transfer" && !sshOnlyTty ? { failed: true, msg: "sudo: sorry, you must have a tty to run sudo" }
     : { changed: false, stdout: scenario === "non-root" ? "1000\n" : "0\n" };
 }
 if (stage === "readiness") data.stdout = JSON.stringify({
@@ -32,5 +36,6 @@ if (stage === "readiness") data.stdout = JSON.stringify({
 });
 mkdirSync(tree, { recursive: true });
 writeFileSync(path.join(tree, alias), JSON.stringify(data));
-console.log(JSON.stringify(data));
+// A real Ansible failure can leave the valuable reason only in --tree.
+if (!(scenario === "sudo-password" && stage === "sudo")) console.log(JSON.stringify(data));
 if (data.failed) process.exitCode = 2;

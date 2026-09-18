@@ -70,7 +70,11 @@ def main():
             body["sudoPassword"] = PASSWORD
         result = request("/api/ansible/hosts/preflight", body)
         if not result.get("ok") or result["checks"]["sudo"]["state"] != "passed":
-            raise AssertionError("Per-host Ansible preflight failed: " + result.get("message", ""))
+            sudo = result.get("checks", {}).get("sudo", {})
+            # Do not include request data: it can contain this fixture's
+            # password.  The server already redacts the bounded diagnostic.
+            details = str(sudo.get("details", ""))[-2000:]
+            raise AssertionError("Per-host Ansible preflight failed: " + result.get("message", "") + "\n" + details)
     if args.check_persistence:
         protocol = json.loads(PROTOCOL.read_text())
         hosts = request("/api/ansible/hosts")["hosts"]

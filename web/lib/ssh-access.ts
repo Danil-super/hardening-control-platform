@@ -28,6 +28,19 @@ export function ansibleSshArgs() {
   return `-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${JSON.stringify(getKnownHostsPath())}`;
 }
 
+/**
+ * Keep options shared by every transfer program separate from a forced TTY.
+ * ANSIBLE_SSH_ARGS is also passed to sftp/scp; placing -tt there corrupts
+ * their file-transfer protocol.  ANSIBLE_SSH_EXTRA_ARGS targets only ssh,
+ * which is the channel where a hardened sudo policy can require a terminal.
+ */
+export function ansibleSshEnvironment({ useTty = false }: { useTty?: boolean } = {}) {
+  return {
+    ANSIBLE_SSH_ARGS: ansibleSshArgs(),
+    ANSIBLE_SSH_EXTRA_ARGS: useTty ? "-tt" : "",
+  };
+}
+
 function isPublicKey(value: string) {
   return /^(?:ssh-(?:ed25519|rsa)|ecdsa-sha2-nistp\d+|sk-[\w@-]+)\s+[A-Za-z0-9+/=]+(?:\s+.*)?$/.test(value.trim());
 }

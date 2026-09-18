@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { getReportsDir } from "@/lib/ansible-reports";
-import { ansibleSshArgs, configuredPrivateKeyPath } from "@/lib/ssh-access";
+import { ansibleSshEnvironment, configuredPrivateKeyPath } from "@/lib/ssh-access";
 import { getInventoryHost, getInventoryTargetHosts } from "@/lib/inventory";
 import { hostCredentialSudoMode } from "@/lib/host-credentials";
 import {
@@ -289,8 +289,9 @@ export async function runAnsiblePlaybook({
       timeout: selected.timeout,
       maxBuffer: 1024 * 1024 * 8,
       // Password-prompting sudo on Astra can require a terminal.  It is
-      // requested only for this one protected manual run, never globally.
-      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ANSIBLE_SSH_ARGS: `${ansibleSshArgs()}${becomePassword ? " -tt" : ""}`, ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
+      // applied only to ssh, not sftp/scp: a TTY on a transfer protocol makes
+      // an otherwise valid elevated audit fail before sudo is reached.
+      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ...ansibleSshEnvironment({ useTty: Boolean(becomePassword) }), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
     });
     return { ...result, stdout: redactSecret(result.stdout, becomePassword), stderr: redactSecret(result.stderr, becomePassword), command, repoRoot, reportRunId };
   } catch (error) {

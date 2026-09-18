@@ -24,8 +24,14 @@ export function explainConnectionFailure(stage: "ssh" | "python" | "sudo", detai
     return "SSH-подключение не установлено. Откройте технические подробности и сверяйтесь с единой инструкцией.";
   }
   if (stage === "sudo") {
+    if (/sftp transfer mechanism failed|scp transfer mechanism failed|failed to transfer file to/i.test(details)) {
+      return "Ansible не смог передать модуль на Astra по SSH. Это ошибка канала передачи, а не неверный пароль sudo; обновите HCP и повторите проверку.";
+    }
+    if (/must have a tty|no tty present|a terminal is required|requiretty/i.test(details)) {
+      return "Политика Astra требует терминал для sudo. HCP не получил его для этой проверки; откройте технические подробности и повторите после обновления HCP.";
+    }
     if (/Missing sudo password|a password is required|no password was provided/i.test(details)) {
-      return "Учётная запись требует пароль для повышения прав. Используйте root с разрешённым SSH-входом или администратора с настроенным беспарольным sudo.";
+      return "Учётная запись требует пароль для повышения прав. Введите пароль sudo для этой разовой операции; HCP не сохраняет его.";
     }
     if (/not in the sudoers|not allowed to execute|not allowed to run sudo/i.test(details)) {
       return "Пользователю SSH не разрешён этот запуск через sudo. Права на Astra должен настроить её администратор.";
@@ -47,8 +53,8 @@ const skipped = (message: string): PreflightCheck => ({ ok: false, state: "skipp
 const passed = (message: string): PreflightCheck => ({ ok: true, state: "passed", message });
 
 /** Dependent checks cannot appear to fail or pass when they never ran. */
-export function summarizePreflight({ ssh, setup, sudo, become, os, pythonMessage }: {
-  ssh: Probe; setup: Probe; sudo: Probe; become: boolean; os: string | null; pythonMessage: string;
+export function summarizePreflight({ ssh, setup, sudo, become, os, pythonMessage, sudoMode }: {
+  ssh: Probe; setup: Probe; sudo: Probe; become: boolean; os: string | null; pythonMessage: string; sudoMode?: "on_demand" | null;
 }) {
   const checks = {
     ssh: ssh.ok ? passed("SSH-подключение установлено.") : failed("ssh", ssh),
@@ -56,7 +62,9 @@ export function summarizePreflight({ ssh, setup, sudo, become, os, pythonMessage
       : setup.ok ? passed(pythonMessage) : failed("python", setup),
     sudo: !become ? { ok: true, state: "disabled", message: "Повышение прав отключено. Используются права пользователя SSH." } as PreflightCheck
       : !ssh.ok || !setup.ok ? skipped("Сначала должны пройти SSH и проверка Python.")
-      : sudo.ok ? passed("Модуль Ansible выполнен с правами root без ввода пароля.") : failed("sudo", sudo),
+      : sudo.ok ? passed(sudoMode === "on_demand"
+        ? "Модуль Ansible выполнен с правами root; пароль sudo использован только для этой проверки и не сохранён."
+        : "Модуль Ansible выполнен с правами root без ввода пароля.") : failed("sudo", sudo),
     os: !setup.ok ? skipped("ОС будет определена после проверки SSH и Python.")
       : os ? passed(os) : skipped("Ansible не вернул название ОС."),
   };
