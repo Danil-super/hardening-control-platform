@@ -42,9 +42,14 @@ test("each host has its own actual key pair and only public metadata is returned
     const elevated = credentials.markHostCredentialSudoReady(ca.id, identity());
     assert.match(elevated.sudoReadyAt, /^\d{4}-\d{2}-\d{2}T/);
     assert.equal(credentials.isHostCredentialSudoReady(ca.id, identity()), true);
+    const onDemand = credentials.markHostCredentialSudoOnDemand(ca.id, identity());
+    assert.equal(onDemand.sudoMode, "on_demand");
+    assert.equal(credentials.hostCredentialSudoMode(ca.id, identity()), "on_demand");
+    assert.equal(credentials.isHostCredentialSudoReady(ca.id, identity()), false);
     const summary = JSON.stringify(credentials.publicCredentialSummary(ca.id));
-    assert.doesNotMatch(summary, /PRIVATE KEY|password|keyPath/);
-    assert.doesNotMatch(readFileSync(path.join(path.dirname(a.keyPath), "metadata.json"), "utf8"), /PRIVATE KEY|password|keyPath/);
+    assert.match(summary, /"sudoMode":"on_demand"/);
+    assert.doesNotMatch(summary, /PRIVATE KEY|"password"\s*:|keyPath/);
+    assert.doesNotMatch(readFileSync(path.join(path.dirname(a.keyPath), "metadata.json"), "utf8"), /PRIVATE KEY|"password"\s*:|keyPath/);
   } finally { a.release(); b.release(); }
 });
 

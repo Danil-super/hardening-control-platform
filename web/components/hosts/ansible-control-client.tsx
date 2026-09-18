@@ -73,6 +73,7 @@ type ManagedHost = {
   credentialFingerprint?: string | null;
   credentialPublicKey?: string | null;
   credentialReady?: boolean;
+  sudoMode?: "passwordless" | "on_demand" | null;
   lastReport: {
     fileName: string;
     createdAt: string | null;
@@ -228,6 +229,8 @@ export function AnsibleControlClient() {
   const [greenboneFile, setGreenboneFile] = useState<File | null>(null);
   const [greenboneMessage, setGreenboneMessage] = useState("");
   const [decommissionHost, setDecommissionHost] = useState<ManagedHost | null>(null);
+  const [operationSudoPassword, setOperationSudoPassword] = useState("");
+  const [secureCredentialTransport, setSecureCredentialTransport] = useState(false);
 
   const selectedHost = useMemo(
     () => hosts?.hosts?.find((host) => host.alias === selectedAlias) ?? null,
@@ -244,6 +247,15 @@ export function AnsibleControlClient() {
   useEffect(() => {
     void refreshAll();
   }, []);
+
+  useEffect(() => {
+    setSecureCredentialTransport(window.location.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]", "::1"].includes(window.location.hostname));
+  }, []);
+
+  useEffect(() => {
+    // Never carry a one-time password from one target host to another.
+    setOperationSudoPassword("");
+  }, [selectedAlias]);
 
   useEffect(() => {
     setHostKeyScan(null);
@@ -423,23 +435,38 @@ export function AnsibleControlClient() {
   }
 
   async function checkPreflight(credentialId = manualCredentialId) {
+    const onDemandSudo = selectedHost?.alias === connectionAlias && selectedHost.sudoMode === "on_demand";
+    const sudoPassword = onDemandSudo ? operationSudoPassword : "";
+    if (onDemandSudo && !sudoPassword) {
+      const message = "Для этого хоста введите пароль sudo для разовой проверки. HCP не сохраняет его.";
+      setRunResult({ ok: false, message }); notify(message, "warning");
+      return;
+    }
+    if (sudoPassword && !secureCredentialTransport) {
+      const message = "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu.";
+      setRunResult({ ok: false, message }); notify(message, "warning");
+      return;
+    }
     setLoading("preflight");
     setRunResult(null);
     setPreflight(null);
     setPreflightFor("");
     const checkedConnection = [connectionAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", credentialId ?? "legacy"].join("\u0000");
     try {
+      const requestBody = JSON.stringify({
+        alias: connectionAlias,
+        address: manualAddress,
+        user: manualUser,
+        port: manualPort,
+        become: manualBecome,
+        credentialId,
+        ...(sudoPassword ? { sudoPassword } : {}),
+      });
+      if (sudoPassword) setOperationSudoPassword("");
       const response = await fetch("/api/ansible/hosts/preflight", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          alias: connectionAlias,
-          address: manualAddress,
-          user: manualUser,
-          port: manualPort,
-          become: manualBecome,
-          credentialId,
-        }),
+        body: requestBody,
       });
       const payload = await readApiResponse(response);
       setPreflight(payload);
@@ -495,6 +522,15 @@ export function AnsibleControlClient() {
       setRunResult({ ok: false, action, message: "Выберите хост." });
       return;
     }
+    const sudoPassword = selectedHost?.sudoMode === "on_demand" ? operationSudoPassword : "";
+    if (selectedHost?.sudoMode === "on_demand" && !sudoPassword) {
+      setRunResult({ ok: false, action, message: "Для выбранной Astra введите пароль sudo для этой операции. HCP не сохраняет его." });
+      return;
+    }
+    if (sudoPassword && !secureCredentialTransport) {
+      setRunResult({ ok: false, action, message: "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu." });
+      return;
+    }
 
     const isResponse = responseActions.some((item) => item.id === action);
     const actionMeta = auditActions.find((item) => item.id === action);
@@ -535,19 +571,22 @@ export function AnsibleControlClient() {
     setRunResult(null);
     setFreshReportHref("");
     try {
+      const requestBody = JSON.stringify({
+        action,
+        profileId,
+        limit: selectedAlias,
+        mode,
+        reason: changeReason.trim(),
+        confirmedHost: isResponse ? confirmedHost.trim() : undefined,
+        confirmAudit: requiresConfirmation,
+        extraVars,
+        ...(sudoPassword ? { sudoPassword } : {}),
+      });
+      if (sudoPassword) setOperationSudoPassword("");
       const response = await fetch("/api/ansible/run", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          action,
-          profileId,
-          limit: selectedAlias,
-          mode,
-          reason: changeReason.trim(),
-          confirmedHost: isResponse ? confirmedHost.trim() : undefined,
-          confirmAudit: requiresConfirmation,
-          extraVars,
-        }),
+        body: requestBody,
       });
       const payload = await readApiResponse(response);
       if (action !== "packageInventory" || !payload.ok) setRunResult(payload);
@@ -637,13 +676,23 @@ export function AnsibleControlClient() {
     if (confirmedHost?.trim() !== transaction.hostAlias) {
       return;
     }
+    const target = hosts?.hosts?.find((host) => host.alias === transaction.hostAlias);
+    const sudoPassword = target?.sudoMode === "on_demand"
+      ? window.prompt(`Введите пароль sudo для ${transaction.hostAlias}; он будет использован только для отката и не сохранится:`) ?? ""
+      : "";
+    if (target?.sudoMode === "on_demand" && !sudoPassword) return;
+    if (sudoPassword && !secureCredentialTransport) {
+      setRunResult({ ok: false, message: "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu." });
+      return;
+    }
     setLoading(`rollback-${transaction.id}`);
     setRunResult(null);
     try {
+      const requestBody = JSON.stringify({ confirmedHost: confirmedHost.trim(), ...(sudoPassword ? { sudoPassword } : {}) });
       const response = await fetch(`/api/ansible/remediations/${encodeURIComponent(transaction.id)}/rollback`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ confirmedHost: confirmedHost.trim() }),
+        body: requestBody,
       });
       setRunResult(await readApiResponse(response));
       await loadRemediations();
@@ -672,7 +721,7 @@ export function AnsibleControlClient() {
     if (loading || accessLoading) return;
     setEditingHost(host.alias);
     setManualCredentialId(host.credentialId ?? null);
-    setCredentialResult(host.credentialId && host.credentialReady ? { ok: true, credentialId: host.credentialId, publicKey: host.credentialPublicKey, fingerprint: host.credentialFingerprint } : null);
+    setCredentialResult(host.credentialId && host.credentialReady ? { ok: true, credentialId: host.credentialId, publicKey: host.credentialPublicKey, fingerprint: host.credentialFingerprint, sudoMode: host.sudoMode } : null);
     setPreflight(null); setPreflightFor("");
     setSelectedAlias(host.alias);
     setManualAlias(host.alias);
@@ -744,6 +793,10 @@ export function AnsibleControlClient() {
         </SshCredentialSetup>
         {editingHost ? <details className="mt-4 rounded-lg border border-slate-800 p-3">
           <summary className="cursor-pointer text-sm text-slate-400">Дополнительные действия с хостом</summary>
+          {selectedHost?.sudoMode === "on_demand" ? <div className="mt-3 max-w-xl">
+            <Field label="Пароль sudo для разовой проверки" value={operationSudoPassword} onChange={setOperationSudoPassword} type="password"
+              placeholder="Пароль, который принимает sudo su" disabled={Boolean(loading) || !secureCredentialTransport} />
+          </div> : null}
           <div className="mt-3 flex flex-wrap gap-3">
             <Button variant="secondary" onClick={() => void checkPreflight()} disabled={Boolean(loading) || Boolean(accessLoading)}>
               <CheckCircle2 size={16} aria-hidden="true" />Только проверить доступ
@@ -835,7 +888,7 @@ export function AnsibleControlClient() {
                     <td className="px-4 py-4 text-slate-300">
                       <span>{host.user ?? "не указан"}</span>
                       <span className={host.become ? "ml-2 text-emerald-200" : "ml-2 text-slate-500"}>
-                        {host.become ? "административный режим" : "права учётной записи"}
+                        {host.become ? host.sudoMode === "on_demand" ? "sudo по паролю" : "административный режим" : "права учётной записи"}
                       </span>
                     </td>
                     <td className="px-4 py-4">
@@ -914,6 +967,17 @@ export function AnsibleControlClient() {
               })}
             </div>
           </div>
+
+          {selectedHost?.sudoMode === "on_demand" ? (
+            <div className="mt-4 rounded-md border border-sky-400/20 bg-sky-400/5 p-3">
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr] lg:items-end">
+                <Field label="Пароль sudo для одного действия" value={operationSudoPassword} onChange={setOperationSudoPassword}
+                  type="password" placeholder="Тот же пароль, что принимает sudo su" disabled={Boolean(loading) || !secureCredentialTransport} />
+                <p className="text-xs leading-5 text-slate-300">У этой Astra права root подтверждены через обычный sudo по паролю. HCP использует пароль только для выбранного запуска, не сохраняет его и не меняет <code>/etc/sudoers.d</code>. Плановые задания для такого хоста не запускаются автоматически.</p>
+              </div>
+              {!secureCredentialTransport ? <p className="mt-2 text-xs leading-5 text-amber-100">Для ввода пароля откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu.</p> : null}
+            </div>
+          ) : null}
 
           <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
             <summary className="cursor-pointer text-sm font-semibold text-slate-200">Дополнительные проверки</summary>
@@ -1143,17 +1207,21 @@ function Field({
   onChange,
   placeholder,
   disabled = false,
+  type = "text",
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   placeholder?: string;
   disabled?: boolean;
+  type?: "text" | "password";
 }) {
   return (
     <label className="block min-w-0">
       <span className="text-xs font-semibold text-slate-400">{label}</span>
       <input
+        type={type}
+        autoComplete={type === "password" ? "off" : undefined}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}

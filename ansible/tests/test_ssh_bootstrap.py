@@ -136,6 +136,13 @@ class SshBootstrapTests(unittest.TestCase):
         self.assertIn("/usr/bin/python3", rendered)
         self.assertIn("geteuid", rendered)
 
+    def test_on_demand_probe_checks_root_without_creating_a_sudoers_rule(self):
+        rendered = BOOTSTRAP.sudo_on_demand_readiness_script()
+        self.assertIn("/usr/bin/python3", rendered)
+        self.assertIn("geteuid", rendered)
+        self.assertNotIn("sudoers", rendered)
+        self.assertNotIn("zz-hcp-", rendered)
+
     def test_sudo_setup_failures_use_safe_stable_codes(self):
         for status, code in {
             74: "sudoers_unavailable",

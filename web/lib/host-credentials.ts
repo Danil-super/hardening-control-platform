@@ -4,6 +4,12 @@ import path from "node:path";
 import { configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 
 export type HostIdentity = { alias: string; address: string; user: string; port: number };
+/**
+ * How HCP elevates a non-root account on this one host.  `on_demand` is the
+ * safe default for Astra: the operator supplies the sudo password for each
+ * manually started operation, so HCP never has to change /etc/sudoers.d.
+ */
+export type SudoAccessMode = "passwordless" | "on_demand";
 export type HostCredential = HostIdentity & {
   version: 1; id: string; createdAt: string; verifiedAt: string | null;
   publicKey: string | null; fingerprint: string | null;
@@ -11,6 +17,10 @@ export type HostCredential = HostIdentity & {
   // Older credential metadata deliberately has no value and stays compatible
   // once it is already bound to an existing inventory host.
   sudoReadyAt?: string | null;
+  // Absent in metadata written by older HCP versions.  Such metadata remains
+  // compatible; sudoReadyAt still identifies the historical passwordless
+  // path.
+  sudoMode?: SudoAccessMode | null;
 };
 export class HostCredentialError extends Error {
   constructor(message: string, public code: string) { super(message); }
@@ -26,6 +36,9 @@ export function validHostIdentity(value: HostIdentity) {
 }
 function validOptionalTimestamp(value: unknown) {
   return value === undefined || value === null || (typeof value === "string" && Number.isFinite(Date.parse(value)));
+}
+function validOptionalSudoMode(value: unknown): value is SudoAccessMode | null | undefined {
+  return value === undefined || value === null || value === "passwordless" || value === "on_demand";
 }
 export function hostKeysDirectory() {
   return path.join(path.resolve(process.env.HCP_STATE_DIR ?? path.join(process.cwd(), "..", "ansible")), "ssh-host-keys");
@@ -53,7 +66,7 @@ export function readHostCredential(id: string): HostCredential {
   let value: HostCredential;
   try { value = JSON.parse(readFileSync(path.join(credentialDirectory(id), "metadata.json"), "utf8")); }
   catch { throw credentialError("Ключ хоста не найден. Восстановите резервную копию или настройте новый доступ.", "credential_missing"); }
-  if (value.version !== 1 || value.id !== id || !validHostIdentity(value) || !validOptionalTimestamp(value.sudoReadyAt)) {
+  if (value.version !== 1 || value.id !== id || !validHostIdentity(value) || !validOptionalTimestamp(value.sudoReadyAt) || !validOptionalSudoMode(value.sudoMode)) {
     throw credentialError("Метаданные SSH-ключа повреждены.");
   }
   return value;
@@ -86,7 +99,7 @@ export function beginHostCredential(identity: HostIdentity, existingId?: string 
     if (existsSync(path.join(credentialDirectory(id), "metadata.json"))) credential = validateHostCredential(id, identity, false);
     else {
       if (existingId) throw credentialError("Сохранённый ключ отсутствует. Восстановите его из резервной копии.", "credential_missing");
-      credential = { ...identity, version: 1, id, createdAt: new Date().toISOString(), verifiedAt: null, publicKey: null, fingerprint: null, sudoReadyAt: null };
+      credential = { ...identity, version: 1, id, createdAt: new Date().toISOString(), verifiedAt: null, publicKey: null, fingerprint: null, sudoReadyAt: null, sudoMode: null };
       writeMetadata(credential);
     }
     if (credential.verifiedAt && !existsSync(credentialKeyPath(id))) throw credentialError("Сохранённый приватный ключ отсутствует. Восстановите его из резервной копии; повторная настройка не заменяет ключ автоматически.", "credential_missing");
@@ -103,12 +116,33 @@ export function markHostCredentialVerified(id: string, identity: HostIdentity, p
 }
 export function markHostCredentialSudoReady(id: string, identity: HostIdentity) {
   const current = validateHostCredential(id, identity);
-  const updated = { ...current, sudoReadyAt: new Date().toISOString() };
+  const updated = { ...current, sudoReadyAt: new Date().toISOString(), sudoMode: "passwordless" as const };
   writeMetadata(updated);
   return updated;
 }
+
+/** Mark a verified key as usable with a password supplied only for one run. */
+export function markHostCredentialSudoOnDemand(id: string, identity: HostIdentity) {
+  const current = validateHostCredential(id, identity);
+  // Do not retain a misleading historical readiness time if a target has
+  // switched back to the password-prompting policy.
+  const updated = { ...current, sudoReadyAt: null, sudoMode: "on_demand" as const };
+  writeMetadata(updated);
+  return updated;
+}
+
+export function hostCredentialSudoMode(id: string, identity: HostIdentity): SudoAccessMode | null {
+  const credential = validateHostCredential(id, identity);
+  // Metadata before the explicit mode used sudoReadyAt as its only marker.
+  return credential.sudoMode ?? (credential.sudoReadyAt ? "passwordless" : null);
+}
+
 export function isHostCredentialSudoReady(id: string, identity: HostIdentity) {
-  return Boolean(validateHostCredential(id, identity).sudoReadyAt);
+  return hostCredentialSudoMode(id, identity) === "passwordless";
+}
+
+export function isHostCredentialSudoOnDemand(id: string, identity: HostIdentity) {
+  return hostCredentialSudoMode(id, identity) === "on_demand";
 }
 function savedCredentialId(alias: string) {
   const inventory = path.resolve(process.cwd(), "..", "ansible", "inventory.ini");
@@ -138,11 +172,12 @@ export function connectionPrivateKey(identity: HostIdentity, credentialId?: unkn
   return configuredPrivateKeyPath();
 }
 export function publicCredentialSummary(id: string | null) {
-  if (!id) return { credentialId: null, credentialFingerprint: null, credentialPublicKey: null, credentialReady: false };
+  if (!id) return { credentialId: null, credentialFingerprint: null, credentialPublicKey: null, credentialReady: false, sudoMode: null };
   try {
     const value = readHostCredential(id);
-    return { credentialId: id, credentialFingerprint: value.fingerprint, credentialPublicKey: value.publicKey, credentialReady: Boolean(value.verifiedAt && existsSync(credentialKeyPath(id))) };
-  } catch { return { credentialId: id, credentialFingerprint: null, credentialPublicKey: null, credentialReady: false }; }
+    return { credentialId: id, credentialFingerprint: value.fingerprint, credentialPublicKey: value.publicKey, credentialReady: Boolean(value.verifiedAt && existsSync(credentialKeyPath(id))),
+      sudoMode: value.sudoMode ?? (value.sudoReadyAt ? "passwordless" : null) };
+  } catch { return { credentialId: id, credentialFingerprint: null, credentialPublicKey: null, credentialReady: false, sudoMode: null }; }
 }
 
 export function deleteHostCredential(id: string, identity: HostIdentity) {

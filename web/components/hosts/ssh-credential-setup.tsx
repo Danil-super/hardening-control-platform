@@ -7,7 +7,8 @@ import { onboardingSecretsForUser, type OnboardingSecrets } from "@/lib/host-onb
 
 export type CredentialSetupResult = {
   ok: boolean; credentialId?: string; publicKey?: string | null; fingerprint?: string | null; message?: string;
-  sudo?: { requested: boolean; ready: boolean; configured: boolean };
+  sudoMode?: "passwordless" | "on_demand" | null;
+  sudo?: { requested: boolean; ready: boolean; configured: boolean; mode?: "passwordless" | "on_demand" };
 };
 export type SetupSecrets = OnboardingSecrets;
 
@@ -24,7 +25,7 @@ export function SshCredentialSetup({ loading, canConnect, result, legacy, editin
   const isRoot = user.trim() === "root";
   // A key retained after a failed first attempt proves SSH only. Until the
   // host is saved, a non-root account must submit the password accepted by
-  // sudo so HCP can finish the one-time non-interactive setup. Existing saved
+  // sudo so HCP can verify the one-time administrative path. Existing saved
   // hosts may still be checked without a password.
   const needsInitialPrivilegeSetup = !editing && !isRoot && result?.sudo?.ready !== true;
   const sshPasswordRequired = !editing && !savedIndividualKey;
@@ -38,9 +39,9 @@ export function SshCredentialSetup({ loading, canConnect, result, legacy, editin
   async function setup() {
     if (submitting.current || loading || !canConnect || !passwordsReady || (!secure && Boolean(password || sudoPassword))) return;
     submitting.current = true;
-    // A non-root account needs a non-interactive privilege path after the
-    // one-time password disappears.  The password is used only in this
-    // request to install the HCP-managed sudoers entry and is never stored.
+    // The password is used only in this request to verify the account's
+    // regular password-prompting sudo path.  HCP does not change sudoers and
+    // never stores this value.
     const secrets = onboardingSecretsForUser(user, password, sudoPassword);
     try { await onSetup(secrets, () => { setPassword(""); setSudoPassword(""); }); }
     finally { secrets.password = ""; secrets.sudoPassword = ""; submitting.current = false; }
@@ -67,7 +68,7 @@ export function SshCredentialSetup({ loading, canConnect, result, legacy, editin
         </label>
         <p className="mt-2 text-xs leading-5 text-slate-400">На отдельных Astra sudo может запрашивать пароль root, а не пароль пользователя SSH. Введите сюда именно тот пароль, который принимает команда sudo в терминале. Если ключ этого хоста уже сохранён, для повторной настройки sudo достаточно этого поля.</p>
       </details> : null}
-      <p className="max-w-2xl text-sm leading-6 text-slate-400">Входить через терминал и создавать ключи вручную не нужно. Для пользователя не root HCP использует введённый пароль один раз, включает постоянное повышение прав для этой учётной записи и затем работает только по отдельному ключу. Пароль не сохраняется.</p>
+      <p className="max-w-2xl text-sm leading-6 text-slate-400">Входить через терминал и создавать ключи вручную не нужно. Для пользователя не root HCP один раз проверяет обычный sudo по паролю, не изменяет sudoers и сохраняет только отдельный SSH-ключ. При каждом ручном аудите или изменении она запросит пароль sudo снова.</p>
       {!secure ? <p className="rounded-lg border border-amber-400/30 p-3 text-sm leading-6 text-amber-100">Для ввода пароля откройте HCP через HTTPS или http://127.0.0.1 с вашим портом на Ubuntu. С другого компьютера можно использовать SSH-туннель — порядок есть в инструкции.</p> : null}
       {children}
       <div className="rounded-lg bg-sky-400/5 p-4">
@@ -78,7 +79,7 @@ export function SshCredentialSetup({ loading, canConnect, result, legacy, editin
           <li><span className="text-sky-200">3.</span> Проверит вход по ключу, права администратора и сохранит хост.</li>
         </ol>
         {existingAccess ? <p className="mt-2 text-xs leading-5 text-slate-400">{needsInitialPrivilegeSetup
-          ? "Ключ SSH уже создан, но хост ещё не добавлен: введите пароль ещё раз, чтобы HCP завершил автоматическую настройку sudo. Эта попытка использует ту же ключевую пару."
+          ? "Ключ SSH уже создан, но хост ещё не добавлен: введите пароль ещё раз, чтобы HCP проверил sudo. Эта попытка использует ту же ключевую пару."
           : "Для уже настроенного подключения HCP использует сохранённый ключ. Новый пароль нужен только при настройке другого доступа."}</p> : null}
         <p className="mt-2 text-xs leading-5 text-slate-400">У каждого хоста своя пара. Приватный ключ остаётся на Ubuntu. Пароль не сохраняется.</p>
       </div>
@@ -89,7 +90,7 @@ export function SshCredentialSetup({ loading, canConnect, result, legacy, editin
       </Button>
     </fieldset>
     {!canConnect ? <p className="mt-2 text-xs text-slate-400">Укажите адрес и пользователя Astra в форме выше.</p> : null}
-    {needsInitialPrivilegeSetup && existingAccess ? <p className="mt-2 text-xs leading-5 text-amber-100">Проверка Ansible пока не запускается: без этого одноразового пароля HCP не может сделать дальнейшие аудиты и харденинг беспарольными.</p> : null}
+    {needsInitialPrivilegeSetup && existingAccess ? <p className="mt-2 text-xs leading-5 text-amber-100">Проверка Ansible пока не запускается: HCP должна один раз убедиться, что этот пользователь действительно получает root через sudo. Пароль не будет сохранён.</p> : null}
     {result?.credentialId ? <details className="mt-4 rounded-lg border border-slate-800 p-3">
       <summary className="cursor-pointer text-sm text-slate-300"><CheckCircle2 size={16} className="mr-2 inline text-emerald-300" aria-hidden="true" />Ключ этого хоста сохранён — сведения</summary>
       <p className="mt-2 break-all font-mono text-xs text-slate-300">{result.fingerprint}</p>

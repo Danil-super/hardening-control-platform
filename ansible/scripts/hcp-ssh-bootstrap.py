@@ -171,6 +171,19 @@ def sudo_readiness_script():
     return "exec sudo -H -S -k -n -u root -- /bin/sh -c " + shlex.quote(python_probe)
 
 
+def sudo_on_demand_readiness_script():
+    """Check the same root/Python capability using one supplied sudo password.
+
+    This is deliberately bounded to a harmless local check.  It does not
+    modify sudoers, PARSEC policy or any target configuration.  Later manual
+    HCP actions receive their own one-time password through Ansible's become
+    channel; scheduled runs are intentionally not possible in this mode.
+    """
+    return "exec /usr/bin/python3 -c " + shlex.quote(
+        "import os, sys; sys.exit(0 if os.geteuid() == 0 else 1)"
+    )
+
+
 def run_remote(client, script):
     command = "/bin/sh -c " + shlex.quote(script)
     stdin, stdout, stderr = client.exec_command(command, timeout=25, get_pty=False)
@@ -281,28 +294,34 @@ def enroll(config):
         status, uid = run_remote(key_client, "id -u")
         if status or not uid.strip().isdigit():
             raise EnrollmentError("key_login_failed")
-        if config.get("configureSudo"):
+        if config.get("configureSudo") and uid.strip() != "0":
+            # Astra administrators commonly have exactly the behaviour of
+            # `sudo su`: sudo requests a password and then grants root.  HCP
+            # must support that without writing an HCP-owned NOPASSWD rule to
+            # /etc/sudoers.d, which can be prohibited by PARSEC or a mounted
+            # read-only policy.  Verify one harmless elevated Python command
+            # now; the password is supplied through the protected PTY only
+            # for this request and is never stored.
             try:
-                if uid.strip() == "0":
-                    status, _ = run_remote(key_client, sudo_setup_script(config["user"], config["credentialId"]))
-                else:
-                    status = run_password_sudo(key_client, sudo_setup_script(config["user"], config["credentialId"]),
-                                               config.get("sudoPassword") or config.get("password") or "")
-                sudo_result["configured"] = status == 0
+                status = run_password_sudo(key_client, sudo_on_demand_readiness_script(),
+                                           config.get("sudoPassword") or config.get("password") or "")
+                sudo_result["mode"] = "on_demand"
+                sudo_result["ready"] = status == 0
                 if status:
                     sudo_result["error"] = sudo_setup_failure(status)
             except (socket.timeout, TimeoutError):
                 sudo_result["error"] = "sudo_auth_timeout"
             except Exception:
                 sudo_result["error"] = "sudo_setup_failed"
-        try:
-            status, root_uid = run_remote(key_client, sudo_readiness_script() if uid.strip() != "0"
-                                          else "/usr/bin/python3 -c " + shlex.quote("import os; print(os.geteuid())"))
-            sudo_result["ready"] = status == 0 and root_uid.strip() == "0"
-            if not sudo_result["ready"] and "error" not in sudo_result:
+        else:
+            try:
+                status, root_uid = run_remote(key_client, sudo_readiness_script() if uid.strip() != "0"
+                                              else "/usr/bin/python3 -c " + shlex.quote("import os; print(os.geteuid())"))
+                sudo_result["ready"] = status == 0 and root_uid.strip() == "0"
+                if not sudo_result["ready"] and "error" not in sudo_result:
+                    sudo_result["error"] = "sudo_ansible_probe_failed"
+            except Exception:
                 sudo_result["error"] = "sudo_ansible_probe_failed"
-        except Exception:
-            sudo_result["error"] = "sudo_ansible_probe_failed"
         return {"ok": True, "publicKey": public_key, "fingerprint": fingerprint, "sudo": sudo_result}
     finally:
         if key_client:

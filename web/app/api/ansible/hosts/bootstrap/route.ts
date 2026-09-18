@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { HostCredentialError, beginHostCredential, markHostCredentialSudoReady, markHostCredentialVerified, validHostIdentity, type HostIdentity } from "@/lib/host-credentials";
+import { HostCredentialError, beginHostCredential, markHostCredentialSudoOnDemand, markHostCredentialSudoReady, markHostCredentialVerified, validHostIdentity, type HostIdentity } from "@/lib/host-credentials";
 import { normalizeSshPort } from "@/lib/ssh-access";
 import { credentialTransportAllowed, readCredentialRequest, runSshBootstrap } from "@/lib/ssh-bootstrap";
 import { appendIncident } from "@/lib/ansible-control";
@@ -16,7 +16,7 @@ const sudoFailureMessages: Record<string, string> = {
   sudo_tty_unavailable: "Вход по отдельному ключу подтверждён, но Astra не предоставила терминал, необходимый для одноразового sudo-сеанса. HCP не передавала пароль без безопасного терминала.",
   sudo_unavailable: "Вход по отдельному ключу подтверждён, но на Astra не найден sudo. Для полного аудита и харденинга используйте root с разрешённым SSH-входом либо установите и настройте sudo по политике организации.",
   sudo_pam_or_policy_rejected: "Вход по отдельному ключу подтверждён, но Astra отклонила одноразовый sudo-сеанс до запуска команды администратора. Проверьте PAM, состояние учётной записи и локальную политику sudo; пароль не сохранён.",
-  sudoers_write_rejected: "Вход по отдельному ключу и повышение прав sudo подтверждены, но Astra не разрешила HCP записать проверенное правило в /etc/sudoers.d. Это ограничение файловой системы или политики PARSEC; HCP не оставил непроверенное правило.",
+  sudoers_write_rejected: "Вход по отдельному ключу и повышение прав sudo подтверждены, но Astra не разрешила создать постоянное правило в /etc/sudoers.d. HCP не оставил неподтверждённое правило. Повторите подключение после обновления HCP: стандартный режим больше не изменяет sudoers и запрашивает пароль только для действий администратора.",
   sudo_safe_channel_failed: "Вход по отдельному ключу подтверждён, но безопасный канал одноразового sudo-сеанса завершился неожиданно. HCP не передала пароль либо не применяла правило; повторите подключение после проверки связи.",
   sudo_auth_timeout: "Вход по отдельному ключу подтверждён, но sudo не завершил однократную проверку пароля вовремя. Проверьте пароль sudo и PAM-политику этой учётной записи; HCP не сохраняла пароль и не меняла sudoers.",
   sudo_elevation_rejected_or_policy: "Вход по отдельному ключу подтверждён, но Astra не приняла одноразовое повышение прав sudo. Проверьте пароль sudo (он может отличаться от SSH) и политику этой учётной записи; пароль не сохранён.",
@@ -43,13 +43,13 @@ export async function POST(request: Request) {
     const sudoPassword = typeof body?.sudoPassword === "string" ? body.sudoPassword : "";
     if ([password, sudoPassword].some((value) => value.length > 1024 || /[\r\n\0]/.test(value))) return response({ ok: false, message: "Пароль должен быть одной строкой длиной до 1024 символов." }, 400);
     const configureSudo = body?.configureSudo === true;
-    if (configureSudo && body?.confirmRootAccess !== true) return response({ ok: false, message: "Подтвердите выдачу этой учётной записи полных прав root без пароля." }, 400);
+    if (configureSudo && body?.confirmRootAccess !== true) return response({ ok: false, message: "Подтвердите проверку прав администратора для этой учётной записи." }, 400);
     if (configureSudo && !password && !sudoPassword) return response({ ok: false, message: "Для настройки повышения прав введите пароль SSH или пароль, который запрашивает sudo." }, 400);
     if (hasActiveRemediationForHost(identity.alias)) return response({ ok: false, message: "Дождитесь завершения изменения или отката на этом хосте." }, 409);
     const existingId = typeof body?.credentialId === "string" ? body.credentialId : null;
     const prepared = beginHostCredential(identity, existingId);
     release = prepared.release;
-    const result = await runSshBootstrap(identity, { credentialId: prepared.credential.id, keyPath: prepared.keyPath, password, sudoPassword, configureSudo });
+    const result = await runSshBootstrap(identity, { credentialId: prepared.credential.id, keyPath: prepared.keyPath, password, sudoPassword, configureSudo, sudoMode: "on_demand" });
     const credential = markHostCredentialVerified(prepared.credential.id, identity, result.publicKey!, result.fingerprint!);
     if (configureSudo && !result.sudo?.ready) {
       const candidate = result.sudo?.error ?? "sudo_setup_failed";
@@ -59,11 +59,17 @@ export async function POST(request: Request) {
       return response({ ok: false, error, credentialId: credential.id, publicKey: credential.publicKey, fingerprint: credential.fingerprint, sudo: result.sudo,
         message: sudoFailureMessages[error] }, 400);
     }
-    if (configureSudo && result.sudo?.ready) markHostCredentialSudoReady(credential.id, identity);
+    const sudoMode = configureSudo && result.sudo?.ready
+      ? result.sudo?.mode === "on_demand" ? "on_demand" as const : "passwordless" as const
+      : null;
+    if (sudoMode === "on_demand") markHostCredentialSudoOnDemand(credential.id, identity);
+    if (sudoMode === "passwordless") markHostCredentialSudoReady(credential.id, identity);
     appendIncident({ action: "ssh-key-enrollment", kind: "system", status: "success", profileId: "ssh-access", limit: identity.alias,
-      message: `Отдельный ключ ${credential.fingerprint} установлен для ${identity.alias}; вход проверен. Настройка sudo запрошена: ${configureSudo ? "да" : "нет"}; sudo готово: ${result.sudo?.ready ? "да" : "нет"}.` });
+      message: `Отдельный ключ ${credential.fingerprint} установлен для ${identity.alias}; вход проверен. Режим прав: ${sudoMode === "on_demand" ? "sudo по разовому паролю" : sudoMode === "passwordless" ? "постоянный sudo" : "без sudo"}.` });
     return response({ ok: true, credentialId: credential.id, publicKey: credential.publicKey, fingerprint: credential.fingerprint,
-      sudo: result.sudo, message: result.sudo?.requested && !result.sudo.ready
+      sudo: result.sudo, sudoMode, message: sudoMode === "on_demand"
+        ? "Отдельный ключ установлен, sudo проверен. HCP не изменяла sudoers или политику Astra: для каждого ручного аудита и изменения она запросит пароль sudo и не сохранит его."
+        : result.sudo?.requested && !result.sudo.ready
         ? "Отдельный ключ установлен, вход по нему проверен. Настроить sudo не удалось: проверьте пароль sudo, права учётной записи и политику Astra."
         : "Отдельный ключ установлен, вход по нему проверен. Пароль не сохранён. Выполняется проверка готовности хоста." });
   } catch (error) {

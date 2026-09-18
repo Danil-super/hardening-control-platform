@@ -75,13 +75,13 @@ export default function GuidePage() {
           <p className="text-sm leading-6 text-slate-400">Сначала HCP сверяет ключ сервера Astra с доверенным источником, затем входит по паролю и создаёт индивидуальную пару доступа. Приватный ключ остаётся на Ubuntu; на Astra передаётся только публичный. Перезапуск и повторное нажатие не меняют пару.</p>
           <p className="text-sm leading-6 text-slate-400">При сверке должны совпасть два отпечатка одного ключа Astra: из её консоли и полученный HCP по сети. Собственный ключ Ubuntu здесь не участвует. После сохранения проверка выполняется автоматически.</p>
           <a href={`${manualUrl}#host-trust-fleet`} className="inline-block text-sm text-sky-300 underline underline-offset-4">Как подготовить доверенные ключи для многих хостов</a>
-          <p className="text-sm leading-6 text-slate-400">Пароль администратора используется только при первом подключении и не сохраняется. Затем HCP работает через индивидуальный ключ.</p>
+          <p className="text-sm leading-6 text-slate-400">Пароль администратора используется только при первом подключении и не сохраняется. Затем HCP работает через индивидуальный ключ; для хоста с обычным sudo она запросит пароль снова только перед ручной привилегированной операцией.</p>
         </aside>
       </section>
 
       <section id="sudo-access" className="scroll-mt-6 rounded-xl border border-sky-400/20 bg-sky-400/5 p-5">
         <h2 className="text-xl font-semibold text-white">Административный доступ</h2>
-        <p className="mt-3 text-sm leading-6 text-slate-300">Используйте root с разрешённым SSH-входом или администратора с настроенным беспарольным sudo. При подключении HCP проверяет выполнение модуля Ansible с правами root. Отдельных переключателей sudo в форме нет.</p>
+        <p className="mt-3 text-sm leading-6 text-slate-300">Используйте root с разрешённым SSH-входом или администратора, у которого работает <code>sudo su</code>. При подключении HCP проверяет выполнение модуля Ansible с правами root, не меняет sudoers и не хранит пароль. Для ручного аудита или изменения такого хоста введите пароль sudo в появившееся поле.</p>
         <p className="mt-3 text-sm leading-6 text-slate-300">Для существующего хоста откройте «Настроить», укажите административную учётную запись и нажмите «Сохранить подключение». Если меняется пользователь SSH, введите его пароль для установки отдельного ключа. История хоста сохраняется.</p>
         <a href={`${manualUrl}#sudo-access`} className="mt-4 inline-block text-sm text-sky-300 underline underline-offset-4">Подготовка административной учётной записи</a>
       </section>

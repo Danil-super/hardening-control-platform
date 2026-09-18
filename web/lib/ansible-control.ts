@@ -1,11 +1,13 @@
 import { execFile, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { getReportsDir } from "@/lib/ansible-reports";
 import { ansibleSshArgs, configuredPrivateKeyPath } from "@/lib/ssh-access";
 import { getInventoryHost, getInventoryTargetHosts } from "@/lib/inventory";
+import { hostCredentialSudoMode } from "@/lib/host-credentials";
 import {
   appendIncident as appendStoredIncident,
   readIncidents as readStoredIncidents,
@@ -175,11 +177,42 @@ export function inventoryHostConnection(alias: string) {
   if (typeof address !== "string" || !address || address.includes("{{") || !Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("Не удалось однозначно определить адрес и порт SSH из inventory.");
   }
-  return { address, port, user: typeof variables.ansible_user === "string" ? variables.ansible_user : undefined };
+  const credentialId = typeof variables.hcp_ssh_credential_id === "string" && /^[a-f0-9]{64}$/.test(variables.hcp_ssh_credential_id)
+    ? variables.hcp_ssh_credential_id
+    : undefined;
+  return { address, port, user: typeof variables.ansible_user === "string" ? variables.ansible_user : undefined, credentialId };
 }
 
 export function inventoryHostAddress(alias: string) {
   return inventoryHostExists(alias) ? inventoryHostConnection(alias).address : null;
+}
+
+/**
+ * Return the host that needs a one-time sudo password for this playbook run.
+ * A password cannot be sensibly or safely supplied for an inventory group,
+ * therefore on-demand sudo is intentionally limited to one explicit host.
+ */
+export function onDemandSudoHostForLimit(limit?: string) {
+  const targets = (limit ?? "linux_hosts").split(",").flatMap((target) => getInventoryTargetHosts(target));
+  const aliases = [...new Set(targets.filter((host) => host.groups.includes("linux_hosts")).map((host) => host.alias))];
+  const onDemand = aliases.filter((alias) => {
+    const connection = inventoryHostConnection(alias);
+    if (!connection.credentialId || !connection.user || connection.user === "root") return false;
+    return hostCredentialSudoMode(connection.credentialId, { alias, address: connection.address, user: connection.user, port: connection.port }) === "on_demand";
+  });
+  if (!onDemand.length) return null;
+  if (aliases.length !== 1 || !limit || limit.includes(",")) {
+    throw Object.assign(new Error("Этот запуск включает хост с sudo по разовому паролю. Выберите один конкретный хост и выполните аудит вручную; плановые и групповые задания для него не запускаются."), { code: "sudo_password_host_required" });
+  }
+  return onDemand[0];
+}
+
+function validOneTimeSudoPassword(value: string | undefined) {
+  return !value || (value.length <= 1024 && !/[\r\n\0]/.test(value));
+}
+
+function redactSecret(value: string | undefined, secret: string | undefined) {
+  return secret && value ? value.split(secret).join("[скрыто]") : value ?? "";
 }
 
 export async function runAnsiblePlaybook({
@@ -188,12 +221,15 @@ export async function runAnsiblePlaybook({
   limit,
   extraVars = {},
   checkMode = false,
+  becomePassword,
 }: {
   action: PlaybookAction;
   profileId: string;
   limit?: string;
   extraVars?: Record<string, string>;
   checkMode?: boolean;
+  /** A caller-provided password for one manual sudo operation; never stored. */
+  becomePassword?: string;
 }) {
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
@@ -207,6 +243,13 @@ export async function runAnsiblePlaybook({
   const targets = (limit ?? "linux_hosts").split(",").flatMap((target) => getInventoryTargetHosts(target));
   if (!targets.some((host) => host.groups.includes("linux_hosts"))) {
     throw Object.assign(new Error("В выбранной цели нет хостов группы linux_hosts; проверка не запущена."), { code: "inventory_target_missing" });
+  }
+  if (!validOneTimeSudoPassword(becomePassword)) {
+    throw Object.assign(new Error("Пароль sudo должен быть одной строкой длиной до 1024 символов."), { code: "bad_sudo_password" });
+  }
+  const onDemandHost = onDemandSudoHostForLimit(limit);
+  if (onDemandHost && !becomePassword) {
+    throw Object.assign(new Error(`Для хоста ${onDemandHost} введите пароль sudo для этой операции. HCP не сохраняет его.`), { code: "sudo_password_required" });
   }
   const playbookPath = path.join(repoRoot, "ansible", "playbooks", selected.file);
   const args = ["-i", inventoryPath, playbookPath, "-e", `audit_profile=${profileId}`];
@@ -228,12 +271,37 @@ export async function runAnsiblePlaybook({
   }
 
   const command = `ansible-playbook ${args.join(" ")}`;
-  const result = await execFileAsync("ansible-playbook", args, {
-    cwd: repoRoot,
-    timeout: selected.timeout,
-    maxBuffer: 1024 * 1024 * 8,
-    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ANSIBLE_SSH_ARGS: ansibleSshArgs(), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
-  });
-
-  return { ...result, command, repoRoot, reportRunId };
+  let secretDirectory = "";
+  try {
+    let executionArgs = args;
+    if (becomePassword) {
+      secretDirectory = mkdtempSync(path.join(os.tmpdir(), "hcp-become-"));
+      chmodSync(secretDirectory, 0o700);
+      const secretFile = path.join(secretDirectory, "vars.json");
+      // Keep the secret out of command arguments, environment variables,
+      // inventory and report/incident data.  It is removed immediately after
+      // this one Ansible child exits.
+      writeFileSync(secretFile, JSON.stringify({ ansible_become_password: becomePassword }), { mode: 0o600 });
+      executionArgs = [...args.slice(0, 2), "--extra-vars", `@${secretFile}`, ...args.slice(2)];
+    }
+    const result = await execFileAsync("ansible-playbook", executionArgs, {
+      cwd: repoRoot,
+      timeout: selected.timeout,
+      maxBuffer: 1024 * 1024 * 8,
+      // Password-prompting sudo on Astra can require a terminal.  It is
+      // requested only for this one protected manual run, never globally.
+      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ANSIBLE_SSH_ARGS: `${ansibleSshArgs()}${becomePassword ? " -tt" : ""}`, ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
+    });
+    return { ...result, stdout: redactSecret(result.stdout, becomePassword), stderr: redactSecret(result.stderr, becomePassword), command, repoRoot, reportRunId };
+  } catch (error) {
+    const output = error as { stdout?: string; stderr?: string; message?: string };
+    if (becomePassword) {
+      output.stdout = redactSecret(output.stdout, becomePassword);
+      output.stderr = redactSecret(output.stderr, becomePassword);
+      output.message = redactSecret(output.message, becomePassword);
+    }
+    throw error;
+  } finally {
+    if (secretDirectory) rmSync(secretDirectory, { recursive: true, force: true });
+  }
 }

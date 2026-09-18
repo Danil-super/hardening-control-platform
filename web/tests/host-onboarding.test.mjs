@@ -49,6 +49,30 @@ test("one action installs an individual key then saves only after successful key
   assert.equal(input.sudoPassword, "");
 });
 
+test("Astra sudo su mode uses the sudo password for the first preflight only", async () => {
+  const calls = [];
+  const input = secrets();
+  const result = await connectAndSaveHost(connection, input, { editing: false,
+    request: async (url, options) => {
+      const body = JSON.parse(options.body); calls.push([url, body]);
+      if (url.endsWith("/access")) return Response.json({ ok: true, trusted: true });
+      if (url.endsWith("/bootstrap")) {
+        return Response.json({ ok: true, credentialId: "a".repeat(64), sudoMode: "on_demand", sudo: { mode: "on_demand", ready: true } });
+      }
+      if (url.endsWith("/preflight")) {
+        assert.equal(body.sudoPassword, "sudo-fixture-only");
+        return Response.json({ ok: true });
+      }
+      assert.doesNotMatch(options.body, /fixture-only/);
+      return Response.json({ ok: true });
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(calls.filter(([url]) => url.endsWith("/preflight")).length, 1);
+  assert.equal(input.password, "");
+  assert.equal(input.sudoPassword, "");
+});
+
 test("an unknown server is not sent a password and the UI need not clear its password field yet", async () => {
   const calls = [], input = secrets();
   const result = await connectAndSaveHost(connection, input, { editing: false,

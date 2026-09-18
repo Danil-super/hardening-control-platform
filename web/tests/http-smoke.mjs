@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -11,6 +11,9 @@ import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const inventoryPath = path.resolve(webDir, "..", "ansible", "inventory.ini");
+const originalInventory = existsSync(inventoryPath) ? readFileSync(inventoryPath) : null;
+const inventoryExample = readFileSync(path.resolve(webDir, "..", "ansible", "inventory.example.ini"));
 const temporary = mkdtempSync(path.join(os.tmpdir(), "hcp-http-smoke-"));
 const fixtureBin = path.join(temporary, "bin");
 const preflightFixture = path.join(temporary, "preflight-case");
@@ -91,6 +94,10 @@ async function request(endpoint, { method = "GET", body, auth = true, origin = b
 }
 
 try {
+  // Host routes intentionally manage inventory in normal operation. Keep this
+  // process-level smoke test isolated and restore any developer inventory even
+  // when one assertion fails midway through the test.
+  writeFileSync(inventoryPath, inventoryExample, { mode: 0o600 });
   await start();
   await request("/api/ansible/hosts", { auth: false, status: 401 });
   await request("/api/ansible/session", { auth: false, status: 401 });
@@ -118,7 +125,7 @@ try {
   assert.match(hostsPage.slice(formPosition), /Пароль для входа по SSH/);
   assert.match(hostsPage.slice(formPosition), /sudo запрашивает другой пароль/);
   assert.match(hostsPage.slice(formPosition), /Пароль, который запрашивает sudo/);
-  assert.match(hostsPage.slice(formPosition), /использует введённый пароль один раз, включает постоянное повышение прав/);
+  assert.match(hostsPage.slice(formPosition), /один раз проверяет обычный sudo по паролю, не изменяет sudoers/);
   assert.match(hostsPage, /type="password"/);
   const renderedButtons = Array.from(hostsPage.matchAll(/<button([^>]*)>([\s\S]*?)<\/button>/g));
   for (const label of ["Сверить и сохранить", "Скопировать команду", "Получить отпечатки по сети"]) {
@@ -228,6 +235,26 @@ try {
   })).json();
   assert.equal(savedCredentialPreflight.ok, true);
   assert.match(readFileSync(`${preflightFixture}.calls`, "utf8"), /sudo/);
+  // A current Astra-style account can elevate with `sudo su`, but HCP must
+  // never persist that password or create a sudoers rule. The server blocks a
+  // missing password before invoking Ansible and accepts it only for this one
+  // protected preflight request.
+  guardedMetadata.sudoReadyAt = null;
+  guardedMetadata.sudoMode = "on_demand";
+  writeFileSync(path.join(guardedDirectory, "metadata.json"), JSON.stringify(guardedMetadata));
+  writeFileSync(`${preflightFixture}.calls`, "");
+  const onDemandMissingPassword = await (await request("/api/ansible/hosts/preflight", {
+    method: "POST", body: { ...guardedIdentity, become: true }, status: 409,
+  })).json();
+  assert.equal(onDemandMissingPassword.error, "sudo_password_required");
+  assert.equal(readFileSync(`${preflightFixture}.calls`, "utf8"), "");
+  const onDemandPassword = "on-demand-sudo-fixture";
+  const onDemandPreflight = await (await request("/api/ansible/hosts/preflight", {
+    method: "POST", body: { ...guardedIdentity, become: true, sudoPassword: onDemandPassword },
+  })).json();
+  assert.equal(onDemandPreflight.ok, true);
+  assert.doesNotMatch(JSON.stringify(onDemandPreflight), /on-demand-sudo-fixture/);
+  assert.match(readFileSync(`${preflightFixture}.calls`, "utf8"), /sudo/);
   const foreignSavedCredential = await (await request("/api/ansible/hosts/preflight", {
     method: "POST", body: { ...guardedIdentity, become: true, credentialId: "f".repeat(64) }, status: 409,
   })).json();
@@ -278,5 +305,7 @@ try {
   console.log(`PASS ${checks} HTTP checks: auth, CSRF, report rendering, source selection and restart persistence (isolated fixtures)`);
 } finally {
   await stop();
+  if (originalInventory === null) rmSync(inventoryPath, { force: true });
+  else writeFileSync(inventoryPath, originalInventory, { mode: 0o600 });
   rmSync(temporary, { recursive: true, force: true });
 }

@@ -17,7 +17,7 @@ const messages: Record<string, string> = {
   revocation_failed: "Не удалось подтвердить завершение отзыва доступа на хосте.",
 };
 
-export async function revokeHostSshAccess(identity: HostIdentity, input: { keyPath: string; publicKey: string; credentialId: string }) {
+export async function revokeHostSshAccess(identity: HostIdentity, input: { keyPath: string; publicKey: string; credentialId: string; sudoMode?: "on_demand" | "passwordless" | null }) {
   return new Promise<void>((resolve, reject) => {
     const script = path.join(process.cwd(), "..", "ansible", "scripts", "hcp-ssh-revoke.py");
     const child = spawn("/usr/bin/python3", [script], { stdio: ["pipe", "pipe", "pipe"] });
@@ -41,6 +41,7 @@ export async function revokeHostSshAccess(identity: HostIdentity, input: { keyPa
         } else resolve();
       } catch { reject(credentialError(messages.revocation_failed, "revocation_failed")); }
     });
-    child.stdin.end(JSON.stringify({ ...identity, keyPath: input.keyPath, publicKey: input.publicKey, credentialId: input.credentialId, knownHostsPath: getKnownHostsPath() }));
+    child.stdin.end(JSON.stringify({ ...identity, keyPath: input.keyPath, publicKey: input.publicKey, credentialId: input.credentialId,
+      sudoMode: input.sudoMode ?? null, knownHostsPath: getKnownHostsPath() }));
   });
 }

@@ -51,10 +51,10 @@ export const bootstrapMessages: Record<string, string> = {
 };
 export type BootstrapResult = {
   ok: boolean; error?: string; publicKey?: string; fingerprint?: string;
-  sudo?: { requested: boolean; ready: boolean; configured: boolean; error?: string };
+  sudo?: { requested: boolean; ready: boolean; configured: boolean; error?: string; mode?: "on_demand" | "passwordless" };
 };
 export function runSshBootstrap(identity: HostIdentity, options: {
-  credentialId: string; keyPath: string; password: string; sudoPassword: string; configureSudo: boolean;
+  credentialId: string; keyPath: string; password: string; sudoPassword: string; configureSudo: boolean; sudoMode?: "on_demand";
 }): Promise<BootstrapResult> {
   return new Promise((resolve, reject) => {
     const script = path.join(process.cwd(), "..", "ansible", "scripts", "hcp-ssh-bootstrap.py");

@@ -65,7 +65,10 @@ def main():
     if not re.search(r"(?m)^pipelining\s*=\s*False\s*$", config_file):
         raise AssertionError("HCP must disable Ansible pipelining for non-interactive sudo")
     def check_connection(host):
-        result = request("/api/ansible/hosts/preflight", host)
+        body = dict(host)
+        if body.get("sudoMode") == "on_demand":
+            body["sudoPassword"] = PASSWORD
+        result = request("/api/ansible/hosts/preflight", body)
         if not result.get("ok") or result["checks"]["sudo"]["state"] != "passed":
             raise AssertionError("Per-host Ansible preflight failed: " + result.get("message", ""))
     if args.check_persistence:
@@ -76,16 +79,16 @@ def main():
             assert saved["credentialId"] == host["credentialId"]
             assert saved["credentialFingerprint"] == host["fingerprint"]
             assert saved["credentialReady"]
-            check_connection({key: host[key] for key in ["alias", "address", "user", "port", "credentialId", "become"]})
+            check_connection({key: host[key] for key in ["alias", "address", "user", "port", "credentialId", "become", "sudoMode"]})
         closing = next(host for host in protocol["hosts"] if host["alias"] == "enrolled-second")
         closed = request("/api/ansible/hosts/decommission", {"alias": closing["alias"], "confirmation": closing["alias"]})
         assert closed["ok"], closed
         keys = run(["docker", "exec", SECOND, "cat", "/home/lab/.ssh/authorized_keys"]).stdout.splitlines()
         assert closing["publicKey"] not in keys, "Closeout left the individual HCP key on the target"
         rule_path = "/etc/sudoers.d/zz-hcp-" + closing["credentialId"]
-        assert run(["docker", "exec", SECOND, "/bin/sh", "-c", "test ! -e " + rule_path], check=False).returncode == 0, "Closeout left the HCP sudoers rule on the target"
+        assert run(["docker", "exec", SECOND, "/bin/sh", "-c", "test ! -e " + rule_path], check=False).returncode == 0, "On-demand enrollment unexpectedly created an HCP sudoers rule"
         assert all(host["alias"] != closing["alias"] for host in request("/api/ansible/hosts")["hosts"]), "Closeout left the host in inventory"
-        print("PASS Individual keys survive restart and closeout removes the HCP key plus managed sudoers rule")
+        print("PASS Individual keys survive restart and closeout removes the HCP key without changing sudoers")
         return
 
     networks = json.loads(run(["docker", "inspect", target, "--format", "{{json .NetworkSettings.Networks}}"]).stdout)
@@ -105,9 +108,9 @@ def main():
         run(["docker", "exec", "-i", container, "chpasswd"], text="lab:" + PASSWORD + "\n")
         run(["docker", "exec", container, "/bin/sh", "-c", "printf '\nMatch User lab\n  PasswordAuthentication yes\n' >> /etc/ssh/sshd_config; /usr/sbin/sshd -t"])
         run(["docker", "kill", "--signal", "HUP", container])
-    # Model a hardened target where sudo requires a terminal.  HCP must use a
-    # PTY once during enrollment and create its per-user !requiretty override
-    # for later non-interactive Ansible jobs.
+    # Model a hardened target where sudo requires a terminal. HCP must use a
+    # PTY for the password-bearing one-time operations without modifying the
+    # target's sudoers policy.
     run(["docker", "exec", SECOND, "/bin/sh", "-c", "printf 'Defaults:lab requiretty\nlab ALL=(root) ALL\n' > /etc/sudoers.d/lab; chmod 440 /etc/sudoers.d/lab; visudo -c"])
     a = {"alias": "lab-insecure", "address": "lab-target", "user": "lab", "port": 22, "become": True}
     b = {"alias": "enrolled-second", "address": SECOND, "user": "lab", "port": 22, "become": True}
@@ -121,7 +124,8 @@ def main():
         assert request("/api/ansible/access", {"operation": "status", "address": host["address"], "port": 22})["trusted"] is True
     wrong = request("/api/ansible/hosts/bootstrap", {**a, "password": "wrong-fixture-password"}, status=400)
     assert wrong["error"] == "password_rejected", "Unexpected password rejection: " + json.dumps(wrong)
-    result_a = request("/api/ansible/hosts/bootstrap", {**a, "password": PASSWORD})
+    result_a = request("/api/ansible/hosts/bootstrap", {**a, "password": PASSWORD, "sudoPassword": PASSWORD,
+                                                          "configureSudo": True, "confirmRootAccess": True})
     rejected_sudo = request("/api/ansible/hosts/bootstrap", {**b, "password": PASSWORD, "sudoPassword": WRONG_SUDO_PASSWORD,
                                                                 "configureSudo": True, "confirmRootAccess": True}, status=400)
     assert rejected_sudo["error"] in {"sudo_password_rejected", "sudo_auth_timeout"}, "Unexpected sudo-password rejection: " + json.dumps(rejected_sudo)
@@ -136,9 +140,13 @@ def main():
     assert result_b["publicKey"] == rejected_sudo["publicKey"]
     assert result_a["fingerprint"] != result_b["fingerprint"]
     assert result_a["publicKey"] != result_b["publicKey"]
-    assert result_b["sudo"]["configured"] and result_b["sudo"]["ready"]
+    assert result_a["sudoMode"] == "on_demand" and result_a["sudo"]["ready"]
+    assert result_b["sudoMode"] == "on_demand" and result_b["sudo"]["ready"]
+    assert result_b["sudo"]["configured"] is False
     a["credentialId"] = result_a["credentialId"]
     b["credentialId"] = result_b["credentialId"]
+    a["sudoMode"] = result_a["sudoMode"]
+    b["sudoMode"] = result_b["sudoMode"]
     request("/api/ansible/hosts", {**a, "group": "linux_hosts"}, method="PUT")
     request("/api/ansible/hosts", {**b, "group": "linux_hosts"})
     # The saved identity and the supplied key conflict.  A 409 makes the
@@ -146,7 +154,8 @@ def main():
     # used for host B.
     swapped = request("/api/ansible/hosts/preflight", {**b, "credentialId": a["credentialId"]}, status=409)
     assert not swapped["ok"]
-    repeat = request("/api/ansible/hosts/bootstrap", {**a, "password": ""})
+    repeat = request("/api/ansible/hosts/bootstrap", {**a, "password": "", "sudoPassword": PASSWORD,
+                                                        "configureSudo": True, "confirmRootAccess": True})
     assert repeat["credentialId"] == a["credentialId"] and repeat["fingerprint"] == result_a["fingerprint"]
     # The remote authorized_keys file contains only one copy of the managed key.
     keys = run(["docker", "exec", target, "cat", "/home/lab/.ssh/authorized_keys"]).stdout.splitlines()
@@ -174,7 +183,7 @@ def main():
     logs = run(["docker", "logs", hcp])
     assert all(secret not in logs.stdout + logs.stderr for secret in (PASSWORD, WRONG_SUDO_PASSWORD))
     protocol = {"passed": True, "scope": "Two disposable Debian OpenSSH containers; not Astra",
-                "checks": ["unknown server rejected before password authentication", "wrong SSH password rejected", "wrong sudo password returns a safe classified error", "retry reuses the pair with a separate sudo password", "unique per-host keys", "password-based sudo setup with requiretty", "real Ansible without legacy key", "cross-host keys rejected", "no password in state or responses", "closeout removes the managed key and sudoers rule"],
+                "checks": ["unknown server rejected before password authentication", "wrong SSH password rejected", "wrong sudo password returns a safe classified error", "retry reuses the pair with a separate sudo password", "unique per-host keys", "password-based sudo with requiretty without a sudoers change", "real Ansible without legacy key", "cross-host keys rejected", "no password in state or responses", "closeout removes the managed key without a sudoers rule"],
                 "hosts": [{**a, "fingerprint": result_a["fingerprint"], "publicKey": result_a["publicKey"]}, {**b, "fingerprint": result_b["fingerprint"], "publicKey": result_b["publicKey"]}]}
     PROTOCOL.write_text(json.dumps(protocol, indent=2) + "\n")
     print("PASS Password enrollment, unique keys, sudo, cross-host isolation and secret handling on two real SSH servers")

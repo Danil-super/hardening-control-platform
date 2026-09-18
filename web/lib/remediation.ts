@@ -63,12 +63,14 @@ export async function previewRemediation({
   hostAlias,
   extraVars,
   reason,
+  becomePassword,
 }: {
   action: PlaybookAction;
   profileId: string;
   hostAlias: string;
   extraVars: Record<string, string>;
   reason: string;
+  becomePassword?: string;
 }) {
   validateRemediationTarget(action, hostAlias, extraVars);
   const result = await runAnsiblePlaybook({
@@ -77,6 +79,7 @@ export async function previewRemediation({
     limit: hostAlias,
     extraVars,
     checkMode: true,
+    becomePassword,
   });
   appendIncident({
     action,
@@ -96,12 +99,14 @@ export async function applyRemediation({
   hostAlias,
   extraVars,
   reason,
+  becomePassword,
 }: {
   action: PlaybookAction;
   profileId: string;
   hostAlias: string;
   extraVars: Record<string, string>;
   reason: string;
+  becomePassword?: string;
 }) {
   const connection = validateRemediationTarget(action, hostAlias, extraVars);
   const transactionId = `txn-${new Date().toISOString().replace(/[-:.]/g, "")}-${randomUUID().slice(0, 8)}`;
@@ -123,7 +128,7 @@ export async function applyRemediation({
   }
 
   try {
-    const preAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias });
+    const preAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias, becomePassword });
     const preAuditReportId = reportIdForRun({
       action: "agentlessAudit",
       profileId,
@@ -142,12 +147,13 @@ export async function applyRemediation({
       profileId,
       limit: hostAlias,
       extraVars: { ...extraVars, transaction_id: transactionId, remediation_action: action },
+      becomePassword,
     });
     const backupRef = backupReference(transactionId);
     updateRemediationTransaction(transactionId, { status: "backed_up", backupRef });
 
     assertConnectionUnchanged(hostAlias, connection);
-    const applied = await runAnsiblePlaybook({ action, profileId, limit: hostAlias, extraVars });
+    const applied = await runAnsiblePlaybook({ action, profileId, limit: hostAlias, extraVars, becomePassword });
     appendIncident({
       action,
       kind: "response",
@@ -161,7 +167,7 @@ export async function applyRemediation({
     let postAuditReportId: string | null = null;
     let postAuditError: string | null = null;
     try {
-      const postAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias });
+      const postAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias, becomePassword });
       postAuditReportId = reportIdForRun({
         action: "agentlessAudit",
         profileId,
@@ -211,7 +217,7 @@ export async function applyRemediation({
   }
 }
 
-export async function rollbackRemediation(transactionId: string, confirmedHost: string) {
+export async function rollbackRemediation(transactionId: string, confirmedHost: string, becomePassword?: string) {
   const transaction = getRemediationTransaction(transactionId);
   if (!transaction) {
     throw Object.assign(new Error("Транзакция remediation не найдена."), { code: "transaction_not_found" });
@@ -233,6 +239,7 @@ export async function rollbackRemediation(transactionId: string, confirmedHost: 
       profileId: transaction.profileId,
       limit: transaction.hostAlias,
       extraVars: { transaction_id: transaction.id, remediation_action: transaction.action },
+      becomePassword,
     });
     // Do not call a failed reload successful: the runner propagates its exit code.
     updateRemediationTransaction(transaction.id, { status: "rolled_back", error: null });

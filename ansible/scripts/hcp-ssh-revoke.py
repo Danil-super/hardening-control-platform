@@ -191,7 +191,15 @@ def revoke(config):
         raise RevokeError('bad_request')
     encoded = base64.b64encode(REMOTE_PROGRAM.encode('utf-8')).decode('ascii')
     python = "import base64;exec(compile(base64.b64decode(%r), '<hcp-key-revoke>', 'exec'))" % encoded
-    command = "if [ \"$(id -u)\" = 0 ]; then exec python3 -c %s; else exec sudo -n -- python3 -c %s; fi" % (shlex.quote(python), shlex.quote(python))
+    # The current default enrollment never creates a sudoers file.  In that
+    # on-demand mode the SSH account owns its own authorized_keys, so revoke
+    # the individual key without requesting a password or changing sudo
+    # policy.  Older passwordless enrolments retain the strict root/sudo -n
+    # path because they may also need to remove the legacy HCP sudoers rule.
+    if config.get('sudoMode') == 'on_demand':
+        command = "exec python3 -c %s" % shlex.quote(python)
+    else:
+        command = "if [ \"$(id -u)\" = 0 ]; then exec python3 -c %s; else exec sudo -n -- python3 -c %s; fi" % (shlex.quote(python), shlex.quote(python))
     client = connect(config)
     try:
         stdin, stdout, stderr = client.exec_command('/bin/sh -c ' + shlex.quote(command), timeout=30, get_pty=False)

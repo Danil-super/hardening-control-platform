@@ -8,9 +8,9 @@ export type OnboardingStage = "trust" | "bootstrap" | "preflight" | "save";
 type ApiPayload = Awaited<ReturnType<typeof readApiResponse>>;
 
 /**
- * A password-based sudo session cannot be reused by scheduled audits.  On the
- * first non-root connection, use the supplied password once to establish the
- * HCP-managed non-interactive path; neither input is persisted.
+ * A password-based sudo session cannot be reused by scheduled audits.  For a
+ * non-root Astra account HCP verifies it once during enrollment, then keeps
+ * only the individual SSH key.  The sudo password itself is never persisted.
  */
 export function onboardingSecretsForUser(user: string, password: string, alternateSudoPassword = ""): OnboardingSecrets {
   // After an interrupted first attempt the individual SSH key can already be
@@ -38,10 +38,10 @@ export async function connectAndSaveHost(connection: HostConnection, secrets: On
   const { alias, address, user, port, group, become } = connection;
   let credentialId = connection.credentialId;
   // A retained individual key means only that SSH is ready.  It does not mean
-  // that the one-time sudo setup completed.  In particular, after a failed
-  // first attempt the form has a credentialId but must not silently fall
-  // through to an Ansible `sudo -n` preflight without the administrator
-  // password that is needed to repair the setup.
+  // that one-time sudo verification completed.  In particular, after a
+  // failed first attempt the form has a credentialId but must not silently
+  // fall through to a privileged preflight without the administrator
+  // password that is needed to verify the connection.
   if (!options.editing && !credentialId && !secrets.password) {
     options.onStage?.("bootstrap");
     return {
@@ -62,13 +62,18 @@ export async function connectAndSaveHost(connection: HostConnection, secrets: On
       payload: {
         ok: false,
         error: "sudo_password_required",
-        message: "Ключ SSH уже сохранён, но HCP должен завершить настройку прав администратора. Введите пароль SSH или, если sudo запрашивает другой пароль, укажите его в дополнительном поле; новая ключевая пара не создаётся.",
+        message: "Ключ SSH уже сохранён, но HCP должен проверить права администратора. Введите пароль SSH или, если sudo запрашивает другой пароль, укажите его в дополнительном поле; новая ключевая пара не создаётся.",
       } as ApiPayload,
     };
   }
   const send = async (url: string, body: object, method = "POST") => readApiResponse(await request(url, {
     method, credentials: "same-origin", cache: "no-store", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   }));
+  // Keep this only in the current function frame long enough for the first
+  // Ansible preflight.  The browser fields are cleared before the bootstrap
+  // request, and no later save request receives a password.
+  let onDemandSudoPassword = secrets.sudoPassword || secrets.password;
+  let onDemandSudo = false;
   try {
     options.onStage?.("trust");
     const trust = await send("/api/ansible/access", { operation: "status", address, port });
@@ -90,16 +95,21 @@ export async function connectAndSaveHost(connection: HostConnection, secrets: On
         return { ok: false, stage: "bootstrap" as const, payload: credential };
       }
       credentialId = credential.credentialId;
+      onDemandSudo = credential.sudoMode === "on_demand" || credential.sudo?.mode === "on_demand";
       options.onCredential?.(credential);
     }
     options.onStage?.("preflight");
-    const preflight = await send("/api/ansible/hosts/preflight", { alias, address, user, port, become, credentialId });
+    const preflight = await send("/api/ansible/hosts/preflight", {
+      alias, address, user, port, become, credentialId,
+      ...(onDemandSudo ? { sudoPassword: onDemandSudoPassword } : {}),
+    });
+    onDemandSudoPassword = "";
     options.onPreflight?.(preflight, credentialId);
     if (!preflight.ok) return { ok: false, stage: "preflight" as const, payload: preflight };
     options.onStage?.("save");
     const saved = await send("/api/ansible/hosts", { alias, address, user, port, group, become, credentialId }, options.editing ? "PUT" : "POST");
     return { ok: Boolean(saved.ok), stage: "save" as const, payload: saved };
   } finally {
-    secrets.password = ""; secrets.sudoPassword = "";
+    secrets.password = ""; secrets.sudoPassword = ""; onDemandSudoPassword = "";
   }
 }

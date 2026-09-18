@@ -73,23 +73,25 @@ test("host closeout revokes the HCP-managed sudo rule together with its individu
   assert.match(route, /credentialId: host\.credentialId/);
 });
 
-test("password onboarding reports an incomplete automatic sudo setup before generic preflight", () => {
+test("password onboarding uses one-time sudo without creating a sudoers rule", () => {
   const bootstrap = read(path.join("web", "app", "api", "ansible", "hosts", "bootstrap", "route.ts"));
   const onboarding = read(path.join("web", "lib", "host-onboarding.ts"));
-  assert.match(bootstrap, /sudo_setup_failed/);
-  assert.match(bootstrap, /sudo_check_failed/);
+  const helper = read(path.join("ansible", "scripts", "hcp-ssh-bootstrap.py"));
+  assert.match(bootstrap, /markHostCredentialSudoOnDemand/);
+  assert.match(bootstrap, /sudoMode: "on_demand"/);
   assert.match(bootstrap, /sudo_password_rejected/);
   assert.match(bootstrap, /sudo_not_permitted/);
-  assert.match(bootstrap, /sudoers_write_rejected/);
   assert.match(bootstrap, /sudo_safe_channel_failed/);
   assert.match(bootstrap, /sudo_auth_timeout/);
   assert.match(bootstrap, /sudo_elevation_rejected_or_policy/);
-  assert.match(bootstrap, /sudo_rule_not_effective/);
-  assert.match(bootstrap, /sudo_ansible_probe_failed/);
+  assert.match(helper, /sudo_on_demand_readiness_script/);
+  assert.match(helper, /without writing an HCP-owned NOPASSWD rule/);
+  assert.doesNotMatch(helper.slice(helper.indexOf("def enroll")), /sudo_setup_script\(/);
   assert.match(onboarding, /credential\.credentialId/);
+  assert.match(onboarding, /credential\.sudoMode === "on_demand"/);
 });
 
-test("Ansible keeps the same non-interactive sudo contract as host onboarding", () => {
+test("Ansible supplies a one-time sudo secret through a protected extra-vars file", () => {
   const config = read("ansible.cfg");
   const bootstrap = read(path.join("ansible", "scripts", "hcp-ssh-bootstrap.py"));
   const preflight = read(path.join("web", "app", "api", "ansible", "hosts", "preflight", "route.ts"));
@@ -102,6 +104,8 @@ test("Ansible keeps the same non-interactive sudo contract as host onboarding", 
   assert.match(bootstrap, /stty -echo/);
   assert.match(bootstrap, /SUDO_READY_MARKER/);
   assert.match(preflight, /sudo_setup_incomplete/);
+  assert.match(preflight, /ansible_become_password/);
+  assert.match(preflight, / -tt/);
 });
 
 test("CVE checking has an explicit Trivy-only isolated-network mode", () => {

@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { appendAuditEvent, hasActiveRemediationForHost } from "@/lib/state-store";
-import { acquireHostCredentialCloseoutLock, credentialKeyPath, deleteHostCredential, HostCredentialError, validateHostCredential } from "@/lib/host-credentials";
+import { acquireHostCredentialCloseoutLock, credentialKeyPath, deleteHostCredential, hostCredentialSudoMode, HostCredentialError, validateHostCredential } from "@/lib/host-credentials";
 import { readInventoryCloseoutHost, removeInventoryCloseoutHost } from "@/lib/inventory-closeout";
 import { revokeHostSshAccess } from "@/lib/ssh-revocation";
 
@@ -31,12 +31,15 @@ export async function POST(request: Request) {
     const lockedCredential = validateHostCredential(host.credentialId, identity);
     if (!lockedCredential.publicKey || !lockedCredential.fingerprint) throw new HostCredentialError("Для этого хоста нет проверенного индивидуального публичного ключа.", "credential_unverified");
     appendAuditEvent("host_decommission_started", alias, { alias, address: host.address, port: host.port, user: host.user, credentialId: host.credentialId, fingerprint: credential.fingerprint });
-    await revokeHostSshAccess(identity, { keyPath: credentialKeyPath(host.credentialId), publicKey: lockedCredential.publicKey, credentialId: host.credentialId });
+    const sudoMode = hostCredentialSudoMode(host.credentialId, identity);
+    await revokeHostSshAccess(identity, { keyPath: credentialKeyPath(host.credentialId), publicKey: lockedCredential.publicKey, credentialId: host.credentialId, sudoMode });
     remoteRevoked = true;
     deleteHostCredential(host.credentialId, identity);
     removeInventoryCloseoutHost(alias);
     appendAuditEvent("host_decommission_completed", alias, { alias, address: host.address, port: host.port, credentialId: host.credentialId, fingerprint: lockedCredential.fingerprint, reportsRetained: true, hostTrustRetained: true });
-    return NextResponse.json({ ok: true, message: "Доступ HCP к хосту отозван: уникальный ключ и созданное HCP правило sudoers удалены на цели, локальная пара и строка inventory удалены. Отчёты, история и доверенный ключ сервера сохранены." });
+    return NextResponse.json({ ok: true, message: sudoMode === "on_demand"
+      ? "Доступ HCP к хосту отозван: уникальный ключ удалён на цели, локальная пара и строка inventory удалены. HCP не создавала правило sudoers для этого хоста. Отчёты, история и доверенный ключ сервера сохранены."
+      : "Доступ HCP к хосту отозван: уникальный ключ и созданное HCP правило sudoers удалены на цели, локальная пара и строка inventory удалены. Отчёты, история и доверенный ключ сервера сохранены." });
   } catch (error) {
     if (error instanceof HostCredentialError && (error as HostCredentialError & { remoteRevoked?: boolean }).remoteRevoked) remoteRevoked = true;
     try { appendAuditEvent("host_decommission_failed", alias, { alias, remoteRevoked, code: error instanceof HostCredentialError ? error.code : "decommission_failed" }); } catch { /* keep the original outcome visible to the operator */ }

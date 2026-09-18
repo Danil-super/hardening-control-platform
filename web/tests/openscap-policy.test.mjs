@@ -140,6 +140,7 @@ test("manual audit exposes annotation failures instead of reporting full success
     "@/lib/state-store": { listOpenScapExceptions: () => [] },
     "@/lib/audit-result": { inspectAuditReports: () => ({ partial: false, warnings: [], reportIds: ["host-openscap-run-host"] }) },
     "@/lib/ansible-reports": {}, "@/lib/remediation": {},
+    "@/lib/ssh-bootstrap": { credentialTransportAllowed: () => true },
   });
   const response = await endpoint.POST(new Request("http://localhost", { method: "POST", body: JSON.stringify({ action: "openScapAudit", limit: "host", confirmAudit: true }) }));
   const body = await response.json();

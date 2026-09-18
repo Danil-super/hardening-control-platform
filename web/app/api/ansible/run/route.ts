@@ -19,6 +19,7 @@ import {
   isReversibleRemediationAction,
   previewRemediation,
 } from "@/lib/remediation";
+import { credentialTransportAllowed } from "@/lib/ssh-bootstrap";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -29,6 +30,15 @@ function validReason(value: unknown): value is string {
 
 export async function POST(request: Request) {
   const body = await request.json().catch(() => ({}));
+  const sudoPassword = typeof body?.sudoPassword === "string" ? body.sudoPassword : "";
+  if (typeof body?.sudoPassword !== "undefined" && (typeof body?.sudoPassword !== "string" || sudoPassword.length > 1024 || /[\r\n\0]/.test(sudoPassword))) {
+    return NextResponse.json({ ok: false, error: "bad_sudo_password", message: "Пароль sudo должен быть одной строкой длиной до 1024 символов." }, { status: 400 });
+  }
+  if (sudoPassword && !credentialTransportAllowed(request)) {
+    return NextResponse.json({ ok: false, error: "secure_transport_required",
+      message: "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu. Пароль не отправляется через обычный HTTP по сети." }, { status: 400 });
+  }
+  if (body && typeof body === "object") delete body.sudoPassword;
   const action = body?.action;
   const profileId = normalizeProfileId(body?.profileId);
   const limit = typeof body?.limit === "string" ? body.limit.trim() : "";
@@ -93,6 +103,7 @@ export async function POST(request: Request) {
           hostAlias: limit,
           extraVars: extraVars.values,
           reason: body.reason.trim(),
+          becomePassword: sudoPassword || undefined,
         });
         return NextResponse.json({
           ok: true,
@@ -113,6 +124,7 @@ export async function POST(request: Request) {
         hostAlias: limit,
         extraVars: extraVars.values,
         reason: body.reason.trim(),
+        becomePassword: sudoPassword || undefined,
       });
       const postAudit = applied.postAuditReportId ? readAnsibleReport(applied.postAuditReportId) : null;
       const partial = Boolean(applied.postAuditError || !postAudit || postAudit.partial);
@@ -197,6 +209,7 @@ export async function POST(request: Request) {
       profileId,
       limit: limit || undefined,
       extraVars: runnerExtraVars,
+      becomePassword: sudoPassword || undefined,
     });
     const reportId = reportIdForRun({ action, profileId, limit, reportRunId });
     let exceptionsApplied = 0;
@@ -265,7 +278,7 @@ export async function POST(request: Request) {
         stdout: output.stdout ?? "",
         stderr: output.stderr ?? "",
       },
-      { status: output.code === "inventory_missing" ? 400 : 500 },
+      { status: ["inventory_missing", "bad_sudo_password", "sudo_password_required", "sudo_password_host_required"].includes(output.code ?? "") ? 400 : 500 },
     );
   }
 }
