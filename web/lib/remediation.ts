@@ -25,6 +25,93 @@ export function isReversibleRemediationAction(action: PlaybookAction) {
   return reversibleRemediationActions.has(action);
 }
 
+type FirewallBaselineAssessment = {
+  ok: boolean;
+  blockers: string[];
+  warnings: string[];
+};
+
+type AuditRawFinding = {
+  id?: unknown;
+  status?: unknown;
+};
+
+type AuditRawPayload = {
+  scanner?: {
+    available?: unknown;
+    error?: unknown;
+    incompleteChecks?: unknown;
+  };
+  findings?: unknown;
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function incompleteCheckLabels(checks: string[]) {
+  const labels: Record<string, string> = {
+    ssh_effective_config: "эффективная конфигурация SSH",
+    security_auto_updates: "наличие механизма security-обновлений",
+    package_updates_available: "локальный кэш обновлений",
+    world_writable_dirs: "права временных каталогов",
+  };
+  return checks.map((check) => labels[check] ?? check.replace(/_/g, " "));
+}
+
+/**
+ * The full Linux profile deliberately keeps unrelated collection failures
+ * visible.  They should not, however, prevent a reversible firewall operation
+ * when the safety-critical evidence (current firewall and listening sockets)
+ * was successfully collected and the operation itself verifies the backend
+ * and creates a backup.
+ */
+export function assessFirewallBaseline(report: ReturnType<typeof readAnsibleReport>): FirewallBaselineAssessment {
+  const blockers: string[] = [];
+  const warnings: string[] = [];
+  if (!report) {
+    return { ok: false, blockers: ["исходный отчёт не создан или повреждён"], warnings };
+  }
+  if (report.available === false) blockers.push("исходный аудит недоступен");
+  if (report.reportTimeValid === false) blockers.push("время исходного аудита некорректно");
+
+  const raw = asRecord(report.raw) as AuditRawPayload | null;
+  if (!raw) {
+    if (report.partial) blockers.push("в отчёте нет сведений о проверках firewall и открытых портах");
+    return { ok: blockers.length === 0, blockers, warnings };
+  }
+
+  const scanner = asRecord(raw.scanner) as AuditRawPayload["scanner"] | null;
+  const incompleteChecks = Array.isArray(scanner?.incompleteChecks)
+    ? scanner.incompleteChecks.filter((value): value is string => typeof value === "string")
+    : [];
+  if (scanner?.available === false || scanner?.error) blockers.push("исходный аудит завершился с ошибкой scanner");
+
+  const findings = Array.isArray(raw.findings)
+    ? raw.findings.filter((value): value is AuditRawFinding => Boolean(asRecord(value)))
+    : [];
+  const statusFor = (id: string) => findings.find((finding) => finding.id === id)?.status;
+  const firewallStatus = statusFor("firewall_active");
+  const portsUnavailable = statusFor("agentless_ports_unavailable");
+
+  if (incompleteChecks.includes("firewall_active") || firewallStatus !== "passed") {
+    blockers.push("не подтверждено активное состояние поддерживаемого firewall");
+  }
+  if (incompleteChecks.includes("open_ports") || portsUnavailable === "manual") {
+    blockers.push("не получен список открытых портов перед изменением");
+  }
+
+  if (report.partial) {
+    const unrelated = incompleteChecks.filter((check) => !["firewall_active", "open_ports"].includes(check));
+    if (unrelated.length) {
+      warnings.push(`Исходный аудит содержит несвязанные с firewall ограничения: ${incompleteCheckLabels(unrelated).join(", ")}.`);
+    } else if (!blockers.length) {
+      warnings.push("Исходный аудит отмечен как неполный, но состояние firewall и открытые порты подтверждены.");
+    }
+  }
+  return { ok: blockers.length === 0, blockers, warnings };
+}
+
 function assertSingleKnownHost(limit: string) {
   if (!isSafeLimit(limit) || limit.includes(",") || !inventoryHostExists(limit)) {
     throw Object.assign(new Error("Для изменения выберите один сохраненный хост, а не группу или несколько хостов."), { code: "host_required" });
@@ -136,8 +223,9 @@ export async function applyRemediation({
       reportRunId: preAudit.reportRunId,
     });
     const preAuditReport = preAuditReportId ? readAnsibleReport(preAuditReportId) : null;
-    if (!preAuditReport || preAuditReport.partial) {
-      throw new Error("Исходный аудит отсутствует или неполон. Изменения firewall не начаты.");
+    const preAuditAssessment = assessFirewallBaseline(preAuditReport);
+    if (!preAuditAssessment.ok) {
+      throw new Error(`Исходный аудит не подтверждает безопасную точку firewall: ${preAuditAssessment.blockers.join("; ")}. Изменения не начаты.`);
     }
     updateRemediationTransaction(transactionId, { preAuditReportId });
 
@@ -166,6 +254,7 @@ export async function applyRemediation({
     });
     let postAuditReportId: string | null = null;
     let postAuditError: string | null = null;
+    let postAuditWarnings: string[] = [];
     try {
       const postAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias, becomePassword });
       postAuditReportId = reportIdForRun({
@@ -175,9 +264,11 @@ export async function applyRemediation({
         reportRunId: postAudit.reportRunId,
       });
       const postAuditReport = postAuditReportId ? readAnsibleReport(postAuditReportId) : null;
-      if (!postAuditReport || postAuditReport.partial) {
-        throw new Error("Повторный аудит отсутствует или неполон; изменение требует проверки.");
+      const postAuditAssessment = assessFirewallBaseline(postAuditReport);
+      if (!postAuditAssessment.ok) {
+        throw new Error(`Повторный аудит не подтвердил состояние firewall: ${postAuditAssessment.blockers.join("; ")}. Изменение требует проверки.`);
       }
+      postAuditWarnings = postAuditAssessment.warnings;
       updateRemediationTransaction(transactionId, { status: "applied", postAuditReportId });
     } catch (error) {
       postAuditError = error instanceof Error ? error.message : "Повторный аудит не выполнен.";
@@ -199,6 +290,8 @@ export async function applyRemediation({
       preAuditReportId,
       postAuditReportId,
       postAuditError,
+      preAuditWarnings: preAuditAssessment.warnings,
+      postAuditWarnings,
       backupRef,
     };
   } catch (error) {

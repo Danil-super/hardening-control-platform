@@ -8,7 +8,7 @@ import { compileServerModules } from "./_typescript-loader.mjs";
 // Exercise real orchestration and SQLite state while replacing only remote I/O.
 const compiled = compileServerModules(["remediation", "state-store", "astra-oval-config"]);
 writeFileSync(path.join(compiled.directory, "ansible-control.mjs"), `
-export const control = { runs: [], failAction: null, failPost: false, missingReport: false, address: "192.0.2.20" };
+export const control = { runs: [], failAction: null, failPost: false, missingReport: false, address: "192.0.2.20", report: {partial:false,available:true} };
 export const isSafeLimit = value => /^[A-Za-z0-9_-]+$/.test(value);
 export const inventoryHostExists = value => value === "host-one";
 export const inventoryHostConnection = () => ({address: control.address, port: 2222, user: "audit"});
@@ -24,7 +24,7 @@ export async function runAnsiblePlaybook(options) {
 `);
 writeFileSync(path.join(compiled.directory, "ansible-reports.mjs"), `
 import {control} from "./ansible-control.mjs";
-export const readAnsibleReport = () => control.missingReport ? null : {partial:false,available:true};
+export const readAnsibleReport = () => control.missingReport ? null : control.report;
 `);
 const remediation = await import(compiled.url("remediation"));
 const store = await import(compiled.url("state-store"));
@@ -36,7 +36,7 @@ beforeEach(() => {
   directory = mkdtempSync(path.join(tmpdir(), "hcp-remediation-test-"));
   process.env.HCP_STATE_DIR = directory;
   process.env.HCP_AUDIT_HMAC_KEY = "remediation-test-key";
-  Object.assign(control, {runs:[],failAction:null,failPost:false,missingReport:false,address:"192.0.2.20"});
+  Object.assign(control, {runs:[],failAction:null,failPost:false,missingReport:false,address:"192.0.2.20",report:{partial:false,available:true}});
 });
 afterEach(() => rmSync(directory, {recursive:true,force:true}));
 after(() => {
@@ -46,9 +46,40 @@ after(() => {
 });
 const request = {action:"closePort",profileId:"basic_linux",hostAlias:"host-one",extraVars:{target_port:"8080",target_protocol:"tcp"},reason:"test authorised remediation"};
 
+function verifiedButPartlyLimitedAudit(incompleteChecks = ["ssh_effective_config"]) {
+  return {
+    partial: true,
+    available: true,
+    raw: {
+      scanner: { partial: true, incompleteChecks },
+      findings: [
+        { id: "firewall_active", status: "passed" },
+        { id: "dangerous_ports_absent", status: "passed" },
+      ],
+    },
+  };
+}
+
 test("missing pre-audit prevents firewall backup and modification", async () => {
   control.missingReport = true;
-  await assert.rejects(remediation.applyRemediation(request), /аудит отсутствует/);
+  await assert.rejects(remediation.applyRemediation(request), /исходный отчёт не создан/);
+  assert.deepEqual(control.runs, ["agentlessAudit"]);
+  assert.equal(store.listRemediationTransactions()[0].backupRef, null);
+});
+
+test("unrelated audit limitations do not block a verified firewall transaction", async () => {
+  control.report = verifiedButPartlyLimitedAudit();
+  const result = await remediation.applyRemediation(request);
+  assert.equal(result.transaction.status, "applied");
+  assert.match(result.preAuditWarnings.join(" "), /эффективная конфигурация SSH/);
+  assert.match(result.postAuditWarnings.join(" "), /эффективная конфигурация SSH/);
+  assert.deepEqual(control.runs, ["agentlessAudit", "backupRemediation", "closePort", "agentlessAudit"]);
+});
+
+test("missing firewall or port evidence still prevents the backup and modification", async () => {
+  control.report = verifiedButPartlyLimitedAudit(["firewall_active"]);
+  control.report.raw.findings[0].status = "manual";
+  await assert.rejects(remediation.applyRemediation(request), /не подтверждено активное состояние поддерживаемого firewall/);
   assert.deepEqual(control.runs, ["agentlessAudit"]);
   assert.equal(store.listRemediationTransactions()[0].backupRef, null);
 });

@@ -44,6 +44,9 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.doesNotMatch(shell, /label: "Вход"/);
   assert.match(hosts, /Дополнительные проверки/);
   assert.match(hosts, /Обратимые изменения firewall/);
+  assert.match(hosts, /Сетевой сканер Greenbone \/ OpenVAS/);
+  assert.match(hosts, /Полная инструкция Greenbone/);
+  assert.match(hosts, /Несвязанные ограничения основного аудита больше не блокируют изменение/);
   assert.match(hosts, /Введите точный alias выбранного хоста/);
   assert.match(reports, /Журнал действий/);
   assert.match(reports, /DeleteRecordButton/);

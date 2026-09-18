@@ -2,6 +2,8 @@ import { ArrowRight, CheckCircle2, KeyRound, ServerCog, ShieldCheck } from "luci
 import { LinkButton } from "@/components/ui/button";
 
 const manualUrl = "https://github.com/Danil-super/hardening-control-platform/blob/main/docs/ubuntu-astra-setup.md";
+const greenboneContainersUrl = "https://greenbone.github.io/docs/latest/22.4/container/index.html";
+const greenboneFeedsUrl = "https://greenbone.github.io/docs/latest/22.4/container/workflows.html";
 const setupSteps = [
   "Выберите Astra в результатах сканирования или введите её адрес вручную.",
   "Введите логин и пароль администратора Astra прямо на сайте. Входить через терминал и создавать ключи вручную не нужно.",
@@ -84,6 +86,86 @@ export default function GuidePage() {
         <p className="mt-3 text-sm leading-6 text-slate-300">Используйте root с разрешённым SSH-входом или администратора, у которого работает <code>sudo su</code>. При подключении HCP проверяет выполнение модуля Ansible с правами root, не меняет sudoers и не хранит пароль. Для ручного аудита или изменения такого хоста введите пароль sudo в появившееся поле.</p>
         <p className="mt-3 text-sm leading-6 text-slate-300">Для существующего хоста откройте «Настроить», укажите административную учётную запись и нажмите «Сохранить подключение». Если меняется пользователь SSH, введите его пароль для установки отдельного ключа. История хоста сохраняется.</p>
         <a href={`${manualUrl}#sudo-access`} className="mt-4 inline-block text-sm text-sky-300 underline underline-offset-4">Подготовка административной учётной записи</a>
+      </section>
+
+      <section id="greenbone" className="scroll-mt-6 rounded-xl border border-violet-400/20 bg-violet-500/5 p-5">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-violet-200">Сетевое сканирование</p>
+            <h2 className="mt-2 text-xl font-semibold text-white">Greenbone / OpenVAS: от запуска до XML</h2>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">Greenbone — самостоятельный сетевой сканер. Он видит сетевые службы, версии и известные уязвимости, а HCP принимает только его завершённый XML-отчёт. Это разделение не даёт HCP незаметно запускать активное сетевое сканирование.</p>
+          </div>
+          <LinkButton href="/hosts" variant="secondary">Перейти к импорту XML</LinkButton>
+        </div>
+
+        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+          <article className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+            <h3 className="font-semibold text-white">1. Разверните сканер отдельно</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-400">Подходит отдельная VM или control node, если на нём хватает ресурсов. По документации Greenbone требуется минимум 4 ГБ RAM и 20 ГБ диска; для нормальной работы рекомендуется 8 ГБ и 60 ГБ. Целевая Astra ничего для этого не устанавливает.</p>
+            <pre className="mt-3 overflow-x-auto rounded-md border border-slate-800 bg-slate-950 p-3 text-xs leading-5 text-slate-300"><code>{`export DOWNLOAD_DIR="$HOME/greenbone-community-edition"
+mkdir -p "$DOWNLOAD_DIR"
+curl -f -O -L https://greenbone.github.io/docs/latest/_static/compose.yaml --output-dir "$DOWNLOAD_DIR"
+docker compose -f "$DOWNLOAD_DIR/compose.yaml" pull
+docker compose -f "$DOWNLOAD_DIR/compose.yaml" up -d`}</code></pre>
+            <p className="mt-3 text-sm leading-6 text-slate-400">После запуска откройте <code>https://127.0.0.1</code> на машине со сканером. В официальном Compose первый локальный вход — <code>admin</code>/<code>admin</code>; браузер предупредит о самоподписанном сертификате. Сразу смените пароль администратора. Для первой загрузки feeds может потребоваться от нескольких минут до нескольких часов.</p>
+          </article>
+
+          <article className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+            <h3 className="font-semibold text-white">2. Дождитесь готовности баз</h3>
+            <p className="mt-2 text-sm leading-6 text-slate-400">Сканирование нельзя считать готовым сразу после старта контейнеров: Greenbone сначала загружает и индексирует VT, CVE и конфигурации. Пока данные загружаются, задачи могут быть в очереди или давать неполные результаты.</p>
+            <pre className="mt-3 overflow-x-auto rounded-md border border-slate-800 bg-slate-950 p-3 text-xs leading-5 text-slate-300"><code>{`docker compose -f "$DOWNLOAD_DIR/compose.yaml" logs -f ospd-openvas gvmd`}</code></pre>
+            <p className="mt-3 text-sm leading-6 text-slate-400">При регулярном обновлении сначала подтягиваются образы с feeds, затем работающие службы сами загружают их в память и БД. Не запускайте новый аудит, пока эта загрузка не закончится.</p>
+          </article>
+
+          <article className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+            <h3 className="font-semibold text-white">3. Создайте и запустите задачу</h3>
+            <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm leading-6 text-slate-400">
+              <li>В GSA создайте <strong>Target</strong> с точным IP-адресом выбранной Astra, а не всей сетью.</li>
+              <li>Создайте <strong>Task</strong>, привяжите к ней этот Target и разрешённую конфигурацию сканирования. Для первого стенда используйте только свою тестовую VM и не добавляйте учётные данные Greenbone.</li>
+              <li>Запустите Task, дождитесь статуса <code>Done</code>. Статус <code>Running</code>, <code>Interrupted</code> или очередь не подходят для итогового импорта.</li>
+            </ol>
+          </article>
+
+          <article className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+            <h3 className="font-semibold text-white">4. Скачайте правильный файл и импортируйте</h3>
+            <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm leading-6 text-slate-400">
+              <li>В GSA откройте <strong>Scans → Reports</strong>, выберите завершённый report и скачайте формат <strong>XML</strong>.</li>
+              <li>Не используйте PDF, CSV, архив, экспорт задачи или отчёт с фильтром, скрывающим результаты.</li>
+              <li>В HCP: «Хосты» → выберите ту же Astra → «Сетевой сканер Greenbone / OpenVAS» → загрузите XML.</li>
+            </ol>
+            <p className="mt-3 text-sm leading-6 text-slate-400">HCP сверяет IP выбранного хоста, отбрасывает чужие результаты и сохраняет OID, CVE, порт, severity и QoD. Низкий QoD и неполный XML требуют ручной проверки, а не считаются подтверждённой уязвимостью.</p>
+          </article>
+        </div>
+        <p className="mt-4 text-sm leading-6 text-slate-400">Официальные источники: <a className="text-sky-300 underline underline-offset-4" href={greenboneContainersUrl} target="_blank" rel="noreferrer">развёртывание Greenbone Community Containers</a> и <a className="text-sky-300 underline underline-offset-4" href={greenboneFeedsUrl} target="_blank" rel="noreferrer">обновление feeds</a>.</p>
+      </section>
+
+      <section id="firewall" className="scroll-mt-6 rounded-xl border border-amber-400/25 bg-amber-500/5 p-5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-amber-200">Контролируемое изменение</p>
+        <h2 className="mt-2 text-xl font-semibold text-white">Как безопасно закрыть тестовый порт</h2>
+        <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-300">HCP меняет только один активный UFW или firewalld. Перед применением он проверяет актуальное состояние firewall и список открытых портов, создаёт резервную копию, затем выполняет правило. Текущий SSH-порт управления блокируется защитой.</p>
+        <div className="mt-5 grid gap-4 lg:grid-cols-2">
+          <article className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+            <h3 className="font-semibold text-white">Рекомендуемый первый опыт</h3>
+            <ol className="mt-2 list-decimal space-y-2 pl-5 text-sm leading-6 text-slate-400">
+              <li>Создайте снимок Astra VM и оставьте доступ к её консоли.</li>
+              <li>На тестовой Astra временно поднимите сервис на безопасном порту, например <code>python3 -m http.server 8088 --bind 0.0.0.0</code>.</li>
+              <li>С control node убедитесь, что порт 8088 виден: <code>nmap -Pn -p 8088 IP_ASTRA</code>.</li>
+              <li>В HCP выберите «Закрыть порт», укажите <code>8088</code>/<code>TCP</code>, причину и точный alias хоста.</li>
+              <li>Нажмите «1. Проверить», затем «2. Применить». После этого повторите Nmap: порт должен перестать быть доступным извне.</li>
+              <li>Нажмите «Откатить» у появившейся транзакции и повторите Nmap: исходная доступность должна вернуться.</li>
+            </ol>
+          </article>
+          <article className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+            <h3 className="font-semibold text-white">Что может остановить изменение</h3>
+            <ul className="mt-2 list-disc space-y-2 pl-5 text-sm leading-6 text-slate-400">
+              <li>Нет одного активного поддерживаемого UFW или firewalld, либо активны оба.</li>
+              <li>Не удалось подтвердить состояние firewall или перечень открытых портов в исходном аудите.</li>
+              <li>Выбран SSH-порт, адрес управления для блокировки, неправильный alias или слишком короткая причина.</li>
+              <li>Для firewalld временные и постоянные правила различаются: сначала их нужно согласовать вручную.</li>
+            </ul>
+            <p className="mt-3 text-sm leading-6 text-slate-400">Неполнота несвязанной проверки профиля — например, отсутствующий auditd или особенность <code>sshd -T</code> — отображается как ограничение отчёта, но не мешает этой операции, если firewall и порты подтверждены.</p>
+          </article>
+        </div>
       </section>
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">

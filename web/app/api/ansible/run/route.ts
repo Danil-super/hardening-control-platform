@@ -128,6 +128,7 @@ export async function POST(request: Request) {
       });
       const postAudit = applied.postAuditReportId ? readAnsibleReport(applied.postAuditReportId) : null;
       const partial = Boolean(applied.postAuditError || !postAudit || postAudit.partial);
+      const baselineWarnings = [...new Set([...applied.preAuditWarnings, ...applied.postAuditWarnings])];
       return NextResponse.json({
         ok: true,
         partial,
@@ -137,7 +138,7 @@ export async function POST(request: Request) {
         limit,
         message: applied.postAuditError
           ? `Изменение применено, но повторный аудит завершился ошибкой: ${applied.postAuditError}`
-          : partial ? "Изменение применено и резервная копия создана, но повторный аудит неполный. Проверьте ограничения отчёта."
+          : partial ? `Изменение применено и резервная копия создана. Повторный аудит содержит ограничения: ${baselineWarnings.join(" ") || "проверьте ограничения отчёта."}`
             : "Изменение применено: резервная копия создана, повторный аудит выполнен.",
         transaction: applied.transaction,
         preAuditReportId: applied.preAuditReportId,
@@ -146,6 +147,7 @@ export async function POST(request: Request) {
         command: applied.result.command,
         stdout: applied.result.stdout,
         stderr: applied.result.stderr,
+        warnings: baselineWarnings,
       });
     } catch (error) {
       const output = error as { stdout?: string; stderr?: string; message?: string; transactionId?: string };

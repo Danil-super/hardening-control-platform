@@ -1065,10 +1065,20 @@ export function AnsibleControlClient() {
           </details>
 
           <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Импорт сетевого отчёта Greenbone / OpenVAS</summary>
+            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Сетевой сканер Greenbone / OpenVAS — импорт XML</summary>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
-              Greenbone запускается отдельным сканером сети. Экспортируйте завершённый report в XML и привяжите его к выбранному хосту: результаты не смешиваются с SSH и CVE-аудитом.
+              Greenbone работает отдельной ВМ или сервисом в сети. HCP не запускает его по SSH и не передаёт ему ключи: он безопасно принимает только готовый XML-отчёт для выбранной машины.
             </p>
+            <ol className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 md:grid-cols-2">
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">1. Сканер</span><br />В Greenbone создайте цель с точным адресом <code>{selectedHost?.address ?? "выбранного хоста"}</code>. Сканируйте только разрешённую ВМ или подсеть.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">2. Задача</span><br />Запустите сетевую задачу и дождитесь статуса <code>Done</code>. Первый запуск лучше делать без учётных данных Greenbone.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">3. Экспорт</span><br />В разделе Reports скачайте именно <strong>Report → XML</strong>. PDF, CSV, конфигурация задачи и незавершённый отчёт не подходят.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">4. Импорт</span><br />Вернитесь сюда, оставьте выбранным тот же хост и загрузите XML. HCP сверит адрес и исключит результаты других хостов.</li>
+            </ol>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <LinkButton href="/guide#greenbone" variant="secondary">Полная инструкция Greenbone</LinkButton>
+              <p className="text-xs leading-5 text-slate-400">В отчёт попадут OID, CVE, порт, severity и QoD. Низкий QoD или неполный экспорт помечаются как требующие проверки.</p>
+            </div>
             <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
               <label className="block min-w-0 flex-1">
                 <span className="text-xs font-semibold text-slate-400">XML-отчёт Greenbone (до 20 МБ)</span>
@@ -1078,6 +1088,7 @@ export function AnsibleControlClient() {
                   onChange={(event) => setGreenboneFile(event.target.files?.[0] ?? null)}
                   className="mt-2 block w-full text-sm text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-slate-800 file:px-3 file:py-2 file:text-sm file:text-slate-100"
                 />
+                <span className="mt-1 block text-xs leading-5 text-slate-500">Загрузите распакованный файл <code>.xml</code> завершённого отчёта, а не архив, PDF или экспорт настроек.</span>
               </label>
               <Button variant="secondary" onClick={importGreenboneReport} disabled={Boolean(loading) || !selectedHost || !greenboneFile}>
                 <Upload size={16} className={loading === "greenboneImport" ? "animate-pulse" : ""} aria-hidden="true" />
@@ -1090,8 +1101,17 @@ export function AnsibleControlClient() {
           <details className="mt-4 rounded-md border border-amber-400/20 bg-amber-500/5 p-3">
             <summary className="cursor-pointer text-sm font-semibold text-amber-100">Обратимые изменения firewall</summary>
             <p className="mt-1 text-xs leading-5 text-slate-400">
-              Сначала проверьте план. При применении платформа создаёт резервную копию firewall, выполняет изменение и запускает повторный аудит.
+              Безопасный порядок: предварительная проверка → исходная точка firewall → резервная копия → изменение → повторный аудит → откат при необходимости. HCP не закрывает текущий SSH-порт и не включает firewall сам.
             </p>
+            <div className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 md:grid-cols-3">
+              <p className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-amber-100">Проверить план</span><br />Не меняет хост. Проверяет параметры и активный UFW/firewalld для выбранного действия.</p>
+              <p className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-amber-100">Применить</span><br />Автоматически проверяет состояние firewall и список портов, создаёт backup, затем добавляет правило.</p>
+              <p className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-amber-100">Откатить</span><br />Восстанавливает сохранённую конфигурацию. Не меняйте правила вручную между применением и откатом.</p>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-3">
+              <LinkButton href="/guide#firewall" variant="secondary">Полная инструкция firewall</LinkButton>
+              <p className="text-xs leading-5 text-slate-400">Несвязанные ограничения основного аудита больше не блокируют изменение. Если защита остановит действие, она назовёт именно непроверенный firewall или список портов.</p>
+            </div>
             <div className="mt-3 grid gap-3 lg:grid-cols-3">
               <Field label="Причина изменения" value={changeReason} onChange={setChangeReason} placeholder="Например: закрытие Telnet по результату аудита" />
               <Field label="Подтверждение" value={confirmedHost} onChange={setConfirmedHost} placeholder={selectedHost?.alias ?? "Введите alias хоста"} />
@@ -1260,11 +1280,11 @@ function ActionPair({
   return (
     <div className="mt-3 flex overflow-hidden rounded-md border border-slate-700">
       <Button variant="secondary" onClick={() => onRun(action.id, "preview")} disabled={Boolean(loading) || disabled} className="flex-1 rounded-none border-0 px-3">
-        Проверить план
+        1. Проверить
       </Button>
       <Button variant="danger" onClick={() => onRun(action.id, "apply")} disabled={Boolean(loading) || disabled} className="flex-1 rounded-none border-0 px-3">
         <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
-        Применить
+        2. Применить
       </Button>
     </div>
   );
