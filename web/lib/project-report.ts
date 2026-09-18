@@ -7,6 +7,7 @@ import { hashAnsibleReport, listAnsibleReports, targetAliasFromReport } from "@/
 import { getHcpStateDirectory, createProjectReportRecord, getProjectReportRecord, listProjectReportRecords, listRemediationPlanItems, listRemediationTransactions, verifyAuditChain, type ProjectReportRecord } from "@/lib/state-store";
 
 export type ProjectReportSubject = { clientName: string; projectName: string; period: string; specialist: string };
+export type ProjectReportSourceReference = { id: string; hostAlias: string; snapshotReadable: boolean };
 
 type SourceManifestEntry = { id: string; mode: string; profileId: string | null; createdAt: string | null; partial: boolean; available: boolean; reportTimeValid: boolean; sha256: string | null };
 
@@ -102,6 +103,36 @@ function evidenceSnapshot(value: { reportId: string; findingId: string; source: 
 
 export function listProjectReports(hostAlias?: string) {
   return listProjectReportRecords(hostAlias);
+}
+
+/**
+ * A final PDF contains an immutable snapshot of its source report manifest.
+ * Do not let raw source evidence disappear while that manifest references it.
+ */
+export function listProjectReportSourceReferences(reportId: string, hostAlias: string): ProjectReportSourceReference[] {
+  if (!/^[A-Za-z0-9_.:-]{1,180}$/.test(reportId) || !safeAlias(hostAlias)) return [];
+  const references: ProjectReportSourceReference[] = [];
+  for (const projectReport of listProjectReportRecords(hostAlias)) {
+    const snapshotFileName = projectReport.fileName.replace(/\.pdf$/, ".json");
+    try {
+      const snapshotPath = safeProjectPath(snapshotFileName);
+      const info = lstatSync(snapshotPath, { throwIfNoEntry: false });
+      if (!info || !info.isFile() || info.isSymbolicLink()) {
+        references.push({ id: projectReport.id, hostAlias: projectReport.hostAlias, snapshotReadable: false });
+        continue;
+      }
+      const snapshot = JSON.parse(readFileSync(snapshotPath, "utf8")) as { sourceManifest?: unknown };
+      const sourceManifest = Array.isArray(snapshot.sourceManifest) ? snapshot.sourceManifest : [];
+      if (sourceManifest.some((source) => source && typeof source === "object" && !Array.isArray(source) && (source as Record<string, unknown>).id === reportId)) {
+        references.push({ id: projectReport.id, hostAlias: projectReport.hostAlias, snapshotReadable: true });
+      }
+    } catch {
+      // A broken final-report snapshot is itself a retention reason until an
+      // operator investigates it; deleting raw evidence would make it worse.
+      references.push({ id: projectReport.id, hostAlias: projectReport.hostAlias, snapshotReadable: false });
+    }
+  }
+  return references;
 }
 
 export async function createProjectReport(input: { hostAlias: unknown; subject: Partial<ProjectReportSubject> }) {

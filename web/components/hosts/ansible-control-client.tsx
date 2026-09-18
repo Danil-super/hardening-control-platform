@@ -658,7 +658,10 @@ export function AnsibleControlClient() {
         const cvePayload = await readApiResponse(cveResponse);
         let dependencyTrackMessage = "";
         let dependencyTrackFailed = false;
-        if (cvePayload.ok && cvePayload.reportId && cvePayload.report?.vulnerabilityScan?.sbomFile) {
+        // Dependency-Track is an optional, independent integration. Do not add
+        // its configuration message to a failed or partial Trivy run: it makes
+        // the actual next step (load the shared CVE database) hard to see.
+        if (cvePayload.ok && !cvePayload.partial && cvePayload.reportId && cvePayload.report?.vulnerabilityScan?.sbomFile) {
           try {
             const dependencyTrackResponse = await fetch("/api/ansible/dependency-track/sync", {
               method: "POST",
@@ -667,7 +670,9 @@ export function AnsibleControlClient() {
             });
             const dependencyTrackPayload = await readApiResponse(dependencyTrackResponse);
             dependencyTrackFailed = !dependencyTrackResponse.ok || !dependencyTrackPayload.ok;
-            dependencyTrackMessage = dependencyTrackPayload.message ? ` ${dependencyTrackPayload.message}` : "";
+            if (dependencyTrackPayload.configured === true && dependencyTrackPayload.message) {
+              dependencyTrackMessage = ` ${dependencyTrackPayload.message}`;
+            }
           } catch {
             dependencyTrackFailed = true;
             dependencyTrackMessage = " Передача в Dependency-Track не подтверждена: нет ответа от платформы.";

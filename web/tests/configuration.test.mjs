@@ -36,7 +36,7 @@ test("the old in-memory scheduler is not part of the application API", () => {
   assert.match(timer, /Persistent=true/);
 });
 
-test("operator interface keeps routine work visible and hides destructive log controls", () => {
+test("operator interface keeps routine work visible and allows guarded report cleanup", () => {
   const shell = read(path.join("web", "components", "layout", "app-shell.tsx"));
   const hosts = read(path.join("web", "components", "hosts", "ansible-control-client.tsx"));
   const reports = read(path.join("web", "app", "reports", "agentless", "page.tsx"));
@@ -46,7 +46,8 @@ test("operator interface keeps routine work visible and hides destructive log co
   assert.match(hosts, /Обратимые изменения firewall/);
   assert.match(hosts, /Введите точный alias выбранного хоста/);
   assert.match(reports, /Журнал действий/);
-  assert.doesNotMatch(reports, /DeleteRecordButton/);
+  assert.match(reports, /DeleteRecordButton/);
+  assert.match(reports, /Ненужные тестовые отчёты можно удалить/);
 });
 
 test("host onboarding uses verified SSH host keys and persists them", () => {
@@ -165,6 +166,7 @@ test("freshness, group profiles and expiring OpenSCAP exceptions are explicit", 
   const playbook = read(path.join("ansible", "playbooks", "openscap-audit.yml"));
   assert.match(scan, /HCP_TRIVY_MAX_DB_AGE_HOURS/);
   assert.match(scan, /function freshnessFinding/);
+  assert.match(scan, /trivyDatabaseRequiredMessage/);
   assert.match(store, /openscap_policies/);
   assert.match(store, /openscap_exceptions/);
   assert.match(policies, /exceptionsApplied/);

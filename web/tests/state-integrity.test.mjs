@@ -58,6 +58,20 @@ test("failed audit insertion rolls back the associated state update", () => {
   database.close();
 });
 
+test("stored remediation and plan evidence block report cleanup", () => {
+  transaction("report-use");
+  store.updateRemediationTransaction("report-use", { preAuditReportId: "host-one-basic_linux-run-1" });
+  store.createRemediationPlanItem({
+    hostAlias: "host-one", findingKey: "finding:report-use", title: "Проверка ссылки", category: "Тест", risk: "medium",
+    description: "План использует сохранённый отчёт.", recommendation: "Не удалять источник до завершения плана.",
+    evidence: [{ reportId: "host-one-nmap-run-1", findingId: "finding", source: "nmap", mode: "nmap", createdAt: new Date().toISOString(), evidence: "port=22", reportSha256: "a".repeat(64) }],
+  });
+  const references = store.listStoredReportReferences("host-one-nmap-run-1");
+  assert.equal(references.length, 1);
+  assert.equal(references[0].kind, "plan_evidence");
+  assert.equal(store.listStoredReportReferences("host-one-basic_linux-run-1")[0].kind, "remediation");
+});
+
 test("legacy signatures are preserved and marked as lacking full payload protection", () => {
   const database = new DatabaseSync(path.join(directory, "hcp.sqlite"));
   const value = { createdAt: "2025-01-01T00:00:00.000Z", eventType: "legacy", entityId: "old", payload: { parameters: { port: "22" } }, previousHash: null };

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -124,6 +124,14 @@ test("online package audit consumes the downloaded snapshot without another regi
   assert.ok(args.includes("--skip-java-db-update"));
   assert.ok(!args.includes("--offline-scan"));
   assert.ok(!args.includes("--db-repository"));
+});
+
+test("missing shared database directs the operator to Sources without creating a failed report", async (t) => {
+  const h = harness(t, "normal", "online");
+  rmSync(path.join(h.cache, "db", "trivy.db"));
+  await assert.rejects(h.scan(), /Общая база CVE Trivy ещё не загружена/);
+  assert.equal(existsSync(path.join(h.dir, "sbom")), false);
+  assert.deepEqual(readdirSync(h.reports), ["lab-host-packages-run1.json"]);
 });
 
 test("database refresh classifies a container DNS failure without exposing command output", async (t) => {

@@ -2,6 +2,7 @@ import { Activity, AlertTriangle, FileText, Server, ShieldCheck } from "lucide-r
 import Link from "next/link";
 import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
+import { DeleteRecordButton } from "@/components/reports/delete-record-button";
 import { readIncidents } from "@/lib/ansible-control";
 import { verifyAuditChain } from "@/lib/state-store";
 import { listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
@@ -171,7 +172,7 @@ export default async function AgentlessReportsPage({
         {hostFilter ? (
           <>
             <div className="border-b border-slate-800 px-4 py-3 text-sm text-slate-400">
-              Все проверки и отчёты хоста <span className="font-semibold text-slate-200">{hostFilter}</span>.
+              Все проверки и отчёты хоста <span className="font-semibold text-slate-200">{hostFilter}</span>. Ненужные тестовые отчёты можно удалить; записи, уже используемые в плане устранения, изменении или итоговом PDF, защищены от удаления.
             </div>
             {scopedReports.length ? (
           <div className="overflow-x-auto">
@@ -184,7 +185,7 @@ export default async function AgentlessReportsPage({
                   <th className="px-4 py-3">Риски</th>
                   <th className="px-4 py-3">Данные</th>
                   <th className="px-4 py-3">Дата</th>
-                  <th className="px-4 py-3">Открыть</th>
+                  <th className="px-4 py-3">Действия</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -227,7 +228,15 @@ export default async function AgentlessReportsPage({
                     </td>
                     <td className="px-4 py-4 text-slate-300">{formatDate(report.createdAt ?? report.modifiedAt)}</td>
                     <td className="px-4 py-4">
-                      <LinkButton href={`/reports/agentless/${encodeURIComponent(report.id)}`} variant="secondary">Открыть</LinkButton>
+                      <div className="flex flex-wrap gap-2">
+                        <LinkButton href={`/reports/agentless/${encodeURIComponent(report.id)}`} variant="secondary">Открыть</LinkButton>
+                        <DeleteRecordButton
+                          endpoint={`/api/ansible/reports/${encodeURIComponent(report.id)}`}
+                          body={{ confirmReportId: report.id }}
+                          confirmation={`Удалить отчёт «${report.fileName}»? Если он не используется другими сохранёнными результатами, будет удалён и связанный SBOM. Журнал действий и итоговые PDF не изменятся.`}
+                          label="Удалить"
+                        />
+                      </div>
                     </td>
                   </tr>
                 ))}

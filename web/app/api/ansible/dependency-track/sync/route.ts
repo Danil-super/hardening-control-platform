@@ -11,10 +11,15 @@ export async function POST(request: Request) {
   const vulnerabilityReportId = typeof body?.vulnerabilityReportId === "string" ? body.vulnerabilityReportId.trim() : "";
   try {
     const result = await syncDependencyTrack({ hostAlias, vulnerabilityReportId });
+    if (!result.configured) {
+      // Dependency-Track is optional. A normal package/CVE audit must not add a
+      // failed action record merely because this separate service is disabled.
+      return NextResponse.json({ ok: true, ...result, skipped: true });
+    }
     appendIncident({
       action: "dependencyTrackSync",
       kind: "audit",
-      status: result.configured ? "success" : "failed",
+      status: "success",
       profileId: "dependency-track",
       limit: hostAlias || null,
       message: result.message,

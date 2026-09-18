@@ -56,11 +56,51 @@ test("discovery cannot bypass verified SSH onboarding", async () => {
   assert.equal((await response.json()).error, "verified_onboarding_required");
 });
 
-test("legacy DELETE cannot erase audit or remediation evidence", async () => {
-  const route = load("app/api/ansible/reports/[reportId]/route.ts", { "@/lib/ansible-reports": {} });
-  const response = await route.DELETE();
-  assert.equal(response.status, 405);
-  assert.equal((await response.json()).error, "report_history_preserved");
+test("report deletion requires confirmation and cannot erase referenced evidence", async () => {
+  let removed = false;
+  const route = load("app/api/ansible/reports/[reportId]/route.ts", {
+    "@/lib/ansible-reports": {
+      readAnsibleReport: () => ({ id: "host-1-nmap-run-1", mode: "nmap" }),
+      targetAliasFromReport: () => "host-1",
+      listAnsibleReportDependents: () => [{ id: "host-1-dependent", mode: "dependency-track" }],
+      deleteAnsibleReport: () => { removed = true; return { id: "host-1-nmap-run-1", hostAlias: "host-1", mode: "nmap", sbomRemoved: false }; },
+    },
+    "@/lib/state-store": { appendAuditEvent: () => {}, listStoredReportReferences: () => [] },
+    "@/lib/project-report": { listProjectReportSourceReferences: () => [] },
+  });
+  const params = { params: Promise.resolve({ reportId: "host-1-nmap-run-1" }) };
+  const unconfirmed = await route.DELETE(new Request("http://localhost/api/ansible/reports/host-1-nmap-run-1", { method: "DELETE", body: "{}" }), params);
+  assert.equal(unconfirmed.status, 400);
+  assert.equal((await unconfirmed.json()).error, "delete_confirmation_required");
+
+  const referenced = await route.DELETE(new Request("http://localhost/api/ansible/reports/host-1-nmap-run-1", {
+    method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmReportId: "host-1-nmap-run-1" }),
+  }), params);
+  assert.equal(referenced.status, 409);
+  assert.equal((await referenced.json()).error, "report_is_referenced");
+  assert.equal(removed, false);
+});
+
+test("a standalone confirmed report is removed and the deletion is recorded", async () => {
+  let removed = false;
+  const events = [];
+  const route = load("app/api/ansible/reports/[reportId]/route.ts", {
+    "@/lib/ansible-reports": {
+      readAnsibleReport: () => ({ id: "host-1-nmap-run-1", mode: "nmap" }),
+      targetAliasFromReport: () => "host-1",
+      listAnsibleReportDependents: () => [],
+      deleteAnsibleReport: () => { removed = true; return { id: "host-1-nmap-run-1", hostAlias: "host-1", mode: "nmap", sbomRemoved: true }; },
+    },
+    "@/lib/state-store": { appendAuditEvent: (...args) => events.push(args), listStoredReportReferences: () => [] },
+    "@/lib/project-report": { listProjectReportSourceReferences: () => [] },
+  });
+  const response = await route.DELETE(new Request("http://localhost/api/ansible/reports/host-1-nmap-run-1", {
+    method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmReportId: "host-1-nmap-run-1" }),
+  }), { params: Promise.resolve({ reportId: "host-1-nmap-run-1" }) });
+  assert.equal(response.status, 200);
+  assert.equal((await response.json()).ok, true);
+  assert.equal(removed, true);
+  assert.equal(events[0][0], "ansible_report_deleted");
 });
 
 test("custom variable values remain one JSON value rather than injected Ansible options", async () => {

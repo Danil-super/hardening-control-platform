@@ -84,6 +84,12 @@ export type RemediationPlanHistory = {
   riskAcceptedUntil: string | null;
 };
 
+export type StoredReportReference = {
+  kind: "remediation" | "plan_evidence" | "plan_verification";
+  id: string;
+  hostAlias: string;
+};
+
 export type ProjectReportRecord = {
   id: string;
   createdAt: string;
@@ -736,6 +742,44 @@ export function listRemediationTransactions(limit = 50) {
     .prepare("SELECT * FROM remediation_transactions ORDER BY created_at DESC LIMIT ?")
     .all(limit)
     .map(rowToTransaction);
+}
+
+/**
+ * Raw audit reports can be cleaned up, but not while a saved change or a plan
+ * still relies on them. This intentionally checks the persisted state rather
+ * than the current report list, so a deleted file can never make a reference
+ * disappear from the guard.
+ */
+export function listStoredReportReferences(reportId: string): StoredReportReference[] {
+  if (!/^[A-Za-z0-9_.:-]{1,180}$/.test(reportId)) return [];
+  const database = getDatabase();
+  const references: StoredReportReference[] = [];
+  const transactions = database.prepare(`SELECT id, host_alias FROM remediation_transactions
+    WHERE pre_audit_report_id = ? OR post_audit_report_id = ?`).all(reportId, reportId);
+  for (const row of transactions) {
+    const data = row as Record<string, unknown>;
+    references.push({ kind: "remediation", id: String(data.id), hostAlias: String(data.host_alias) });
+  }
+
+  const plans = database.prepare("SELECT id, host_alias, evidence_json, verification_report_id FROM remediation_plan_items").all();
+  for (const row of plans) {
+    const data = row as Record<string, unknown>;
+    const id = String(data.id);
+    const hostAlias = String(data.host_alias);
+    if (data.verification_report_id === reportId) {
+      references.push({ kind: "plan_verification", id, hostAlias });
+    }
+    try {
+      const evidence = JSON.parse(String(data.evidence_json));
+      if (Array.isArray(evidence) && evidence.some((item) => item && typeof item === "object" && !Array.isArray(item) && (item as Record<string, unknown>).reportId === reportId)) {
+        references.push({ kind: "plan_evidence", id, hostAlias });
+      }
+    } catch {
+      // Do not delete evidence while the stored plan itself cannot be checked.
+      references.push({ kind: "plan_evidence", id, hostAlias });
+    }
+  }
+  return references;
 }
 
 function planText(value: unknown, field: string, minimum = 1, maximum = 1200) {

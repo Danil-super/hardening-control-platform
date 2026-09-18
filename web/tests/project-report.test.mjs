@@ -21,6 +21,9 @@ test("final PDF stores a bounded snapshot and an HMAC-audited manifest", async (
   assert.match(record.id, /^project_report_/);
   assert.match(record.pdfSha256, /^[a-f0-9]{64}$/);
   assert.equal(projectReports.listProjectReports("astra-1").length, 1);
+  assert.deepEqual(projectReports.listProjectReportSourceReferences("astra-1-basic_linux-run", "astra-1"), [{
+    id: record.id, hostAlias: "astra-1", snapshotReadable: true,
+  }]);
   const result = projectReports.readProjectReportPdf(record.id);
   assert.ok(result);
   assert.equal(result.pdf.subarray(0, 5).toString("ascii"), "%PDF-");

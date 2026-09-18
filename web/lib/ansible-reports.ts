@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Finding } from "@/types";
 
@@ -35,6 +35,19 @@ export type AnsibleReportDetail = AnsibleReportSummary & {
     message?: string;
   }>;
   raw: unknown;
+};
+
+export type AnsibleReportDependent = {
+  id: string;
+  mode: string;
+  reason: "package_inventory" | "cve_report";
+};
+
+export type DeletedAnsibleReport = {
+  id: string;
+  hostAlias: string;
+  mode: string;
+  sbomRemoved: boolean;
 };
 
 type ReportJson = {
@@ -258,6 +271,96 @@ export function readAnsibleReport(reportId: string): AnsibleReportDetail | null 
     findings: Array.isArray(parsed.findings) ? parsed.findings.filter(isFinding) : [],
     events: Array.isArray(parsed.events) ? parsed.events : [],
     raw: parsed,
+  };
+}
+
+function record(value: unknown) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function sbomFileFromReport(report: Pick<AnsibleReportDetail, "mode" | "raw">) {
+  if (report.mode !== "vulnerabilities") return null;
+  const candidate = record(record(report.raw).vulnerabilityScan).sbomFile;
+  return typeof candidate === "string" && /^[A-Za-z0-9_.:-]{1,180}$/.test(candidate) ? candidate : null;
+}
+
+/**
+ * Reports may form a short evidence chain: package inventory -> CVE scan ->
+ * optional Dependency-Track delivery.  A source report cannot disappear while
+ * a saved later report still points to it.
+ */
+export function listAnsibleReportDependents(reportId: string): AnsibleReportDependent[] {
+  if (!fileNameFromReportId(reportId)) return [];
+  const dependents: AnsibleReportDependent[] = [];
+  for (const summary of listAnsibleReports()) {
+    const report = readAnsibleReport(summary.id);
+    if (!report) continue;
+    const raw = record(report.raw);
+    const vulnerabilityScan = record(raw.vulnerabilityScan);
+    if (vulnerabilityScan.sourcePackageReportId === reportId) {
+      dependents.push({ id: report.id, mode: report.mode, reason: "package_inventory" });
+      continue;
+    }
+    const scanner = record(raw.scanner);
+    if (scanner.sourceCveReport === reportId) {
+      dependents.push({ id: report.id, mode: report.mode, reason: "cve_report" });
+    }
+  }
+  return dependents;
+}
+
+function stateDirectoryForReports() {
+  const repoRoot = getRepoRoot();
+  return process.env.HCP_STATE_DIR ? path.resolve(process.env.HCP_STATE_DIR) : path.join(repoRoot, "ansible");
+}
+
+/**
+ * Removes a standalone raw audit result. Callers must check persisted plan and
+ * remediation references first. The immutable action journal is deliberately
+ * not removed. A CycloneDX SBOM is removed only when no other report uses it.
+ */
+export function deleteAnsibleReport(reportId: string): DeletedAnsibleReport | null {
+  const report = readAnsibleReport(reportId);
+  if (!report) return null;
+  const fileName = fileNameFromReportId(reportId);
+  if (!fileName) return null;
+
+  const reportsDir = getReportsDir();
+  const reportPath = path.join(reportsDir, fileName);
+  if (!reportPath.startsWith(reportsDir + path.sep)) return null;
+  const reportInfo = lstatSync(reportPath, { throwIfNoEntry: false });
+  if (!reportInfo || !reportInfo.isFile() || reportInfo.isSymbolicLink()) {
+    throw new Error("Файл отчёта недоступен или имеет недопустимый тип.");
+  }
+
+  const sbomFile = sbomFileFromReport(report);
+  const sbomDir = path.join(stateDirectoryForReports(), "sbom");
+  const sbomPath = sbomFile ? path.join(sbomDir, sbomFile) : null;
+  if (sbomPath && !sbomPath.startsWith(sbomDir + path.sep)) {
+    throw new Error("Путь CycloneDX SBOM недопустим.");
+  }
+  const sbomInfo = sbomPath ? lstatSync(sbomPath, { throwIfNoEntry: false }) : null;
+  if (sbomInfo && (!sbomInfo.isFile() || sbomInfo.isSymbolicLink())) {
+    throw new Error("Файл CycloneDX SBOM недоступен или имеет недопустимый тип.");
+  }
+  const sbomUsedElsewhere = sbomFile
+    ? listAnsibleReports().some((candidate) => {
+      if (candidate.id === report.id) return false;
+      const detail = readAnsibleReport(candidate.id);
+      return detail ? sbomFileFromReport(detail) === sbomFile : false;
+    })
+    : false;
+
+  rmSync(reportPath, { force: false });
+  if (sbomPath && sbomInfo && !sbomUsedElsewhere) {
+    rmSync(sbomPath, { force: false });
+  }
+
+  return {
+    id: report.id,
+    hostAlias: targetAliasFromReport(report),
+    mode: report.mode,
+    sbomRemoved: Boolean(sbomPath && sbomInfo && !sbomUsedElsewhere),
   };
 }
 
