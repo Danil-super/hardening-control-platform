@@ -45,7 +45,7 @@ export function AstraOvalClient() {
 
   return <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5" aria-labelledby="astra-oval-title">
     <h2 id="astra-oval-title" className="text-xl font-semibold text-white">CVE пакетов Astra</h2>
-    <p className="mt-2 text-sm leading-6 text-slate-400">OpenSCAP проверяет установленные пакеты по определениям выбранной OVAL-базы. Назначьте источник группе хостов. Для разных выпусков можно создать отдельные группы и источники.</p>
+    <p className="mt-2 text-sm leading-6 text-slate-400">OpenSCAP проверяет установленные пакеты по определениям выбранной OVAL-базы Astra. Один источник назначается группе хостов одного выпуска и архитектуры, а не каждому хосту. Для другого выпуска Astra создайте отдельную группу и укажите соответствующий XML.</p>
     <form className="mt-5 grid gap-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); void saveOrRemove("POST"); }}>
       <label className="min-w-0 text-sm text-slate-300">Группа хостов
         <select className={inputClass} value={group} onChange={(event) => setGroup(event.target.value)} required>
@@ -97,6 +97,6 @@ export function AstraOvalClient() {
         </div>
       </div>)}
     </div>
-    <p className="mt-4 text-sm leading-6 text-slate-400">После сохранения откройте «Хосты» → «Проверить CVE Astra по OVAL». Полнота относится к определениям выбранного файла. Отсутствие находок не гарантирует отсутствие всех CVE.</p>
+    <p className="mt-4 text-sm leading-6 text-slate-400">Для HTTPS-источника HCP скачивает XML на control node при OVAL-аудите; целевому хосту интернет не нужен. Если производитель выпустил новый XML, сначала сверьте его SHA-256 по доверенному источнику, затем через «Изменить» замените URL/контрольную сумму и сохраните источник. Полнота относится к определениям выбранного файла. Отсутствие находок не гарантирует отсутствие всех CVE.</p>
   </section>;
 }

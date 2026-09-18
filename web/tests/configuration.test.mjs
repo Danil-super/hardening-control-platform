@@ -150,7 +150,8 @@ test("operator can select an online or local Trivy database in the interface", (
   assert.match(route, /Greenbone \/ OpenVAS/);
   assert.match(screen, /Локальная база/);
   assert.match(screen, /Сетевая база/);
-  assert.match(screen, /Загрузить базу Trivy/);
+  assert.match(screen, /Загрузить общую базу CVE/);
+  assert.match(screen, /одна общая CVE-база пакетов/);
   assert.match(shell, /data-sources/);
   assert.match(proxy, /api\/settings/);
 });

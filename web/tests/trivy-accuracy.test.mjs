@@ -25,16 +25,16 @@ function harness(t, response = "normal", mode = "offline") {
   writeFileSync(path.join(cache, "db/metadata.json"), JSON.stringify({ UpdatedAt: new Date().toISOString() }));
   // This executable is a contract fixture. These tests do not claim a live Trivy scan.
   const binary = path.join(dir, "trivy-fixture");
-  writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nfs.writeFileSync(${JSON.stringify(path.join(dir, "args.json"))}, JSON.stringify({args, env: process.env}));\nif(args.includes('--download-db-only')) {\n  fs.writeFileSync(${JSON.stringify(path.join(cache, "db/trivy.db"))}, 'downloaded fixture');\n  fs.writeFileSync(${JSON.stringify(path.join(cache, "db/metadata.json"))}, JSON.stringify({UpdatedAt: new Date().toISOString()}));\n  process.exit(0);\n}\nconst sbom = JSON.parse(fs.readFileSync(args.at(-1), 'utf8'));\nconst response = ${JSON.stringify(response)};\nlet output = {SchemaVersion: 2, Metadata: {OS: {Family: sbom.metadata.component.name, Name: sbom.metadata.component.version}}, Results: [{Class: 'os-pkgs', Type: sbom.metadata.component.name, Packages: sbom.components.map(p => ({Name: p.name, Version: p.version, Identifier: {BOMRef: p['bom-ref'], PURL: p.purl}})), Vulnerabilities: []}]};\nif(response === 'empty') output = {};\nif(response === 'missing-package') output.Results[0].Packages = [];\nif(response === 'wrong-os') output.Metadata.OS.Family = 'alpine';\nif(response === 'eosl') output.Metadata.OS.EOSL = true;\nif(response === 'many') output.Results[0].Vulnerabilities = Array.from({length: 1005}, (_,i) => ({VulnerabilityID:'CVE-2026-' + i, PkgName:'libssl3', InstalledVersion:'3.0.2-0ubuntu1', FixedVersion:'3.0.2-0ubuntu2', Status:'fixed', Severity:'HIGH'}));\nconsole.log(JSON.stringify(output));\n`);
+  writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst response = ${JSON.stringify(response)};\nfs.writeFileSync(${JSON.stringify(path.join(dir, "args.json"))}, JSON.stringify({args, env: process.env}));\nif(args.includes('--download-db-only') && response === 'download-dns') { console.error('lookup ghcr.io: no such host'); process.exit(1); }\nif(args.includes('--download-db-only')) {\n  fs.writeFileSync(${JSON.stringify(path.join(cache, "db/trivy.db"))}, 'downloaded fixture');\n  fs.writeFileSync(${JSON.stringify(path.join(cache, "db/metadata.json"))}, JSON.stringify({UpdatedAt: new Date().toISOString()}));\n  process.exit(0);\n}\nconst sbom = JSON.parse(fs.readFileSync(args.at(-1), 'utf8'));\nlet output = {SchemaVersion: 2, Metadata: {OS: {Family: sbom.metadata.component.name, Name: sbom.metadata.component.version}}, Results: [{Class: 'os-pkgs', Type: sbom.metadata.component.name, Packages: sbom.components.map(p => ({Name: p.name, Version: p.version, Identifier: {BOMRef: p['bom-ref'], PURL: p.purl}})), Vulnerabilities: []}]};\nif(response === 'empty') output = {};\nif(response === 'missing-package') output.Results[0].Packages = [];\nif(response === 'wrong-os') output.Metadata.OS.Family = 'alpine';\nif(response === 'eosl') output.Metadata.OS.EOSL = true;\nif(response === 'many') output.Results[0].Vulnerabilities = Array.from({length: 1005}, (_,i) => ({VulnerabilityID:'CVE-2026-' + i, PkgName:'libssl3', InstalledVersion:'3.0.2-0ubuntu1', FixedVersion:'3.0.2-0ubuntu2', Status:'fixed', Severity:'HIGH'}));\nconsole.log(JSON.stringify(output));\n`);
   chmodSync(binary, 0o700);
-  const env = { ...process.env, HCP_TRIVY_BIN: binary, HCP_TRIVY_CACHE_DIR: cache, HCP_TRIVY_MAX_DB_AGE_HOURS: "168", TRIVY_SERVER: "https://must-not-be-used.invalid", TRIVY_SEVERITY: "LOW", TRIVY_IGNORE_UNFIXED: "true" };
+  const env = { ...process.env, HCP_TRIVY_BIN: binary, HCP_TRIVY_CACHE_DIR: cache, HCP_TRIVY_MAX_DB_AGE_HOURS: "168", HCP_TRIVY_DB_REPOSITORY: "", TRIVY_SERVER: "https://must-not-be-used.invalid", TRIVY_SEVERITY: "LOW", TRIVY_IGNORE_UNFIXED: "true" };
   const exports = {};
   const mocks = {
     "@/lib/ansible-control": { getStateDir: () => dir },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
     "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), appendAuditEvent: () => {} },
   };
-  vm.runInNewContext(compiled, { exports, require: (name) => mocks[name] ?? require(name), process: { env }, URLSearchParams, console });
+  vm.runInNewContext(compiled, { exports, require: (name) => mocks[name] ?? require(name), process: { env }, URLSearchParams, console: { warn: () => {}, log: () => {}, error: () => {} } });
   const report = { mode: "packages", profileId: "packages", inventoryHost: "lab-host", hostname: "different-hostname", createdAt: new Date().toISOString(), packageInventory: { packageCount: 1, manager: "dpkg", osRelease: { ID: "ubuntu", VERSION_ID: "22.04" }, error: "" }, packages: [{ name: "libssl3:amd64", version: "3.0.2-0ubuntu1", arch: "amd64", manager: "dpkg", sourceName: "openssl", sourceVersion: "3.0.2-0ubuntu1" }] };
   const save = () => writeFileSync(path.join(reports, "lab-host-packages-run1.json"), JSON.stringify(report));
   save();
@@ -104,9 +104,31 @@ test("online source downloads the Trivy database before a CVE audit", async (t) 
   assert.equal(freshness.status, "fresh");
   const { args, env } = JSON.parse(readFileSync(path.join(h.dir, "args.json"), "utf8"));
   for (const flag of ["image", "--download-db-only", "--disable-telemetry", "--quiet", "--cache-dir"]) assert.ok(args.includes(flag));
+  assert.deepEqual(args.filter((item) => item.includes("trivy-db")), [
+    "mirror.gcr.io/aquasec/trivy-db",
+    "ghcr.io/aquasecurity/trivy-db",
+    "public.ecr.aws/aquasecurity/trivy-db",
+    "aquasec/trivy-db",
+  ]);
   assert.equal(env.TRIVY_SERVER, undefined);
   assert.equal(env.TRIVY_SEVERITY, undefined);
   assert.equal(env.TRIVY_IGNORE_UNFIXED, undefined);
+});
+
+test("online package audit consumes the downloaded snapshot without another registry request", async (t) => {
+  const h = harness(t, "normal", "online");
+  const result = await h.scan();
+  assert.equal(result.partial, false);
+  const { args } = JSON.parse(readFileSync(path.join(h.dir, "args.json"), "utf8"));
+  assert.ok(args.includes("--skip-db-update"));
+  assert.ok(args.includes("--skip-java-db-update"));
+  assert.ok(!args.includes("--offline-scan"));
+  assert.ok(!args.includes("--db-repository"));
+});
+
+test("database refresh classifies a container DNS failure without exposing command output", async (t) => {
+  const h = harness(t, "download-dns", "online");
+  await assert.rejects(h.refresh(), /Контейнер HCP не смог разрешить адрес registry по DNS/);
 });
 
 for (const response of ["empty", "missing-package", "wrong-os", "eosl"]) {
