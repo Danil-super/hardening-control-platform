@@ -128,26 +128,82 @@ const profileOptions = [
   { id: "docker_host", label: "Docker-хост" },
 ] as const;
 
-const auditActions = [
-  { id: "agentlessAudit", label: "Запустить аудит", icon: ShieldCheck },
+const primaryAuditActions = [
+  { id: "agentlessAudit", label: "Проверить профиль", icon: ShieldCheck },
   { id: "ping", label: "Проверить связь", icon: Server },
-  { id: "collectFacts", label: "Собрать сведения", icon: FileText, advanced: true },
-  { id: "packageInventory", label: "Проверить пакеты и CVE", icon: FileText, advanced: true },
-  { id: "collectEvents", label: "Собрать события", icon: Terminal, advanced: true },
-  { id: "sshCryptoAudit", label: "Проверить SSH-криптографию", icon: ShieldCheck, advanced: true },
-  { id: "networkPortScan", label: "Проверить открытые порты", icon: Search, requiresConfirmation: true, advanced: true },
-  { id: "lynisTemporaryAudit", label: "Запустить Lynis", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
-  { id: "openScapAudit", label: "Проверить профиль OpenSCAP", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
-  { id: "astraOvalAudit", label: "Проверить CVE Astra по OVAL", icon: ShieldCheck, requiresConfirmation: true, advanced: true },
 ] as const;
+
+const additionalAuditActions = [
+  {
+    id: "packageInventory",
+    label: "Пакеты и CVE — Trivy",
+    group: "CVE и пакеты",
+    description: "Собирает установленное ПО, формирует SBOM и сопоставляет пакеты с базой CVE Trivy.",
+    icon: FileText,
+  },
+  {
+    id: "astraOvalAudit",
+    label: "CVE Astra — OVAL / OpenSCAP",
+    group: "CVE и пакеты",
+    description: "Проверяет пакеты Astra по назначенной официальной OVAL-базе. Не изменяет хост.",
+    icon: ShieldCheck,
+    requiresConfirmation: true,
+  },
+  {
+    id: "openScapAudit",
+    label: "Профиль конфигурации — OpenSCAP",
+    group: "Безопасность и конфигурация",
+    description: "Сверяет настройки хоста с выбранным профилем безопасности HCP. Не изменяет хост.",
+    icon: ShieldCheck,
+    requiresConfirmation: true,
+  },
+  {
+    id: "sshCryptoAudit",
+    label: "Защита SSH — ssh-audit",
+    group: "Безопасность и конфигурация",
+    description: "Проверяет алгоритмы и настройки SSH с управляющей машины, без входа на хост.",
+    icon: ShieldCheck,
+  },
+  {
+    id: "lynisTemporaryAudit",
+    label: "Рекомендации hardening — Lynis",
+    group: "Безопасность и конфигурация",
+    description: "Временно запускает Lynis на хосте и удаляет его рабочие файлы после проверки.",
+    icon: ShieldCheck,
+    requiresConfirmation: true,
+  },
+  {
+    id: "networkPortScan",
+    label: "Открытые TCP-порты — Nmap",
+    group: "Диагностика",
+    description: "Проверяет top-100 TCP-портов выбранного хоста с управляющей машины.",
+    icon: Search,
+    requiresConfirmation: true,
+  },
+  {
+    id: "collectFacts",
+    label: "Сведения о хосте — Ansible",
+    group: "Диагностика",
+    description: "Собирает версии ОС, ядра и компонентов для диагностики подключения.",
+    icon: FileText,
+  },
+  {
+    id: "collectEvents",
+    label: "События безопасности — Ansible",
+    group: "Диагностика",
+    description: "Собирает события безопасности для разбора инцидента; это не основной аудит.",
+    icon: Terminal,
+  },
+] as const;
+
+const auditActions = [...primaryAuditActions, ...additionalAuditActions] as const;
+const additionalAuditGroups = ["CVE и пакеты", "Безопасность и конфигурация", "Диагностика"] as const;
+type AdditionalAuditActionId = (typeof additionalAuditActions)[number]["id"];
 
 const responseActions = [
   { id: "closePort", label: "Закрыть порт", icon: Ban },
   { id: "blockIp", label: "Блок IP", icon: AlertTriangle },
 ] as const;
-
-const primaryAuditActions = auditActions.filter((action) => !("advanced" in action && action.advanced));
-const additionalAuditActions = auditActions.filter((action) => "advanced" in action && action.advanced);
 
 const transactionStatusLabels: Record<RemediationTransaction["status"], string> = {
   preparing: "подготовка",
@@ -196,6 +252,7 @@ export function AnsibleControlClient() {
   const [health, setHealth] = useState<HealthPayload | null>(null);
   const [hosts, setHosts] = useState<HostsPayload | null>(null);
   const [profileId, setProfileId] = useState("basic_linux");
+  const [additionalAuditActionId, setAdditionalAuditActionId] = useState<AdditionalAuditActionId>("packageInventory");
   const [selectedAlias, setSelectedAlias] = useState("");
   const [loading, setLoading] = useState("");
   const [runResult, setRunResult] = useActionResult<RunPayload>();
@@ -736,6 +793,8 @@ export function AnsibleControlClient() {
   }
 
   const summary = hosts?.summary;
+  const selectedAdditionalAction = additionalAuditActions.find((action) => action.id === additionalAuditActionId) ?? additionalAuditActions[0];
+  const SelectedAdditionalActionIcon = selectedAdditionalAction.icon;
 
   return (
     <div className="space-y-6">
@@ -844,18 +903,9 @@ export function AnsibleControlClient() {
         <div className="flex flex-col gap-3 border-b border-slate-800 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">Управляемые хосты</h2>
-            <p className="mt-1 text-sm text-slate-400">Нажмите «Выбрать», затем выполните аудит в следующем блоке.</p>
+            <p className="mt-1 text-sm text-slate-400">Нажмите «Выбрать», затем настройте профиль и запустите проверку в следующем блоке.</p>
           </div>
           <div className="flex flex-wrap gap-2">
-            <select
-              value={profileId}
-              onChange={(event) => setProfileId(event.target.value)}
-              className="h-10 rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-            >
-              {profileOptions.map((profile) => (
-                <option key={profile.id} value={profile.id}>{profile.label}</option>
-              ))}
-            </select>
             <LinkButton href="/reports" variant="secondary">
               <FileText size={16} aria-hidden="true" />
               Отчеты
@@ -938,10 +988,11 @@ export function AnsibleControlClient() {
         <div id="ansible-actions" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-white">Аудит хоста</h2>
+              <h2 className="text-lg font-semibold text-white">Основной аудит</h2>
               <p className="mt-1 text-sm text-slate-400">
                 Хост: <span className="font-semibold text-slate-100">{selectedHost?.alias ?? "не выбран"}</span>
               </p>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">Профиль HCP / Ansible проверяет настройки роли хоста. CVE, OpenSCAP, Nmap, Lynis и SSH-криптография запускаются отдельно только при необходимости.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <label className="block">
@@ -981,17 +1032,30 @@ export function AnsibleControlClient() {
 
           <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
             <summary className="cursor-pointer text-sm font-semibold text-slate-200">Дополнительные проверки</summary>
-            <p className="mt-1 text-xs leading-5 text-slate-400">Используйте их, когда обычного аудита недостаточно.</p>
-            <div className="mt-3 flex flex-wrap gap-2">
-              {additionalAuditActions.map((action) => {
-                const Icon = action.icon;
-                return (
-                  <Button key={action.id} variant="secondary" onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
-                    <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
-                    {action.label}
-                  </Button>
-                );
-              })}
+            <p className="mt-1 text-xs leading-5 text-slate-400">Основной аудит не запускает эти инструменты. Выберите только одну нужную проверку.</p>
+            <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,430px)_1fr_auto] lg:items-end">
+              <label className="block min-w-0">
+                <span className="text-xs font-semibold uppercase text-slate-500">Инструмент</span>
+                <select
+                  value={additionalAuditActionId}
+                  onChange={(event) => setAdditionalAuditActionId(event.target.value as AdditionalAuditActionId)}
+                  disabled={Boolean(loading) || !selectedHost}
+                  className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  {additionalAuditGroups.map((group) => (
+                    <optgroup key={group} label={group}>
+                      {additionalAuditActions.filter((action) => action.group === group).map((action) => (
+                        <option key={action.id} value={action.id}>{action.label}</option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+              </label>
+              <p className="text-xs leading-5 text-slate-400">{selectedAdditionalAction.description}</p>
+              <Button variant="secondary" onClick={() => runAction(selectedAdditionalAction.id)} disabled={Boolean(loading) || !selectedHost}>
+                <SelectedAdditionalActionIcon size={16} className={loading === selectedAdditionalAction.id ? "animate-spin" : ""} aria-hidden="true" />
+                Запустить проверку
+              </Button>
             </div>
           </details>
 
