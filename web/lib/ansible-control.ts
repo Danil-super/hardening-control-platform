@@ -25,7 +25,9 @@ export const playbooks = {
   packageInventory: { file: "package-inventory.yml", timeout: 600_000, kind: "audit" },
   collectEvents: { file: "collect-security-events.yml", timeout: 360_000, kind: "audit" },
   sshCryptoAudit: { file: "ssh-crypto-audit.yml", timeout: 180_000, kind: "audit", requiresLimit: true },
-  networkPortScan: { file: "nmap-scan.yml", timeout: 300_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
+  // A full TCP range can legitimately take much longer than the routine
+  // top-port checks when a firewall silently drops packets.
+  networkPortScan: { file: "nmap-scan.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   lynisTemporaryAudit: { file: "lynis-temporary-audit.yml", timeout: 1_200_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   openScapAudit: { file: "openscap-audit.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   astraOvalAudit: { file: "astra-oval-audit.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
@@ -133,6 +135,13 @@ type ExtraVarsResult =
 
 export function validateExtraVars(action: PlaybookAction, extraVars: unknown): ExtraVarsResult {
   const values = extraVars && typeof extraVars === "object" ? extraVars as Record<string, unknown> : {};
+  if (action === "networkPortScan") {
+    const scope = typeof values.nmap_scan_scope === "string" ? values.nmap_scan_scope : "top_100";
+    if (!new Set(["top_100", "top_1000", "full_tcp"]).has(scope)) {
+      return { ok: false as const, message: "Выберите допустимую глубину Nmap: 100, 1000 или все TCP-порты." };
+    }
+    return { ok: true, values: { nmap_scan_scope: scope } };
+  }
   if (action === "closePort") {
     if (!isSafePort(values.target_port)) {
       return { ok: false as const, message: "Укажите корректный порт от 1 до 65535." };

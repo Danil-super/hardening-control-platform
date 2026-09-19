@@ -43,6 +43,9 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.doesNotMatch(shell, /Playbook'и/);
   assert.doesNotMatch(shell, /label: "Вход"/);
   assert.match(hosts, /Дополнительные проверки/);
+  assert.match(hosts, /Глубина Nmap/);
+  assert.match(hosts, /Полная TCP: 1–65 535/);
+  assert.match(hosts, /nmap_scan_scope/);
   assert.match(hosts, /Обратимые изменения firewall/);
   assert.match(hosts, /Сетевой сканер Greenbone \/ OpenVAS/);
   assert.match(hosts, /Полная инструкция Greenbone/);
@@ -51,6 +54,19 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.match(reports, /Журнал действий/);
   assert.match(reports, /DeleteRecordButton/);
   assert.match(reports, /Ненужные тестовые отчёты можно удалить/);
+});
+
+test("Nmap validates its selected TCP coverage and records it in the report", () => {
+  const control = read(path.join("web", "lib", "ansible-control.ts"));
+  const playbook = read(path.join("ansible", "playbooks", "nmap-scan.yml"));
+  const scanner = read(path.join("ansible", "scripts", "hcp-controller-scan.py"));
+  const report = read(path.join("web", "app", "reports", "agentless", "[reportId]", "page.tsx"));
+  assert.match(control, /nmap_scan_scope/);
+  assert.match(control, /full_tcp/);
+  assert.match(playbook, /--scan-scope/);
+  assert.match(scanner, /NMAP_SCAN_SCOPES/);
+  assert.match(scanner, /all_tcp_1_65535/);
+  assert.match(report, /Охват проверки Nmap/);
 });
 
 test("host onboarding uses verified SSH host keys and persists them", () => {

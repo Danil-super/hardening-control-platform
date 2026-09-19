@@ -73,8 +73,15 @@ export default async function AgentlessReportDetailPage({
     .map(([status, count]) => `${status}: ${count}`);
   const isLynisReport = report.mode === "lynis";
   const isOpenScapReport = report.mode === "openscap";
+  const isNmapReport = report.mode === "nmap";
   const freshnessLabels: Record<string, string> = { fresh: "актуальна", stale: "устарела", missing: "отсутствует", unknown: "актуальность неизвестна" };
   const exceptionsApplied = Array.isArray(scanner.exceptionsApplied) ? scanner.exceptionsApplied : [];
+  const nmapScopeLabels: Record<string, string> = {
+    top_100: "Быстрая: 100 наиболее распространённых TCP-портов",
+    top_1000: "Стандартная: 1 000 наиболее распространённых TCP-портов",
+    full_tcp: "Полная TCP-проверка: порты 1–65 535",
+  };
+  const nmapScope = nmapScopeLabels[String(scanner.scanScope)] ?? textValue(scanner.scope);
 
   return (
     <div className="space-y-6">
@@ -123,6 +130,16 @@ export default async function AgentlessReportDetailPage({
           <p className="font-semibold">{report.available ? "Проверка неполная" : "Сканер не выполнил проверку"}</p>
           <p>{!report.reportTimeValid ? "Дата отчёта некорректна: его нельзя использовать как актуальное свидетельство." : "Отсутствие находок в этом отчёте не подтверждает защищённость хоста. Устраните причину и повторите проверку."}</p>
           {typeof vulnerabilityScan.message === "string" ? <p className="mt-1">{vulnerabilityScan.message}</p> : null}
+        </section>
+      ) : null}
+
+      {isNmapReport ? (
+        <section className="rounded-md border border-sky-400/25 bg-sky-500/5 p-4 text-sm leading-6 text-sky-100">
+          <h2 className="font-semibold">Охват проверки Nmap</h2>
+          <p className="mt-1">{nmapScope}.</p>
+          <p className="mt-1 text-slate-300">{scanner.coverageComplete === true
+            ? "Все TCP-порты проверены. UDP, локальные сокеты и сценарии уязвимостей в этот запуск не входят."
+            : "Это ограниченная выборка TCP-портов: отсутствие находок вне указанного диапазона не подтверждено. Для полного TCP-охвата запустите «Полная TCP: 1–65 535». UDP выполняется отдельной согласованной проверкой."}</p>
         </section>
       ) : null}
 

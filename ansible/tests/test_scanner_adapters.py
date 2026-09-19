@@ -153,6 +153,18 @@ class ScannerAdaptersTest(unittest.TestCase):
         report = self.invoke_network(scanner.nmap, nmap_xml())
         self.assertFalse(report["scanner"]["partial"])
         self.assertEqual(report["findings"][0]["status"], "passed")
+        self.assertEqual(report["scanner"]["scanScope"], "top_100")
+        self.assertFalse(report["scanner"]["coverageComplete"])
+
+    def test_nmap_full_tcp_uses_entire_range_and_records_coverage(self):
+        with patch.object(scanner.shutil, "which", return_value="/test/tool"), patch.object(scanner, "run", return_value=(0, nmap_xml(), "")) as execute:
+            report = scanner.nmap(arguments(scan_scope="full_tcp"))
+        command = execute.call_args.args[0]
+        self.assertIn("-p-", command)
+        self.assertNotIn("--top-ports", command)
+        self.assertEqual(report["scanner"]["scanScope"], "full_tcp")
+        self.assertTrue(report["scanner"]["coverageComplete"])
+        self.assertIn("1–65535", report["findings"][0]["title"])
 
     def test_lynis_arbitrary_text_is_not_success(self):
         report = self.parse_file("not a lynis report", scanner.lynis_report)

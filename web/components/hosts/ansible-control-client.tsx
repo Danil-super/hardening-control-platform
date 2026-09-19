@@ -1,820 +1,21 @@
-"use client";
-
-import {
-  AlertTriangle,
-  Ban,
-  CheckCircle2,
-  FileText,
-  Plus,
-  RefreshCw,
-  RotateCcw,
-  Search,
-  Server,
-  ShieldCheck,
-  Terminal,
-  Upload,
-} from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Button, LinkButton } from "@/components/ui/button";
-import { useActionResult, useFeedbackMessage, useNotify } from "@/components/ui/feedback";
-import { errorMessage, readApiResponse } from "@/lib/client-api";
-import { HostServerTrust } from "@/components/hosts/ssh-connection-help";
-import { copyText } from "@/lib/clipboard";
-import { NetworkDiscovery, type DiscoveryPayload } from "@/components/hosts/network-discovery";
-import { SshCredentialSetup, type CredentialSetupResult, type SetupSecrets } from "@/components/hosts/ssh-credential-setup";
-import { DecommissionHostDialog } from "@/components/hosts/decommission-host-dialog";
-import { connectAndSaveHost, defaultHostAlias } from "@/lib/host-onboarding";
-import type { PreflightCheck } from "@/lib/preflight-result";
-
-type HealthPayload = {
-  ansibleInstalled?: boolean;
-  version?: string | null;
-  inventoryReady?: boolean;
-  message?: string;
-};
-
-type RunPayload = {
-  ok?: boolean;
-  partial?: boolean;
-  warnings?: string[];
-  action?: string;
-  command?: string;
-  message?: string;
-  stdout?: string;
-  stderr?: string;
-  reportRunId?: string | null;
-  reportId?: string | null;
-  postAuditReportId?: string | null;
-  transaction?: RemediationTransaction;
-};
-
-type RemediationTransaction = {
-  id: string;
-  createdAt: string;
-  hostAlias: string;
-  action: string;
-  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back";
-  reason: string;
-  backupRef: string | null;
-  preAuditReportId: string | null;
-  postAuditReportId: string | null;
-  error: string | null;
-};
-
-type ManagedHost = {
-  alias: string;
-  address: string;
-  user: string | null;
-  port: number;
-  become: boolean | null;
-  groups: string[];
-  reportCount: number;
-  credentialId?: string | null;
-  credentialFingerprint?: string | null;
-  credentialPublicKey?: string | null;
-  credentialReady?: boolean;
-  sudoMode?: "passwordless" | "on_demand" | null;
-  lastReport: {
-    fileName: string;
-    createdAt: string | null;
-    profileId: string | null;
-    score: number | null;
-    high: number;
-    medium: number;
-    low: number;
-    info: number;
-  } | null;
-};
-
-type HostsPayload = {
-  inventoryReady?: boolean;
-  hosts?: ManagedHost[];
-  summary?: {
-    total: number;
-    withReports: number;
-    withoutReports: number;
-    becomeEnabled: number;
-    averageScore: number | null;
-  };
-};
-
-type PreflightPayload = {
-  ok?: boolean;
-  message?: string;
-  readiness?: import("@/lib/host-readiness").HostReadiness | null;
-  readinessError?: string | null;
-  checks?: {
-    ssh: PreflightCheck;
-    python: PreflightCheck;
-    sudo: PreflightCheck;
-    os?: PreflightCheck;
-  };
-  facts?: {
-    os: string | null;
-    python: string | null;
-  };
-};
-
-type HostKeyPayload = {
-  ok?: boolean;
-  fingerprints?: Array<{ fingerprint: string; algorithm: string }>;
-  message?: string;
-};
-
-const profileOptions = [
-  { id: "basic_linux", label: "Ğ‘Ğ°Ğ·Ğ¾Ğ²Ñ‹Ğ¹ Linux" },
-  { id: "ssh_security", label: "SSH-ÑĞµÑ€Ğ²ĞµÑ€" },
-  { id: "web_server", label: "Ğ’ĞµĞ±-ÑĞµÑ€Ğ²ĞµÑ€" },
-  { id: "docker_host", label: "Docker-Ñ…Ğ¾ÑÑ‚" },
-] as const;
-
-const primaryAuditActions = [
-  { id: "agentlessAudit", label: "ĞŸÑ€Ğ¾Ğ²ĞµÑ€Ğ¸Ñ‚ÑŒ Ğ¿Ñ€Ğ¾Ñ„Ğ¸Ğ»ÑŒ", icon: ShieldCheck },
-  { id: "ping", label: "ĞŸÑ€Ğ¾Ğ²ĞµÑ€Ğ¸Ñ‚ÑŒ ÑĞ²ÑĞ·ÑŒ", icon: Server },
-] as const;
-
-const additionalAuditActions = [
-  {
-    id: "packageInventory",
-    label: "ĞŸĞ°ĞºĞµÑ‚Ñ‹ Ğ¸ CVE â€” Trivy",
-    group: "CVE Ğ¸ Ğ¿Ğ°ĞºĞµÑ‚Ñ‹",
-    description: "Ğ¡Ğ¾Ğ±Ğ¸Ñ€Ğ°ĞµÑ‚ ÑƒÑÑ‚Ğ°Ğ½Ğ¾Ğ²Ğ»ĞµĞ½Ğ½Ğ¾Ğµ ĞŸĞ, Ñ„Ğ¾Ñ€Ğ¼Ğ¸Ñ€ÑƒĞµÑ‚ SBOM Ğ¸ ÑĞ¾Ğ¿Ğ¾ÑÑ‚Ğ°Ğ²Ğ»ÑĞµÑ‚ Ğ¿Ğ°ĞºĞµÑ‚Ñ‹ Ñ Ğ±Ğ°Ğ·Ğ¾Ğ¹ CVE Trivy.",
-    icon: FileText,
-  },
-  {
-    id: "astraOvalAudit",
-    label: "CVE Astra â€” OVAL / OpenSCAP",
-    group: "CVE Ğ¸ Ğ¿Ğ°ĞºĞµÑ‚Ñ‹",
-    description: "ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑĞµÑ‚ Ğ¿Ğ°ĞºĞµÑ‚Ñ‹ Astra Ğ¿Ğ¾ Ğ½Ğ°Ğ·Ğ½Ğ°Ñ‡ĞµĞ½Ğ½Ğ¾Ğ¹ Ğ¾Ñ„Ğ¸Ñ†Ğ¸Ğ°Ğ»ÑŒĞ½Ğ¾Ğ¹ OVAL-Ğ±Ğ°Ğ·Ğµ. ĞĞµ Ğ¸Ğ·Ğ¼ĞµĞ½ÑĞµÑ‚ Ñ…Ğ¾ÑÑ‚.",
-    icon: ShieldCheck,
-    requiresConfirmation: true,
-  },
-  {
-    id: "openScapAudit",
-    label: "ĞŸÑ€Ğ¾Ñ„Ğ¸Ğ»ÑŒ ĞºĞ¾Ğ½Ñ„Ğ¸Ğ³ÑƒÑ€Ğ°Ñ†Ğ¸Ğ¸ â€” OpenSCAP",
-    group: "Ğ‘ĞµĞ·Ğ¾Ğ¿Ğ°ÑĞ½Ğ¾ÑÑ‚ÑŒ Ğ¸ ĞºĞ¾Ğ½Ñ„Ğ¸Ğ³ÑƒÑ€Ğ°Ñ†Ğ¸Ñ",
-    description: "Ğ¡Ğ²ĞµÑ€ÑĞµÑ‚ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸ Ñ…Ğ¾ÑÑ‚Ğ° Ñ Ğ²Ñ‹Ğ±Ñ€Ğ°Ğ½Ğ½Ñ‹Ğ¼ Ğ¿Ñ€Ğ¾Ñ„Ğ¸Ğ»ĞµĞ¼ Ğ±ĞµĞ·Ğ¾Ğ¿Ğ°ÑĞ½Ğ¾ÑÑ‚Ğ¸ HCP. ĞĞµ Ğ¸Ğ·Ğ¼ĞµĞ½ÑĞµÑ‚ Ñ…Ğ¾ÑÑ‚.",
-    icon: ShieldCheck,
-    requiresConfirmation: true,
-  },
-  {
-    id: "sshCryptoAudit",
-    label: "Ğ—Ğ°Ñ‰Ğ¸Ñ‚Ğ° SSH â€” ssh-audit",
-    group: "Ğ‘ĞµĞ·Ğ¾Ğ¿Ğ°ÑĞ½Ğ¾ÑÑ‚ÑŒ Ğ¸ ĞºĞ¾Ğ½Ñ„Ğ¸Ğ³ÑƒÑ€Ğ°Ñ†Ğ¸Ñ",
-    description: "ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑĞµÑ‚ Ğ°Ğ»Ğ³Ğ¾Ñ€Ğ¸Ñ‚Ğ¼Ñ‹ Ğ¸ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸ SSH Ñ ÑƒĞ¿Ñ€Ğ°Ğ²Ğ»ÑÑÑ‰ĞµĞ¹ Ğ¼Ğ°ÑˆĞ¸Ğ½Ñ‹, Ğ±ĞµĞ· Ğ²Ñ…Ğ¾Ğ´Ğ° Ğ½Ğ° Ñ…Ğ¾ÑÑ‚.",
-    icon: ShieldCheck,
-  },
-  {
-    id: "lynisTemporaryAudit",
-    label: "Ğ ĞµĞºĞ¾Ğ¼ĞµĞ½Ğ´Ğ°Ñ†Ğ¸Ğ¸ hardening â€” Lynis",
-    group: "Ğ‘ĞµĞ·Ğ¾Ğ¿Ğ°ÑĞ½Ğ¾ÑÑ‚ÑŒ Ğ¸ ĞºĞ¾Ğ½Ñ„Ğ¸Ğ³ÑƒÑ€Ğ°Ñ†Ğ¸Ñ",
-    description: "Ğ’Ñ€ĞµĞ¼ĞµĞ½Ğ½Ğ¾ Ğ·Ğ°Ğ¿ÑƒÑĞºĞ°ĞµÑ‚ Lynis Ğ½Ğ° Ñ…Ğ¾ÑÑ‚Ğµ Ğ¸ ÑƒĞ´Ğ°Ğ»ÑĞµÑ‚ ĞµĞ³Ğ¾ Ñ€Ğ°Ğ±Ğ¾Ñ‡Ğ¸Ğµ Ñ„Ğ°Ğ¹Ğ»Ñ‹ Ğ¿Ğ¾ÑĞ»Ğµ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞºĞ¸.",
-    icon: ShieldCheck,
-    requiresConfirmation: true,
-  },
-  {
-    id: "networkPortScan",
-    label: "ĞÑ‚ĞºÑ€Ñ‹Ñ‚Ñ‹Ğµ TCP-Ğ¿Ğ¾Ñ€Ñ‚Ñ‹ â€” Nmap",
-    group: "Ğ”Ğ¸Ğ°Ğ³Ğ½Ğ¾ÑÑ‚Ğ¸ĞºĞ°",
-    description: "ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑĞµÑ‚ top-100 TCP-Ğ¿Ğ¾Ñ€Ñ‚Ğ¾Ğ² Ğ²Ñ‹Ğ±Ñ€Ğ°Ğ½Ğ½Ğ¾Ğ³Ğ¾ Ñ…Ğ¾ÑÑ‚Ğ° Ñ ÑƒĞ¿Ñ€Ğ°Ğ²Ğ»ÑÑÑ‰ĞµĞ¹ Ğ¼Ğ°ÑˆĞ¸Ğ½Ñ‹.",
-    icon: Search,
-    requiresConfirmation: true,
-  },
-  {
-    id: "collectFacts",
-    label: "Ğ¡Ğ²ĞµĞ´ĞµĞ½Ğ¸Ñ Ğ¾ Ñ…Ğ¾ÑÑ‚Ğµ â€” Ansible",
-    group: "Ğ”Ğ¸Ğ°Ğ³Ğ½Ğ¾ÑÑ‚Ğ¸ĞºĞ°",
-    description: "Ğ¡Ğ¾Ğ±Ğ¸Ñ€Ğ°ĞµÑ‚ Ğ²ĞµÑ€ÑĞ¸Ğ¸ ĞĞ¡, ÑĞ´Ñ€Ğ° Ğ¸ ĞºĞ¾Ğ¼Ğ¿Ğ¾Ğ½ĞµĞ½Ñ‚Ğ¾Ğ² Ğ´Ğ»Ñ Ğ´Ğ¸Ğ°Ğ³Ğ½Ğ¾ÑÑ‚Ğ¸ĞºĞ¸ Ğ¿Ğ¾Ğ´ĞºĞ»ÑÑ‡ĞµĞ½Ğ¸Ñ.",
-    icon: FileText,
-  },
-  {
-    id: "collectEvents",
-    label: "Ğ¡Ğ¾Ğ±Ñ‹Ñ‚Ğ¸Ñ Ğ±ĞµĞ·Ğ¾Ğ¿Ğ°ÑĞ½Ğ¾ÑÑ‚Ğ¸ â€” Ansible",
-    group: "Ğ”Ğ¸Ğ°Ğ³Ğ½Ğ¾ÑÑ‚Ğ¸ĞºĞ°",
-    description: "Ğ¡Ğ¾Ğ±Ğ¸Ñ€Ğ°ĞµÑ‚ ÑĞ¾Ğ±Ñ‹Ñ‚Ğ¸Ñ Ğ±ĞµĞ·Ğ¾Ğ¿Ğ°ÑĞ½Ğ¾ÑÑ‚Ğ¸ Ğ´Ğ»Ñ Ñ€Ğ°Ğ·Ğ±Ğ¾Ñ€Ğ° Ğ¸Ğ½Ñ†Ğ¸Ğ´ĞµĞ½Ñ‚Ğ°; ÑÑ‚Ğ¾ Ğ½Ğµ Ğ¾ÑĞ½Ğ¾Ğ²Ğ½Ğ¾Ğ¹ Ğ°ÑƒĞ´Ğ¸Ñ‚.",
-    icon: Terminal,
-  },
-] as const;
-
-const auditActions = [...primaryAuditActions, ...additionalAuditActions] as const;
-const additionalAuditGroups = ["CVE Ğ¸ Ğ¿Ğ°ĞºĞµÑ‚Ñ‹", "Ğ‘ĞµĞ·Ğ¾Ğ¿Ğ°ÑĞ½Ğ¾ÑÑ‚ÑŒ Ğ¸ ĞºĞ¾Ğ½Ñ„Ğ¸Ğ³ÑƒÑ€Ğ°Ñ†Ğ¸Ñ", "Ğ”Ğ¸Ğ°Ğ³Ğ½Ğ¾ÑÑ‚Ğ¸ĞºĞ°"] as const;
-type AdditionalAuditActionId = (typeof additionalAuditActions)[number]["id"];
-
-const responseActions = [
-  { id: "closePort", label: "Ğ—Ğ°ĞºÑ€Ñ‹Ñ‚ÑŒ Ğ¿Ğ¾Ñ€Ñ‚", icon: Ban },
-  { id: "blockIp", label: "Ğ‘Ğ»Ğ¾Ğº IP", icon: AlertTriangle },
-] as const;
-
-const transactionStatusLabels: Record<RemediationTransaction["status"], string> = {
-  preparing: "Ğ¿Ğ¾Ğ´Ğ³Ğ¾Ñ‚Ğ¾Ğ²ĞºĞ°",
-  backed_up: "Ñ€ĞµĞ·ĞµÑ€Ğ²Ğ½Ğ°Ñ ĞºĞ¾Ğ¿Ğ¸Ñ ÑĞ¾Ğ·Ğ´Ğ°Ğ½Ğ°",
-  applied: "Ğ¿Ñ€Ğ¸Ğ¼ĞµĞ½ĞµĞ½Ğ¾",
-  failed: "Ğ¾ÑˆĞ¸Ğ±ĞºĞ°",
-  rolling_back: "Ğ²Ñ‹Ğ¿Ğ¾Ğ»Ğ½ÑĞµÑ‚ÑÑ Ğ¾Ñ‚ĞºĞ°Ñ‚",
-  rollback_failed: "Ğ¾ÑˆĞ¸Ğ±ĞºĞ° Ğ¾Ñ‚ĞºĞ°Ñ‚Ğ°",
-  rolled_back: "Ğ²Ğ¾ÑÑÑ‚Ğ°Ğ½Ğ¾Ğ²Ğ»ĞµĞ½Ğ¾",
-};
-
-const transactionActionLabels: Record<string, string> = {
-  closePort: "Ğ—Ğ°ĞºÑ€Ñ‹Ñ‚Ğ¸Ğµ Ğ¿Ğ¾Ñ€Ñ‚Ğ°",
-  blockIp: "Ğ‘Ğ»Ğ¾ĞºĞ¸Ñ€Ğ¾Ğ²ĞºĞ° IP",
-};
-
-function formatDate(value: string | null | undefined) {
-  if (!value) {
-    return "Ğ½ĞµÑ‚ Ğ¾Ñ‚Ñ‡ĞµÑ‚Ğ°";
-  }
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
-}
-
-function scoreTone(score: number | null | undefined) {
-  if (typeof score !== "number") {
-    return "border-slate-700 bg-slate-900 text-slate-300";
-  }
-  if (score >= 80) {
-    return "border-emerald-400/40 bg-emerald-500/15 text-emerald-100";
-  }
-  if (score >= 55) {
-    return "border-amber-400/40 bg-amber-500/15 text-amber-100";
-  }
-  return "border-red-400/40 bg-red-500/15 text-red-100";
-}
-
-function reportHref(fileName: string) {
-  return `/reports/agentless/${encodeURIComponent(fileName.replace(/\.json$/i, ""))}`;
-}
-
-export function AnsibleControlClient() {
-  const notify = useNotify();
-  const formRef = useRef<HTMLElement>(null);
-  const [editingHost, setEditingHost] = useState("");
-  const [health, setHealth] = useState<HealthPayload | null>(null);
-  const [hosts, setHosts] = useState<HostsPayload | null>(null);
-  const [profileId, setProfileId] = useState("basic_linux");
-  const [additionalAuditActionId, setAdditionalAuditActionId] = useState<AdditionalAuditActionId>("packageInventory");
-  const [selectedAlias, setSelectedAlias] = useState("");
-  const [loading, setLoading] = useState("");
-  const [runResult, setRunResult] = useActionResult<RunPayload>();
-  const [freshReportHref, setFreshReportHref] = useState("");
-  const [manualAlias, setManualAlias] = useState("");
-  const [manualAddress, setManualAddress] = useState("");
-  const [manualUser, setManualUser] = useState("");
-  const [manualPort, setManualPort] = useState("22");
-  const [manualGroup, setManualGroup] = useState("linux_hosts");
-  // The host form always verifies administrative access before saving.
-  const manualBecome = true;
-  const [preflight, setPreflight] = useState<PreflightPayload | null>(null);
-  const [preflightFor, setPreflightFor] = useState("");
-  const [scanCidr, setScanCidr] = useState("");
-  const [discovery, setDiscovery] = useState<DiscoveryPayload | null>(null);
-  const [targetPort, setTargetPort] = useState("23");
-  const [targetProtocol, setTargetProtocol] = useState("tcp");
-  const [blockIp, setBlockIp] = useState("");
-  const [changeReason, setChangeReason] = useState("");
-  const [confirmedHost, setConfirmedHost] = useState("");
-  const [transactions, setTransactions] = useState<RemediationTransaction[]>([]);
-  const [manualCredentialId, setManualCredentialId] = useState<string | null>(null);
-  const [credentialResult, setCredentialResult] = useState<CredentialSetupResult | null>(null);
-  const [hostKeyScan, setHostKeyScan] = useState<HostKeyPayload | null>(null);
-  const [trustedFingerprint, setTrustedFingerprint] = useState("");
-  const [serverTrusted, setServerTrusted] = useState(false);
-  const [trustExpanded, setTrustExpanded] = useState(false);
-  const [accessLoading, setAccessLoading] = useState("");
-  const [accessMessage, setAccessMessage] = useFeedbackMessage();
-  const [copied, setCopied] = useState("");
-  const [greenboneFile, setGreenboneFile] = useState<File | null>(null);
-  const [greenboneMessage, setGreenboneMessage] = useState("");
-  const [decommissionHost, setDecommissionHost] = useState<ManagedHost | null>(null);
-  const [operationSudoPassword, setOperationSudoPassword] = useState("");
-  const [secureCredentialTransport, setSecureCredentialTransport] = useState(false);
-
-  const selectedHost = useMemo(
-    () => hosts?.hosts?.find((host) => host.alias === selectedAlias) ?? null,
-    [hosts, selectedAlias],
-  );
-
-  const connectionAlias = manualAlias.trim() || defaultHostAlias(manualAddress);
-
-  const connectionSignature = useMemo(
-    () => [connectionAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", manualCredentialId ?? "legacy"].join("\u0000"),
-    [manualAddress, connectionAlias, manualBecome, manualPort, manualUser, manualCredentialId],
-  );
-
-  useEffect(() => {
-    void refreshAll();
-  }, []);
-
-  useEffect(() => {
-    setSecureCredentialTransport(window.location.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]", "::1"].includes(window.location.hostname));
-  }, []);
-
-  useEffect(() => {
-    // Never carry a one-time password from one target host to another.
-    setOperationSudoPassword("");
-  }, [selectedAlias]);
-
-  useEffect(() => {
-    setHostKeyScan(null);
-    setTrustExpanded(false);
-    setServerTrusted(false);
-    setTrustedFingerprint("");
-    setAccessMessage("");
-  }, [manualAddress, manualPort, setAccessMessage]);
-
-  useEffect(() => {
-    if (!copied) return;
-    const timer = window.setTimeout(() => setCopied(""), 2500);
-    return () => window.clearTimeout(timer);
-  }, [copied]);
-
-  async function refreshAll(announce = false) {
-    setLoading("refresh");
-    try {
-      const [healthResponse, hostsResponse, remediationResponse] = await Promise.all([
-        fetch("/api/ansible/health"),
-        fetch("/api/ansible/hosts"),
-        fetch("/api/ansible/remediations"),
-      ]);
-      const nextHealth = await readApiResponse(healthResponse);
-      const nextHosts = await readApiResponse(hostsResponse);
-      const nextRemediations = await readApiResponse(remediationResponse);
-      if (!healthResponse.ok || !hostsResponse.ok || !remediationResponse.ok) {
-        throw new Error(nextHealth.message || nextHosts.message || nextRemediations.message || "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ¾Ğ±Ğ½Ğ¾Ğ²Ğ¸Ñ‚ÑŒ Ğ´Ğ°Ğ½Ğ½Ñ‹Ğµ.");
-      }
-      setHealth(nextHealth);
-      setHosts(nextHosts);
-      setTransactions(nextRemediations.transactions ?? []);
-      if (!selectedAlias && nextHosts.hosts?.[0]) {
-        setSelectedAlias(nextHosts.hosts[0].alias);
-      }
-      if (announce) notify("Ğ”Ğ°Ğ½Ğ½Ñ‹Ğµ Ñ…Ğ¾ÑÑ‚Ğ¾Ğ² Ğ¾Ğ±Ğ½Ğ¾Ğ²Ğ»ĞµĞ½Ñ‹.", "success");
-      return nextHosts as HostsPayload;
-    } catch (error) {
-      setRunResult({ ok: false, message: errorMessage(error, "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ¾Ğ±Ğ½Ğ¾Ğ²Ğ¸Ñ‚ÑŒ Ğ´Ğ°Ğ½Ğ½Ñ‹Ğµ. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ğ¿Ğ¾Ğ´ĞºĞ»ÑÑ‡ĞµĞ½Ğ¸Ğµ Ğº Ğ¿Ğ»Ğ°Ñ‚Ñ„Ğ¾Ñ€Ğ¼Ğµ Ğ¸ Ğ¿Ğ¾Ğ²Ñ‚Ğ¾Ñ€Ğ¸Ñ‚Ğµ Ğ·Ğ°Ğ¿Ñ€Ğ¾Ñ.") });
-    } finally {
-      setLoading("");
-    }
-  }
-
-  async function loadHosts() {
-    const response = await fetch("/api/ansible/hosts");
-    const payload = await readApiResponse(response);
-    if (!response.ok) throw new Error(payload.message || "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ·Ğ°Ğ³Ñ€ÑƒĞ·Ğ¸Ñ‚ÑŒ Ñ…Ğ¾ÑÑ‚Ñ‹.");
-    setHosts(payload);
-    return payload as HostsPayload;
-  }
-
-  async function loadRemediations() {
-    const response = await fetch("/api/ansible/remediations");
-    const payload = await readApiResponse(response);
-    if (!response.ok) throw new Error(payload.message || "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ·Ğ°Ğ³Ñ€ÑƒĞ·Ğ¸Ñ‚ÑŒ Ğ¸Ğ·Ğ¼ĞµĞ½ĞµĞ½Ğ¸Ñ.");
-    setTransactions(payload.transactions ?? []);
-  }
-
-  async function refreshRemediations() {
-    setLoading("remediations");
-    try {
-      await loadRemediations();
-      notify("Ğ¡Ğ¿Ğ¸ÑĞ¾Ğº Ğ¸Ğ·Ğ¼ĞµĞ½ĞµĞ½Ğ¸Ğ¹ Ğ¾Ğ±Ğ½Ğ¾Ğ²Ğ»Ñ‘Ğ½.", "success");
-    } catch (error) {
-      notify(errorMessage(error, "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ¾Ğ±Ğ½Ğ¾Ğ²Ğ¸Ñ‚ÑŒ ÑĞ¿Ğ¸ÑĞ¾Ğº Ğ¸Ğ·Ğ¼ĞµĞ½ĞµĞ½Ğ¸Ğ¹."), "error");
-    } finally { setLoading(""); }
-  }
-
-  async function copyToClipboard(value: string, label: string) {
-    try {
-      await copyText(value);
-      setCopied(label);
-      notify(label === "public-key" ? "ĞŸÑƒĞ±Ğ»Ğ¸Ñ‡Ğ½Ñ‹Ğ¹ ĞºĞ»ÑÑ‡ ÑĞºĞ¾Ğ¿Ğ¸Ñ€Ğ¾Ğ²Ğ°Ğ½." : "ĞšĞ¾Ğ¼Ğ°Ğ½Ğ´Ğ° ÑĞºĞ¾Ğ¿Ğ¸Ñ€Ğ¾Ğ²Ğ°Ğ½Ğ°.", "success");
-    } catch {
-      setAccessMessage("ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ ÑĞºĞ¾Ğ¿Ğ¸Ñ€Ğ¾Ğ²Ğ°Ñ‚ÑŒ Ğ°Ğ²Ñ‚Ğ¾Ğ¼Ğ°Ñ‚Ğ¸Ñ‡ĞµÑĞºĞ¸. Ğ’Ñ‹Ğ´ĞµĞ»Ğ¸Ñ‚Ğµ Ğ·Ğ½Ğ°Ñ‡ĞµĞ½Ğ¸Ğµ Ğ¸ ÑĞºĞ¾Ğ¿Ğ¸Ñ€ÑƒĞ¹Ñ‚Ğµ Ğ²Ñ€ÑƒÑ‡Ğ½ÑƒÑ.");
-    }
-  }
-
-  async function scanHostFingerprint() {
-    if (!manualAddress) {
-      setAccessMessage("Ğ¡Ğ½Ğ°Ñ‡Ğ°Ğ»Ğ° ÑƒĞºĞ°Ğ¶Ğ¸Ñ‚Ğµ IP-Ğ°Ğ´Ñ€ĞµÑ Ğ¸Ğ»Ğ¸ hostname Ñ†ĞµĞ»ĞµĞ²Ğ¾Ğ³Ğ¾ Ñ…Ğ¾ÑÑ‚Ğ°.");
-      return;
-    }
-    setAccessLoading("scan");
-    setAccessMessage("");
-    setHostKeyScan(null);
-    try {
-      const response = await fetch("/api/ansible/access", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ operation: "scan", address: manualAddress, port: manualPort }),
-      });
-      const payload = await readApiResponse(response);
-      setHostKeyScan(payload);
-      setAccessMessage(payload.message || (payload.ok ? "ĞšĞ»ÑÑ‡Ğ¸ Ğ¿Ğ¾Ğ»ÑƒÑ‡ĞµĞ½Ñ‹. Ğ¡Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ğ¾Ñ‚Ğ¿ĞµÑ‡Ğ°Ñ‚Ğ¾Ğº Ñ Ğ´Ğ¾Ğ²ĞµÑ€ĞµĞ½Ğ½Ñ‹Ğ¼ Ğ¸ÑÑ‚Ğ¾Ñ‡Ğ½Ğ¸ĞºĞ¾Ğ¼." : "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ¿Ğ¾Ğ»ÑƒÑ‡Ğ¸Ñ‚ÑŒ ĞºĞ»ÑÑ‡Ğ¸ ÑĞµÑ€Ğ²ĞµÑ€Ğ°."), payload.ok ? "info" : "error");
-    } catch (error) {
-      setAccessMessage(errorMessage(error, "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ¿Ğ¾Ğ»ÑƒÑ‡Ğ¸Ñ‚ÑŒ Ğ¾Ñ‚Ğ¿ĞµÑ‡Ğ°Ñ‚Ğ¾Ğº ĞºĞ»ÑÑ‡Ğ° Ñ†ĞµĞ»ĞµĞ²Ğ¾Ğ¹ Astra."));
-    } finally {
-      setAccessLoading("");
-    }
-  }
-
-  async function trustScannedHostKey() {
-    if (!manualAddress || !trustedFingerprint) {
-      setAccessMessage("Ğ£ĞºĞ°Ğ¶Ğ¸Ñ‚Ğµ Ñ…Ğ¾ÑÑ‚ Ğ¸ Ğ²ÑÑ‚Ğ°Ğ²ÑŒÑ‚Ğµ ĞµĞ³Ğ¾ Ğ¾Ñ‚Ğ¿ĞµÑ‡Ğ°Ñ‚Ğ¾Ğº Ğ¸Ğ· Ğ´Ğ¾Ğ²ĞµÑ€ĞµĞ½Ğ½Ğ¾Ğ¹ ĞºĞ¾Ğ½ÑĞ¾Ğ»Ğ¸ Astra Ğ¸Ğ»Ğ¸ Ñ€ĞµĞµÑÑ‚Ñ€Ğ°.");
-      return;
-    }
-    setServerTrusted(false);
-    setAccessLoading("trust");
-    setAccessMessage("");
-    try {
-      const response = await fetch("/api/ansible/access", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          operation: "trust",
-          address: manualAddress,
-          port: manualPort,
-          expectedFingerprint: trustedFingerprint.trim(),
-        }),
-      });
-      const payload = await readApiResponse(response);
-      setServerTrusted(Boolean(payload.ok));
-      setAccessMessage(payload.message || (payload.ok ? "ĞŸÑ€Ğ¾Ğ²ĞµÑ€ĞµĞ½Ğ½Ñ‹Ğ¹ ĞºĞ»ÑÑ‡ ÑĞµÑ€Ğ²ĞµÑ€Ğ° ÑĞ¾Ñ…Ñ€Ğ°Ğ½Ñ‘Ğ½." : "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ ÑĞ¾Ñ…Ñ€Ğ°Ğ½Ğ¸Ñ‚ÑŒ ĞºĞ»ÑÑ‡ ÑĞµÑ€Ğ²ĞµÑ€Ğ°."), payload.ok ? "success" : "error");
-    } catch (error) {
-      setAccessMessage(errorMessage(error, "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ ÑĞ¾Ñ…Ñ€Ğ°Ğ½Ğ¸Ñ‚ÑŒ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞµĞ½Ğ½Ñ‹Ğ¹ SSH-ĞºĞ»ÑÑ‡ ÑĞµÑ€Ğ²ĞµÑ€Ğ°."));
-    } finally {
-      setAccessLoading("");
-    }
-  }
-
-  async function setupHostCredential(secrets: SetupSecrets, clearPasswords: () => void) {
-    setLoading("connect-trust");
-    setPreflight(null); setPreflightFor(""); setRunResult(null);
-    const connection = { alias: connectionAlias, address: manualAddress.trim(), user: manualUser.trim(), port: manualPort,
-      group: manualGroup, become: manualBecome, credentialId: manualCredentialId };
-    try {
-      const outcome = await connectAndSaveHost(connection, secrets, {
-        editing: Boolean(editingHost),
-        onStage: (stage) => { setLoading(`connect-${stage}`); if (stage !== "trust") setServerTrusted(true); },
-        onPasswordSubmit: clearPasswords,
-        onCredential: (payload) => { setManualCredentialId(payload.credentialId); setCredentialResult(payload); },
-        onPreflight: (payload, credentialId) => {
-          setPreflight(payload);
-          setPreflightFor([connectionAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", credentialId ?? "legacy"].join("\u0000"));
-        },
-      });
-      if (!outcome.ok) {
-        const message = outcome.payload.message || "ĞŸĞ¾Ğ´ĞºĞ»ÑÑ‡ĞµĞ½Ğ¸Ğµ Ğ½Ğµ Ğ·Ğ°Ğ²ĞµÑ€ÑˆĞµĞ½Ğ¾. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ñ€ĞµĞ·ÑƒĞ»ÑŒÑ‚Ğ°Ñ‚ Ğ½Ğ¸Ğ¶Ğµ Ğ¸ Ğ¿Ğ¾Ğ²Ñ‚Ğ¾Ñ€Ğ¸Ñ‚Ğµ Ğ¿Ğ¾Ğ¿Ñ‹Ñ‚ĞºÑƒ.";
-        if (outcome.stage === "trust" || ["host_not_trusted", "host_key_changed"].includes(outcome.payload.error)) {
-          setTrustExpanded(true); setServerTrusted(false);
-          setAccessMessage(message, "warning");
-        }
-        setCredentialResult((previous) => ({ ...previous, ok: false, message }));
-        notify(message, outcome.stage === "trust" ? "warning" : "error");
-        return;
-      }
-      setRunResult({ ok: true, action: editingHost ? "updateHost" : "addHost",
-        message: editingHost ? `ĞŸĞ¾Ğ´ĞºĞ»ÑÑ‡ĞµĞ½Ğ¸Ğµ ${connection.alias} Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞµĞ½Ğ¾ Ğ¸ ÑĞ¾Ñ…Ñ€Ğ°Ğ½ĞµĞ½Ğ¾.` : `Ğ¥Ğ¾ÑÑ‚ ${connection.alias} Ğ¿Ğ¾Ğ´ĞºĞ»ÑÑ‡Ñ‘Ğ½ Ğ¸ Ğ´Ğ¾Ğ±Ğ°Ğ²Ğ»ĞµĞ½ Ğ² ÑĞ¿Ğ¸ÑĞ¾Ğº. ĞœĞ¾Ğ¶Ğ½Ğ¾ Ğ·Ğ°Ğ¿ÑƒÑĞºĞ°Ñ‚ÑŒ Ğ°ÑƒĞ´Ğ¸Ñ‚.` });
-      if (!editingHost) startNewHost();
-      else setCredentialResult((previous) => ({ ...previous, ok: true, message: "ĞŸĞ¾Ğ´ĞºĞ»ÑÑ‡ĞµĞ½Ğ¸Ğµ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞµĞ½Ğ¾ Ğ¸ ÑĞ¾Ñ…Ñ€Ğ°Ğ½ĞµĞ½Ğ¾." }));
-      await refreshAll();
-      setSelectedAlias(connection.alias);
-    } catch (error) {
-      const message = errorMessage(error, "ĞÑ‚Ğ²ĞµÑ‚ Ğ½Ğµ Ğ¿Ğ¾Ğ»ÑƒÑ‡ĞµĞ½. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ ÑĞ¿Ğ¸ÑĞ¾Ğº Ñ…Ğ¾ÑÑ‚Ğ¾Ğ² Ğ¿ĞµÑ€ĞµĞ´ Ğ¿Ğ¾Ğ²Ñ‚Ğ¾Ñ€Ğ½Ğ¾Ğ¹ Ğ¿Ğ¾Ğ¿Ñ‹Ñ‚ĞºĞ¾Ğ¹; ÑĞ¾Ğ·Ğ´Ğ°Ğ½Ğ½Ğ°Ñ Ğ¿Ğ°Ñ€Ğ° ÑĞ¾Ñ…Ñ€Ğ°Ğ½ÑĞµÑ‚ÑÑ.");
-      setCredentialResult((previous) => ({ ...previous, ok: false, message }));
-      notify(message, "error");
-    } finally {
-      secrets.password = ""; secrets.sudoPassword = "";
-      setLoading("");
-    }
-  }
-
-  function invalidateCredential() {
-    setManualCredentialId(null); setCredentialResult(null); setPreflight(null); setPreflightFor("");
-  }
-
-  async function checkPreflight(credentialId = manualCredentialId) {
-    const onDemandSudo = selectedHost?.alias === connectionAlias && selectedHost.sudoMode === "on_demand";
-    const sudoPassword = onDemandSudo ? operationSudoPassword : "";
-    if (onDemandSudo && !sudoPassword) {
-      const message = "Ğ”Ğ»Ñ ÑÑ‚Ğ¾Ğ³Ğ¾ Ñ…Ğ¾ÑÑ‚Ğ° Ğ²Ğ²ĞµĞ´Ğ¸Ñ‚Ğµ Ğ¿Ğ°Ñ€Ğ¾Ğ»ÑŒ sudo Ğ´Ğ»Ñ Ñ€Ğ°Ğ·Ğ¾Ğ²Ğ¾Ğ¹ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞºĞ¸. HCP Ğ½Ğµ ÑĞ¾Ñ…Ñ€Ğ°Ğ½ÑĞµÑ‚ ĞµĞ³Ğ¾.";
-      setRunResult({ ok: false, message }); notify(message, "warning");
-      return;
-    }
-    if (sudoPassword && !secureCredentialTransport) {
-      const message = "Ğ”Ğ»Ñ Ğ¿Ğ°Ñ€Ğ¾Ğ»Ñ sudo Ğ¾Ñ‚ĞºÑ€Ğ¾Ğ¹Ñ‚Ğµ HCP Ñ‡ĞµÑ€ĞµĞ· HTTPS Ğ»Ğ¸Ğ±Ğ¾ http://127.0.0.1 Ğ½Ğ° ÑƒĞ¿Ñ€Ğ°Ğ²Ğ»ÑÑÑ‰ĞµĞ¹ Ubuntu.";
-      setRunResult({ ok: false, message }); notify(message, "warning");
-      return;
-    }
-    setLoading("preflight");
-    setRunResult(null);
-    setPreflight(null);
-    setPreflightFor("");
-    const checkedConnection = [connectionAlias, manualAddress, manualUser, manualPort, manualBecome ? "sudo" : "no-sudo", credentialId ?? "legacy"].join("\u0000");
-    try {
-      const requestBody = JSON.stringify({
-        alias: connectionAlias,
-        address: manualAddress,
-        user: manualUser,
-        port: manualPort,
-        become: manualBecome,
-        credentialId,
-        ...(sudoPassword ? { sudoPassword } : {}),
-      });
-      if (sudoPassword) setOperationSudoPassword("");
-      const response = await fetch("/api/ansible/hosts/preflight", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: requestBody,
-      });
-      const payload = await readApiResponse(response);
-      setPreflight(payload);
-      setPreflightFor(checkedConnection);
-      notify(payload.message || (payload.ok ? "ĞŸĞ¾Ğ´ĞºĞ»ÑÑ‡ĞµĞ½Ğ¸Ğµ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞµĞ½Ğ¾. ĞœĞ¾Ğ¶Ğ½Ğ¾ Ğ´Ğ¾Ğ±Ğ°Ğ²Ğ¸Ñ‚ÑŒ Ñ…Ğ¾ÑÑ‚." : "ĞŸĞ¾Ğ´ĞºĞ»ÑÑ‡ĞµĞ½Ğ¸Ğµ Ğ½Ğµ Ğ³Ğ¾Ñ‚Ğ¾Ğ²Ğ¾. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ñ€ĞµĞ·ÑƒĞ»ÑŒÑ‚Ğ°Ñ‚Ñ‹ Ğ½Ğ¸Ğ¶Ğµ."), payload.ok ? "success" : "error");
-    } catch (error) {
-      const message = errorMessage(error, "ĞŸÑ€Ğ¾Ğ²ĞµÑ€ĞºĞ° Ğ¿Ğ¾Ğ´ĞºĞ»ÑÑ‡ĞµĞ½Ğ¸Ñ Ğ½Ğµ Ğ·Ğ°Ğ²ĞµÑ€ÑˆĞµĞ½Ğ°: Ğ½ĞµÑ‚ Ğ¾Ñ‚Ğ²ĞµÑ‚Ğ° Ğ¾Ñ‚ Ğ¿Ğ»Ğ°Ñ‚Ñ„Ğ¾Ñ€Ğ¼Ñ‹.");
-      setPreflight({ ok: false, message });
-      setPreflightFor(checkedConnection);
-      notify(message, "error");
-    } finally {
-      setLoading("");
-    }
-  }
-
-  async function detectNetwork() {
-    setLoading("detect");
-    try {
-      const response = await fetch(`/api/ansible/discover?address=${encodeURIComponent(manualAddress.trim())}&siteAddress=${encodeURIComponent(window.location.hostname)}`);
-      const payload = await readApiResponse(response);
-      setDiscovery(payload);
-      if (payload.defaultCidr) {
-        setScanCidr(payload.defaultCidr);
-      }
-      notify(payload.message || (payload.defaultCidr ? `ĞŸĞ¾Ğ´ÑĞµÑ‚ÑŒ ${payload.defaultCidr} Ğ¿Ğ¾Ğ´ÑÑ‚Ğ°Ğ²Ğ»ĞµĞ½Ğ°.` : "ĞŸĞ¾Ğ´ÑĞµÑ‚ÑŒ Ğ½Ğµ Ğ¾Ğ¿Ñ€ĞµĞ´ĞµĞ»ĞµĞ½Ğ°. Ğ£ĞºĞ°Ğ¶Ğ¸Ñ‚Ğµ ĞµÑ‘ Ğ²Ñ€ÑƒÑ‡Ğ½ÑƒÑ."), payload.ok ? "info" : "error");
-    } catch (error) {
-      setRunResult({ ok: false, message: errorMessage(error, "ĞÑ‚Ğ²ĞµÑ‚ Ğ½Ğµ Ğ¿Ğ¾Ğ»ÑƒÑ‡ĞµĞ½. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ğ´Ğ°Ğ½Ğ½Ñ‹Ğµ Ğ¸ Ğ¶ÑƒÑ€Ğ½Ğ°Ğ» Ğ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ğ¹ Ğ¿ĞµÑ€ĞµĞ´ Ğ¿Ğ¾Ğ²Ñ‚Ğ¾Ñ€Ğ½Ğ¾Ğ¹ Ğ¿Ğ¾Ğ¿Ñ‹Ñ‚ĞºĞ¾Ğ¹.") });
-    } finally {
-      setLoading("");
-    }
-  }
-
-  async function scanNetwork() {
-    setLoading("scan");
-    try {
-      const response = await fetch("/api/ansible/discover", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ cidr: scanCidr, sshUser: manualUser, become: manualBecome, addToInventory: false }),
-      });
-      const payload = await readApiResponse(response);
-      setDiscovery(payload);
-      notify(payload.message || (payload.ok ? `ĞŸĞ¾Ğ¸ÑĞº Ğ·Ğ°Ğ²ĞµÑ€ÑˆÑ‘Ğ½. ĞĞ°Ğ¹Ğ´ĞµĞ½Ğ¾ Ñ…Ğ¾ÑÑ‚Ğ¾Ğ²: ${payload.found?.length ?? 0}.` : "ĞŸĞ¾Ğ¸ÑĞº Ğ½Ğµ Ğ·Ğ°Ğ²ĞµÑ€ÑˆÑ‘Ğ½."), payload.ok ? "success" : "error");
-    } catch (error) {
-      setRunResult({ ok: false, message: errorMessage(error, "ĞÑ‚Ğ²ĞµÑ‚ Ğ½Ğµ Ğ¿Ğ¾Ğ»ÑƒÑ‡ĞµĞ½. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ğ´Ğ°Ğ½Ğ½Ñ‹Ğµ Ğ¸ Ğ¶ÑƒÑ€Ğ½Ğ°Ğ» Ğ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ğ¹ Ğ¿ĞµÑ€ĞµĞ´ Ğ¿Ğ¾Ğ²Ñ‚Ğ¾Ñ€Ğ½Ğ¾Ğ¹ Ğ¿Ğ¾Ğ¿Ñ‹Ñ‚ĞºĞ¾Ğ¹.") });
-    } finally {
-      setLoading("");
-    }
-  }
-
-  async function runAction(action: string, mode: "preview" | "apply" = "apply") {
-    if (!selectedAlias) {
-      setRunResult({ ok: false, action, message: "Ğ’Ñ‹Ğ±ĞµÑ€Ğ¸Ñ‚Ğµ Ñ…Ğ¾ÑÑ‚." });
-      return;
-    }
-    const sudoPassword = selectedHost?.sudoMode === "on_demand" ? operationSudoPassword : "";
-    if (selectedHost?.sudoMode === "on_demand" && !sudoPassword) {
-      setRunResult({ ok: false, action, message: "Ğ”Ğ»Ñ Ğ²Ñ‹Ğ±Ñ€Ğ°Ğ½Ğ½Ğ¾Ğ¹ Astra Ğ²Ğ²ĞµĞ´Ğ¸Ñ‚Ğµ Ğ¿Ğ°Ñ€Ğ¾Ğ»ÑŒ sudo Ğ´Ğ»Ñ ÑÑ‚Ğ¾Ğ¹ Ğ¾Ğ¿ĞµÑ€Ğ°Ñ†Ğ¸Ğ¸. HCP Ğ½Ğµ ÑĞ¾Ñ…Ñ€Ğ°Ğ½ÑĞµÑ‚ ĞµĞ³Ğ¾." });
-      return;
-    }
-    if (sudoPassword && !secureCredentialTransport) {
-      setRunResult({ ok: false, action, message: "Ğ”Ğ»Ñ Ğ¿Ğ°Ñ€Ğ¾Ğ»Ñ sudo Ğ¾Ñ‚ĞºÑ€Ğ¾Ğ¹Ñ‚Ğµ HCP Ñ‡ĞµÑ€ĞµĞ· HTTPS Ğ»Ğ¸Ğ±Ğ¾ http://127.0.0.1 Ğ½Ğ° ÑƒĞ¿Ñ€Ğ°Ğ²Ğ»ÑÑÑ‰ĞµĞ¹ Ubuntu." });
-      return;
-    }
-
-    const isResponse = responseActions.some((item) => item.id === action);
-    const actionMeta = auditActions.find((item) => item.id === action);
-    const requiresConfirmation = Boolean(
-      actionMeta && "requiresConfirmation" in actionMeta && actionMeta.requiresConfirmation === true,
-    );
-    const confirmationText = action === "lynisTemporaryAudit"
-      ? "Lynis Ğ±ÑƒĞ´ĞµÑ‚ Ğ²Ñ€ĞµĞ¼ĞµĞ½Ğ½Ğ¾ Ğ¿ĞµÑ€ĞµĞ´Ğ°Ğ½ Ğ½Ğ° Ğ²Ñ‹Ğ±Ñ€Ğ°Ğ½Ğ½ÑƒÑ Ğ’Ğœ, Ğ²Ñ‹Ğ¿Ğ¾Ğ»Ğ½ĞµĞ½ Ñ sudo, Ğ° ĞµĞ³Ğ¾ ĞºĞ°Ñ‚Ğ°Ğ»Ğ¾Ğ³ Ğ¸ ÑÑ‹Ñ€Ğ¾Ğ¹ Ğ¾Ñ‚Ñ‡ĞµÑ‚ Ğ±ÑƒĞ´ÑƒÑ‚ ÑƒĞ´Ğ°Ğ»ĞµĞ½Ñ‹. ĞŸÑ€Ğ¾Ğ´Ğ¾Ğ»Ğ¶Ğ¸Ñ‚ÑŒ?"
-      : action === "openScapAudit"
-        ? "OpenSCAP Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€Ğ¸Ñ‚ Ğ²Ñ‹Ğ±Ñ€Ğ°Ğ½Ğ½Ñ‹Ğ¹ Ğ¿Ñ€Ğ¾Ñ„Ğ¸Ğ»ÑŒ Ğ½Ğ° Ğ’Ğœ. Ğ’ÑÑ‚Ñ€Ğ¾ĞµĞ½Ğ½Ñ‹Ğ¹ Ğ¿Ñ€Ğ¾Ñ„Ğ¸Ğ»ÑŒ HCP Ğ²Ñ€ĞµĞ¼ĞµĞ½Ğ½Ğ¾ Ğ¿ĞµÑ€ĞµĞ´Ğ°Ñ‘Ñ‚ÑÑ Ğ¿Ğ¾ SSH. ĞĞ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸ Ğ½Ğµ Ğ¼ĞµĞ½ÑÑÑ‚ÑÑ; Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞºĞ° Ğ¼Ğ¾Ğ¶ĞµÑ‚ Ğ·Ğ°Ğ½ÑÑ‚ÑŒ Ğ´Ğ¾ 30 Ğ¼Ğ¸Ğ½ÑƒÑ‚. ĞŸÑ€Ğ¾Ğ´Ğ¾Ğ»Ğ¶Ğ¸Ñ‚ÑŒ?"
-      : action === "astraOvalAudit"
-        ? "OpenSCAP Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€Ğ¸Ñ‚ Ñ…Ğ¾ÑÑ‚ Ğ¿Ğ¾ OVAL-Ğ±Ğ°Ğ·Ğµ, Ğ½Ğ°Ğ·Ğ½Ğ°Ñ‡ĞµĞ½Ğ½Ğ¾Ğ¹ ĞµĞ³Ğ¾ Ğ³Ñ€ÑƒĞ¿Ğ¿Ğµ Ğ² Â«Ğ˜ÑÑ‚Ğ¾Ñ‡Ğ½Ğ¸ĞºĞ°Ñ…Â». ĞĞ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸ Ñ…Ğ¾ÑÑ‚Ğ° Ğ½Ğµ Ğ¼ĞµĞ½ÑÑÑ‚ÑÑ. ĞŸÑ€Ğ¾Ğ´Ğ¾Ğ»Ğ¶Ğ¸Ñ‚ÑŒ?"
-      : action === "networkPortScan"
-        ? "Nmap Ğ²Ñ‹Ğ¿Ğ¾Ğ»Ğ½Ğ¸Ñ‚ ÑĞµÑ‚ĞµĞ²ÑƒÑ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞºÑƒ top-100 TCP-Ğ¿Ğ¾Ñ€Ñ‚Ğ¾Ğ² Ğ²Ñ‹Ğ±Ñ€Ğ°Ğ½Ğ½Ğ¾Ğ³Ğ¾ Ñ…Ğ¾ÑÑ‚Ğ° Ñ control node. ĞŸÑ€Ğ¾Ğ´Ğ¾Ğ»Ğ¶Ğ¸Ñ‚ÑŒ?"
-        : "Ğ—Ğ°Ğ¿ÑƒÑÑ‚Ğ¸Ñ‚ÑŒ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞºÑƒ?";
-    if (requiresConfirmation && !window.confirm(confirmationText)) {
-      return;
-    }
-
-    if (isResponse && changeReason.trim().length < 10) {
-      setRunResult({ ok: false, action, message: "Ğ£ĞºĞ°Ğ¶Ğ¸Ñ‚Ğµ Ğ¿Ñ€Ğ¸Ñ‡Ğ¸Ğ½Ñƒ Ğ¸Ğ·Ğ¼ĞµĞ½ĞµĞ½Ğ¸Ñ Ğ½Ğµ ĞºĞ¾Ñ€Ğ¾Ñ‡Ğµ 10 ÑĞ¸Ğ¼Ğ²Ğ¾Ğ»Ğ¾Ğ²." });
-      return;
-    }
-    if (isResponse && confirmedHost.trim() !== selectedAlias) {
-      setRunResult({ ok: false, action, message: "Ğ’Ğ²ĞµĞ´Ğ¸Ñ‚Ğµ Ñ‚Ğ¾Ñ‡Ğ½Ñ‹Ğ¹ alias Ğ²Ñ‹Ğ±Ñ€Ğ°Ğ½Ğ½Ğ¾Ğ³Ğ¾ Ñ…Ğ¾ÑÑ‚Ğ° Ğ² Ğ¿Ğ¾Ğ»Ğµ Ğ¿Ğ¾Ğ´Ñ‚Ğ²ĞµÑ€Ğ¶Ğ´ĞµĞ½Ğ¸Ñ." });
-      return;
-    }
-
-    const extraVars =
-      action === "closePort"
-        ? { target_port: targetPort, target_protocol: targetProtocol }
-        : action === "blockIp"
-          ? { block_ip: blockIp }
-          : {};
-
-    setLoading(action);
-    notify(`Ğ’Ñ‹Ğ¿Ğ¾Ğ»Ğ½ÑĞµÑ‚ÑÑ: ${actionMeta?.label ?? responseActions.find((item) => item.id === action)?.label ?? action}. Ğ”Ğ¾Ğ¶Ğ´Ğ¸Ñ‚ĞµÑÑŒ Ñ€ĞµĞ·ÑƒĞ»ÑŒÑ‚Ğ°Ñ‚Ğ°.`, "info");
-    setRunResult(null);
-    setFreshReportHref("");
-    try {
-      const requestBody = JSON.stringify({
-        action,
-        profileId,
-        limit: selectedAlias,
-        mode,
-        reason: changeReason.trim(),
-        confirmedHost: isResponse ? confirmedHost.trim() : undefined,
-        confirmAudit: requiresConfirmation,
-        extraVars,
-        ...(sudoPassword ? { sudoPassword } : {}),
-      });
-      if (sudoPassword) setOperationSudoPassword("");
-      const response = await fetch("/api/ansible/run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: requestBody,
-      });
-      const payload = await readApiResponse(response);
-      if (action !== "packageInventory" || !payload.ok) setRunResult(payload);
-      await loadHosts();
-      await loadRemediations();
-      if (payload.ok && action === "packageInventory") {
-        const cveResponse = await fetch("/api/ansible/vulnerabilities/check", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hostAlias: selectedAlias, reportId: payload.reportId }),
-        });
-        const cvePayload = await readApiResponse(cveResponse);
-        let dependencyTrackMessage = "";
-        let dependencyTrackFailed = false;
-        // Dependency-Track is an optional, independent integration. Do not add
-        // its configuration message to a failed or partial Trivy run: it makes
-        // the actual next step (load the shared CVE database) hard to see.
-        if (cvePayload.ok && !cvePayload.partial && cvePayload.reportId && cvePayload.report?.vulnerabilityScan?.sbomFile) {
-          try {
-            const dependencyTrackResponse = await fetch("/api/ansible/dependency-track/sync", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ hostAlias: selectedAlias, vulnerabilityReportId: cvePayload.reportId }),
-            });
-            const dependencyTrackPayload = await readApiResponse(dependencyTrackResponse);
-            dependencyTrackFailed = !dependencyTrackResponse.ok || !dependencyTrackPayload.ok;
-            if (dependencyTrackPayload.configured === true && dependencyTrackPayload.message) {
-              dependencyTrackMessage = ` ${dependencyTrackPayload.message}`;
-            }
-          } catch {
-            dependencyTrackFailed = true;
-            dependencyTrackMessage = " ĞŸĞµÑ€ĞµĞ´Ğ°Ñ‡Ğ° Ğ² Dependency-Track Ğ½Ğµ Ğ¿Ğ¾Ğ´Ñ‚Ğ²ĞµÑ€Ğ¶Ğ´ĞµĞ½Ğ°: Ğ½ĞµÑ‚ Ğ¾Ñ‚Ğ²ĞµÑ‚Ğ° Ğ¾Ñ‚ Ğ¿Ğ»Ğ°Ñ‚Ñ„Ğ¾Ñ€Ğ¼Ñ‹.";
-          }
-        }
-        setRunResult({
-          ok: cvePayload.ok,
-          partial: Boolean(cvePayload.partial || dependencyTrackFailed),
-          action,
-          message: `${cvePayload.message ?? (cvePayload.ok ? "CVE-Ğ°ÑƒĞ´Ğ¸Ñ‚ Ğ¿Ğ°ĞºĞµÑ‚Ğ¾Ğ² Ğ²Ñ‹Ğ¿Ğ¾Ğ»Ğ½ĞµĞ½." : "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ²Ñ‹Ğ¿Ğ¾Ğ»Ğ½Ğ¸Ñ‚ÑŒ CVE-Ğ°ÑƒĞ´Ğ¸Ñ‚ Ğ¿Ğ°ĞºĞµÑ‚Ğ¾Ğ².")}${dependencyTrackMessage}`,
-          stdout: payload.stdout,
-          stderr: payload.stderr,
-        });
-        await loadHosts();
-        if (cvePayload.ok && cvePayload.reportId) {
-          setFreshReportHref(`/reports/agentless/${encodeURIComponent(cvePayload.reportId)}`);
-        }
-      }
-      if (payload.ok && action !== "packageInventory" && payload.reportId) {
-        setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.reportId)}`);
-      }
-      if (payload.ok && payload.postAuditReportId) {
-        setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.postAuditReportId)}`);
-      }
-    } catch (error) {
-      setRunResult({ ok: false, action, message: errorMessage(error, "ĞÑ‚Ğ²ĞµÑ‚ Ğ½Ğ° Ğ·Ğ°Ğ¿ÑƒÑĞº Ğ½Ğµ Ğ¿Ğ¾Ğ»ÑƒÑ‡ĞµĞ½. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ğ¶ÑƒÑ€Ğ½Ğ°Ğ» Ğ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ğ¹ Ğ¸ Ğ¾Ñ‚Ñ‡Ñ‘Ñ‚Ñ‹ Ğ¿ĞµÑ€ĞµĞ´ Ğ¿Ğ¾Ğ²Ñ‚Ğ¾Ñ€Ğ½Ñ‹Ğ¼ Ğ·Ğ°Ğ¿ÑƒÑĞºĞ¾Ğ¼.") });
-    } finally {
-      setLoading("");
-    }
-  }
-
-  async function importGreenboneReport() {
-    if (!selectedAlias || !greenboneFile) {
-      setGreenboneMessage("Ğ’Ñ‹Ğ±ĞµÑ€Ğ¸Ñ‚Ğµ Ñ…Ğ¾ÑÑ‚ Ğ¸ XML-Ñ„Ğ°Ğ¹Ğ» Ğ¾Ñ‚Ñ‡Ñ‘Ñ‚Ğ° Greenbone.");
-      notify("Ğ’Ñ‹Ğ±ĞµÑ€Ğ¸Ñ‚Ğµ Ñ…Ğ¾ÑÑ‚ Ğ¸ XML-Ñ„Ğ°Ğ¹Ğ» Ğ¾Ñ‚Ñ‡Ñ‘Ñ‚Ğ° Greenbone.", "error");
-      return;
-    }
-    setLoading("greenboneImport");
-    setGreenboneMessage("");
-    setFreshReportHref("");
-    try {
-      const form = new FormData();
-      form.set("hostAlias", selectedAlias);
-      form.set("report", greenboneFile);
-      const response = await fetch("/api/ansible/greenbone/import", { method: "POST", body: form });
-      const payload = await readApiResponse(response);
-      setGreenboneMessage(payload.message ?? "ĞĞµ ÑƒĞ´Ğ°Ğ»Ğ¾ÑÑŒ Ğ¸Ğ¼Ğ¿Ğ¾Ñ€Ñ‚Ğ¸Ñ€Ğ¾Ğ²Ğ°Ñ‚ÑŒ Ğ¾Ñ‚Ñ‡Ñ‘Ñ‚ Greenbone.");
-      setRunResult({ ok: payload.ok, partial: payload.partial, action: "greenboneImport", message: payload.message });
-      if (payload.ok && payload.reportId) {
-        setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.reportId)}`);
-        setGreenboneFile(null);
-        await loadHosts();
-      }
-    } catch (error) {
-      setRunResult({ ok: false, message: errorMessage(error, "ĞÑ‚Ğ²ĞµÑ‚ Ğ½Ğµ Ğ¿Ğ¾Ğ»ÑƒÑ‡ĞµĞ½. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ğ´Ğ°Ğ½Ğ½Ñ‹Ğµ Ğ¸ Ğ¶ÑƒÑ€Ğ½Ğ°Ğ» Ğ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ğ¹ Ğ¿ĞµÑ€ĞµĞ´ Ğ¿Ğ¾Ğ²Ñ‚Ğ¾Ñ€Ğ½Ğ¾Ğ¹ Ğ¿Ğ¾Ğ¿Ñ‹Ñ‚ĞºĞ¾Ğ¹.") });
-    } finally {
-      setLoading("");
-    }
-  }
-
-  async function rollbackTransaction(transaction: RemediationTransaction) {
-    const confirmedHost = window.prompt(`Ğ’Ğ²ĞµĞ´Ğ¸Ñ‚Ğµ alias ${transaction.hostAlias} Ğ´Ğ»Ñ Ğ¾Ñ‚ĞºĞ°Ñ‚Ğ°:`);
-    if (confirmedHost?.trim() !== transaction.hostAlias) {
-      return;
-    }
-    const target = hosts?.hosts?.find((host) => host.alias === transaction.hostAlias);
-    const sudoPassword = target?.sudoMode === "on_demand"
-      ? window.prompt(`Ğ’Ğ²ĞµĞ´Ğ¸Ñ‚Ğµ Ğ¿Ğ°Ñ€Ğ¾Ğ»ÑŒ sudo Ğ´Ğ»Ñ ${transaction.hostAlias}; Ğ¾Ğ½ Ğ±ÑƒĞ´ĞµÑ‚ Ğ¸ÑĞ¿Ğ¾Ğ»ÑŒĞ·Ğ¾Ğ²Ğ°Ğ½ Ñ‚Ğ¾Ğ»ÑŒĞºĞ¾ Ğ´Ğ»Ñ Ğ¾Ñ‚ĞºĞ°Ñ‚Ğ° Ğ¸ Ğ½Ğµ ÑĞ¾Ñ…Ñ€Ğ°Ğ½Ğ¸Ñ‚ÑÑ:`) ?? ""
-      : "";
-    if (target?.sudoMode === "on_demand" && !sudoPassword) return;
-    if (sudoPassword && !secureCredentialTransport) {
-      setRunResult({ ok: false, message: "Ğ”Ğ»Ñ Ğ¿Ğ°Ñ€Ğ¾Ğ»Ñ sudo Ğ¾Ñ‚ĞºÑ€Ğ¾Ğ¹Ñ‚Ğµ HCP Ñ‡ĞµÑ€ĞµĞ· HTTPS Ğ»Ğ¸Ğ±Ğ¾ http://127.0.0.1 Ğ½Ğ° ÑƒĞ¿Ñ€Ğ°Ğ²Ğ»ÑÑÑ‰ĞµĞ¹ Ubuntu." });
-      return;
-    }
-    setLoading(`rollback-${transaction.id}`);
-    setRunResult(null);
-    try {
-      const requestBody = JSON.stringify({ confirmedHost: confirmedHost.trim(), ...(sudoPassword ? { sudoPassword } : {}) });
-      const response = await fetch(`/api/ansible/remediations/${encodeURIComponent(transaction.id)}/rollback`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: requestBody,
-      });
-      setRunResult(await readApiResponse(response));
-      await loadRemediations();
-      await loadHosts();
-    } catch (error) {
-      setRunResult({ ok: false, message: errorMessage(error, "ĞÑ‚Ğ²ĞµÑ‚ Ğ½Ğµ Ğ¿Ğ¾Ğ»ÑƒÑ‡ĞµĞ½. ĞŸÑ€Ğ¾Ğ²ĞµÑ€ÑŒÑ‚Ğµ Ğ´Ğ°Ğ½Ğ½Ñ‹Ğµ Ğ¸ Ğ¶ÑƒÑ€Ğ½Ğ°Ğ» Ğ´ĞµĞ¹ÑÑ‚Ğ²Ğ¸Ğ¹ Ğ¿ĞµÑ€ĞµĞ´ Ğ¿Ğ¾Ğ²Ñ‚Ğ¾Ñ€Ğ½Ğ¾Ğ¹ Ğ¿Ğ¾Ğ¿Ñ‹Ñ‚ĞºĞ¾Ğ¹.") });
-    } finally {
-      setLoading("");
-    }
-  }
-
-  function startNewHost(address = "", alias = "") {
-    setEditingHost("");
-    invalidateCredential();
-    setManualAlias(alias);
-    setManualAddress(address);
-    setManualUser("");
-    setManualPort("22");
-    setManualGroup("linux_hosts");
-    setPreflight(null);
-    setPreflightFor("");
-    if (address) notify(`ĞĞ´Ñ€ĞµÑ ${address} Ğ¿Ğ¾Ğ´ÑÑ‚Ğ°Ğ²Ğ»ĞµĞ½. Ğ’Ğ²ĞµĞ´Ğ¸Ñ‚Ğµ Ğ¿Ğ¾Ğ»ÑŒĞ·Ğ¾Ğ²Ğ°Ñ‚ĞµĞ»Ñ Ğ¸ Ğ¿Ğ°Ñ€Ğ¾Ğ»ÑŒ Astra Ğ½Ğ¸Ğ¶Ğµ.`, "info");
-  }
-
-  function fillHostForm(host: ManagedHost) {
-    if (loading || accessLoading) return;
-    setEditingHost(host.alias);
-    setManualCredentialId(host.credentialId ?? null);
-    setCredentialResult(host.credentialId && host.credentialReady ? { ok: true, credentialId: host.credentialId, publicKey: host.credentialPublicKey, fingerprint: host.credentialFingerprint, sudoMode: host.sudoMode } : null);
-    setPreflight(null); setPreflightFor("");
-    setSelectedAlias(host.alias);
-    setManualAlias(host.alias);
-    setManualAddress(host.address);
-    setManualUser(host.user ?? "");
-    setManualPort(String(host.port ?? 22));
-    setManualGroup(host.groups[0] ?? "linux_hosts");
-    if (formRef.current) {
-      formRef.current.scrollIntoView({ block: "start" });
-    }
-    notify(`ĞÑ‚ĞºÑ€Ñ‹Ñ‚Ñ‹ Ğ½Ğ°ÑÑ‚Ñ€Ğ¾Ğ¹ĞºĞ¸ Ñ…Ğ¾ÑÑ‚Ğ° ${host.alias}.`, "info");
-  }
-
-  const summary = hosts?.summary;
-  const selectedAdditionalAction = additionalAuditActions.find((action) => action.id === additionalAuditActionId) ?? additionalAuditActions[0];
-  const SelectedAdditionalActionIcon = selectedAdditionalAction.icon;
-
-  return (
-    <div className="space-y-6">
-      <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">Ğ£Ğ¿Ñ€Ğ°Ğ²Ğ»ĞµĞ½Ğ¸Ğµ Ñ…Ğ¾ÑÑ‚Ğ°Ğ¼Ğ¸</p>
-          <h1 className="mt-2 text-3xl font-semibold text-white">ĞŸÑ€Ğ¾Ğ²ĞµÑ€ĞºĞ° Ğ±ĞµĞ·Ğ¾Ğ¿Ğ°ÑĞ½Ğ¾ÑÑ‚Ğ¸</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            Ğ’Ñ‹Ğ±ĞµÑ€Ğ¸Ñ‚Ğµ Ñ…Ğ¾ÑÑ‚, Ğ·Ğ°Ğ¿ÑƒÑÑ‚Ğ¸Ñ‚Ğµ Ğ°ÑƒĞ´Ğ¸Ñ‚ Ğ¸ Ğ¿Ñ€Ğ¾ÑĞ¼Ğ¾Ñ‚Ñ€Ğ¸Ñ‚Ğµ Ñ€ĞµĞ·ÑƒĞ»ÑŒÑ‚Ğ°Ñ‚. Ğ˜Ğ·Ğ¼ĞµĞ½ĞµĞ½Ğ¸Ñ firewall Ğ²Ñ‹Ğ¿Ğ¾Ğ»Ğ½ÑÑÑ‚ÑÑ Ğ¾Ñ‚Ğ´ĞµĞ»ÑŒĞ½Ğ¾, Ñ Ğ¿Ğ»Ğ°Ğ½Ğ¾Ğ¼ Ğ¸ Ğ¾Ñ‚ĞºĞ°Ñ‚Ğ¾Ğ¼.
-          </p>
-        </div>
-        <Button variant="secondary" onClick={() => refreshAll(true)} disabled={Boolean(loading)}>
-          <RefreshCw size={16} className={loading === "refresh" ? "animate-spin" : ""} aria-hidden="true" />
-          ĞĞ±Ğ½Ğ¾Ğ²Ğ¸Ñ‚ÑŒ Ğ´Ğ°Ğ½Ğ½Ñ‹Ğµ
-        </Button>
+YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éíÛ8Õ:-jZ.¶›­–)Ş³R'W6R6Æ–VçB#° ¦–×÷'B°¢ÆW'EG&–ævÆRÀ¢&âÀ¢6†V6´6—&6ÆS"À¢f–ÆUFW‡BÀ¢ÇW2À¢&Vg&W6„7rÀ¢&÷FFT67rÀ¢6V&6‚À¢6W'fW"À¢6†–VÆD6†V6²À¢FW&Ö–æÂÀ¢WÆöBÀ§Òg&öÒ&ÇV6–FR×&V7B#°¦–×÷'B²W6TVffV7BÂW6TÖVÖòÂW6U&VbÂW6U7FFRÒg&öÒ'&V7B#°¦–×÷'B²'WGFöâÂÆ–æ´'WGFöâÒg&öÒ$ö6ö×öæVçG2÷V’ö'WGFöâ#°¦–×÷'B²W6T7F–öå&W7VÇBÂW6TfVVF&6´ÖW76vRÂW6Tæ÷F–g’Òg&öÒ$ö6ö×öæVçG2÷V’öfVVF&6²#°¦–×÷'B²W'&÷$ÖW76vRÂ&VD•&W7öç6RÒg&öÒ$öÆ–"ö6Æ–VçBÖ’#°¦–×÷'B²†÷7E6W'fW%G'W7BÒg&öÒ$ö6ö×öæVçG2ö†÷7G2÷76‚Ö6öææV7F–öâÖ†VÇ#°¦–×÷'B²6÷•FW‡BÒg&öÒ$öÆ–"ö6Æ—&ö&B#°¦–×÷'B²æWGv÷&´F—66÷fW'’ÂG—RF—66÷fW'•–ÆöBÒg&öÒ$ö6ö×öæVçG2ö†÷7G2öæWGv÷&²ÖF—66÷fW'’#°¦–×÷'B²76„7&VFVçF–Å6WGWÂG—R7&VFVçF–Å6WGW&W7VÇBÂG—R6WGW6V7&WG2Òg&öÒ$ö6ö×öæVçG2ö†÷7G2÷76‚Ö7&VFVçF–Â×6WGW#°¦–×÷'B²FV6öÖÖ—76–öä†÷7DF–ÆörÒg&öÒ$ö6ö×öæVçG2ö†÷7G2öFV6öÖÖ—76–öâÖ†÷7BÖF–Æör#°¦–×÷'B²6öææV7DæE6fT†÷7BÂFVfVÇD†÷7DÆ–2Òg&öÒ$öÆ–"ö†÷7BÖöæ&ö&F–ær#°¦–×÷'BG—R²&VfÆ–v‡D6†V6²Òg&öÒ$öÆ–"÷&VfÆ–v‡B×&W7VÇB#° §G—R†VÇF…–ÆöBÒ°¢ç6–&ÆT–ç7FÆÆVCó¢&ööÆVã°¢fW'6–öãó¢7G&–ærÂçVÆÃ°¢–çfVçF÷'•&VG“ó¢&ööÆVã°¢ÖW76vSó¢7G&–æs°§Ó° §G—R'Vå–ÆöBÒ°¢ö³ó¢&ööÆVã°¢'F–Ãó¢&ööÆVã°¢v&æ–æw3ó¢7G&–æuµÓ°¢7F–öãó¢7G&–æs°¢6öÖÖæCó¢7G&–æs°¢ÖW76vSó¢7G&–æs°¢7FF÷WCó¢7G&–æs°¢7FFW'#ó¢7G&–æs°¢&W÷'E'Vä–Có¢7G&–ærÂçVÆÃ°¢&W÷'D–Có¢7G&–ærÂçVÆÃ°¢÷7DVF—E&W÷'D–Có¢7G&–ærÂçVÆÃ°¢G&ç67F–öãó¢&VÖVF–F–öåG&ç67F–öã°§Ó° §G—R&VÖVF–F–öåG&ç67F–öâÒ°¢–C¢7G&–æs°¢7&VFVDC¢7G&–æs°¢†÷7DÆ–3¢7G&–æs°¢7F–öã¢7G&–æs°¢7FGW3¢'&W&–ær"Â&&6¶VE÷W"Â&Æ–VB"Â&f–ÆVB"Â'&öÆÆ–æuö&6²"Â'&öÆÆ&6µöf–ÆVB"Â'&öÆÆVEö&6²#°¢&V6öã¢7G&–æs°¢&6·W&Vc¢7G&–ærÂçVÆÃ°¢&TVF—E&W÷'D–C¢7G&–ærÂçVÆÃ°¢÷7DVF—E&W÷'D–C¢7G&–ærÂçVÆÃ°¢W'&÷#¢7G&–ærÂçVÆÃ°§Ó° §G—RÖævVD†÷7BÒ°¢Æ–3¢7G&–æs°¢FG&W73¢7G&–æs°¢W6W#¢7G&–ærÂçVÆÃ°¢÷'C¢çVÖ&W#°¢&V6öÖS¢&ööÆVâÂçVÆÃ°¢w&÷W3¢7G&–æuµÓ°¢&W÷'D6÷VçC¢çVÖ&W#°¢7&VFVçF–Ä–Có¢7G&–ærÂçVÆÃ°¢7&VFVçF–Äf–ævW'&–çCó¢7G&–ærÂçVÆÃ°¢7&VFVçF–ÅV&Æ–4¶W“ó¢7G&–ærÂçVÆÃ°¢7&VFVçF–Å&VG“ó¢&ööÆVã°¢7VFôÖöFSó¢'77v÷&FÆW72"Â&öåöFVÖæB"ÂçVÆÃ°¢Æ7E&W÷'C¢°¢f–ÆTæÖS¢7G&–æs°¢7&VFVDC¢7G&–ærÂçVÆÃ°¢&öf–ÆT–C¢7G&–ærÂçVÆÃ°¢66÷&S¢çVÖ&W"ÂçVÆÃ°¢†–vƒ¢çVÖ&W#°¢ÖVF—VÓ¢çVÖ&W#°¢Æ÷s¢çVÖ&W#°¢–æfó¢çVÖ&W#°¢ÒÂçVÆÃ°§Ó° §G—R†÷7G5–ÆöBÒ°¢–çfVçF÷'•&VG“ó¢&ööÆVã°¢†÷7G3ó¢ÖævVD†÷7EµÓ°¢7VÖÖ'“ó¢°¢F÷FÃ¢çVÖ&W#°¢v—F…&W÷'G3¢çVÖ&W#°¢v—F†÷WE&W÷'G3¢çVÖ&W#°¢&V6öÖTVæ&ÆVC¢çVÖ&W#°¢fW&vU66÷&S¢çVÖ&W"ÂçVÆÃ°¢Ó°§Ó° §G—R&VfÆ–v‡E–ÆöBÒ°¢ö³ó¢&ööÆVã°¢ÖW76vSó¢7G&–æs°¢&VF–æW73ó¢–×÷'B‚$öÆ–"ö†÷7B×&VF–æW72"’ä†÷7E&VF–æW72ÂçVÆÃ°¢&VF–æW74W'&÷#ó¢7G&–ærÂçVÆÃ°¢6†V6·3ó¢°¢76ƒ¢&VfÆ–v‡D6†V6³°¢—F†öã¢&VfÆ–v‡D6†V6³°¢7VFó¢&VfÆ–v‡D6†V6³°¢÷3ó¢&VfÆ–v‡D6†V6³°¢Ó°¢f7G3ó¢°¢÷3¢7G&–ærÂçVÆÃ°¢—F†öã¢7G&–ærÂçVÆÃ°¢Ó°§Ó° §G—R†÷7D¶W•–ÆöBÒ°¢ö³ó¢&ööÆVã°¢f–ævW'&–çG3ó¢'&“Ç²f–ævW'&–çC¢7G&–æs²Æv÷&—F†Ó¢7G&–ærÓã°¢ÖW76vSó¢7G&–æs°§Ó° ¦6öç7B&öf–ÆT÷F–öç2Ò°¢²–C¢&&6–5öÆ–çW‚"ÂÆ&VÃ¢-	}í-½’Æ–çW‚"ÒÀ¢²–C¢'76…÷6V7W&—G’"ÂÆ&VÃ¢%54‚İ]-]"ÒÀ¢²–C¢'vV%÷6W'fW""ÂÆ&VÃ¢-	-]İ]-]"ÒÀ¢²–C¢&Fö6¶W%ö†÷7B"ÂÆ&VÃ¢$Fö6¶W"İ]í""ÒÀ¥Ò26öç7C° ¦6öç7B&–Ö'”VF—D7F–öç2Ò°¢²–C¢&vVçFÆW74VF—B"ÂÆ&VÃ¢-	ıí-]-ÂıíM½Â"Â–6öã¢6†–VÆD6†V6²ÒÀ¢²–C¢'–ær"ÂÆ&VÃ¢-	ıí-]-Â-ı}Â"Â–6öã¢6W'fW"ÒÀ¥Ò26öç7C° ¦6öç7BFF—F–öæÄVF—D7F–öç2Ò°¢°¢–C¢'6¶vT–çfVçF÷'’"À¢Æ&VÃ¢-	ı­]-²‚5dR(	BG&—g’"À¢w&÷W¢$5dR‚ı­]-²"À¢FW67&—F–öã¢-
+í]"=-İí-½]İİíR	ı	âÂMíÍ=]"4$ôÒ‚íıí--½ı]"ı­]-²}í’5dRG&—g’â"À¢–6öã¢f–ÆUFW‡BÀ¢ÒÀ¢°¢–C¢&7G&÷fÄVF—B"À¢Æ&VÃ¢$5dR7G&(	BõdÂò÷Vå44"À¢w&÷W¢$5dR‚ı­]-²"À¢FW67&—F–öã¢-	ıí-]ı]"ı­]-²7G&ıâİ}İ}]İİí’íMm½Íİí’õdÂİ}Râ	İR}Í]İı]"]í"â"À¢–6öã¢6†–VÆD6†V6²À¢&WV—&W46öæf—&ÖF–öã¢G'VRÀ¢ÒÀ¢°¢–C¢&÷Vå66VF—B"À¢Æ&VÃ¢-	ıíM½Â­íİM==m‚(	B÷Vå44"À¢w&÷W¢-	]}íıİí-Â‚­íİM==mò"À¢FW67&—F–öã¢-
+-]ı]"İ-í­‚]í--½İİ½ÂıíM½]Â]}íıİí-‚„5â	İR}Í]İı]"]í"â"À¢–6öã¢6†–VÆD6†V6²À¢&WV—&W46öæf—&ÖF–öã¢G'VRÀ¢ÒÀ¢°¢–C¢'76„7'—FôVF—B"À¢Æ&VÃ¢-	}-54‚(	B76‚ÖVF—B"À¢w&÷W¢-	]}íıİí-Â‚­íİM==mò"À¢FW67&—F–öã¢-	ıí-]ı]"½=í-Í²‚İ-í­‚54‚=ı-½ıí]’Íİ²Â]r-]íMİ]í"â"À¢–6öã¢6†–VÆD6†V6²À¢ÒÀ¢°¢–C¢&Ç–æ—5FV×÷&'”VF—B"À¢Æ&VÃ¢-
+]­íÍ]İMm‚†&FVæ–ær(	BÇ–æ—2"À¢w&÷W¢-	]}íıİí-Â‚­íİM==mò"À¢FW67&—F–öã¢-	-]Í]İİâ}ı=­]"Ç–æ—2İ]í-R‚=M½ı]"]=âí}RM½²ıí½Rıí-]­‚â"À¢–6öã¢6†–VÆD6†V6²À¢&WV—&W46öæf—&ÖF–öã¢G'VRÀ¢ÒÀ¢°¢–C¢&æWGv÷&µ÷'E66â"À¢Æ&VÃ¢-	í-­½-½RD5İıí-²(	BæÖ"À¢w&÷W¢-	M=İí-­"À¢FW67&—F–öã¢-	ıí-]ı]"D5İıí-²-½İİí=â]í-=ı-½ıí]’Íİ²â	ı]]B}ı=­íÂ-½]-R=½=İ2ıí-]­‚â"À¢–6öã¢6V&6‚À¢&WV—&W46öæf—&ÖF–öã¢G'VRÀ¢ÒÀ¢°¢–C¢&6öÆÆV7Df7G2"À¢Æ&VÃ¢-
+-]M]İòâ]í-R(	Bç6–&ÆR"À¢w&÷W¢-	M=İí-­"À¢FW67&—F–öã¢-
+í]"-]‚	í
+ÂıM‚­íÍıíİ]İ-í"M½òM=İí-­‚ıíM­½í}]İòâ"À¢–6öã¢f–ÆUFW‡BÀ¢ÒÀ¢°¢–C¢&6öÆÆV7DWfVçG2"À¢Æ&VÃ¢-
+í½-ò]}íıİí-‚(	Bç6–&ÆR"À¢w&÷W¢-	M=İí-­"À¢FW67&—F–öã¢-
+í]"í½-ò]}íıİí-‚M½ò}íİmM]İ-²İ-âİRíİí-İí’=M"â"À¢–6öã¢FW&Ö–æÂÀ¢ÒÀ¥Ò26öç7C° ¦6öç7BVF—D7F–öç2Ò²ââç&–Ö'”VF—D7F–öç2ÂââæFF—F–öæÄVF—D7F–öç5Ò26öç7C°¦6öç7BFF—F–öæÄVF—Dw&÷W2Ò²$5dR‚ı­]-²"Â-	]}íıİí-Â‚­íİM==mò"Â-	M=İí-­%Ò26öç7C°§G—RFF—F–öæÄVF—D7F–öä–BÒ‡G—VöbFF—F–öæÄVF—D7F–öç2•¶çVÖ&W%Õ²&–B%Ó° ¦6öç7BæÖ66å66÷T÷F–öç2Ò°¢°¢–C¢'F÷ó"À¢Æ&VÃ¢-	½-ó¢D5İıí-í""À¢FW67&—F–öã¢-	­íí-­òıí-]­İí½]Rıí-İİİ½R]-í"â	İRıíM--]mM]"í-=---Rıí-í"-İRİ-í’-½í­‚â"À¢ÒÀ¢°¢–C¢'F÷ó"À¢Æ&VÃ¢-
+-İM-İó¢D5İıí-í""À¢FW67&—F–öã¢-	í½]Rí­’í}íıí-İİİ½R]-í#²í½}İâ}İÍ]"İ]­í½Í­âÍİ="â"À¢ÒÀ¢°¢–C¢&gVÆÅ÷F7"À¢Æ&VÃ¢-	ıí½İòD5¢(	3cRS3R"À¢FW67&—F–öã¢-	ıí-]ı]"-]ÂD5İMı}íÒâ	İM½Í-=í]Âf—&WvÆÂÍím]"M-‚Mâ3Íİ=#²TEíMİR-]íM"â"À¢ÒÀ¥Ò26öç7C°§G—RæÖ66å66÷RÒ‡G—VöbæÖ66å66÷T÷F–öç2•¶çVÖ&W%Õ²&–B%Ó° ¦6öç7B&W7öç6T7F–öç2Ò°¢²–C¢&6Æ÷6U÷'B"ÂÆ&VÃ¢-	}­½-Âıí""Â–6öã¢&âÒÀ¢²–C¢&&Æö6´—"ÂÆ&VÃ¢-	½í¢•"Â–6öã¢ÆW'EG&–ævÆRÒÀ¥Ò26öç7C° ¦6öç7BG&ç67F–öå7FGW4Æ&VÇ3¢&V6÷&CÅ&VÖVF–F–öåG&ç67F–öå²'7FGW2%ÒÂ7G&–æsâÒ°¢&W&–æs¢-ıíM=í-í-­"À¢&6¶VE÷W¢-]}]-İò­íıòí}Mİ"À¢Æ–VC¢-ıÍ]İ]İâ"À¢f–ÆVC¢-í­"À¢&öÆÆ–æuö&6³¢--½ıí½İı]-òí-­""À¢&öÆÆ&6µöf–ÆVC¢-í­í-­-"À¢&öÆÆVEö&6³¢--í-İí-½]İâ"À§Ó° ¦6öç7BG&ç67F–öä7F–öäÆ&VÇ3¢&V6÷&CÇ7G&–ærÂ7G&–æsâÒ°¢6Æ÷6U÷'C¢-	}­½-Rıí-"À¢&Æö6´—¢-	½í­í-­•"À§Ó° ¦gVæ7F–öâf÷&ÖDFFR‡fÇVS¢7G&–ærÂçVÆÂÂVæFVf–æVB’°¢–b‚fÇVR’°¢&WGW&â-İ]"í-}]-#°¢Ğ¢6öç7BFFRÒæWrFFR‡fÇVR“°¢&WGW&âçVÖ&W"æ—4æâ†FFRævWEF–ÖR‚’’òfÇVR¢FFRçFôÆö6ÆU7G&–ær‚''RÕ%R"“°§Ğ ¦gVæ7F–öâ66÷&UFöæR‡66÷&S¢çVÖ&W"ÂçVÆÂÂVæFVf–æVB’°¢–b‡G—Vöb66÷&RÓÒ&çVÖ&W""’°¢&WGW&â&&÷&FW"×6ÆFRÓs&r×6ÆFRÓ“FW‡B×6ÆFRÓ3#°¢Ğ¢–b‡66÷&RãÒƒ’°¢&WGW&â&&÷&FW"ÖVÖW&ÆBÓCóC&rÖVÖW&ÆBÓSóRFW‡BÖVÖW&ÆBÓ#°¢Ğ¢–b‡66÷&RãÒSR’°¢&WGW&â&&÷&FW"ÖÖ&W"ÓCóC&rÖÖ&W"ÓSóRFW‡BÖÖ&W"Ó#°¢Ğ¢&WGW&â&&÷&FW"×&VBÓCóC&r×&VBÓSóRFW‡B×&VBÓ#°§Ğ ¦gVæ7F–öâ&W÷'D‡&Vb†f–ÆTæÖS¢7G&–ær’°¢&WGW&â÷&W÷'G2övVçFÆW72òG¶Væ6öFUU$”6ö×öæVçB†f–ÆTæÖRç&WÆ6R‚õÂæ§6öâBö’Â""’—Ö°§Ğ ¦W‡÷'BgVæ7F–öâç6–&ÆT6öçG&öÄ6Æ–VçB‚’°¢6öç7Bæ÷F–g’ÒW6Tæ÷F–g’‚“°¢6öç7Bf÷&Õ&VbÒW6U&VcÄ…DÔÄVÆVÖVçCâ†çVÆÂ“°¢6öç7B¶VF—F–æt†÷7BÂ6WDVF—F–æt†÷7EÒÒW6U7FFR‚""“°¢6öç7B¶†VÇF‚Â6WD†VÇF…ÒÒW6U7FFSÄ†VÇF…–ÆöBÂçVÆÃâ†çVÆÂ“°¢6öç7B¶†÷7G2Â6WD†÷7G5ÒÒW6U7FFSÄ†÷7G5–ÆöBÂçVÆÃâ†çVÆÂ“°¢6öç7B·&öf–ÆT–BÂ6WE&öf–ÆT–EÒÒW6U7FFR‚&&6–5öÆ–çW‚"“°¢6öç7B¶FF—F–öæÄVF—D7F–öä–BÂ6WDFF—F–öæÄVF—D7F–öä–EÒÒW6U7FFSÄFF—F–öæÄVF—D7F–öä–Câ‚'6¶vT–çfVçF÷'’"“°¢6öç7B¶æÖ66å66÷RÂ6WDæÖ66å66÷UÒÒW6U7FFSÄæÖ66å66÷Sâ‚'F÷ó"“°¢6öç7B·6VÆV7FVDÆ–2Â6WE6VÆV7FVDÆ–5ÒÒW6U7FFR‚""“°¢6öç7B¶ÆöF–ærÂ6WDÆöF–æuÒÒW6U7FFR‚""“°¢6öç7B·'Vå&W7VÇBÂ6WE'Vå&W7VÇEÒÒW6T7F–öå&W7VÇCÅ'Vå–ÆöCâ‚“°¢6öç7B¶g&W6…&W÷'D‡&VbÂ6WDg&W6…&W÷'D‡&VeÒÒW6U7FFR‚""“°¢6öç7B¶ÖçVÄÆ–2Â6WDÖçVÄÆ–5ÒÒW6U7FFR‚""“°¢6öç7B¶ÖçVÄFG&W72Â6WDÖçVÄFG&W75ÒÒW6U7FFR‚""“°¢6öç7B¶ÖçVÅW6W"Â6WDÖçVÅW6W%ÒÒW6U7FFR‚""“°¢6öç7B¶ÖçVÅ÷'BÂ6WDÖçVÅ÷'EÒÒW6U7FFR‚##""“°¢6öç7B¶ÖçVÄw&÷WÂ6WDÖçVÄw&÷WÒÒW6U7FFR‚&Æ–çW…ö†÷7G2"“°¢òòF†R†÷7Bf÷&ÒÇv—2fW&–f–W2FÖ–æ—7G&F—fR66W72&Vf÷&R6f–ærà¢6öç7BÖçVÄ&V6öÖRÒG'VS°¢6öç7B·&VfÆ–v‡BÂ6WE&VfÆ–v‡EÒÒW6U7FFSÅ&VfÆ–v‡E–ÆöBÂçVÆÃâ†çVÆÂ“°¢6öç7B·&VfÆ–v‡Df÷"Â6WE&VfÆ–v‡Df÷%ÒÒW6U7FFR‚""“°¢6öç7B·66ä6–G"Â6WE66ä6–G%ÒÒW6U7FFR‚""“°¢6öç7B¶F—66÷fW'’Â6WDF—66÷fW'•ÒÒW6U7FFSÄF—66÷fW'•–ÆöBÂçVÆÃâ†çVÆÂ“°¢6öç7B·F&vWE÷'BÂ6WEF&vWE÷'EÒÒW6U7FFR‚##2"“°¢6öç7B·F&vWE&÷Fö6öÂÂ6WEF&vWE&÷Fö6öÅÒÒW6U7FFR‚'F7"“°¢6öç7B¶&Æö6´—Â6WD&Æö6´—ÒÒW6U7FFR‚""“°¢6öç7B¶6†ævU&V6öâÂ6WD6†ævU&V6öåÒÒW6U7FFR‚""“°¢6öç7B¶6öæf—&ÖVD†÷7BÂ6WD6öæf—&ÖVD†÷7EÒÒW6U7FFR‚""“°¢6öç7B·G&ç67F–öç2Â6WEG&ç67F–öç5ÒÒW6U7FFSÅ&VÖVF–F–öåG&ç67F–öåµÓâ…µÒ“°¢6öç7B¶ÖçVÄ7&VFVçF–Ä–BÂ6WDÖçVÄ7&VFVçF–Ä–EÒÒW6U7FFSÇ7G&–ærÂçVÆÃâ†çVÆÂ“°¢6öç7B¶7&VFVçF–Å&W7VÇBÂ6WD7&VFVçF–Å&W7VÇEÒÒW6U7FFSÄ7&VFVçF–Å6WGW&W7VÇBÂçVÆÃâ†çVÆÂ“°¢6öç7B¶†÷7D¶W•66âÂ6WD†÷7D¶W•66åÒÒW6U7FFSÄ†÷7D¶W•–ÆöBÂçVÆÃâ†çVÆÂ“°¢6öç7B·G'W7FVDf–ævW'&–çBÂ6WEG'W7FVDf–ævW'&–çEÒÒW6U7FFR‚""“°¢6öç7B·6W'fW%G'W7FVBÂ6WE6W'fW%G'W7FVEÒÒW6U7FFR†fÇ6R“°¢6öç7B·G'W7DW‡æFVBÂ6WEG'W7DW‡æFVEÒÒW6U7FFR†fÇ6R“°¢6öç7B¶66W74ÆöF–ærÂ6WD66W74ÆöF–æuÒÒW6U7FFR‚""“°¢6öç7B¶66W74ÖW76vRÂ6WD66W74ÖW76vUÒÒW6TfVVF&6´ÖW76vR‚“°¢6öç7B¶6÷–VBÂ6WD6÷–VEÒÒW6U7FFR‚""“°¢6öç7B¶w&VVæ&öæTf–ÆRÂ6WDw&VVæ&öæTf–ÆUÒÒW6U7FFSÄf–ÆRÂçVÆÃâ†çVÆÂ“°¢6öç7B¶w&VVæ&öæTÖW76vRÂ6WDw&VVæ&öæTÖW76vUÒÒW6U7FFR‚""“°¢6öç7B¶FV6öÖÖ—76–öä†÷7BÂ6WDFV6öÖÖ—76–öä†÷7EÒÒW6U7FFSÄÖævVD†÷7BÂçVÆÃâ†çVÆÂ“°¢6öç7B¶÷W&F–öå7VFõ77v÷&BÂ6WD÷W&F–öå7VFõ77v÷&EÒÒW6U7FFR‚""“°¢6öç7B·6V7W&T7&VFVçF–ÅG&ç7÷'BÂ6WE6V7W&T7&VFVçF–ÅG&ç7÷'EÒÒW6U7FFR†fÇ6R“° ¢6öç7B6VÆV7FVD†÷7BÒW6TÖVÖò€¢‚’Óâ†÷7G3òæ†÷7G3òæf–æB‚††÷7B’Óâ†÷7BæÆ–2ÓÓÒ6VÆV7FVDÆ–2’óòçVÆÂÀ¢¶†÷7G2Â6VÆV7FVDÆ–5ÒÀ¢“° ¢6öç7B6öææV7F–öäÆ–2ÒÖçVÄÆ–2çG&–Ò‚’ÇÂFVfVÇD†÷7DÆ–2†ÖçVÄFG&W72“° ¢6öç7B6öææV7F–öå6–væGW&RÒW6TÖVÖò€¢‚’Óâ¶6öææV7F–öäÆ–2ÂÖçVÄFG&W72ÂÖçVÅW6W"ÂÖçVÅ÷'BÂÖçVÄ&V6öÖRò'7VFò"¢&æò×7VFò"ÂÖçVÄ7&VFVçF–Ä–Bóò&ÆVv7’%Òæ¦ö–â‚%ÇS"’À¢¶ÖçVÄFG&W72Â6öææV7F–öäÆ–2ÂÖçVÄ&V6öÖRÂÖçVÅ÷'BÂÖçVÅW6W"ÂÖçVÄ7&VFVçF–Ä–EÒÀ¢“° ¢W6TVffV7B‚‚’Óâ°¢fö–B&Vg&W6„ÆÂ‚“°¢ÒÂµÒ“° ¢W6TVffV7B‚‚’Óâ°¢6WE6V7W&T7&VFVçF–ÅG&ç7÷'B‡v–æF÷ræÆö6F–öâç&÷Fö6öÂÓÓÒ&‡GG3¢"ÇÂ²&Æö6Æ†÷7B"Â##rããã"Â%³££Ò"Â#££%Òæ–æ6ÇVFW2‡v–æF÷ræÆö6F–öâæ†÷7FæÖR’“°¢ÒÂµÒ“° ¢W6TVffV7B‚‚’Óâ°¢òòæWfW"6''’öæR×F–ÖR77v÷&Bg&öÒöæRF&vWB†÷7BFòæ÷F†W"à¢6WD÷W&F–öå7VFõ77v÷&B‚""“°¢ÒÂ·6VÆV7FVDÆ–5Ò“° ¢W6TVffV7B‚‚’Óâ°¢6WD†÷7D¶W•66â†çVÆÂ“°¢6WEG'W7DW‡æFVB†fÇ6R“°¢6WE6W'fW%G'W7FVB†fÇ6R“°¢6WEG'W7FVDf–ævW'&–çB‚""“°¢6WD66W74ÖW76vR‚""“°¢ÒÂ¶ÖçVÄFG&W72ÂÖçVÅ÷'BÂ6WD66W74ÖW76vUÒ“° ¢W6TVffV7B‚‚’Óâ°¢–b‚6÷–VB’&WGW&ã°¢6öç7BF–ÖW"Òv–æF÷rç6WEF–ÖV÷WB‚‚’Óâ6WD6÷–VB‚""’Â#S“°¢&WGW&â‚’Óâv–æF÷ræ6ÆV%F–ÖV÷WB‡F–ÖW"“°¢ÒÂ¶6÷–VEÒ“° ¢7–æ2gVæ7F–öâ&Vg&W6„ÆÂ†ææ÷Væ6RÒfÇ6R’°¢6WDÆöF–ær‚'&Vg&W6‚"“°¢G'’°¢6öç7B¶†VÇF…&W7öç6RÂ†÷7G5&W7öç6RÂ&VÖVF–F–öå&W7öç6UÒÒv—B&öÖ—6RæÆÂ…°¢fWF6‚‚"ö’öç6–&ÆRö†VÇF‚"’À¢fWF6‚‚"ö’öç6–&ÆRö†÷7G2"’À¢fWF6‚‚"ö’öç6–&ÆR÷&VÖVF–F–öç2"’À¢Ò“°¢6öç7BæW‡D†VÇF‚Òv—B&VD•&W7öç6R††VÇF…&W7öç6R“°¢6öç7BæW‡D†÷7G2Òv—B&VD•&W7öç6R††÷7G5&W7öç6R“°¢6öç7BæW‡E&VÖVF–F–öç2Òv—B&VD•&W7öç6R‡&VÖVF–F–öå&W7öç6R“°¢–b‚†VÇF…&W7öç6Ræö²ÇÂ†÷7G5&W7öç6Ræö²ÇÂ&VÖVF–F–öå&W7öç6Ræö²’°¢F‡&÷ræWrW'&÷"†æW‡D†VÇF‚æÖW76vRÇÂæW‡D†÷7G2æÖW76vRÇÂæW‡E&VÖVF–F–öç2æÖW76vRÇÂ-	İR=M½íÂíİí--ÂMİİ½Râ"“°¢Ğ¢6WD†VÇF‚†æW‡D†VÇF‚“°¢6WD†÷7G2†æW‡D†÷7G2“°¢6WEG&ç67F–öç2†æW‡E&VÖVF–F–öç2çG&ç67F–öç2óòµÒ“°¢–b‚6VÆV7FVDÆ–2bbæW‡D†÷7G2æ†÷7G3òå³Ò’°¢6WE6VÆV7FVDÆ–2†æW‡D†÷7G2æ†÷7G5³ÒæÆ–2“°¢Ğ¢–b†ææ÷Væ6R’æ÷F–g’‚-	Mİİ½R]í-í"íİí-½]İ²â"Â'7V66W72"“°¢&WGW&âæW‡D†÷7G22†÷7G5–ÆöC°¢Ò6F6‚†W'&÷"’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂÖW76vS¢W'&÷$ÖW76vR†W'&÷"Â-	İR=M½íÂíİí--ÂMİİ½Râ	ıí-]Í-RıíM­½í}]İR¢ı½-MíÍR‚ıí--í-R}ıíâ"’Ò“°¢Òf–æÆÇ’°¢6WDÆöF–ær‚""“°¢Ğ¢Ğ ¢7–æ2gVæ7F–öâÆöD†÷7G2‚’°¢6öç7B&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆRö†÷7G2"“°¢6öç7B–ÆöBÒv—B&VD•&W7öç6R‡&W7öç6R“°¢–b‚&W7öç6Ræö²’F‡&÷ræWrW'&÷"‡–ÆöBæÖW76vRÇÂ-	İR=M½íÂ}==}-Â]í-²â"“°¢6WD†÷7G2‡–ÆöB“°¢&WGW&â–ÆöB2†÷7G5–ÆöC°¢Ğ ¢7–æ2gVæ7F–öâÆöE&VÖVF–F–öç2‚’°¢6öç7B&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆR÷&VÖVF–F–öç2"“°¢6öç7B–ÆöBÒv—B&VD•&W7öç6R‡&W7öç6R“°¢–b‚&W7öç6Ræö²’F‡&÷ræWrW'&÷"‡–ÆöBæÖW76vRÇÂ-	İR=M½íÂ}==}-Â}Í]İ]İòâ"“°¢6WEG&ç67F–öç2‡–ÆöBçG&ç67F–öç2óòµÒ“°¢Ğ ¢7–æ2gVæ7F–öâ&Vg&W6…&VÖVF–F–öç2‚’°¢6WDÆöF–ær‚'&VÖVF–F–öç2"“°¢G'’°¢v—BÆöE&VÖVF–F–öç2‚“°¢æ÷F–g’‚-
+ıí¢}Í]İ]İ’íİí-½Òâ"Â'7V66W72"“°¢Ò6F6‚†W'&÷"’°¢æ÷F–g’†W'&÷$ÖW76vR†W'&÷"Â-	İR=M½íÂíİí--Âıí¢}Í]İ]İ’â"’Â&W'&÷""“°¢Òf–æÆÇ’²6WDÆöF–ær‚""“²Ğ¢Ğ ¢7–æ2gVæ7F–öâ6÷•Fô6Æ—&ö&B‡fÇVS¢7G&–ærÂÆ&VÃ¢7G&–ær’°¢G'’°¢v—B6÷•FW‡B‡fÇVR“°¢6WD6÷–VB†Æ&VÂ“°¢æ÷F–g’†Æ&VÂÓÓÒ'V&Æ–2Ö¶W’"ò-	ı=½}İ½’­½ír­íıí-Òâ"¢-	­íÍİM­íıí-İâ"Â'7V66W72"“°¢Ò6F6‚°¢6WD66W74ÖW76vR‚-	İR=M½íÂ­íıí--Â--íÍ-}]­‚â	-½M]½-R}İ}]İR‚­íı=-R-=}İ=ââ"“°¢Ğ¢Ğ ¢7–æ2gVæ7F–öâ66ä†÷7Df–ævW'&–çB‚’°¢–b‚ÖçVÄFG&W72’°¢6WD66W74ÖW76vR‚-
+İ}½=­m-R•İM]½‚†÷7FæÖRm]½]-í=â]í-â"“°¢&WGW&ã°¢Ğ¢6WD66W74ÆöF–ær‚'66â"“°¢6WD66W74ÖW76vR‚""“°¢6WD†÷7D¶W•66â†çVÆÂ“°¢G'’°¢6öç7B&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆRö66W72"Â°¢ÖWF†öC¢%õ5B"À¢†VFW'3¢²$6öçFVçBÕG—R#¢&Æ–6F–öâö§6öâ"ÒÀ¢&öG“¢¥4ôâç7G&–æv–g’‡²÷W&F–öã¢'66â"ÂFG&W73¢ÖçVÄFG&W72Â÷'C¢ÖçVÅ÷'BÒ’À¢Ò“°¢6öç7B–ÆöBÒv—B&VD•&W7öç6R‡&W7öç6R“°¢6WD†÷7D¶W•66â‡–ÆöB“°¢6WD66W74ÖW76vR‡–ÆöBæÖW76vRÇÂ‡–ÆöBæö²ò-	­½í}‚ıí½=}]İ²â
+-]Í-Rí-ı]}-í¢Mí-]]İİ½Â-í}İ­íÂâ"¢-	İR=M½íÂıí½=}-Â­½í}‚]-]â"’Â–ÆöBæö²ò&–æfò"¢&W'&÷""“°¢Ò6F6‚†W'&÷"’°¢6WD66W74ÖW76vR†W'&÷$ÖW76vR†W'&÷"Â-	İR=M½íÂıí½=}-Âí-ı]}-í¢­½í}m]½]-í’7G&â"’“°¢Òf–æÆÇ’°¢6WD66W74ÆöF–ær‚""“°¢Ğ¢Ğ ¢7–æ2gVæ7F–öâG'W7E66ææVD†÷7D¶W’‚’°¢–b‚ÖçVÄFG&W72ÇÂG'W7FVDf–ævW'&–çB’°¢6WD66W74ÖW76vR‚-
+=­m-R]í"‚---Í-R]=âí-ı]}-í¢rMí-]]İİí’­íİí½‚7G&½‚]]-â"“°¢&WGW&ã°¢Ğ¢6WE6W'fW%G'W7FVB†fÇ6R“°¢6WD66W74ÆöF–ær‚'G'W7B"“°¢6WD66W74ÖW76vR‚""“°¢G'’°¢6öç7B&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆRö66W72"Â°¢ÖWF†öC¢%õ5B"À¢†VFW'3¢²$6öçFVçBÕG—R#¢&Æ–6F–öâö§6öâ"ÒÀ¢&öG“¢¥4ôâç7G&–æv–g’‡°¢÷W&F–öã¢'G'W7B"À¢FG&W73¢ÖçVÄFG&W72À¢÷'C¢ÖçVÅ÷'BÀ¢W‡V7FVDf–ævW'&–çC¢G'W7FVDf–ævW'&–çBçG&–Ò‚’À¢Ò’À¢Ò“°¢6öç7B–ÆöBÒv—B&VD•&W7öç6R‡&W7öç6R“°¢6WE6W'fW%G'W7FVB„&ööÆVâ‡–ÆöBæö²’“°¢6WD66W74ÖW76vR‡–ÆöBæÖW76vRÇÂ‡–ÆöBæö²ò-	ıí-]]İİ½’­½ír]-]í]İÒâ"¢-	İR=M½íÂí]İ-Â­½ír]-]â"’Â–ÆöBæö²ò'7V66W72"¢&W'&÷""“°¢Ò6F6‚†W'&÷"’°¢6WD66W74ÖW76vR†W'&÷$ÖW76vR†W'&÷"Â-	İR=M½íÂí]İ-Âıí-]]İİ½’54‚İ­½ír]-]â"’“°¢Òf–æÆÇ’°¢6WD66W74ÆöF–ær‚""“°¢Ğ¢Ğ ¢7–æ2gVæ7F–öâ6WGW†÷7D7&VFVçF–Â‡6V7&WG3¢6WGW6V7&WG2Â6ÆV%77v÷&G3¢‚’Óâfö–B’°¢6WDÆöF–ær‚&6öææV7B×G'W7B"“°¢6WE&VfÆ–v‡B†çVÆÂ“²6WE&VfÆ–v‡Df÷"‚""“²6WE'Vå&W7VÇB†çVÆÂ“°¢6öç7B6öææV7F–öâÒ²Æ–3¢6öææV7F–öäÆ–2ÂFG&W73¢ÖçVÄFG&W72çG&–Ò‚’ÂW6W#¢ÖçVÅW6W"çG&–Ò‚’Â÷'C¢ÖçVÅ÷'BÀ¢w&÷W¢ÖçVÄw&÷WÂ&V6öÖS¢ÖçVÄ&V6öÖRÂ7&VFVçF–Ä–C¢ÖçVÄ7&VFVçF–Ä–BÓ°¢G'’°¢6öç7B÷WF6öÖRÒv—B6öææV7DæE6fT†÷7B†6öææV7F–öâÂ6V7&WG2Â°¢VF—F–æs¢&ööÆVâ†VF—F–æt†÷7B’À¢öå7FvS¢‡7FvR’Óâ²6WDÆöF–ær†6öææV7BÒG·7FvWÖ“²–b‡7FvRÓÒ'G'W7B"’6WE6W'fW%G'W7FVB‡G'VR“²ÒÀ¢öå77v÷&E7V&Ö—C¢6ÆV%77v÷&G2À¢öä7&VFVçF–Ã¢‡–ÆöB’Óâ²6WDÖçVÄ7&VFVçF–Ä–B‡–ÆöBæ7&VFVçF–Ä–B“²6WD7&VFVçF–Å&W7VÇB‡–ÆöB“²ÒÀ¢öå&VfÆ–v‡C¢‡–ÆöBÂ7&VFVçF–Ä–B’Óâ°¢6WE&VfÆ–v‡B‡–ÆöB“°¢6WE&VfÆ–v‡Df÷"…¶6öææV7F–öäÆ–2ÂÖçVÄFG&W72ÂÖçVÅW6W"ÂÖçVÅ÷'BÂÖçVÄ&V6öÖRò'7VFò"¢&æò×7VFò"Â7&VFVçF–Ä–Bóò&ÆVv7’%Òæ¦ö–â‚%ÇS"’“°¢ÒÀ¢Ò“°¢–b‚÷WF6öÖRæö²’°¢6öç7BÖW76vRÒ÷WF6öÖRç–ÆöBæÖW76vRÇÂ-	ıíM­½í}]İRİR}-]]İââ	ıí-]Í-R]}=½Í-"İmR‚ıí--í-Rıíı½-­2â#°¢–b†÷WF6öÖRç7FvRÓÓÒ'G'W7B"ÇÂ²&†÷7Eöæ÷E÷G'W7FVB"Â&†÷7Eö¶W•ö6†ævVB%Òæ–æ6ÇVFW2†÷WF6öÖRç–ÆöBæW'&÷"’’°¢6WEG'W7DW‡æFVB‡G'VR“²6WE6W'fW%G'W7FVB†fÇ6R“°¢6WD66W74ÖW76vR†ÖW76vRÂ'v&æ–ær"“°¢Ğ¢6WD7&VFVçF–Å&W7VÇB‚‡&Wf–÷W2’Óâ‡²ââç&Wf–÷W2Âö³¢fÇ6RÂÖW76vRÒ’“°¢æ÷F–g’†ÖW76vRÂ÷WF6öÖRç7FvRÓÓÒ'G'W7B"ò'v&æ–ær"¢&W'&÷""“°¢&WGW&ã°¢Ğ¢6WE'Vå&W7VÇB‡²ö³¢G'VRÂ7F–öã¢VF—F–æt†÷7Bò'WFFT†÷7B"¢&FD†÷7B"À¢ÖW76vS¢VF—F–æt†÷7Bò	ıíM­½í}]İRG¶6öææV7F–öâæÆ–7Òıí-]]İâ‚í]İ]İâæ¢
+]í"G¶6öææV7F–öâæÆ–7ÒıíM­½í}Ò‚Mí-½]Ò"ıí¢â	Íímİâ}ı=­-Â=M"æÒ“°¢–b‚VF—F–æt†÷7B’7F'DæWt†÷7B‚“°¢VÇ6R6WD7&VFVçF–Å&W7VÇB‚‡&Wf–÷W2’Óâ‡²ââç&Wf–÷W2Âö³¢G'VRÂÖW76vS¢-	ıíM­½í}]İRıí-]]İâ‚í]İ]İââ"Ò’“°¢v—B&Vg&W6„ÆÂ‚“°¢6WE6VÆV7FVDÆ–2†6öææV7F–öâæÆ–2“°¢Ò6F6‚†W'&÷"’°¢6öç7BÖW76vRÒW'&÷$ÖW76vR†W'&÷"Â-	í--]"İRıí½=}]Òâ	ıí-]Í-Rıí¢]í-í"ı]]Bıí--íİí’ıíı½-­í“²í}Mİİòıí]İı]-òâ"“°¢6WD7&VFVçF–Å&W7VÇB‚‡&Wf–÷W2’Óâ‡²ââç&Wf–÷W2Âö³¢fÇ6RÂÖW76vRÒ’“°¢æ÷F–g’†ÖW76vRÂ&W'&÷""“°¢Òf–æÆÇ’°¢6V7&WG2ç77v÷&BÒ"#²6V7&WG2ç7VFõ77v÷&BÒ"#°¢6WDÆöF–ær‚""“°¢Ğ¢Ğ ¢gVæ7F–öâ–çfÆ–FFT7&VFVçF–Â‚’°¢6WDÖçVÄ7&VFVçF–Ä–B†çVÆÂ“²6WD7&VFVçF–Å&W7VÇB†çVÆÂ“²6WE&VfÆ–v‡B†çVÆÂ“²6WE&VfÆ–v‡Df÷"‚""“°¢Ğ ¢7–æ2gVæ7F–öâ6†V6µ&VfÆ–v‡B†7&VFVçF–Ä–BÒÖçVÄ7&VFVçF–Ä–B’°¢6öç7BöäFVÖæE7VFòÒ6VÆV7FVD†÷7CòæÆ–2ÓÓÒ6öææV7F–öäÆ–2bb6VÆV7FVD†÷7Bç7VFôÖöFRÓÓÒ&öåöFVÖæB#°¢6öç7B7VFõ77v÷&BÒöäFVÖæE7VFòò÷W&F–öå7VFõ77v÷&B¢"#°¢–b†öäFVÖæE7VFòbb7VFõ77v÷&B’°¢6öç7BÖW76vRÒ-	M½òİ-í=â]í---]M-Rıí½Â7VFòM½ò}í-í’ıí-]­‚â„5İRí]İı]"]=ââ#°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂÖW76vRÒ“²æ÷F–g’†ÖW76vRÂ'v&æ–ær"“°¢&WGW&ã°¢Ğ¢–b‡7VFõ77v÷&Bbb6V7W&T7&VFVçF–ÅG&ç7÷'B’°¢6öç7BÖW76vRÒ-	M½òıí½ò7VFòí-­í-R„5}]]r…EE2½â‡GG¢òó#rãããİ=ı-½ıí]’V'VçGRâ#°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂÖW76vRÒ“²æ÷F–g’†ÖW76vRÂ'v&æ–ær"“°¢&WGW&ã°¢Ğ¢6WDÆöF–ær‚'&VfÆ–v‡B"“°¢6WE'Vå&W7VÇB†çVÆÂ“°¢6WE&VfÆ–v‡B†çVÆÂ“°¢6WE&VfÆ–v‡Df÷"‚""“°¢6öç7B6†V6¶VD6öææV7F–öâÒ¶6öææV7F–öäÆ–2ÂÖçVÄFG&W72ÂÖçVÅW6W"ÂÖçVÅ÷'BÂÖçVÄ&V6öÖRò'7VFò"¢&æò×7VFò"Â7&VFVçF–Ä–Bóò&ÆVv7’%Òæ¦ö–â‚%ÇS"“°¢G'’°¢6öç7B&WVW7D&öG’Ò¥4ôâç7G&–æv–g’‡°¢Æ–3¢6öææV7F–öäÆ–2À¢FG&W73¢ÖçVÄFG&W72À¢W6W#¢ÖçVÅW6W"À¢÷'C¢ÖçVÅ÷'BÀ¢&V6öÖS¢ÖçVÄ&V6öÖRÀ¢7&VFVçF–Ä–BÀ¢âââ‡7VFõ77v÷&Bò²7VFõ77v÷&BÒ¢·Ò’À¢Ò“°¢–b‡7VFõ77v÷&B’6WD÷W&F–öå7VFõ77v÷&B‚""“°¢6öç7B&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆRö†÷7G2÷&VfÆ–v‡B"Â°¢ÖWF†öC¢%õ5B"À¢†VFW'3¢²$6öçFVçBÕG—R#¢&Æ–6F–öâö§6öâ"ÒÀ¢&öG“¢&WVW7D&öG’À¢Ò“°¢6öç7B–ÆöBÒv—B&VD•&W7öç6R‡&W7öç6R“°¢6WE&VfÆ–v‡B‡–ÆöB“°¢6WE&VfÆ–v‡Df÷"†6†V6¶VD6öææV7F–öâ“°¢æ÷F–g’‡–ÆöBæÖW76vRÇÂ‡–ÆöBæö²ò-	ıíM­½í}]İRıí-]]İââ	ÍímİâMí--Â]í"â"¢-	ıíM­½í}]İRİR=í-í-ââ	ıí-]Í-R]}=½Í--²İmRâ"’Â–ÆöBæö²ò'7V66W72"¢&W'&÷""“°¢Ò6F6‚†W'&÷"’°¢6öç7BÖW76vRÒW'&÷$ÖW76vR†W'&÷"Â-	ıí-]­ıíM­½í}]İòİR}-]]İ¢İ]"í--]-í"ı½-MíÍ²â"“°¢6WE&VfÆ–v‡B‡²ö³¢fÇ6RÂÖW76vRÒ“°¢6WE&VfÆ–v‡Df÷"†6†V6¶VD6öææV7F–öâ“°¢æ÷F–g’†ÖW76vRÂ&W'&÷""“°¢Òf–æÆÇ’°¢6WDÆöF–ær‚""“°¢Ğ¢Ğ ¢7–æ2gVæ7F–öâFWFV7DæWGv÷&²‚’°¢6WDÆöF–ær‚&FWFV7B"“°¢G'’°¢6öç7B&W7öç6RÒv—BfWF6‚†ö’öç6–&ÆRöF—66÷fW#öFG&W73ÒG¶Væ6öFUU$”6ö×öæVçB†ÖçVÄFG&W72çG&–Ò‚’—Òg6—FTFG&W73ÒG¶Væ6öFUU$”6ö×öæVçB‡v–æF÷ræÆö6F–öâæ†÷7FæÖR—Ö“°¢6öç7B–ÆöBÒv—B&VD•&W7öç6R‡&W7öç6R“°¢6WDF—66÷fW'’‡–ÆöB“°¢–b‡–ÆöBæFVfVÇD6–G"’°¢6WE66ä6–G"‡–ÆöBæFVfVÇD6–G"“°¢Ğ¢æ÷F–g’‡–ÆöBæÖW76vRÇÂ‡–ÆöBæFVfVÇD6–G"ò	ıíM]-ÂG·–ÆöBæFVfVÇD6–G'ÒıíM--½]İæ¢-	ıíM]-ÂİRíı]M]½]İâ
+=­m-R]-=}İ=ââ"’Â–ÆöBæö²ò&–æfò"¢&W'&÷""“°¢Ò6F6‚†W'&÷"’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂÖW76vS¢W'&÷$ÖW76vR†W'&÷"Â-	í--]"İRıí½=}]Òâ	ıí-]Í-RMİİ½R‚m=İ²M]--’ı]]Bıí--íİí’ıíı½-­í’â"’Ò“°¢Òf–æÆÇ’°¢6WDÆöF–ær‚""“°¢Ğ¢Ğ ¢7–æ2gVæ7F–öâ66äæWGv÷&²‚’°¢6WDÆöF–ær‚'66â"“°¢G'’°¢6öç7B&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆRöF—66÷fW""Â°¢ÖWF†öC¢%õ5B"À¢†VFW'3¢²$6öçFVçBÕG—R#¢&Æ–6F–öâö§6öâ"ÒÀ¢&öG“¢¥4ôâç7G&–æv–g’‡²6–G#¢66ä6–G"Â76…W6W#¢ÖçVÅW6W"Â&V6öÖS¢ÖçVÄ&V6öÖRÂFEFô–çfVçF÷'“¢fÇ6RÒ’À¢Ò“°¢6öç7B–ÆöBÒv—B&VD•&W7öç6R‡&W7öç6R“°¢6WDF—66÷fW'’‡–ÆöB“°¢æ÷F–g’‡–ÆöBæÖW76vRÇÂ‡–ÆöBæö²ò	ıí¢}-]Òâ	İM]İâ]í-í#¢G·–ÆöBæf÷VæCòæÆVæwF‚óòÒæ¢-	ıí¢İR}-]Òâ"’Â–ÆöBæö²ò'7V66W72"¢&W'&÷""“°¢Ò6F6‚†W'&÷"’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂÖW76vS¢W'&÷$ÖW76vR†W'&÷"Â-	í--]"İRıí½=}]Òâ	ıí-]Í-RMİİ½R‚m=İ²M]--’ı]]Bıí--íİí’ıíı½-­í’â"’Ò“°¢Òf–æÆÇ’°¢6WDÆöF–ær‚""“°¢Ğ¢Ğ ¢7–æ2gVæ7F–öâ'Vä7F–öâ†7F–öã¢7G&–ærÂÖöFS¢'&Wf–Wr"Â&Ç’"Ò&Ç’"’°¢–b‚6VÆV7FVDÆ–2’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂ7F–öâÂÖW76vS¢-	-½]-R]í"â"Ò“°¢&WGW&ã°¢Ğ¢6öç7B7VFõ77v÷&BÒ6VÆV7FVD†÷7Còç7VFôÖöFRÓÓÒ&öåöFVÖæB"ò÷W&F–öå7VFõ77v÷&B¢"#°¢–b‡6VÆV7FVD†÷7Còç7VFôÖöFRÓÓÒ&öåöFVÖæB"bb7VFõ77v÷&B’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂ7F–öâÂÖW76vS¢-	M½ò-½İİí’7G&--]M-Rıí½Â7VFòM½òİ-í’íı]m‚â„5İRí]İı]"]=ââ"Ò“°¢&WGW&ã°¢Ğ¢–b‡7VFõ77v÷&Bbb6V7W&T7&VFVçF–ÅG&ç7÷'B’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂ7F–öâÂÖW76vS¢-	M½òıí½ò7VFòí-­í-R„5}]]r…EE2½â‡GG¢òó#rãããİ=ı-½ıí]’V'VçGRâ"Ò“°¢&WGW&ã°¢Ğ ¢6öç7B—5&W7öç6RÒ&W7öç6T7F–öç2ç6öÖR‚†—FVÒ’Óâ—FVÒæ–BÓÓÒ7F–öâ“°¢6öç7B7F–öäÖWFÒVF—D7F–öç2æf–æB‚†—FVÒ’Óâ—FVÒæ–BÓÓÒ7F–öâ“°¢6öç7B&WV—&W46öæf—&ÖF–öâÒ&ööÆVâ€¢7F–öäÖWFbb'&WV—&W46öæf—&ÖF–öâ"–â7F–öäÖWFbb7F–öäÖWFç&WV—&W46öæf—&ÖF–öâÓÓÒG'VRÀ¢“°¢6öç7B6öæf—&ÖF–öåFW‡BÒ7F–öâÓÓÒ&Ç–æ—5FV×÷&'”VF—B ¢ò$Ç–æ—2=M]"-]Í]İİâı]]MÒİ-½İİ=â	-	ÂÂ-½ıí½İ]Ò7VFòÂ]=â­-½í2‚½í’í-}]"=M="=M½]İ²â	ıíMí½m-Ãò ¢¢7F–öâÓÓÒ&÷Vå66VF—B ¢ò$÷Vå44ıí-]"-½İİ½’ıíM½Âİ	-	Ââ	--í]İİ½’ıíM½Â„5-]Í]İİâı]]M-òıâ54‚â	İ-í­‚İRÍ]İıí-ó²ıí-]­Íím]"}İı-ÂMâ3Íİ="â	ıíMí½m-Ãò ¢¢7F–öâÓÓÒ&7G&÷fÄVF—B ¢ò$÷Vå44ıí-]"]í"ıâõdÂİ}RÂİ}İ}]İİí’]=â==ııR"*½	-í}İ­\+²â	İ-í­‚]í-İRÍ]İıí-òâ	ıíMí½m-Ãò ¢¢7F–öâÓÓÒ&æWGv÷&µ÷'E66â ¢òæÖ66å66÷RÓÓÒ&gVÆÅ÷F7 ¢ò$æÖıí-]"-RD5İıí-²(	3cSS3R-½İİí=â]í-6öçG&öÂæöFRâ
+İ-âÍím]"}İı-ÂMâ3Íİ="‚í}M"Íİí=â]-]-½Rí]Mİ]İ’âTEİRıí-]ı]-òâ	ıíMí½m-Ãò ¢¢æÖ-½ıí½İ"G¶æÖ66å66÷RÓÓÒ'F÷ó"ò--İM-İ=âıí-]­2"¢-½-=âıí-]­2'ÒD5İıí-í"-½İİí=â]í-6öçG&öÂæöFRâ	ıíMí½m-Ãö ¢¢-	}ı=--Âıí-]­3ò#°¢–b‡&WV—&W46öæf—&ÖF–öâbbv–æF÷ræ6öæf—&Ò†6öæf—&ÖF–öåFW‡B’’°¢&WGW&ã°¢Ğ ¢–b†—5&W7öç6Rbb6†ævU&V6öâçG&–Ò‚’æÆVæwF‚Â’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂ7F–öâÂÖW76vS¢-
+=­m-Rı}İ2}Í]İ]İòİR­íí}RÍ-í½í"â"Ò“°¢&WGW&ã°¢Ğ¢–b†—5&W7öç6Rbb6öæf—&ÖVD†÷7BçG&–Ò‚’ÓÒ6VÆV7FVDÆ–2’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂ7F–öâÂÖW76vS¢-	--]M-R-í}İ½’Æ–2-½İİí=â]í-"ıí½RıíM--]mM]İòâ"Ò“°¢&WGW&ã°¢Ğ ¢6öç7BW‡G&f'2Ğ¢7F–öâÓÓÒ&6Æ÷6U÷'B ¢ò²F&vWE÷÷'C¢F&vWE÷'BÂF&vWE÷&÷Fö6öÃ¢F&vWE&÷Fö6öÂĞ¢¢7F–öâÓÓÒ&&Æö6´— ¢ò²&Æö6µö—¢&Æö6´—Ğ¢¢7F–öâÓÓÒ&æWGv÷&µ÷'E66â ¢ò²æÖ÷66å÷66÷S¢æÖ66å66÷RĞ¢¢·Ó° ¢6WDÆöF–ær†7F–öâ“°¢æ÷F–g’†	-½ıí½İı]-ó¢G¶7F–öäÖWFòæÆ&VÂóò&W7öç6T7F–öç2æf–æB‚†—FVÒ’Óâ—FVÒæ–BÓÓÒ7F–öâ“òæÆ&VÂóò7F–öçÒâ	MímM-]Â]}=½Í--æÂ&–æfò"“°¢6WE'Vå&W7VÇB†çVÆÂ“°¢6WDg&W6…&W÷'D‡&Vb‚""“°¢G'’°¢6öç7B&WVW7D&öG’Ò¥4ôâç7G&–æv–g’‡°¢7F–öâÀ¢&öf–ÆT–BÀ¢Æ–Ö—C¢6VÆV7FVDÆ–2À¢ÖöFRÀ¢&V6öã¢6†ævU&V6öâçG&–Ò‚’À¢6öæf—&ÖVD†÷7C¢—5&W7öç6Rò6öæf—&ÖVD†÷7BçG&–Ò‚’¢VæFVf–æVBÀ¢6öæf—&ÔVF—C¢&WV—&W46öæf—&ÖF–öâÀ¢W‡G&f'2À¢âââ‡7VFõ77v÷&Bò²7VFõ77v÷&BÒ¢·Ò’À¢Ò“°¢–b‡7VFõ77v÷&B’6WD÷W&F–öå7VFõ77v÷&B‚""“°¢6öç7B&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆR÷'Vâ"Â°¢ÖWF†öC¢%õ5B"À¢†VFW'3¢²$6öçFVçBÕG—R#¢&Æ–6F–öâö§6öâ"ÒÀ¢&öG“¢&WVW7D&öG’À¢Ò“°¢6öç7B–ÆöBÒv—B&VD•&W7öç6R‡&W7öç6R“°¢–b†7F–öâÓÒ'6¶vT–çfVçF÷'’"ÇÂ–ÆöBæö²’6WE'Vå&W7VÇB‡–ÆöB“°¢v—BÆöD†÷7G2‚“°¢v—BÆöE&VÖVF–F–öç2‚“°¢–b‡–ÆöBæö²bb7F–öâÓÓÒ'6¶vT–çfVçF÷'’"’°¢6öç7B7fU&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆR÷gVÆæW&&–Æ—F–W2ö6†V6²"Â°¢ÖWF†öC¢%õ5B"À¢†VFW'3¢²$6öçFVçBÕG—R#¢&Æ–6F–öâö§6öâ"ÒÀ¢&öG“¢¥4ôâç7G&–æv–g’‡²†÷7DÆ–3¢6VÆV7FVDÆ–2Â&W÷'D–C¢–ÆöBç&W÷'D–BÒ’À¢Ò“°¢6öç7B7fU–ÆöBÒv—B&VD•&W7öç6R†7fU&W7öç6R“°¢ÆWBFWVæFVæ7•G&6´ÖW76vRÒ"#°¢ÆWBFWVæFVæ7•G&6´f–ÆVBÒfÇ6S°¢òòFWVæFVæ7’ÕG&6²—2â÷F–öæÂÂ–æFWVæFVçB–çFVw&F–öââFòæ÷BF@¢òò—G26öæf–wW&F–öâÖW76vRFòf–ÆVB÷"'F–ÂG&—g’'Vã¢—BÖ¶W0¢òòF†R7GVÂæW‡B7FW†ÆöBF†R6†&VB5dRFF&6R’†&BFò6VRà¢–b†7fU–ÆöBæö²bb7fU–ÆöBç'F–Âbb7fU–ÆöBç&W÷'D–Bbb7fU–ÆöBç&W÷'CòçgVÆæW&&–Æ—G•66ãòç6&öÔf–ÆR’°¢G'’°¢6öç7BFWVæFVæ7•G&6µ&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆRöFWVæFVæ7’×G&6²÷7–æ2"Â°¢ÖWF†öC¢%õ5B"À¢†VFW'3¢²$6öçFVçBÕG—R#¢&Æ–6F–öâö§6öâ"ÒÀ¢&öG“¢¥4ôâç7G&–æv–g’‡²†÷7DÆ–3¢6VÆV7FVDÆ–2ÂgVÆæW&&–Æ—G•&W÷'D–C¢7fU–ÆöBç&W÷'D–BÒ’À¢Ò“°¢6öç7BFWVæFVæ7•G&6µ–ÆöBÒv—B&VD•&W7öç6R†FWVæFVæ7•G&6µ&W7öç6R“°¢FWVæFVæ7•G&6´f–ÆVBÒFWVæFVæ7•G&6µ&W7öç6Ræö²ÇÂFWVæFVæ7•G&6µ–ÆöBæö³°¢–b†FWVæFVæ7•G&6µ–ÆöBæ6öæf–wW&VBÓÓÒG'VRbbFWVæFVæ7•G&6µ–ÆöBæÖW76vR’°¢FWVæFVæ7•G&6´ÖW76vRÒG¶FWVæFVæ7•G&6µ–ÆöBæÖW76vWÖ°¢Ğ¢Ò6F6‚°¢FWVæFVæ7•G&6´f–ÆVBÒG'VS°¢FWVæFVæ7•G&6´ÖW76vRÒ"	ı]]M}"FWVæFVæ7’ÕG&6²İRıíM--]mM]İ¢İ]"í--]-í"ı½-MíÍ²â#°¢Ğ¢Ğ¢6WE'Vå&W7VÇB‡°¢ö³¢7fU–ÆöBæö²À¢'F–Ã¢&ööÆVâ†7fU–ÆöBç'F–ÂÇÂFWVæFVæ7•G&6´f–ÆVB’À¢7F–öâÀ¢ÖW76vS¢G¶7fU–ÆöBæÖW76vRóò†7fU–ÆöBæö²ò$5dRİ=M"ı­]-í"-½ıí½İ]Òâ"¢-	İR=M½íÂ-½ıí½İ-Â5dRİ=M"ı­]-í"â"—ÒG¶FWVæFVæ7•G&6´ÖW76vWÖÀ¢7FF÷WC¢–ÆöBç7FF÷WBÀ¢7FFW'#¢–ÆöBç7FFW'"À¢Ò“°¢v—BÆöD†÷7G2‚“°¢–b†7fU–ÆöBæö²bb7fU–ÆöBç&W÷'D–B’°¢6WDg&W6…&W÷'D‡&Vb†÷&W÷'G2övVçFÆW72òG¶Væ6öFUU$”6ö×öæVçB†7fU–ÆöBç&W÷'D–B—Ö“°¢Ğ¢Ğ¢–b‡–ÆöBæö²bb7F–öâÓÒ'6¶vT–çfVçF÷'’"bb–ÆöBç&W÷'D–B’°¢6WDg&W6…&W÷'D‡&Vb†÷&W÷'G2övVçFÆW72òG¶Væ6öFUU$”6ö×öæVçB‡–ÆöBç&W÷'D–B—Ö“°¢Ğ¢–b‡–ÆöBæö²bb–ÆöBç÷7DVF—E&W÷'D–B’°¢6WDg&W6…&W÷'D‡&Vb†÷&W÷'G2övVçFÆW72òG¶Væ6öFUU$”6ö×öæVçB‡–ÆöBç÷7DVF—E&W÷'D–B—Ö“°¢Ğ¢Ò6F6‚†W'&÷"’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂ7F–öâÂÖW76vS¢W'&÷$ÖW76vR†W'&÷"Â-	í--]"İ}ı=¢İRıí½=}]Òâ	ıí-]Í-Rm=İ²M]--’‚í-}-²ı]]Bıí--íİ½Â}ı=­íÂâ"’Ò“°¢Òf–æÆÇ’°¢6WDÆöF–ær‚""“°¢Ğ¢Ğ ¢7–æ2gVæ7F–öâ–×÷'Dw&VVæ&öæU&W÷'B‚’°¢–b‚6VÆV7FVDÆ–2ÇÂw&VVæ&öæTf–ÆR’°¢6WDw&VVæ&öæTÖW76vR‚-	-½]-R]í"‚„ÔÂİM²í-}-w&VVæ&öæRâ"“°¢æ÷F–g’‚-	-½]-R]í"‚„ÔÂİM²í-}-w&VVæ&öæRâ"Â&W'&÷""“°¢&WGW&ã°¢Ğ¢6WDÆöF–ær‚&w&VVæ&öæT–×÷'B"“°¢6WDw&VVæ&öæTÖW76vR‚""“°¢6WDg&W6…&W÷'D‡&Vb‚""“°¢G'’°¢6öç7Bf÷&ÒÒæWrf÷&ÔFF‚“°¢f÷&Òç6WB‚&†÷7DÆ–2"Â6VÆV7FVDÆ–2“°¢f÷&Òç6WB‚'&W÷'B"Âw&VVæ&öæTf–ÆR“°¢6öç7B&W7öç6RÒv—BfWF6‚‚"ö’öç6–&ÆRöw&VVæ&öæRö–×÷'B"Â²ÖWF†öC¢%õ5B"Â&öG“¢f÷&ÒÒ“°¢6öç7B–ÆöBÒv—B&VD•&W7öç6R‡&W7öç6R“°¢6WDw&VVæ&öæTÖW76vR‡–ÆöBæÖW76vRóò-	İR=M½íÂÍıí-í--Âí-}"w&VVæ&öæRâ"“°¢6WE'Vå&W7VÇB‡²ö³¢–ÆöBæö²Â'F–Ã¢–ÆöBç'F–ÂÂ7F–öã¢&w&VVæ&öæT–×÷'B"ÂÖW76vS¢–ÆöBæÖW76vRÒ“°¢–b‡–ÆöBæö²bb–ÆöBç&W÷'D–B’°¢6WDg&W6…&W÷'D‡&Vb†÷&W÷'G2övVçFÆW72òG¶Væ6öFUU$”6ö×öæVçB‡–ÆöBç&W÷'D–B—Ö“°¢6WDw&VVæ&öæTf–ÆR†çVÆÂ“°¢v—BÆöD†÷7G2‚“°¢Ğ¢Ò6F6‚†W'&÷"’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂÖW76vS¢W'&÷$ÖW76vR†W'&÷"Â-	í--]"İRıí½=}]Òâ	ıí-]Í-RMİİ½R‚m=İ²M]--’ı]]Bıí--íİí’ıíı½-­í’â"’Ò“°¢Òf–æÆÇ’°¢6WDÆöF–ær‚""“°¢Ğ¢Ğ ¢7–æ2gVæ7F–öâ&öÆÆ&6µG&ç67F–öâ‡G&ç67F–öã¢&VÖVF–F–öåG&ç67F–öâ’°¢6öç7B6öæf—&ÖVD†÷7BÒv–æF÷rç&ö×B†	--]M-RÆ–2G·G&ç67F–öâæ†÷7DÆ–7ÒM½òí-­-¦“°¢–b†6öæf—&ÖVD†÷7CòçG&–Ò‚’ÓÒG&ç67F–öâæ†÷7DÆ–2’°¢&WGW&ã°¢Ğ¢6öç7BF&vWBÒ†÷7G3òæ†÷7G3òæf–æB‚††÷7B’Óâ†÷7BæÆ–2ÓÓÒG&ç67F–öâæ†÷7DÆ–2“°¢6öç7B7VFõ77v÷&BÒF&vWCòç7VFôÖöFRÓÓÒ&öåöFVÖæB ¢òv–æF÷rç&ö×B†	--]M-Rıí½Â7VFòM½òG·G&ç67F–öâæ†÷7DÆ–7Ó²íÒ=M]"ıí½Í}í-Ò-í½Í­âM½òí-­-‚İRí]İ-ó¦’óò" ¢¢"#°¢–b‡F&vWCòç7VFôÖöFRÓÓÒ&öåöFVÖæB"bb7VFõ77v÷&B’&WGW&ã°¢–b‡7VFõ77v÷&Bbb6V7W&T7&VFVçF–ÅG&ç7÷'B’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂÖW76vS¢-	M½òıí½ò7VFòí-­í-R„5}]]r…EE2½â‡GG¢òó#rãããİ=ı-½ıí]’V'VçGRâ"Ò“°¢&WGW&ã°¢Ğ¢6WDÆöF–ær†&öÆÆ&6²ÒG·G&ç67F–öâæ–GÖ“°¢6WE'Vå&W7VÇB†çVÆÂ“°¢G'’°¢6öç7B&WVW7D&öG’Ò¥4ôâç7G&–æv–g’‡²6öæf—&ÖVD†÷7C¢6öæf—&ÖVD†÷7BçG&–Ò‚’Ââââ‡7VFõ77v÷&Bò²7VFõ77v÷&BÒ¢·Ò’Ò“°¢6öç7B&W7öç6RÒv—BfWF6‚†ö’öç6–&ÆR÷&VÖVF–F–öç2òG¶Væ6öFUU$”6ö×öæVçB‡G&ç67F–öâæ–B—Ò÷&öÆÆ&6¶Â°¢ÖWF†öC¢%õ5B"À¢†VFW'3¢²$6öçFVçBÕG—R#¢&Æ–6F–öâö§6öâ"ÒÀ¢&öG“¢&WVW7D&öG’À¢Ò“°¢6WE'Vå&W7VÇB†v—B&VD•&W7öç6R‡&W7öç6R’“°¢v—BÆöE&VÖVF–F–öç2‚“°¢v—BÆöD†÷7G2‚“°¢Ò6F6‚†W'&÷"’°¢6WE'Vå&W7VÇB‡²ö³¢fÇ6RÂÖW76vS¢W'&÷$ÖW76vR†W'&÷"Â-	í--]"İRıí½=}]Òâ	ıí-]Í-RMİİ½R‚m=İ²M]--’ı]]Bıí--íİí’ıíı½-­í’â"’Ò“°¢Òf–æÆÇ’°¢6WDÆöF–ær‚""“°¢Ğ¢Ğ ¢gVæ7F–öâ7F'DæWt†÷7B†FG&W72Ò""ÂÆ–2Ò""’°¢6WDVF—F–æt†÷7B‚""“°¢–çfÆ–FFT7&VFVçF–Â‚“°¢6WDÖçVÄÆ–2†Æ–2“°¢6WDÖçVÄFG&W72†FG&W72“°¢6WDÖçVÅW6W"‚""“°¢6WDÖçVÅ÷'B‚##""“°¢6WDÖçVÄw&÷W‚&Æ–çW…ö†÷7G2"“°¢6WE&VfÆ–v‡B†çVÆÂ“°¢6WE&VfÆ–v‡Df÷"‚""“°¢–b†FG&W72’æ÷F–g’†	M]G¶FG&W77ÒıíM--½]Òâ	--]M-Rıí½Í}í--]½ò‚ıí½Â7G&İmRæÂ&–æfò"“°¢Ğ ¢gVæ7F–öâf–ÆÄ†÷7Df÷&Ò††÷7C¢ÖævVD†÷7B’°¢–b†ÆöF–ærÇÂ66W74ÆöF–ær’&WGW&ã°¢6WDVF—F–æt†÷7B††÷7BæÆ–2“°¢6WDÖçVÄ7&VFVçF–Ä–B††÷7Bæ7&VFVçF–Ä–BóòçVÆÂ“°¢6WD7&VFVçF–Å&W7VÇB††÷7Bæ7&VFVçF–Ä–Bbb†÷7Bæ7&VFVçF–Å&VG’ò²ö³¢G'VRÂ7&VFVçF–Ä–C¢†÷7Bæ7&VFVçF–Ä–BÂV&Æ–4¶W“¢†÷7Bæ7&VFVçF–ÅV&Æ–4¶W’Âf–ævW'&–çC¢†÷7Bæ7&VFVçF–Äf–ævW'&–çBÂ7VFôÖöFS¢†÷7Bç7VFôÖöFRÒ¢çVÆÂ“°¢6WE&VfÆ–v‡B†çVÆÂ“²6WE&VfÆ–v‡Df÷"‚""“°¢6WE6VÆV7FVDÆ–2††÷7BæÆ–2“°¢6WDÖçVÄÆ–2††÷7BæÆ–2“°¢6WDÖçVÄFG&W72††÷7BæFG&W72“°¢6WDÖçVÅW6W"††÷7BçW6W"óò""“°¢6WDÖçVÅ÷'B…7G&–ær††÷7Bç÷'Bóò#"’“°¢6WDÖçVÄw&÷W††÷7Bæw&÷W5³Òóò&Æ–çW…ö†÷7G2"“°¢–b†f÷&Õ&Vbæ7W'&VçB’°¢f÷&Õ&Vbæ7W'&VçBç67&öÆÄ–çFõf–Wr‡²&Æö6³¢'7F'B"Ò“°¢Ğ¢æ÷F–g’†	í-­½-²İ-í­‚]í-G¶†÷7BæÆ–7ÒæÂ&–æfò"“°¢Ğ ¢6öç7N8ÖÚ$z{-®éÜj×      </Button>
       </header>
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Ğ¡Ğ²Ğ¾Ğ´ĞºĞ°">
@@ -1038,7 +239,7 @@ export function AnsibleControlClient() {
           <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
             <summary className="cursor-pointer text-sm font-semibold text-slate-200">Ğ”Ğ¾Ğ¿Ğ¾Ğ»Ğ½Ğ¸Ñ‚ĞµĞ»ÑŒĞ½Ñ‹Ğµ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞºĞ¸</summary>
             <p className="mt-1 text-xs leading-5 text-slate-400">ĞÑĞ½Ğ¾Ğ²Ğ½Ğ¾Ğ¹ Ğ°ÑƒĞ´Ğ¸Ñ‚ Ğ½Ğµ Ğ·Ğ°Ğ¿ÑƒÑĞºĞ°ĞµÑ‚ ÑÑ‚Ğ¸ Ğ¸Ğ½ÑÑ‚Ñ€ÑƒĞ¼ĞµĞ½Ñ‚Ñ‹. Ğ’Ñ‹Ğ±ĞµÑ€Ğ¸Ñ‚Ğµ Ñ‚Ğ¾Ğ»ÑŒĞºĞ¾ Ğ¾Ğ´Ğ½Ñƒ Ğ½ÑƒĞ¶Ğ½ÑƒÑ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞºÑƒ.</p>
-            <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,430px)_1fr_auto] lg:items-end">
+            <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,360px)_minmax(0,250px)_minmax(0,1fr)_auto] xl:items-end">
               <label className="block min-w-0">
                 <span className="text-xs font-semibold uppercase text-slate-500">Ğ˜Ğ½ÑÑ‚Ñ€ÑƒĞ¼ĞµĞ½Ñ‚</span>
                 <select
@@ -1056,7 +257,20 @@ export function AnsibleControlClient() {
                   ))}
                 </select>
               </label>
-              <p className="text-xs leading-5 text-slate-400">{selectedAdditionalAction.description}</p>
+              {additionalAuditActionId === "networkPortScan" ? (
+                <label className="block min-w-0">
+                  <span className="text-xs font-semibold uppercase text-slate-500">Ğ“Ğ»ÑƒĞ±Ğ¸Ğ½Ğ° Nmap</span>
+                  <select
+                    value={nmapScanScope}
+                    onChange={(event) => setNmapScanScope(event.target.value as NmapScanScope)}
+                    disabled={Boolean(loading) || !selectedHost}
+                    className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {nmapScanScopeOptions.map((scope) => <option key={scope.id} value={scope.id}>{scope.label}</option>)}
+                  </select>
+                </label>
+              ) : <div className="hidden xl:block" aria-hidden="true" />}
+              <p className="text-xs leading-5 text-slate-400">{additionalAuditActionId === "networkPortScan" ? selectedNmapScanScope.description : selectedAdditionalAction.description}</p>
               <Button variant="secondary" onClick={() => runAction(selectedAdditionalAction.id)} disabled={Boolean(loading) || !selectedHost}>
                 <SelectedAdditionalActionIcon size={16} className={loading === selectedAdditionalAction.id ? "animate-spin" : ""} aria-hidden="true" />
                 Ğ—Ğ°Ğ¿ÑƒÑÑ‚Ğ¸Ñ‚ÑŒ Ğ¿Ñ€Ğ¾Ğ²ĞµÑ€ĞºÑƒ

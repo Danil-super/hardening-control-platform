@@ -24,6 +24,8 @@
           - /usr/bin/python3
           - "{{ playbook_dir }}/../scripts/hcp-controller-scan.py"
           - nmap
+          - --scan-scope
+          - "{{ nmap_scan_scope | default('top_100') }}"
           - --host
           - "{{ ansible_host | default(inventory_hostname) }}"
           - --inventory-host

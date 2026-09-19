@@ -45,7 +45,7 @@ const builtinTitles: Record<string, string> = {
   packageInventory: "Инвентарь пакетов",
   collectEvents: "Сбор событий",
   sshCryptoAudit: "SSH crypto-аудит (control node)",
-  networkPortScan: "Nmap: top-100 TCP-портов (control node)",
+  networkPortScan: "Nmap: TCP-порты с выбранной глубиной (control node)",
   lynisTemporaryAudit: "Lynis: временный аудит без установки",
   openScapAudit: "OpenSCAP: проверка выбранного профиля конфигурации",
   astraOvalAudit: "Astra: CVE по выбранной OVAL-базе",

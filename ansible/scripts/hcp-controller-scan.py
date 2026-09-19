@@ -105,7 +105,7 @@ def base_report(args: argparse.Namespace, mode: str, source: str, findings: list
     }
 
 
-def unavailable(args: argparse.Namespace, mode: str, source: str, tool: str) -> dict[str, Any]:
+def unavailable(args: argparse.Namespace, mode: str, source: str, tool: str, **extra: Any) -> dict[str, Any]:
     return base_report(
         args,
         mode,
@@ -120,6 +120,7 @@ def unavailable(args: argparse.Namespace, mode: str, source: str, tool: str) -> 
             recommendation=f"Установите {tool} только на control node и повторите запуск.",
         )],
         available=False,
+        **extra,
     )
 
 
@@ -302,15 +303,51 @@ def port_risk(port: int) -> str:
     return "info"
 
 
+NMAP_SCAN_SCOPES: dict[str, dict[str, Any]] = {
+    "top_100": {
+        "arguments": ["--top-ports", "100"],
+        "label": "Быстрая проверка: 100 наиболее распространённых TCP-портов",
+        "scope": "100 наиболее распространённых TCP-портов; облегчённое определение сервисов; UDP не проверялся",
+        "portCoverage": "top_100_tcp",
+        "coverageComplete": False,
+        "timeout": 180,
+        "cleanTitle": "В 100 наиболее распространённых TCP-портах открытые сервисы не обнаружены",
+    },
+    "top_1000": {
+        "arguments": ["--top-ports", "1000"],
+        "label": "Стандартная проверка: 1000 наиболее распространённых TCP-портов",
+        "scope": "1000 наиболее распространённых TCP-портов; облегчённое определение сервисов; UDP не проверялся",
+        "portCoverage": "top_1000_tcp",
+        "coverageComplete": False,
+        "timeout": 600,
+        "cleanTitle": "В 1000 наиболее распространённых TCP-портах открытые сервисы не обнаружены",
+    },
+    "full_tcp": {
+        "arguments": ["-p-"],
+        "label": "Полная TCP-проверка: порты 1–65535",
+        "scope": "Все TCP-порты 1–65535; облегчённое определение сервисов на открытых портах; UDP не проверялся",
+        "portCoverage": "all_tcp_1_65535",
+        "coverageComplete": True,
+        "timeout": 1800,
+        "cleanTitle": "Во всём диапазоне TCP-портов 1–65535 открытые сервисы не обнаружены",
+    },
+}
+
+
 def nmap(args: argparse.Namespace) -> dict[str, Any]:
+    scan_scope = getattr(args, "scan_scope", "top_100")
+    scope = NMAP_SCAN_SCOPES.get(scan_scope)
+    if scope is None:
+        raise ValueError("Недопустимая глубина Nmap-сканирования.")
     binary = os.environ.get("HCP_NMAP_BIN", "nmap")
     if not shutil.which(binary):
-        return unavailable(args, "nmap", "nmap", "nmap")
+        return unavailable(args, "nmap", "nmap", "nmap", scanScope=scan_scope, scope=scope["scope"],
+                           portCoverage=scope["portCoverage"], coverageComplete=scope["coverageComplete"])
 
-    command = [binary, "-Pn", "-n", "-sT", "-sV", "--version-light", "--top-ports", "100", "-oX", "-", args.host]
+    command = [binary, "-Pn", "-n", "-sT", "-sV", "--version-light", *scope["arguments"], "-oX", "-", args.host]
     if ":" in args.host:
         command.insert(1, "-6")
-    code, stdout, stderr = run(command, 180)
+    code, stdout, stderr = run(command, scope["timeout"])
     try:
         root = element_tree.fromstring(stdout)
     except element_tree.ParseError:
@@ -332,6 +369,11 @@ def nmap(args: argparse.Namespace) -> dict[str, Any]:
             partial=True,
             target=args.host,
             exitCode=code,
+            scanScope=scan_scope,
+            scope=scope["scope"],
+            portCoverage=scope["portCoverage"],
+            coverageComplete=scope["coverageComplete"],
+            timeoutSeconds=scope["timeout"],
         )
 
     findings: list[dict[str, Any]] = []
@@ -382,19 +424,26 @@ def nmap(args: argparse.Namespace) -> dict[str, Any]:
             partial = True
         if not findings and not partial:
             findings.append(finding(
-                identifier="nmap_no_open_top_ports",
-                title="В top-100 TCP-портах открытые сервисы не обнаружены",
+                identifier=f"nmap_no_open_{scan_scope}",
+                title=scope["cleanTitle"],
                 risk="info",
                 status="passed",
                 source="nmap",
-                description="Это не заменяет полный инвентарь сервисов и проверку firewall на самом сервере.",
-                recommendation="Используйте SSH-аудит для проверки локальных сокетов и правил firewall.",
+                description=("Проверка выполнена с control node. " +
+                             ("Диапазон TCP проверен полностью; UDP и локальные сокеты в эту проверку не входят."
+                              if scope["coverageComplete"] else
+                              "Это ограниченная выборка TCP-портов, а не полный инвентарь сервисов.")),
+                recommendation=("При необходимости выполните отдельную проверку UDP и сверку с правилами firewall на сервере."
+                                if scope["coverageComplete"] else
+                                "Для полного TCP-охвата выберите «Полная TCP-проверка», а для локальных сокетов и правил firewall используйте SSH-аудит."),
             ))
 
     if partial:
         findings.append(incomplete_finding("nmap", stderr or f"exit={code}; finished={finished.attrib if finished is not None else 'missing'}"))
     return base_report(args, "nmap", "nmap", findings, available=True, partial=partial, target=args.host, exitCode=code,
-                       scope="top-100 TCP ports; service discovery; no vulnerability scripts", version=root.get("version"))
+                       scanScope=scan_scope, scanScopeLabel=scope["label"], scope=scope["scope"],
+                       portCoverage=scope["portCoverage"], coverageComplete=scope["coverageComplete"],
+                       timeoutSeconds=scope["timeout"], version=root.get("version"))
 
 
 def values_from_lynis_report(content: str, key: str) -> list[str]:
@@ -826,6 +875,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host")
     parser.add_argument("--expected-host", action="append", default=[])
     parser.add_argument("--port", type=int, default=22)
+    parser.add_argument("--scan-scope", choices=tuple(NMAP_SCAN_SCOPES), default="top_100")
     parser.add_argument("--inventory-host", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--output", required=True)
