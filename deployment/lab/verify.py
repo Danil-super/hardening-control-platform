@@ -181,6 +181,9 @@ def main():
         # prerequisite, not a successful partial CVE report.
         if args.online:
             request("/api/settings/vulnerability-data", {"mode": "online"}, method="PATCH")
+            refreshed = request("/api/settings/vulnerability-data", method="POST")
+            if refreshed.get("freshness", {}).get("status") != "fresh":
+                raise AssertionError(f"Trivy database refresh did not confirm freshness: {refreshed.get('freshness')}")
         with independent_check('Package inventory and Trivy'):
             packages = report(run("packageInventory"), "packages")
             if not packages["raw"].get("packages") or packages["raw"].get("packageInventory", {}).get("error"):
