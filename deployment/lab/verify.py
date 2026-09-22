@@ -174,7 +174,13 @@ def main():
             record("Real temporary Lynis run", {"reportId": lynis["id"]})
         original_mode = request("/api/settings/vulnerability-data")["database"]["mode"]
         protocol["databaseModeBefore"] = original_mode
-        request("/api/settings/vulnerability-data", {"mode": "offline"}, method="PATCH")
+        # The standard acceptance path models the current deployment: the
+        # control node has Internet access.  Download once in online mode, then
+        # prove that the same cached database works with network access off.
+        # A genuinely offline lab may have no cache; that is a documented
+        # prerequisite, not a successful partial CVE report.
+        if args.online:
+            request("/api/settings/vulnerability-data", {"mode": "online"}, method="PATCH")
         with independent_check('Package inventory and Trivy'):
             packages = report(run("packageInventory"), "packages")
             if not packages["raw"].get("packages") or packages["raw"].get("packageInventory", {}).get("error"):
@@ -187,16 +193,13 @@ def main():
                     raise AssertionError("CVE report invents a security percentage")
                 return payload, item
 
-            initial, initial_report = cve_scan()
-            freshness = initial_report["raw"]["vulnerabilityScan"]["databaseFreshness"]
-            if freshness["status"] != "fresh" and not initial_report["partial"]:
-                raise AssertionError("Missing/stale/unknown DB was treated as a complete scan")
-            record("Offline CVE result preserves database availability", {"reportId": initial_report["id"], "database": freshness["status"]})
             if args.online:
-                request("/api/settings/vulnerability-data", {"mode": "online"}, method="PATCH")
                 online, online_report = cve_scan()
                 if online.get("partial") or online_report["partial"]:
                     raise AssertionError(f"Live Trivy online scan is incomplete: {online.get('message')}")
+                freshness = online_report["raw"]["vulnerabilityScan"]["databaseFreshness"]
+                if freshness["status"] != "fresh":
+                    raise AssertionError(f"Live Trivy scan did not record a fresh database: {freshness}")
                 request("/api/settings/vulnerability-data", {"mode": "offline"}, method="PATCH")
                 offline, offline_report = cve_scan()
                 if offline.get("partial") or offline_report["partial"]:
@@ -206,6 +209,11 @@ def main():
                 if findings(online_report) != findings(offline_report):
                     raise AssertionError("Online/offline findings differ for the same inventory and cached DB")
                 record("Real Trivy DB: online and cached offline results match", {"onlineReport": online_report["id"], "offlineReport": offline_report["id"]})
+            else:
+                unavailable = request("/api/ansible/vulnerabilities/check", {"hostAlias": args.host, "reportId": packages["id"]}, expected=400)
+                if "нет загруженной базы Trivy" not in unavailable.get("message", ""):
+                    raise AssertionError(f"Offline CVE precondition returned an unexpected error: {unavailable.get('message')}")
+                record("Offline CVE requires a preloaded Trivy database", {"reportId": packages["id"]})
         with independent_check('Unprepared OpenSCAP handling'):
             unprepared = run("openScapAudit")
             unprepared_report = report(unprepared, "openscap")
