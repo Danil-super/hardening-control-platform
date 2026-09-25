@@ -8,7 +8,7 @@ import type { AstraOvalConfig } from "@/lib/astra-oval-config";
 
 type Policy = { groupName: string; config: AstraOvalConfig; updatedAt: string };
 type Payload = { ok?: boolean; message?: string; inventoryGroups?: string[]; policies?: Policy[] };
-const initial: AstraOvalConfig = { mode: "local", path: "/usr/share/oval/db.xml", url: "", sha256: "", releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "", sourceReference: "", sourceReviewedAt: null };
+const initial: AstraOvalConfig = { mode: "online", path: "/usr/share/oval/db.xml", url: "", sha256: "", releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "", sourceReference: "", sourceReviewedAt: null };
 const inputClass = "mt-1 w-full min-w-0 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-300";
 
 export function AstraOvalClient() {
@@ -34,8 +34,14 @@ export function AstraOvalClient() {
   async function saveOrRemove(method: "POST" | "DELETE", groupName = group) {
     setBusy(true); setMessage("");
     try {
+      const savedConfig = {
+        ...config,
+        architectures: architectures.split(/[\s,]+/).filter(Boolean),
+        sourceName: config.sourceName.trim() || (config.mode === "online" ? "Указанный HTTPS-источник OVAL" : "Локальная доверенная копия OVAL"),
+        sourceReference: config.sourceReference.trim() || (config.mode === "online" ? config.url.trim() : config.path.trim()),
+      };
       const response = await fetch("/api/settings/astra-oval", { method, headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ groupName, config: { ...config, architectures: architectures.split(/[\s,]+/).filter(Boolean) } }) });
+        body: JSON.stringify({ groupName, config: savedConfig }) });
       const payload = await readApiResponse(response) as Payload;
       if (!response.ok || !payload.ok) throw new Error(payload.message ?? "Не удалось сохранить источник.");
       setData(payload); setMessage(payload.message ?? (method === "DELETE" ? "Источник удалён." : "Источник сохранён."), "success");
@@ -44,8 +50,8 @@ export function AstraOvalClient() {
   }
 
   return <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5" aria-labelledby="astra-oval-title">
-    <h2 id="astra-oval-title" className="text-xl font-semibold text-white">CVE пакетов Astra</h2>
-    <p className="mt-2 text-sm leading-6 text-slate-400">OpenSCAP проверяет установленные пакеты по определениям выбранной OVAL-базы Astra. Один источник назначается группе хостов одного выпуска и архитектуры, а не каждому хосту. Для другого выпуска Astra создайте отдельную группу и укажите соответствующий XML.</p>
+    <h2 id="astra-oval-title" className="text-xl font-semibold text-white">CVE Astra по данным производителя <span className="ml-1 text-sm font-medium text-slate-400">· необязательно</span></h2>
+    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Обычный пакетный аудит и общая база Trivy не требуют этой настройки. Добавьте OVAL-источник один раз для группы хостов одного выпуска Astra, если нужно подтверждённое CVE-покрытие от производителя. При сетевом варианте XML скачивает только control node; Astra не нужен интернет.</p>
     <form className="mt-5 grid gap-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); void saveOrRemove("POST"); }}>
       <label className="min-w-0 text-sm text-slate-300">Группа хостов
         <select className={inputClass} value={group} onChange={(event) => setGroup(event.target.value)} required>
@@ -54,7 +60,7 @@ export function AstraOvalClient() {
       </label>
       <label className="text-sm text-slate-300">Источник базы
         <select className={inputClass} value={config.mode} onChange={(event) => update({ mode: event.target.value as AstraOvalConfig["mode"] })}>
-          <option value="local">Локальный XML на проверяемом хосте</option><option value="online">Интернет или внутреннее HTTPS-зеркало</option>
+          <option value="online">HTTPS-источник или внутреннее зеркало</option><option value="local">Локальный XML на проверяемом хосте</option>
         </select>
       </label>
       <label className="min-w-0 text-sm text-slate-300 md:col-span-2">{config.mode === "local" ? "Полный путь к XML на хосте" : "HTTPS-адрес XML-базы"}
@@ -65,25 +71,29 @@ export function AstraOvalClient() {
         <input className={inputClass} value={config.sha256} onChange={(event) => update({ sha256: event.target.value })} required pattern="[a-fA-F0-9]{64}" placeholder="64 шестнадцатеричных символа" />
         <span className="mt-1 block text-xs leading-5 text-slate-400">Обязателен и для локального XML: HCP сравнит его с выбранной доверенной копией. Совпадение подтверждает байты файла, но не подпись производителя.</span>
       </label>
-      <label className="text-sm text-slate-300">Название доверенного источника
-        <input className={inputClass} value={config.sourceName} onChange={(event) => update({ sourceName: event.target.value })} required placeholder="Например, бюллетени производителя Astra" />
-      </label>
-      <label className="text-sm text-slate-300">Ссылка или ID источника
-        <input className={inputClass} value={config.sourceReference} onChange={(event) => update({ sourceReference: event.target.value })} required placeholder="URL, номер бюллетеня или ID внутреннего реестра" />
-        <span className="mt-1 block text-xs leading-5 text-slate-400">Эти сведения и время сохранения попадут в отчёт как основание оценки. HCP не выдаёт их за проверку подписи производителя.</span>
-      </label>
       <label className="text-sm text-slate-300">Область применения: выпуск Astra
         <input className={inputClass} value={config.releasePattern} onChange={(event) => update({ releasePattern: event.target.value })} required placeholder="Например, 1.7.*" />
         <span className="mt-1 block text-xs leading-5 text-slate-400">Точный выпуск, ветка с .* или *. Это ваше ограничение; условия внутри OVAL также проверяет сканер. * не подтверждает охват всех выпусков.</span>
       </label>
-      <label className="text-sm text-slate-300">Максимальный возраст базы, дней
-        <input className={inputClass} type="number" min={1} max={3650} value={config.maxAgeDays} onChange={(event) => update({ maxAgeDays: Number(event.target.value) })} required />
-        <span className="mt-1 block text-xs leading-5 text-slate-400">Используется дата внутри базы. Неизвестная или устаревшая дата отмечается в отчёте.</span>
-      </label>
-      <label className="text-sm text-slate-300 md:col-span-2">Архитектуры (необязательно)
-        <input className={inputClass} value={architectures} onChange={(event) => setArchitectures(event.target.value)} placeholder="Например, x86_64, aarch64 — значения uname -m" />
-      </label>
-      <div className="md:col-span-2"><Button type="submit" disabled={busy || !data.ok}>{busy ? "Обработка…" : "Сохранить источник"}</Button></div>
+      <details className="rounded-md border border-slate-800 bg-slate-900/60 p-3 md:col-span-2">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-200">Дополнительные ограничения и реквизиты источника</summary>
+        <p className="mt-1 text-xs leading-5 text-slate-400">Если оставить реквизиты пустыми, HCP сохранит URL или путь как ссылку на доверенную копию. Укажите их вручную, если нужен номер бюллетеня или запись внутреннего реестра.</p>
+        <div className="mt-3 grid gap-4 md:grid-cols-2">
+          <label className="text-sm text-slate-300">Название доверенного источника
+            <input className={inputClass} value={config.sourceName} onChange={(event) => update({ sourceName: event.target.value })} placeholder="Например, бюллетени производителя Astra" />
+          </label>
+          <label className="text-sm text-slate-300">Ссылка или ID источника
+            <input className={inputClass} value={config.sourceReference} onChange={(event) => update({ sourceReference: event.target.value })} placeholder="URL, номер бюллетеня или ID внутреннего реестра" />
+          </label>
+          <label className="text-sm text-slate-300">Максимальный возраст базы, дней
+            <input className={inputClass} type="number" min={1} max={3650} value={config.maxAgeDays} onChange={(event) => update({ maxAgeDays: Number(event.target.value) })} required />
+          </label>
+          <label className="text-sm text-slate-300">Архитектуры (необязательно)
+            <input className={inputClass} value={architectures} onChange={(event) => setArchitectures(event.target.value)} placeholder="Например, x86_64, aarch64 — значения uname -m" />
+          </label>
+        </div>
+      </details>
+      <div className="md:col-span-2"><Button type="submit" disabled={busy || !data.ok}>{busy ? "Обработка…" : "Сохранить для группы"}</Button></div>
     </form>
     {message ? <p className="mt-3 break-words text-sm leading-6 text-sky-100" role="status">{message}</p> : null}
     <div className="mt-5 space-y-3">

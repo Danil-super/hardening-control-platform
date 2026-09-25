@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -65,6 +65,19 @@ test("Astra inventory preserves release and never becomes complete Debian CVE co
   assert.ok(sbom.metadata.component.properties.some((property) => property.name === "hcp:astra-version" && property.value === "1.7.6.15"));
 });
 
+test("Astra result without Results is incomplete coverage, not an unreadable SBOM", (t) => {
+  const h = harness(t);
+  h.report.packageInventory.osRelease = { ID: "astra", NAME: "Astra Linux", VERSION_ID: "1.7_x86-64" };
+  h.report.packageInventory.astraVersion = "1.7.6.15";
+  const coverage = h.testing.scanCoverage({
+    SchemaVersion: 2,
+    Metadata: { OS: { Family: "astra", Name: "1.7_x86-64" } },
+  }, h.report);
+  assert.equal(coverage.complete, false);
+  assert.match(coverage.reasons.join(" "), /не вернул секцию результатов/);
+  assert.match(coverage.reasons.join(" "), /Astra/);
+});
+
 test("SBOM preserves distro, source version, epoch, arch and OS identity", (t) => {
   const h = harness(t);
   h.report.packages[0].sourceVersion = "2:3.0.2-0ubuntu1";
@@ -126,12 +139,14 @@ test("online package audit consumes the downloaded snapshot without another regi
   assert.ok(!args.includes("--db-repository"));
 });
 
-test("missing shared database directs the operator to Sources without creating a failed report", async (t) => {
+test("online package audit automatically prepares the shared database when it is missing", async (t) => {
   const h = harness(t, "normal", "online");
   rmSync(path.join(h.cache, "db", "trivy.db"));
-  await assert.rejects(h.scan(), /Общая база CVE Trivy ещё не загружена/);
-  assert.equal(existsSync(path.join(h.dir, "sbom")), false);
-  assert.deepEqual(readdirSync(h.reports), ["lab-host-packages-run1.json"]);
+  const result = await h.scan();
+  assert.equal(result.partial, false);
+  assert.equal(existsSync(path.join(h.cache, "db", "trivy.db")), true);
+  assert.equal(h.getTrivyDatabaseFreshness().status, "fresh");
+  assert.equal(existsSync(path.join(h.dir, "sbom", result.report.vulnerabilityScan.sbomFile)), true);
 });
 
 test("database refresh classifies a container DNS failure without exposing command output", async (t) => {

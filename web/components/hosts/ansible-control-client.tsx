@@ -152,7 +152,7 @@ const additionalAuditActions = [
     id: "packageInventory",
     label: "Пакеты и CVE — Trivy",
     group: "CVE и пакеты",
-    description: "Собирает установленное ПО, формирует SBOM и сопоставляет пакеты с базой CVE Trivy.",
+    description: "Собирает установленное ПО, формирует SBOM и сопоставляет пакеты с общей CVE-базой. В сетевом режиме HCP сам подготовит её при необходимости.",
     icon: FileText,
   },
   {

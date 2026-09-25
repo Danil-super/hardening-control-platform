@@ -185,7 +185,7 @@ test("advanced audit integrations preserve source and incomplete-state evidence"
   assert.match(greenbone, /maxXmlBytes/);
 });
 
-test("operator can select an online or local Trivy database in the interface", () => {
+test("operator can use an automatic shared Trivy source or select an offline mode", () => {
   const route = read(path.join("web", "app", "api", "settings", "vulnerability-data", "route.ts"));
   const screen = read(path.join("web", "components", "settings", "vulnerability-data-client.tsx"));
   const shell = read(path.join("web", "components", "layout", "app-shell.tsx"));
@@ -195,8 +195,9 @@ test("operator can select an online or local Trivy database in the interface", (
   assert.match(route, /Greenbone \/ OpenVAS/);
   assert.match(screen, /Локальная база/);
   assert.match(screen, /Сетевая база/);
-  assert.match(screen, /Загрузить общую базу CVE/);
-  assert.match(screen, /одна общая CVE-база пакетов/);
+  assert.match(screen, /Автоматическое обновление/);
+  assert.match(screen, /Обновить сейчас/);
+  assert.match(screen, /одну общую сетевую базу CVE/);
   assert.match(shell, /data-sources/);
   assert.match(proxy, /api\/settings/);
 });
