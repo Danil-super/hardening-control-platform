@@ -23,3 +23,10 @@ test("dynamic and future incomplete checks remain visible instead of becoming a 
   assert.match(checks[0].title, /auditd/);
   assert.match(checks[1].title, /future probe/);
 });
+
+test("a blocked firewall probe tells the operator to use an external audit instead of manual commands", () => {
+  const [check] = describeIncompleteAuditChecks(["firewall_active"]);
+  assert.match(check.description, /nftables/);
+  assert.match(check.nextStep, /Не запускайте команды вручную/);
+  assert.match(check.nextStep, /Внешний аудит/);
+});

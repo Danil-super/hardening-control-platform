@@ -84,6 +84,15 @@ test("missing firewall or port evidence still prevents the backup and modificati
   assert.equal(store.listRemediationTransactions()[0].backupRef, null);
 });
 
+test("a detected nftables backend stays audit-only until its rollback model is implemented", async () => {
+  control.report = verifiedButPartlyLimitedAudit();
+  control.report.partial = false;
+  control.report.raw.scanner.incompleteChecks = [];
+  control.report.raw.findings[0].evidence = "backend=nftables; nftables=policy drop";
+  await assert.rejects(remediation.applyRemediation(request), /обнаружен nftables/);
+  assert.deepEqual(control.runs, ["agentlessAudit"]);
+});
+
 test("a partly failed change retains its backup and can be rolled back", async () => {
   control.failAction = "closePort";
   await assert.rejects(remediation.applyRemediation(request), /remote operation failed/);

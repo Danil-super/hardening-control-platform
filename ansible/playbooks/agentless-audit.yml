@@ -40,6 +40,7 @@
         python3 - <<'PY'
         import json
         import os
+        import re
         import shutil
         import socket
         import subprocess
@@ -98,6 +99,69 @@
                 return True
             incomplete_checks.append(check_id)
             return False
+
+        def command_is_missing(code, error):
+            return code == 127 or (code is None and ("No such file or directory" in error or "[Errno 2]" in error))
+
+        def command_evidence(label, output, error):
+            return "{}={}".format(label, output or error or "no output")
+
+        def ufw_firewall_state():
+            code, output, error = run(["ufw", "status"])
+            if code == 0 and "Status: active" in output:
+                return "active", "ufw", command_evidence("ufw", output, error)
+            if code == 0 and "Status: inactive" in output:
+                return "inactive", "ufw", command_evidence("ufw", output, error)
+            if command_is_missing(code, error):
+                return "missing", "ufw", command_evidence("ufw", output, error)
+            return "unknown", "ufw", command_evidence("ufw", output, error)
+
+        def firewalld_firewall_state():
+            code, output, error = run(["firewall-cmd", "--state"])
+            if code == 0 and output.strip() == "running":
+                return "active", "firewalld", command_evidence("firewalld", output, error)
+            # Different firewalld releases use different non-zero exit codes
+            # for this exact, unambiguous inactive response.
+            if output.strip().lower() == "not running":
+                return "inactive", "firewalld", command_evidence("firewalld", output, error)
+            if command_is_missing(code, error):
+                return "missing", "firewalld", command_evidence("firewalld", output, error)
+            return "unknown", "firewalld", command_evidence("firewalld", output, error)
+
+        def nftables_firewall_state():
+            code, output, error = run(["nft", "list", "ruleset"])
+            if code != 0:
+                return ("missing" if command_is_missing(code, error) else "unknown"), "nftables", command_evidence("nftables", output, error)
+            ruleset = output.lower()
+            if not re.search(r"\bhook\s+input\b", ruleset):
+                return "inactive", "nftables", command_evidence("nftables", output, error)
+            # A hooked input chain with a deny policy or deny rule is a real
+            # kernel-level filter even when UFW cannot read its runtime lock.
+            if re.search(r"\b(policy\s+(drop|reject)|drop|reject)\b", ruleset):
+                return "active", "nftables", command_evidence("nftables", output, error)
+            return "inactive", "nftables", command_evidence("nftables", output, error)
+
+        def iptables_firewall_state():
+            code, output, error = run(["iptables", "-S"])
+            if code != 0:
+                return ("missing" if command_is_missing(code, error) else "unknown"), "iptables", command_evidence("iptables", output, error)
+            lines = [line.strip() for line in output.splitlines() if line.strip()]
+            input_policy_denies = any(line in ("-P INPUT DROP", "-P INPUT REJECT") for line in lines)
+            input_rules = any(line.startswith("-A INPUT ") for line in lines)
+            return ("active" if input_policy_denies or input_rules else "inactive"), "iptables", command_evidence("iptables", output, error)
+
+        def detect_firewall():
+            states = [ufw_firewall_state(), firewalld_firewall_state(), nftables_firewall_state(), iptables_firewall_state()]
+            evidence = "; ".join(item[2] for item in states)
+            active = next((item for item in states if item[0] == "active"), None)
+            if active:
+                return True, True, "backend={}; {}".format(active[1], evidence)
+            # Never turn an inaccessible firewall manager into an "inactive"
+            # result. It is safer to leave the audit partial than to make a
+            # positive claim about a protected host.
+            if any(item[0] == "unknown" for item in states):
+                return False, False, evidence
+            return False, True, evidence
 
         def package_installed(names):
             installed = []
@@ -269,13 +333,7 @@
                 "checked_ports=" + ",".join(str(rule["port"]) for rule in dangerous_ports),
             ))
 
-        ufw_code, ufw_output, _ = run(["ufw", "status"])
-        firewalld_code, firewalld_output, _ = run(["firewall-cmd", "--state"])
-        firewall_active = (
-            (ufw_code == 0 and "Status: active" in ufw_output)
-            or (firewalld_code == 0 and firewalld_output.strip() == "running")
-        )
-        firewall_known = firewall_active or (ufw_code == 0 and "Status: inactive" in ufw_output) or (firewalld_code == 252 and firewalld_output == "not running")
+        firewall_active, firewall_known, firewall_evidence = detect_firewall()
         if not firewall_known:
             incomplete_checks.append("firewall_active")
         findings.append(finding(
@@ -284,9 +342,9 @@
             "Сеть",
             "medium",
             "passed" if firewall_active else "failed" if firewall_known else "manual",
-            "Проверяется активность ufw/firewalld. Собственные правила nftables/iptables и внешние межсетевые экраны требуют отдельной оценки.",
-            "Включите и настройте ufw/firewalld на хосте.",
-            'ufw={}; firewalld={}'.format(ufw_output or 'n/a', firewalld_output or 'n/a'),
+            "HCP автоматически читает состояние UFW, firewalld, nftables и iptables. Команды не изменяют настройки хоста; внешний Nmap проверяет только доступные по сети порты.",
+            "Настройте применяемый в вашей ОС firewall по утверждённой политике и сверяйте доступные порты внешним Nmap.",
+            firewall_evidence,
         ))
 
         for rule in service_rules:

@@ -214,6 +214,12 @@ const auditActions = [...primaryAuditActions, ...additionalAuditActions] as cons
 const additionalAuditGroups = ["CVE и пакеты", "Безопасность и конфигурация", "Диагностика"] as const;
 type AdditionalAuditActionId = (typeof additionalAuditActions)[number]["id"];
 
+// These checks run only on the control node. They use the address and port
+// already stored in inventory, but do not log in to Astra and do not execute
+// anything on it.
+const controlNodeOnlyAuditActionIds = new Set<string>(["sshCryptoAudit", "networkPortScan"]);
+const controlNodeOnlyAuditActions = additionalAuditActions.filter((action) => controlNodeOnlyAuditActionIds.has(action.id));
+
 const nmapScanScopeOptions = [
   {
     id: "top_100",
@@ -615,6 +621,7 @@ export function AnsibleControlClient() {
     }
     const isResponse = responseActions.some((item) => item.id === action);
     const actionMeta = auditActions.find((item) => item.id === action);
+    const runsOnlyOnControlNode = controlNodeOnlyAuditActionIds.has(action);
     const extraVars =
       action === "closePort"
         ? { target_port: targetPort, target_protocol: targetProtocol }
@@ -661,8 +668,8 @@ export function AnsibleControlClient() {
       }
     }
 
-    const sudoPassword = selectedHost?.sudoMode === "on_demand" ? operationSudoPassword : "";
-    if (selectedHost?.sudoMode === "on_demand" && !sudoPassword) {
+    const sudoPassword = !runsOnlyOnControlNode && selectedHost?.sudoMode === "on_demand" ? operationSudoPassword : "";
+    if (!runsOnlyOnControlNode && selectedHost?.sudoMode === "on_demand" && !sudoPassword) {
       setRunResult({ ok: false, action, message: "Для выбранной Astra введите пароль sudo для этой операции. HCP не сохраняет его." });
       return;
     }
@@ -1079,6 +1086,41 @@ export function AnsibleControlClient() {
       </section>
 
       <section className="grid gap-5">
+        <div className="rounded-md border border-sky-400/20 bg-sky-400/5 p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-sky-200">Без доступа к ОС</p>
+              <h2 className="mt-1 text-lg font-semibold text-white">Внешний аудит</h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-300">Проверка выполняется с control node: HCP не входит по SSH, не использует sudo и не запускает команды на Astra. Она показывает только сетевую поверхность и параметры SSH, а не заменяет аудит локальной конфигурации.</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {controlNodeOnlyAuditActions.map((action) => {
+                const Icon = action.icon;
+                return (
+                  <Button key={action.id} variant={action.id === "networkPortScan" ? "primary" : "secondary"} onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
+                    <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
+                    {action.id === "networkPortScan" ? "Проверить порты" : "Проверить SSH"}
+                  </Button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="mt-3 grid gap-3 border-t border-sky-400/15 pt-3 md:grid-cols-[minmax(0,320px)_1fr] md:items-end">
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-400">Охват проверки портов</span>
+              <select
+                value={nmapScanScope}
+                onChange={(event) => setNmapScanScope(event.target.value as NmapScanScope)}
+                disabled={Boolean(loading) || !selectedHost}
+                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {nmapScanScopeOptions.map((scope) => <option key={scope.id} value={scope.id}>{scope.label}</option>)}
+              </select>
+            </label>
+            <p className="text-xs leading-5 text-slate-400">{selectedNmapScanScope.description} Внешняя проверка создаёт сетевые соединения с выбранным хостом, но не изменяет его.</p>
+          </div>
+        </div>
+
         <div id="ansible-actions" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -1086,7 +1128,7 @@ export function AnsibleControlClient() {
               <p className="mt-1 text-sm text-slate-400">
                 Хост: <span className="font-semibold text-slate-100">{selectedHost?.alias ?? "не выбран"}</span>
               </p>
-              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">Профиль HCP / Ansible проверяет настройки роли хоста. CVE, OpenSCAP, Nmap, Lynis и SSH-криптография запускаются отдельно только при необходимости.</p>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">HCP сам выполняет только read-only команды Ansible по уже настроенному SSH: в терминале Astra ничего запускать не нужно. Этот режим видит локальные настройки роли хоста; внешний аудит выше их не заменяет.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               <label className="block">
@@ -1116,17 +1158,17 @@ export function AnsibleControlClient() {
           {selectedHost?.sudoMode === "on_demand" ? (
             <div className="mt-4 rounded-md border border-sky-400/20 bg-sky-400/5 p-3">
               <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr] lg:items-end">
-                <Field label="Пароль sudo для одного действия" value={operationSudoPassword} onChange={setOperationSudoPassword}
+                <Field label="Пароль sudo для проверки на хосте" value={operationSudoPassword} onChange={setOperationSudoPassword}
                   type="password" placeholder="Тот же пароль, что принимает sudo su" disabled={Boolean(loading) || !secureCredentialTransport} />
-                <p className="text-xs leading-5 text-slate-300">У этой Astra права root подтверждены через обычный sudo по паролю. HCP использует пароль только для выбранного запуска, не сохраняет его и не меняет <code>/etc/sudoers.d</code>. Плановые задания для такого хоста не запускаются автоматически.</p>
+                <p className="text-xs leading-5 text-slate-300">У этой Astra права root подтверждены через обычный sudo по паролю. Он нужен только для основного и других локальных аудитов; кнопки «Проверить порты» и «Проверить SSH» выше не используют пароль, вход по SSH или команды на Astra. HCP не сохраняет пароль и не меняет <code>/etc/sudoers.d</code>.</p>
               </div>
               {!secureCredentialTransport ? <p className="mt-2 text-xs leading-5 text-amber-100">Для ввода пароля откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu.</p> : null}
             </div>
           ) : null}
 
           <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Дополнительные проверки</summary>
-            <p className="mt-1 text-xs leading-5 text-slate-400">Основной аудит не запускает эти инструменты. Выберите только одну нужную проверку.</p>
+            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Дополнительные проверки на хосте</summary>
+            <p className="mt-1 text-xs leading-5 text-slate-400">Эти инструменты получают сведения с Astra через уже настроенный доступ. Они не меняют настройки хоста; выберите только одну нужную проверку.</p>
             <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,360px)_minmax(0,250px)_minmax(0,1fr)_auto] xl:items-end">
               <label className="block min-w-0">
                 <span className="text-xs font-semibold uppercase text-slate-500">Инструмент</span>
@@ -1138,7 +1180,7 @@ export function AnsibleControlClient() {
                 >
                   {additionalAuditGroups.map((group) => (
                     <optgroup key={group} label={group}>
-                      {additionalAuditActions.filter((action) => action.group === group).map((action) => (
+                      {additionalAuditActions.filter((action) => action.group === group && !controlNodeOnlyAuditActionIds.has(action.id)).map((action) => (
                         <option key={action.id} value={action.id}>{action.label}</option>
                       ))}
                     </optgroup>

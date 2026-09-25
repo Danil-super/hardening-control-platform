@@ -47,6 +47,9 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.match(shell, /w-60/);
   assert.doesNotMatch(shell, /label: "Вход"/);
   assert.match(hosts, /Дополнительные проверки/);
+  assert.match(hosts, /Внешний аудит/);
+  assert.match(hosts, /не запускает команды на Astra/);
+  assert.match(hosts, /runsOnlyOnControlNode/);
   assert.match(hosts, /Глубина Nmap/);
   assert.match(hosts, /Полная TCP: 1–65 535/);
   assert.match(hosts, /nmap_scan_scope/);
@@ -87,6 +90,8 @@ test("Nmap validates its selected TCP coverage and records it in the report", ()
   assert.match(scanner, /NMAP_SCAN_SCOPES/);
   assert.match(scanner, /all_tcp_1_65535/);
   assert.match(report, /Охват проверки Nmap/);
+  assert.match(control, /executionLocation: "control-node"/);
+  assert.match(control, /actionRequiresTargetSudo/);
 });
 
 test("host onboarding uses verified SSH host keys and persists them", () => {

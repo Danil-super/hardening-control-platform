@@ -87,6 +87,17 @@ class AgentlessAuditTest(unittest.TestCase):
         self.assertEqual(findings["service_auditd_active"]["status"], "manual")
         self.assertTrue(report["scanner"]["partial"])
 
+    def test_nftables_fallback_handles_an_unreadable_ufw_lock(self):
+        report, findings = self.execute_audit({
+            ("ufw", "status"): (1, "", "PermissionError: [Errno 13] Permission denied: '/run/ufw.lock'"),
+            ("firewall-cmd", "--state"): (252, "not running", ""),
+            ("nft", "list", "ruleset"): (0, "table inet filter { chain input { type filter hook input priority filter; policy drop; } }", ""),
+            ("iptables", "-S"): (127, "", "command unavailable"),
+        })
+        self.assertEqual(findings["firewall_active"]["status"], "passed")
+        self.assertIn("backend=nftables", findings["firewall_active"]["evidence"])
+        self.assertNotIn("firewall_active", report["scanner"]["incompleteChecks"])
+
     def test_confirmed_inactive_required_service_is_a_failure(self):
         _, findings = self.execute_audit({("systemctl", "is-active", "auditd"): (3, "inactive", "")})
         self.assertEqual(findings["service_auditd_active"]["status"], "failed")

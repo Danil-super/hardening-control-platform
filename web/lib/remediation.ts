@@ -34,6 +34,7 @@ type FirewallBaselineAssessment = {
 type AuditRawFinding = {
   id?: unknown;
   status?: unknown;
+  evidence?: unknown;
 };
 
 type AuditRawPayload = {
@@ -90,12 +91,19 @@ export function assessFirewallBaseline(report: ReturnType<typeof readAnsibleRepo
   const findings = Array.isArray(raw.findings)
     ? raw.findings.filter((value): value is AuditRawFinding => Boolean(asRecord(value)))
     : [];
-  const statusFor = (id: string) => findings.find((finding) => finding.id === id)?.status;
-  const firewallStatus = statusFor("firewall_active");
+  const findingFor = (id: string) => findings.find((finding) => finding.id === id);
+  const statusFor = (id: string) => findingFor(id)?.status;
+  const firewallFinding = findingFor("firewall_active");
+  const firewallStatus = firewallFinding?.status;
   const portsUnavailable = statusFor("agentless_ports_unavailable");
 
   if (incompleteChecks.includes("firewall_active") || firewallStatus !== "passed") {
     blockers.push("не подтверждено активное состояние поддерживаемого firewall");
+  }
+  const firewallEvidence = typeof firewallFinding?.evidence === "string" ? firewallFinding.evidence : "";
+  const firewallBackend = /^backend=([^;]+);/.exec(firewallEvidence)?.[1];
+  if (firewallBackend && !["ufw", "firewalld"].includes(firewallBackend)) {
+    blockers.push(`обнаружен ${firewallBackend}; автоматические изменения пока поддерживают только UFW и firewalld`);
   }
   if (incompleteChecks.includes("open_ports") || portsUnavailable === "manual") {
     blockers.push("не получен список открытых портов перед изменением");

@@ -24,10 +24,13 @@ export const playbooks = {
   agentlessAudit: { file: "agentless-audit.yml", timeout: 600_000, kind: "audit" },
   packageInventory: { file: "package-inventory.yml", timeout: 600_000, kind: "audit" },
   collectEvents: { file: "collect-security-events.yml", timeout: 360_000, kind: "audit" },
-  sshCryptoAudit: { file: "ssh-crypto-audit.yml", timeout: 180_000, kind: "audit", requiresLimit: true },
+  // These playbooks are delegated entirely to the control node.  They use
+  // only the target address/port from inventory and never open an SSH session
+  // or run a command on the target host.
+  sshCryptoAudit: { file: "ssh-crypto-audit.yml", timeout: 180_000, kind: "audit", requiresLimit: true, executionLocation: "control-node" },
   // A full TCP range can legitimately take much longer than the routine
   // top-port checks when a firewall silently drops packets.
-  networkPortScan: { file: "nmap-scan.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
+  networkPortScan: { file: "nmap-scan.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true, executionLocation: "control-node" },
   lynisTemporaryAudit: { file: "lynis-temporary-audit.yml", timeout: 1_200_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   openScapAudit: { file: "openscap-audit.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   astraOvalAudit: { file: "astra-oval-audit.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
@@ -38,6 +41,16 @@ export const playbooks = {
 } as const;
 
 export type PlaybookAction = keyof typeof playbooks;
+
+/**
+ * Whether an action needs the target's administrative context.  Network-only
+ * checks must remain usable for hosts with password-on-demand sudo: asking for
+ * an unnecessary secret would make an external audit look like it runs on the
+ * target when it does not.
+ */
+export function actionRequiresTargetSudo(action: PlaybookAction) {
+  return !("executionLocation" in playbooks[action] && playbooks[action].executionLocation === "control-node");
+}
 
 function newReportRunId() {
   return `run-${new Date().toISOString().replace(/[-:.]/g, "")}-${randomUUID().slice(0, 8)}`;
@@ -256,7 +269,7 @@ export async function runAnsiblePlaybook({
   if (!validOneTimeSudoPassword(becomePassword)) {
     throw Object.assign(new Error("Пароль sudo должен быть одной строкой длиной до 1024 символов."), { code: "bad_sudo_password" });
   }
-  const onDemandHost = onDemandSudoHostForLimit(limit);
+  const onDemandHost = actionRequiresTargetSudo(action) ? onDemandSudoHostForLimit(limit) : null;
   if (onDemandHost && !becomePassword) {
     throw Object.assign(new Error(`Для хоста ${onDemandHost} введите пароль sudo для этой операции. HCP не сохраняет его.`), { code: "sudo_password_required" });
   }
