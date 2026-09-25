@@ -32,16 +32,56 @@ type PlaybookMeta = Omit<RegisteredPlaybook, "source" | "file" | "timeout"> & {
 };
 
 export const customPlaybookDir = path.join("ansible", "playbooks", "custom");
+const customPlaybookStateDirectory = "custom-playbooks";
+
+export type CustomPlaybookCapabilities = {
+  authoringEnabled: boolean;
+  executionEnabled: boolean;
+  productionLocked: boolean;
+  reason: string;
+};
+
+/** Browser-authored YAML may be drafted explicitly, but never executed on a production control node. */
+export function customPlaybookCapabilities(): CustomPlaybookCapabilities {
+  const authoringEnabled = process.env.HCP_ENABLE_CUSTOM_AUDITS === "true";
+  const productionLocked = process.env.HCP_PRODUCTION_MODE === "true";
+  if (!authoringEnabled) {
+    return {
+      authoringEnabled: false,
+      executionEnabled: false,
+      productionLocked,
+      reason: "Черновики пользовательских сценариев выключены. Включите HCP_ENABLE_CUSTOM_AUDITS=true только в контролируемом контуре.",
+    };
+  }
+  if (productionLocked) {
+    return {
+      authoringEnabled: true,
+      executionEnabled: false,
+      productionLocked: true,
+      reason: "Черновики доступны, но проверка и запуск произвольного YAML на рабочем control node заблокированы.",
+    };
+  }
+  return {
+    authoringEnabled: true,
+    executionEnabled: true,
+    productionLocked: false,
+    reason: "Режим тестового контура включён. Перед запуском ограничьте цель конкретным хостом или группой.",
+  };
+}
+
+export function customPlaybookAuthoringEnabled() {
+  return customPlaybookCapabilities().authoringEnabled;
+}
 
 /** Browser-authored YAML must not be executable on a production control node. */
 export function customPlaybooksEnabled() {
-  return process.env.HCP_ENABLE_CUSTOM_AUDITS === "true" && process.env.HCP_PRODUCTION_MODE !== "true";
+  return customPlaybookCapabilities().executionEnabled;
 }
 
 const builtinTitles: Record<string, string> = {
   ping: "Ping",
   collectFacts: "Сбор фактов",
-  agentlessAudit: "SSH-аудит Ansible",
+  agentlessAudit: "Основной аудит профиля",
   packageInventory: "Инвентарь пакетов",
   collectEvents: "Сбор событий",
   sshCryptoAudit: "SSH crypto-аудит (control node)",
@@ -101,15 +141,34 @@ export function isSafePlaybookId(value: unknown): value is string {
 }
 
 export function getCustomPlaybookPath(id: string, repoRoot = getRepoRoot()) {
-  return path.join(repoRoot, customPlaybookDir, `${id}.yml`);
+  return path.join(customPlaybookStorageDir(repoRoot), `${id}.yml`);
 }
 
 function getCustomMetaPath(id: string, repoRoot = getRepoRoot()) {
-  return path.join(repoRoot, customPlaybookDir, `${id}.meta.json`);
+  return path.join(customPlaybookStorageDir(repoRoot), `${id}.meta.json`);
 }
 
 function ensureCustomDir(repoRoot = getRepoRoot()) {
-  mkdirSync(path.join(repoRoot, customPlaybookDir), { recursive: true });
+  mkdirSync(customPlaybookStorageDir(repoRoot), { recursive: true });
+}
+
+/**
+ * Container images are replaceable. Keep browser-authored drafts under the
+ * durable HCP state volume; local source checkout remains a development fallback.
+ */
+function customPlaybookStorageDir(repoRoot = getRepoRoot()) {
+  const stateDirectory = process.env.HCP_STATE_DIR?.trim();
+  return stateDirectory ? path.join(stateDirectory, customPlaybookStateDirectory) : path.join(repoRoot, customPlaybookDir);
+}
+
+function customPlaybookDisplayPath(id: string) {
+  return process.env.HCP_STATE_DIR?.trim()
+    ? path.join("HCP state", customPlaybookStateDirectory, `${id}.yml`)
+    : path.join(customPlaybookDir, `${id}.yml`);
+}
+
+function registeredPlaybookPath(playbook: RegisteredPlaybook, repoRoot = getRepoRoot()) {
+  return playbook.source === "custom" ? getCustomPlaybookPath(playbook.id, repoRoot) : path.join(repoRoot, playbook.file);
 }
 
 function readCustomMeta(id: string, repoRoot = getRepoRoot()) {
@@ -134,11 +193,11 @@ export function listRegisteredPlaybooks(repoRoot = getRepoRoot()): RegisteredPla
     variables: builtinVariables[id] ?? [],
     }));
 
-  if (!customPlaybooksEnabled()) {
+  if (!customPlaybookAuthoringEnabled()) {
     return builtin;
   }
 
-  const customDir = path.join(repoRoot, customPlaybookDir);
+  const customDir = customPlaybookStorageDir(repoRoot);
   const custom = existsSync(customDir)
     ? readdirSync(customDir)
       .filter((fileName) => fileName.endsWith(".meta.json"))
@@ -152,7 +211,7 @@ export function listRegisteredPlaybooks(repoRoot = getRepoRoot()): RegisteredPla
         return {
           id,
           title: meta.title,
-          file: path.join(customPlaybookDir, `${id}.yml`),
+          file: customPlaybookDisplayPath(id),
           kind: meta.kind,
           source: "custom" as const,
           requiresLimit: meta.requiresLimit,
@@ -171,7 +230,7 @@ export function getRegisteredPlaybook(id: string, repoRoot = getRepoRoot()) {
 }
 
 export function readPlaybookContent(playbook: RegisteredPlaybook, repoRoot = getRepoRoot()) {
-  return readFileSync(path.join(repoRoot, playbook.file), "utf8");
+  return readFileSync(registeredPlaybookPath(playbook, repoRoot), "utf8");
 }
 
 export function updateCustomPlaybook({
@@ -209,7 +268,7 @@ export function updateCustomPlaybook({
     timeout: playbook.timeout,
   };
 
-  writeFileSync(path.join(repoRoot, playbook.file), content);
+  writeFileSync(registeredPlaybookPath(playbook, repoRoot), content);
   writeFileSync(getCustomMetaPath(playbook.id, repoRoot), JSON.stringify(meta, null, 2));
   return getRegisteredPlaybook(playbook.id, repoRoot)!;
 }
@@ -220,7 +279,7 @@ export function deleteCustomPlaybook(playbook: RegisteredPlaybook) {
   }
 
   const repoRoot = getRepoRoot();
-  rmSync(path.join(repoRoot, playbook.file), { force: true });
+  rmSync(registeredPlaybookPath(playbook, repoRoot), { force: true });
   rmSync(getCustomMetaPath(playbook.id, repoRoot), { force: true });
 }
 
@@ -254,7 +313,7 @@ export function createCustomPlaybook({
     id,
     title: title.trim() || template.title,
     kind: "audit",
-    requiresLimit: false,
+    requiresLimit: true,
     variables: template.variables,
   };
 
@@ -265,11 +324,11 @@ export function createCustomPlaybook({
 
 export async function syntaxCheckPlaybook(playbook: RegisteredPlaybook) {
   if (playbook.source === "custom" && !customPlaybooksEnabled()) {
-    throw new Error("Пользовательские playbook отключены в production режиме.");
+    throw new Error("Проверка пользовательского YAML доступна только в тестовом контуре.");
   }
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
-  const playbookPath = path.join(repoRoot, playbook.file);
+  const playbookPath = registeredPlaybookPath(playbook, repoRoot);
   return execFileAsync("ansible-playbook", ["-i", inventoryPath, playbookPath, "--syntax-check"], {
     cwd: repoRoot,
     timeout: 120_000,
@@ -296,8 +355,8 @@ export async function runRegisteredPlaybook({
   if (playbook.kind !== "audit") {
     throw new Error("Response-playbook'и запускаются только через транзакционный контур remediation.");
   }
-  if (playbook.requiresLimit && !limit) {
-    throw new Error("Для response-playbook выберите host/group limit.");
+  if (!limit) {
+    throw new Error("Для пользовательского сценария выберите конкретный host/group limit.");
   }
   if (limit && !isSafeLimit(limit)) {
     throw new Error("Limit может содержать только имена хостов/групп без пробелов.");
@@ -312,7 +371,7 @@ export async function runRegisteredPlaybook({
 
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
-  const playbookPath = path.join(repoRoot, playbook.file);
+  const playbookPath = registeredPlaybookPath(playbook, repoRoot);
   const args = ["-i", inventoryPath, playbookPath];
   const extraVars: Record<string, string> = {};
   for (const variable of playbook.variables) {

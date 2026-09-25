@@ -87,7 +87,7 @@ test("login timeout is reported and does not navigate", async (context) => {
 
 test("next destinations remain local pages and cannot return to the login loop", () => {
   for (const input of [undefined, "//example.org", "/\\example.org", "/%5cexample.org", "/%2fexample.org", "javascript:alert(1)", "/login", "/a/../login", "/%6cogin", "/api/ansible/hosts", "/\n/example.org", "/%zz"]) {
-    assert.equal(normalizeNextPath(input), "/hosts", String(input));
+    assert.equal(normalizeNextPath(input), "/", String(input));
   }
   assert.equal(normalizeNextPath("/reports/agentless?host=astra#latest"), "/reports/agentless?host=astra#latest");
 });

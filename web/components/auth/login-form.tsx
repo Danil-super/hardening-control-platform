@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useFeedbackMessage } from "@/components/ui/feedback";
 import { signIn } from "@/lib/client-navigation";
 
-export function LoginForm({ nextPath = "/hosts" }: { nextPath?: string }) {
+export function LoginForm({ nextPath = "/" }: { nextPath?: string }) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);

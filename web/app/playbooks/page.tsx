@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import { PlaybooksClient } from "@/components/playbooks/playbooks-client";
 
 export default function PlaybooksPage() {
-  redirect("/hosts");
+  return <PlaybooksClient />;
 }

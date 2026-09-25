@@ -1,13 +1,13 @@
 /** Only allow local page destinations, including when the browser normalizes URLs. */
 export function normalizeNextPath(value: string | undefined) {
-  if (!value || !value.startsWith("/") || value.startsWith("//") || /[\\\u0000-\u0020]/.test(value)) return "/hosts";
+  if (!value || !value.startsWith("/") || value.startsWith("//") || /[\\\u0000-\u0020]/.test(value)) return "/";
   try {
     const url = new URL(value, "https://hcp.invalid");
     const pathname = decodeURIComponent(url.pathname);
     if (url.origin !== "https://hcp.invalid" || /[\\\u0000-\u0020]/.test(pathname)
-      || pathname.startsWith("//") || /^\/(login|api)(\/|$)/.test(pathname)) return "/hosts";
+      || pathname.startsWith("//") || /^\/(login|api)(\/|$)/.test(pathname)) return "/";
     return `${url.pathname}${url.search}${url.hash}`;
-  } catch { return "/hosts"; }
+  } catch { return "/"; }
 }
 
 export async function signIn(password: string, nextPath: string, dependencies: {

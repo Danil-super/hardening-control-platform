@@ -34,7 +34,8 @@ services:
       HCP_TRIVY_MODE: offline
       HCP_TRIVY_CACHE_DIR: /var/lib/hcp/trivy-cache
       HCP_TRIVY_MAX_DB_AGE_HOURS: 168
-      HCP_PRODUCTION_MODE: "true"
+      HCP_ENABLE_CUSTOM_AUDITS: ${HCP_ENABLE_CUSTOM_AUDITS:-false}
+      HCP_PRODUCTION_MODE: ${HCP_PRODUCTION_MODE:-true}
     ports:
       - "127.0.0.1:3001:3000"
     volumes:

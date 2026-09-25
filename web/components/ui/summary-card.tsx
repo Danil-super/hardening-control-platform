@@ -12,7 +12,7 @@ export function SummaryCard({
   icon?: ReactNode;
 }) {
   return (
-    <div className="rounded-md border border-slate-800 bg-slate-950/70 p-4 shadow-xl shadow-black/10">
+    <div className="rounded-xl border border-slate-800/90 bg-slate-950/75 p-4 shadow-xl shadow-black/10 backdrop-blur-sm">
       <div className="flex items-center justify-between gap-3">
         <p className="text-sm text-slate-400">{label}</p>
         {icon ? <span className="text-sky-200">{icon}</span> : null}

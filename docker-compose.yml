@@ -32,7 +32,9 @@ services:
       HCP_SCHEDULE_LIMIT: ${HCP_SCHEDULE_LIMIT:-linux_hosts}
       HCP_SCHEDULE_DEEP_LIMIT: ${HCP_SCHEDULE_DEEP_LIMIT:-linux_hosts}
       HCP_CORRELATION_MAX_AGE_HOURS: ${HCP_CORRELATION_MAX_AGE_HOURS:-168}
-      HCP_PRODUCTION_MODE: "true"
+      # true by default: production can keep reviewed YAML drafts, but never run arbitrary browser-authored playbooks.
+      HCP_ENABLE_CUSTOM_AUDITS: ${HCP_ENABLE_CUSTOM_AUDITS:-false}
+      HCP_PRODUCTION_MODE: ${HCP_PRODUCTION_MODE:-true}
       HCP_TRUSTED_TLS_PROXY: ${HCP_TRUSTED_TLS_PROXY:-false}
       HCP_CONTROL_IPS: ${HCP_CONTROL_IPS:-}
     volumes:

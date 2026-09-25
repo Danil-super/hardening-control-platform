@@ -117,16 +117,31 @@ test("custom variable values remain one JSON value rather than injected Ansible 
   });
   const playbook = { id: "custom-test", kind: "audit", source: "custom", file: "playbook.yml", requiresLimit: false, timeout: 10, variables: [{ name: "package_name", required: true }] };
   try {
-    await registry.runRegisteredPlaybook({ playbook, variables: { package_name: "openssl ansible_connection=local" } });
+    await registry.runRegisteredPlaybook({ playbook, limit: "target", variables: { package_name: "openssl ansible_connection=local" } });
     assert.deepEqual(JSON.parse(executedArgs[executedArgs.indexOf("-e") + 1]), { package_name: "openssl ansible_connection=local" });
     await assert.rejects(registry.runRegisteredPlaybook({ playbook: { ...playbook, source: "builtin" }, variables: {} }), /\/api\/ansible\/run/);
     await assert.rejects(registry.runRegisteredPlaybook({ playbook: { ...playbook, kind: "response" }, variables: {} }), /транзакционный/);
     process.env.HCP_PRODUCTION_MODE = "true";
-    await assert.rejects(registry.syntaxCheckPlaybook(playbook), /production/);
+    await assert.rejects(registry.syntaxCheckPlaybook(playbook), /тестовом контуре/);
     await assert.rejects(registry.runRegisteredPlaybook({ playbook, variables: { package_name: "openssl" } }), /production/);
   } finally {
     if (previousEnable === undefined) delete process.env.HCP_ENABLE_CUSTOM_AUDITS; else process.env.HCP_ENABLE_CUSTOM_AUDITS = previousEnable;
     if (previousProduction === undefined) delete process.env.HCP_PRODUCTION_MODE; else process.env.HCP_PRODUCTION_MODE = previousProduction;
+  }
+});
+
+test("custom playbook drafts use the durable HCP state directory when it is configured", () => {
+  const previousStateDirectory = process.env.HCP_STATE_DIR;
+  const registry = load("lib/playbook-registry.ts", {
+    "@/lib/ansible-control": { getRepoRoot: () => "/tmp/fake-hcp-test", isSafeLimit: () => true, appendIncident: () => {}, playbooks: {} },
+  });
+  try {
+    process.env.HCP_STATE_DIR = "/tmp/hcp-durable-state";
+    assert.equal(registry.getCustomPlaybookPath("audit-draft", "/tmp/ignored-repo"), "/tmp/hcp-durable-state/custom-playbooks/audit-draft.yml");
+    delete process.env.HCP_STATE_DIR;
+    assert.equal(registry.getCustomPlaybookPath("audit-draft", "/tmp/fake-hcp-test"), "/tmp/fake-hcp-test/ansible/playbooks/custom/audit-draft.yml");
+  } finally {
+    if (previousStateDirectory === undefined) delete process.env.HCP_STATE_DIR; else process.env.HCP_STATE_DIR = previousStateDirectory;
   }
 });
 

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import {
   deleteCustomPlaybook,
-  customPlaybooksEnabled,
+  customPlaybookAuthoringEnabled,
+  customPlaybookCapabilities,
   getRegisteredPlaybook,
   readPlaybookContent,
   updateCustomPlaybook,
@@ -20,8 +21,8 @@ export async function GET(
   if (!playbook) {
     return NextResponse.json({ ok: false, message: "Playbook не найден." }, { status: 404 });
   }
-  if (playbook.source === "custom" && !customPlaybooksEnabled()) {
-    return NextResponse.json({ ok: false, message: "Пользовательские playbook отключены в production режиме." }, { status: 403 });
+  if (playbook.source === "custom" && !customPlaybookAuthoringEnabled()) {
+    return NextResponse.json({ ok: false, message: customPlaybookCapabilities().reason }, { status: 403 });
   }
 
   return NextResponse.json({
@@ -41,8 +42,8 @@ export async function PUT(
   if (!playbook) {
     return NextResponse.json({ ok: false, message: "Playbook не найден." }, { status: 404 });
   }
-  if (playbook.source === "custom" && !customPlaybooksEnabled()) {
-    return NextResponse.json({ ok: false, message: "Пользовательские playbook отключены в production режиме." }, { status: 403 });
+  if (playbook.source === "custom" && !customPlaybookAuthoringEnabled()) {
+    return NextResponse.json({ ok: false, message: customPlaybookCapabilities().reason }, { status: 403 });
   }
 
   try {
@@ -72,6 +73,9 @@ export async function DELETE(
   const playbook = getRegisteredPlaybook(decodeURIComponent(playbookId));
   if (!playbook) {
     return NextResponse.json({ ok: false, message: "Playbook не найден." }, { status: 404 });
+  }
+  if (playbook.source === "custom" && !customPlaybookAuthoringEnabled()) {
+    return NextResponse.json({ ok: false, message: customPlaybookCapabilities().reason }, { status: 403 });
   }
 
   try {

@@ -40,7 +40,11 @@ test("operator interface keeps routine work visible and allows guarded report cl
   const shell = read(path.join("web", "components", "layout", "app-shell.tsx"));
   const hosts = read(path.join("web", "components", "hosts", "ansible-control-client.tsx"));
   const reports = read(path.join("web", "app", "reports", "agentless", "page.tsx"));
+  const reportDetail = read(path.join("web", "app", "reports", "agentless", "[reportId]", "page.tsx"));
+  const dashboard = read(path.join("web", "components", "dashboard", "workspace-dashboard.tsx"));
   assert.doesNotMatch(shell, /Playbook'и/);
+  assert.match(shell, /href: "\/playbooks"/);
+  assert.match(shell, /w-60/);
   assert.doesNotMatch(shell, /label: "Вход"/);
   assert.match(hosts, /Дополнительные проверки/);
   assert.match(hosts, /Глубина Nmap/);
@@ -54,6 +58,9 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.match(reports, /Журнал действий/);
   assert.match(reports, /DeleteRecordButton/);
   assert.match(reports, /Ненужные тестовые отчёты можно удалить/);
+  assert.match(reportDetail, /Что не удалось проверить/);
+  assert.match(reportDetail, /Основной аудит профиля/);
+  assert.match(dashboard, /Следующий шаг/);
 });
 
 test("a matching completed audit is a confirmable warning, not a hard block", () => {

@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, FileCode2, Play, Plus, RefreshCw, Save, ShieldAlert, Trash2 } from "lucide-react";
+import { CheckCircle2, CircleAlert, FileCode2, LockKeyhole, Play, Plus, RefreshCw, Save, ShieldAlert, TestTube2, Trash2 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useActionResult, useNotify } from "@/components/ui/feedback";
 import { readApiResponse, errorMessage } from "@/lib/client-api";
@@ -33,6 +33,13 @@ type Template = {
   variables: Variable[];
 };
 
+type CustomPlaybookCapabilities = {
+  authoringEnabled: boolean;
+  executionEnabled: boolean;
+  productionLocked: boolean;
+  reason: string;
+};
+
 export function PlaybooksClient() {
   const [playbooks, setPlaybooks] = useState<RegisteredPlaybook[]>([]);
   const [templates, setTemplates] = useState<Template[]>([]);
@@ -45,10 +52,15 @@ export function PlaybooksClient() {
   const [variablesJson, setVariablesJson] = useState("[]");
   const [limit, setLimit] = useState("linux_hosts");
   const [runVariables, setRunVariables] = useState<Record<string, string>>({});
-  const [newId, setNewId] = useState("fix-cve");
-  const [newTitle, setNewTitle] = useState("Fix CVE");
+  const [newId, setNewId] = useState("package-check");
+  const [newTitle, setNewTitle] = useState("Проверка пакета");
   const [templateId, setTemplateId] = useState("audit-package");
-  const [customPlaybooksEnabled, setCustomPlaybooksEnabled] = useState(false);
+  const [customPlaybooks, setCustomPlaybooks] = useState<CustomPlaybookCapabilities>({
+    authoringEnabled: false,
+    executionEnabled: false,
+    productionLocked: false,
+    reason: "Загружаем состояние пользовательских сценариев.",
+  });
   const [loading, setLoading] = useState("");
   const [result, setResult] = useActionResult<{ ok?: boolean; message?: string; stdout?: string; stderr?: string; command?: string }>();
   const notify = useNotify();
@@ -87,7 +99,14 @@ export function PlaybooksClient() {
       setPlaybooks(payload.playbooks ?? []);
       if (announce) notify("Список сценариев обновлён.", "success");
       setTemplates(payload.templates ?? []);
-      setCustomPlaybooksEnabled(Boolean(payload.customPlaybooksEnabled));
+      setCustomPlaybooks(payload.customPlaybooks ?? {
+        authoringEnabled: Boolean(payload.customPlaybooksEnabled),
+        executionEnabled: Boolean(payload.customPlaybooksEnabled),
+        productionLocked: false,
+        reason: Boolean(payload.customPlaybooksEnabled)
+          ? "Пользовательские сценарии доступны."
+          : "Пользовательские сценарии выключены.",
+      });
     } catch (error) {
       setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
@@ -243,14 +262,42 @@ export function PlaybooksClient() {
   }
 
   return (
-    <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+    <div className="space-y-5">
+      <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-200">Проверки как код</p>
+          <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">Сценарии проверок</h1>
+          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Встроенные сценарии запускаются через тот же защищённый путь, что и кнопки в разделе «Хосты». Собственный YAML сначала создаётся из шаблона и проверяется на синтаксис.</p>
+        </div>
+        <Button variant="secondary" onClick={() => loadPlaybooks(true)} disabled={Boolean(loading)}>
+          <RefreshCw size={16} className={loading === "load" ? "animate-spin" : ""} aria-hidden="true" />
+          Обновить список
+        </Button>
+      </header>
+
+      <section className={`rounded-2xl border p-5 ${customPlaybooks.authoringEnabled ? "border-sky-400/25 bg-sky-500/5" : "border-slate-800 bg-slate-950/70"}`}>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+          <div className="flex gap-3">
+            {customPlaybooks.executionEnabled ? <TestTube2 className="mt-0.5 shrink-0 text-sky-200" size={21} aria-hidden="true" /> : <LockKeyhole className="mt-0.5 shrink-0 text-amber-200" size={21} aria-hidden="true" />}
+            <div>
+              <h2 className="font-semibold text-white">Собственные сценарии</h2>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-300">{customPlaybooks.reason}</p>
+              {!customPlaybooks.authoringEnabled ? <p className="mt-2 text-xs leading-5 text-slate-500">Чтобы создать черновик, задайте <code>HCP_ENABLE_CUSTOM_AUDITS=true</code> и перезапустите HCP. Не включайте выполнение произвольного YAML на рабочем control node.</p> : null}
+              {customPlaybooks.authoringEnabled && !customPlaybooks.executionEnabled ? <p className="mt-2 text-xs leading-5 text-slate-400">На рабочем контуре можно создать и сохранить YAML. Проверка и запуск доступны только на отдельном тестовом control node, чтобы черновик не затронул реальные серверы.</p> : null}
+            </div>
+          </div>
+          <span className={`inline-flex w-fit items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold ${customPlaybooks.executionEnabled ? "border-sky-300/30 bg-sky-400/10 text-sky-100" : "border-amber-300/25 bg-amber-400/10 text-amber-100"}`}>
+            {customPlaybooks.executionEnabled ? <CheckCircle2 size={14} aria-hidden="true" /> : <CircleAlert size={14} aria-hidden="true" />}
+            {customPlaybooks.executionEnabled ? "Тестовый запуск разрешён" : customPlaybooks.authoringEnabled ? "Только черновики" : "Черновики выключены"}
+          </span>
+        </div>
+      </section>
+
+      <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
       <aside className="space-y-4">
         <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
           <div className="flex items-center justify-between border-b border-slate-800 p-4">
-            <h1 className="text-lg font-semibold text-white">Playbook'и</h1>
-            <Button variant="secondary" onClick={() => loadPlaybooks(true)} disabled={Boolean(loading)}>
-              <RefreshCw size={16} className={loading === "load" ? "animate-spin" : ""} aria-hidden="true" />
-            </Button>
+            <h2 className="text-lg font-semibold text-white">Доступные сценарии</h2>
           </div>
           <div className="max-h-[520px] divide-y divide-slate-800 overflow-auto">
             {playbooks.map((playbook) => (
@@ -268,10 +315,10 @@ export function PlaybooksClient() {
           </div>
         </section>
 
-        {customPlaybooksEnabled ? <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
-          <h2 className="text-lg font-semibold text-white">Создать playbook</h2>
+        {customPlaybooks.authoringEnabled ? <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+          <h2 className="text-lg font-semibold text-white">Создать черновик</h2>
           <div className="mt-4 space-y-3">
-            <Field label="ID файла" value={newId} onChange={setNewId} />
+              <Field label="ID файла" value={newId} onChange={setNewId} placeholder="package-check" />
             <Field label="Название" value={newTitle} onChange={setNewTitle} />
             <div>
               <p className="text-xs font-semibold uppercase text-slate-500">Шаблон</p>
@@ -301,7 +348,7 @@ export function PlaybooksClient() {
             {template ? (
               <div className="rounded-md border border-slate-800 bg-slate-900/70 p-3 text-xs leading-5 text-slate-400">
                 <p className="font-semibold text-slate-200">Что будет создано</p>
-                <p className="mt-1">YAML в `ansible/playbooks/custom/{newId || "id"}.yml` и meta-файл рядом.</p>
+                <p className="mt-1">YAML появится в постоянном хранилище HCP вместе с метаданными. После обновления или перезапуска черновик сохранится; для тестового запуска всегда потребуется цель.</p>
               </div>
             ) : null}
             <Button onClick={createPlaybook} disabled={Boolean(loading)} className="w-full">
@@ -328,23 +375,33 @@ export function PlaybooksClient() {
                 <p className="mt-1 text-xs text-slate-500">{selected.file}</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="secondary" onClick={syntaxCheck} disabled={Boolean(loading)}>
+                <Button
+                  variant="secondary"
+                  onClick={syntaxCheck}
+                  disabled={Boolean(loading) || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
+                  title={selected.source === "custom" && !customPlaybooks.executionEnabled ? "Проверка пользовательского YAML разрешена только на тестовом control node." : undefined}
+                >
                   <CheckCircle2 size={16} className={loading === "syntax" ? "animate-spin" : ""} aria-hidden="true" />
-                  Syntax
+                  {selected.source === "custom" && !customPlaybooks.executionEnabled ? "Проверка только в тесте" : "Проверить YAML"}
                 </Button>
-                <Button variant={selected.kind === "response" ? "danger" : "primary"} onClick={runPlaybook} disabled={Boolean(loading)}>
+                <Button
+                  variant={selected.kind === "response" ? "danger" : "primary"}
+                  onClick={runPlaybook}
+                  disabled={Boolean(loading) || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
+                  title={selected.source === "custom" && !customPlaybooks.executionEnabled ? "Запуск черновиков разрешён только на тестовом control node." : undefined}
+                >
                   <Play size={16} className={loading === "run" ? "animate-spin" : ""} aria-hidden="true" />
-                  Run
+                  {selected.source === "custom" && !customPlaybooks.executionEnabled ? "Запуск только в тесте" : "Запустить"}
                 </Button>
                 {selected.source === "custom" ? (
                   <>
                     <Button variant="secondary" onClick={savePlaybook} disabled={Boolean(loading)}>
                       <Save size={16} className={loading === "save" ? "animate-spin" : ""} aria-hidden="true" />
-                      Save
+                      Сохранить
                     </Button>
                     <Button variant="danger" onClick={deletePlaybook} disabled={Boolean(loading)}>
                       <Trash2 size={16} aria-hidden="true" />
-                      Delete
+                      Удалить
                     </Button>
                   </>
                 ) : null}
@@ -373,9 +430,9 @@ export function PlaybooksClient() {
                   disabled={selected.source !== "custom"}
                   className="h-4 w-4 rounded border-slate-600 bg-slate-950"
                 />
-                requires limit
+                Требуется цель
               </label>
-              <Field label="Run limit" value={limit} onChange={setLimit} />
+              <Field label="Цель запуска" value={limit} onChange={setLimit} placeholder="точный хост или группа" />
             </div>
 
             {selected.variables.length ? (
@@ -426,8 +483,8 @@ export function PlaybooksClient() {
                   <p className="font-semibold text-slate-200">Что такое “Имя пакета”</p>
                   <p className="mt-1">Это системный пакет Linux, например `openssl`, `nginx`, `curl` или `openssh-server`.</p>
                   <p className="mt-3 font-semibold text-slate-200">Где менять шаблон</p>
-                  <p className="mt-1">После создания редактируйте YAML здесь или файл в `ansible/playbooks/custom`.</p>
-                  <p className="mt-2">Встроенные playbook'и read-only. Для своей логики создайте custom.</p>
+                  <p className="mt-1">После создания редактируйте YAML здесь; HCP хранит черновик в постоянном runtime-хранилище, а не внутри заменяемого образа контейнера.</p>
+                  <p className="mt-2">Встроенные сценарии доступны только для чтения. Черновик сначала сохраните и проверьте YAML, затем запускайте только в тестовом контуре.</p>
                 </div>
               </label>
             </div>
@@ -450,10 +507,11 @@ export function PlaybooksClient() {
               </pre>
             </div>
           ) : (
-            <p className="mt-3 text-sm text-slate-400">Откройте playbook, измените custom YAML, сохраните, проверьте syntax-check и запустите.</p>
+            <p className="mt-3 text-sm text-slate-400">Выберите встроенный сценарий для просмотра или создайте черновик из шаблона. Сначала сохраните и проверьте YAML; запуск пользовательского кода доступен только в тестовом контуре.</p>
           )}
         </section>
       </main>
+      </div>
     </div>
   );
 }

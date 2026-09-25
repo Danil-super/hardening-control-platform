@@ -49,12 +49,14 @@ export function FindingsExplorer({
   hostAlias,
   remediationLinkHref,
   remediationLinkLabel = "Сформировать план исправлений",
+  planLinkHref,
 }: {
   findings: Finding[];
   profileId: string;
   hostAlias?: string;
   remediationLinkHref?: string;
   remediationLinkLabel?: string;
+  planLinkHref?: string;
 }) {
   const [risk, setRisk] = useState<RiskFilter>("all");
   const [category, setCategory] = useState("all");
@@ -138,9 +140,9 @@ export function FindingsExplorer({
         )}
       </div>
 
-      {findings.some((finding) => finding.remediationAvailable) ? <div className="flex justify-end">
-        <LinkButton href={remediationLinkHref ?? `/remediation?profileId=${profileId}`}>
-          {remediationLinkLabel}
+      {planLinkHref || findings.some((finding) => finding.remediationAvailable) ? <div className="flex justify-end">
+        <LinkButton href={planLinkHref ?? remediationLinkHref ?? `/remediation?profileId=${profileId}`}>
+          {planLinkHref ? "Выбрать изменения для плана" : remediationLinkLabel}
         </LinkButton>
       </div> : null}
     </section>

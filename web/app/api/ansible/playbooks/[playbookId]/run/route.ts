@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { customPlaybooksEnabled, getRegisteredPlaybook, runRegisteredPlaybook } from "@/lib/playbook-registry";
+import { customPlaybookCapabilities, customPlaybooksEnabled, getRegisteredPlaybook, runRegisteredPlaybook } from "@/lib/playbook-registry";
 import { POST as runManagedPlaybook } from "@/app/api/ansible/run/route";
 
 export const dynamic = "force-dynamic";
@@ -16,7 +16,7 @@ export async function POST(
     return NextResponse.json({ ok: false, message: "Playbook не найден." }, { status: 404 });
   }
   if (playbook.source === "custom" && !customPlaybooksEnabled()) {
-    return NextResponse.json({ ok: false, message: "Запуск пользовательских playbook отключен в production режиме." }, { status: 403 });
+    return NextResponse.json({ ok: false, message: customPlaybookCapabilities().reason }, { status: 403 });
   }
   if (playbook.source === "builtin") {
     // Keep a single execution path for target validation, SSH configuration,

@@ -3,6 +3,7 @@ import { AlertTriangle, Download, FileText, ListChecks, Server, ShieldCheck } fr
 import { FindingsExplorer } from "@/components/findings/findings-explorer";
 import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
+import { describeIncompleteAuditChecks } from "@/lib/audit-coverage";
 import { readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
 
 export const dynamic = "force-dynamic";
@@ -17,6 +18,7 @@ function formatDate(value: string | null | undefined) {
 }
 
 function reportModeTitle(mode: string) {
+  if (mode === "agentless") return "Основной аудит профиля";
   if (mode === "facts") return "Сведения о хосте";
   if (mode === "packages") return "Инвентаризация пакетов";
   if (mode === "vulnerabilities") return "CVE-аудит пакетов";
@@ -28,7 +30,17 @@ function reportModeTitle(mode: string) {
   if (mode === "astra-oval") return "Astra: CVE по выбранной OVAL-базе";
   if (mode === "greenbone") return "Greenbone / OpenVAS: импорт сетевого отчёта";
   if (mode === "dependency-track") return "OWASP Dependency-Track: передача SBOM";
-  return "SSH-аудит Ansible";
+  return "Аудит Ansible";
+}
+
+function profileTitle(profileId: string | null) {
+  const titles: Record<string, string> = {
+    basic_linux: "Базовый Linux",
+    ssh_security: "SSH-сервер",
+    web_server: "Веб-сервер",
+    docker_host: "Docker-хост",
+  };
+  return profileId ? titles[profileId] ?? profileId : "без профиля";
 }
 
 function asRecord(value: unknown) {
@@ -64,6 +76,7 @@ export default async function AgentlessReportDetailPage({
   const vulnerabilityScan = asRecord(raw.vulnerabilityScan);
   const trivyFreshness = asRecord(vulnerabilityScan.databaseFreshness);
   const scanner = asRecord(raw.scanner);
+  const incompleteChecks = describeIncompleteAuditChecks(scanner.incompleteChecks);
   const ovalDatabase = asRecord(scanner.database);
   const ovalIdentity = asRecord(scanner.hostIdentity);
   const ovalDefinitions = Array.isArray(scanner.definitionResults) ? scanner.definitionResults.map(asRecord) : [];
@@ -96,6 +109,7 @@ export default async function AgentlessReportDetailPage({
         <div className="flex flex-wrap gap-3">
           <LinkButton href={`/reports/agentless?host=${encodeURIComponent(targetAlias)}`} variant="secondary">История хоста</LinkButton>
           <LinkButton href={`/reports/correlation/${encodeURIComponent(targetAlias)}`} variant="secondary">Единая сводка</LinkButton>
+          <LinkButton href={`/remediation-plan?host=${encodeURIComponent(targetAlias)}`}>Выбрать изменения</LinkButton>
           <LinkButton href={`/api/ansible/reports/${encodeURIComponent(report.id)}`} variant="secondary">
             <Download size={16} aria-hidden="true" />
             JSON
@@ -116,7 +130,8 @@ export default async function AgentlessReportDetailPage({
           </div>
           <div>
             <p className="text-xs font-semibold uppercase text-slate-500">Профиль</p>
-            <p className="mt-2 text-sm text-slate-300">{report.profileId ?? "без профиля"}</p>
+            <p className="mt-2 text-sm text-slate-300">{profileTitle(report.profileId)}</p>
+            {report.profileId ? <p className="mt-1 text-xs text-slate-500">{report.profileId}</p> : null}
           </div>
           <div>
             <p className="text-xs font-semibold uppercase text-slate-500">Источник</p>
@@ -126,10 +141,32 @@ export default async function AgentlessReportDetailPage({
       </section>
 
       {report.partial || !report.reportTimeValid ? (
-        <section role="status" className="rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
-          <p className="font-semibold">{report.available ? "Проверка неполная" : "Сканер не выполнил проверку"}</p>
-          <p>{!report.reportTimeValid ? "Дата отчёта некорректна: его нельзя использовать как актуальное свидетельство." : "Отсутствие находок в этом отчёте не подтверждает защищённость хоста. Устраните причину и повторите проверку."}</p>
-          {typeof vulnerabilityScan.message === "string" ? <p className="mt-1">{vulnerabilityScan.message}</p> : null}
+        <section role="status" className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-6 text-amber-100">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+            <div>
+              <p className="font-semibold">{report.available ? "Проверка неполная" : "Сканер не выполнил проверку"}</p>
+              <p className="mt-1">{!report.reportTimeValid ? "Дата отчёта некорректна: его нельзя использовать как актуальное свидетельство." : "Часть контролей не дала достоверный ответ. Поэтому отсутствие находок и общая оценка не означают, что хост защищён."}</p>
+            </div>
+            {report.mode === "agentless" ? <LinkButton href="/hosts" variant="secondary">Повторить после исправления</LinkButton> : null}
+          </div>
+          {incompleteChecks.length ? (
+            <div className="mt-4 rounded-lg border border-amber-300/20 bg-slate-950/30 p-4 text-slate-100">
+              <h2 className="font-semibold">Что не удалось проверить</h2>
+              <ol className="mt-3 space-y-3">
+                {incompleteChecks.map((check, index) => (
+                  <li key={check.id} className="grid gap-1 sm:grid-cols-[1.75rem_minmax(0,1fr)]">
+                    <span className="flex h-7 w-7 items-center justify-center rounded-full border border-amber-300/30 bg-amber-400/10 text-xs font-semibold text-amber-100">{index + 1}</span>
+                    <div>
+                      <p className="font-semibold text-white">{check.title}</p>
+                      <p className="text-slate-300">{check.description}</p>
+                      <p className="mt-1 text-sky-100">Следующий шаг: {check.nextStep}</p>
+                    </div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          ) : report.partial ? <p className="mt-3 text-slate-200">Точная причина не записана этим источником. Откройте JSON или технические данные отчёта, устраните ошибку сбора и повторите проверку.</p> : null}
+          {typeof vulnerabilityScan.message === "string" ? <p className="mt-3 text-slate-200">{vulnerabilityScan.message}</p> : null}
         </section>
       ) : null}
 
@@ -147,7 +184,7 @@ export default async function AgentlessReportDetailPage({
         <SummaryCard
           label={isLynisReport ? "Индекс Lynis" : "Оценка"}
           value={report.score === null ? "не рассчитана" : isLynisReport ? `${report.score}/100` : `${report.score}%`}
-          detail={isLynisReport ? "Индекс харденинга Lynis" : isOpenScapReport ? "По правилам выбранного профиля" : report.mode === "vulnerabilities" ? "CVE не переводятся в процент защищённости" : "В пределах выполненных проверок"}
+          detail={report.partial ? "Не рассчитывается, пока есть непроверенные пункты" : isLynisReport ? "Индекс харденинга Lynis" : isOpenScapReport ? "По правилам выбранного профиля" : report.mode === "vulnerabilities" ? "CVE не переводятся в процент защищённости" : "В пределах выполненных проверок"}
           icon={<ShieldCheck size={18} />}
         />
         <SummaryCard label="Высокий" value={report.high} detail="Срочный приоритет" icon={<AlertTriangle size={18} />} />
@@ -243,6 +280,7 @@ export default async function AgentlessReportDetailPage({
           hostAlias={targetAlias}
           remediationLinkHref="/hosts"
           remediationLinkLabel="Открыть управление хостами"
+          planLinkHref={`/remediation-plan?host=${encodeURIComponent(targetAlias)}`}
         />
       ) : null}
 
