@@ -137,7 +137,8 @@ test("manual audit exposes annotation failures instead of reporting full success
       resolveOpenScapPolicyForHost: () => ({ groups: ["linux_hosts"], policy: profile("linux_hosts"), source: "group" }),
       applyOpenScapExceptions: () => { throw new Error("disk is read-only"); },
     },
-    "@/lib/state-store": { listOpenScapExceptions: () => [] },
+    "@/lib/audit-repeat": { findRepeatAuditNotice: () => null },
+    "@/lib/state-store": { listOpenScapExceptions: () => [], listRemediationTransactions: () => [] },
     "@/lib/audit-result": { inspectAuditReports: () => ({ partial: false, warnings: [], reportIds: ["host-openscap-run-host"] }) },
     "@/lib/ansible-reports": {}, "@/lib/remediation": {},
     "@/lib/ssh-bootstrap": { credentialTransportAllowed: () => true },
@@ -148,4 +149,35 @@ test("manual audit exposes annotation failures instead of reporting full success
   assert.equal(body.partial, true);
   assert.match(body.message, /disk is read-only/);
   assert.equal(body.warnings.length, 1);
+});
+
+test("manual audit requires explicit confirmation when the same completed audit exists", async () => {
+  let started = false;
+  const endpoint = load("app/api/ansible/run/route.ts", {
+    "@/lib/astra-oval-policy": {},
+    "next/server": { NextResponse: { json: (body, options) => Response.json(body, options) } },
+    "@/lib/ansible-control": {
+      isPlaybookAction: () => true, isSafeLimit: () => true, normalizeProfileId: () => "basic_linux",
+      validateExtraVars: () => ({ ok: true, values: {} }),
+      playbooks: { agentlessAudit: { kind: "audit", requiresLimit: true } },
+      runAnsiblePlaybook: async () => { started = true; return { stdout: "", stderr: "", command: "ansible-playbook", reportRunId: "run-host" }; },
+      reportIdForRun: () => "host-basic_linux-run-host", appendIncident: () => {},
+    },
+    "@/lib/openscap-policy": {},
+    "@/lib/audit-repeat": { findRepeatAuditNotice: () => ({ reportId: "host-basic_linux-run-old", reportCreatedAt: "2025-01-01T10:00:00Z", mode: "agentless", message: "Existing audit" }) },
+    "@/lib/state-store": { listOpenScapExceptions: () => [], listRemediationTransactions: () => [] },
+    "@/lib/audit-result": {},
+    "@/lib/ansible-reports": {},
+    "@/lib/remediation": {},
+    "@/lib/ssh-bootstrap": { credentialTransportAllowed: () => true },
+  });
+  const response = await endpoint.POST(new Request("http://localhost", {
+    method: "POST",
+    body: JSON.stringify({ action: "agentlessAudit", limit: "host" }),
+  }));
+  const body = await response.json();
+  assert.equal(response.status, 409);
+  assert.equal(body.error, "audit_already_completed");
+  assert.equal(body.repeatAudit.reportId, "host-basic_linux-run-old");
+  assert.equal(started, false);
 });

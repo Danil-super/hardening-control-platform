@@ -12,8 +12,9 @@ import {
 import { applyOpenScapExceptions, resolveOpenScapPolicyForHost } from "@/lib/openscap-policy";
 import { resolveAstraOvalPolicyForHost } from "@/lib/astra-oval-policy";
 import { inspectAuditReports } from "@/lib/audit-result";
+import { findRepeatAuditNotice } from "@/lib/audit-repeat";
 import { readAnsibleReport } from "@/lib/ansible-reports";
-import { listOpenScapExceptions } from "@/lib/state-store";
+import { listOpenScapExceptions, listRemediationTransactions } from "@/lib/state-store";
 import {
   applyRemediation,
   isReversibleRemediationAction,
@@ -203,6 +204,25 @@ export async function POST(request: Request) {
         { status: 400 },
       );
     }
+  }
+
+  const repeatAudit = findRepeatAuditNotice({
+    action,
+    profileId,
+    hostAlias: limit,
+    extraVars: extraVars.values,
+    remediationTransactions: listRemediationTransactions(500),
+  });
+  if (repeatAudit && body?.confirmRepeatAudit !== true) {
+    return NextResponse.json(
+      {
+        ok: false,
+        error: "audit_already_completed",
+        message: repeatAudit.message,
+        repeatAudit,
+      },
+      { status: 409 },
+    );
   }
 
   try {

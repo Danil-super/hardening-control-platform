@@ -56,6 +56,19 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.match(reports, /Ненужные тестовые отчёты можно удалить/);
 });
 
+test("a matching completed audit is a confirmable warning, not a hard block", () => {
+  const route = read(path.join("web", "app", "api", "ansible", "run", "route.ts"));
+  const preflight = read(path.join("web", "app", "api", "ansible", "audit-repeat", "route.ts"));
+  const helper = read(path.join("web", "lib", "audit-repeat.ts"));
+  const hosts = read(path.join("web", "components", "hosts", "ansible-control-client.tsx"));
+  assert.match(route, /audit_already_completed/);
+  assert.match(route, /confirmRepeatAudit/);
+  assert.match(preflight, /listRemediationTransactions\(500\)/);
+  assert.match(helper, /обновилась база CVE/);
+  assert.match(hosts, /Запустить проверку повторно/);
+  assert.match(hosts, /Не запущено/);
+});
+
 test("Nmap validates its selected TCP coverage and records it in the report", () => {
   const control = read(path.join("web", "lib", "ansible-control.ts"));
   const playbook = read(path.join("ansible", "playbooks", "nmap-scan.yml"));

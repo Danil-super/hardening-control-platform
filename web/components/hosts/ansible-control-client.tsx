@@ -35,6 +35,7 @@ type HealthPayload = {
 
 type RunPayload = {
   ok?: boolean;
+  skipped?: boolean;
   partial?: boolean;
   warnings?: string[];
   action?: string;
@@ -46,6 +47,19 @@ type RunPayload = {
   reportId?: string | null;
   postAuditReportId?: string | null;
   transaction?: RemediationTransaction;
+};
+
+type AuditRepeatNotice = {
+  reportId: string;
+  reportCreatedAt: string;
+  mode: string;
+  message: string;
+};
+
+type RepeatAuditPayload = {
+  ok?: boolean;
+  message?: string;
+  repeatAudit?: AuditRepeatNotice | null;
 };
 
 type RemediationTransaction = {
@@ -599,6 +613,54 @@ export function AnsibleControlClient() {
       setRunResult({ ok: false, action, message: "Выберите хост." });
       return;
     }
+    const isResponse = responseActions.some((item) => item.id === action);
+    const actionMeta = auditActions.find((item) => item.id === action);
+    const extraVars =
+      action === "closePort"
+        ? { target_port: targetPort, target_protocol: targetProtocol }
+        : action === "blockIp"
+          ? { block_ip: blockIp }
+          : action === "networkPortScan"
+            ? { nmap_scan_scope: nmapScanScope }
+            : {};
+    let confirmRepeatAudit = false;
+
+    if (!isResponse) {
+      setLoading("repeat-check");
+      try {
+        const params = new URLSearchParams({ action, profileId, limit: selectedAlias });
+        if (action === "networkPortScan") params.set("nmapScanScope", nmapScanScope);
+        const response = await fetch(`/api/ansible/audit-repeat?${params.toString()}`);
+        const payload = await readApiResponse(response) as RepeatAuditPayload;
+        if (!response.ok || !payload.ok) {
+          throw new Error(payload.message ?? "Не удалось проверить историю аудитов.");
+        }
+        if (payload.repeatAudit) {
+          const repeatAudit = payload.repeatAudit;
+          const approved = window.confirm(`${repeatAudit.message}\n\nПредыдущий отчёт: ${formatDate(repeatAudit.reportCreatedAt)}.\n\nЗапустить проверку повторно?`);
+          if (!approved) {
+            setFreshReportHref(reportHref(repeatAudit.reportId));
+            setRunResult({
+              ok: true,
+              skipped: true,
+              action,
+              message: "Новая проверка не запущена. Откройте предыдущий отчёт или повторите запуск после изменений.",
+            });
+            notify("Повторная проверка отменена: предыдущий отчёт остаётся доступен.", "info");
+            return;
+          }
+          confirmRepeatAudit = true;
+        }
+      } catch (error) {
+        const message = errorMessage(error, "Не удалось проверить историю аудитов. Повторите попытку.");
+        setRunResult({ ok: false, action, message });
+        notify(message, "error");
+        return;
+      } finally {
+        setLoading("");
+      }
+    }
+
     const sudoPassword = selectedHost?.sudoMode === "on_demand" ? operationSudoPassword : "";
     if (selectedHost?.sudoMode === "on_demand" && !sudoPassword) {
       setRunResult({ ok: false, action, message: "Для выбранной Astra введите пароль sudo для этой операции. HCP не сохраняет его." });
@@ -609,8 +671,6 @@ export function AnsibleControlClient() {
       return;
     }
 
-    const isResponse = responseActions.some((item) => item.id === action);
-    const actionMeta = auditActions.find((item) => item.id === action);
     const requiresConfirmation = Boolean(
       actionMeta && "requiresConfirmation" in actionMeta && actionMeta.requiresConfirmation === true,
     );
@@ -638,15 +698,6 @@ export function AnsibleControlClient() {
       return;
     }
 
-    const extraVars =
-      action === "closePort"
-        ? { target_port: targetPort, target_protocol: targetProtocol }
-        : action === "blockIp"
-          ? { block_ip: blockIp }
-          : action === "networkPortScan"
-            ? { nmap_scan_scope: nmapScanScope }
-          : {};
-
     setLoading(action);
     notify(`Выполняется: ${actionMeta?.label ?? responseActions.find((item) => item.id === action)?.label ?? action}. Дождитесь результата.`, "info");
     setRunResult(null);
@@ -660,6 +711,7 @@ export function AnsibleControlClient() {
         reason: changeReason.trim(),
         confirmedHost: isResponse ? confirmedHost.trim() : undefined,
         confirmAudit: requiresConfirmation,
+        confirmRepeatAudit,
         extraVars,
         ...(sudoPassword ? { sudoPassword } : {}),
       });
@@ -670,6 +722,18 @@ export function AnsibleControlClient() {
         body: requestBody,
       });
       const payload = await readApiResponse(response);
+      if (response.status === 409 && payload.error === "audit_already_completed" && payload.repeatAudit) {
+        const repeatAudit = payload.repeatAudit as AuditRepeatNotice;
+        setFreshReportHref(reportHref(repeatAudit.reportId));
+        setRunResult({
+          ok: true,
+          skipped: true,
+          action,
+          message: "Новая проверка не запущена: такой же отчёт появился или был подтверждён после предварительной проверки. Откройте предыдущий отчёт либо запустите проверку ещё раз и подтвердите повтор.",
+        });
+        notify("Повторный запуск требует подтверждения; предыдущий отчёт открыт ниже.", "info");
+        return;
+      }
       if (action !== "packageInventory" || !payload.ok) setRunResult(payload);
       await loadHosts();
       await loadRemediations();
@@ -1223,9 +1287,9 @@ export function AnsibleControlClient() {
           {runResult ? (
             <div className="mt-3 space-y-3 text-sm">
               <div className={`rounded-md border p-3 ${
-                !runResult.ok ? "border-red-400/30 bg-red-500/10 text-red-100" : runResult.partial ? "border-amber-400/30 bg-amber-500/10 text-amber-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+                !runResult.ok ? "border-red-400/30 bg-red-500/10 text-red-100" : runResult.skipped ? "border-sky-400/30 bg-sky-500/10 text-sky-100" : runResult.partial ? "border-amber-400/30 bg-amber-500/10 text-amber-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
               }`}>
-                <p className="font-semibold">{!runResult.ok ? "Ошибка" : runResult.partial ? "Выполнено с ограничениями" : "Выполнено"}</p>
+                <p className="font-semibold">{!runResult.ok ? "Ошибка" : runResult.skipped ? "Не запущено" : runResult.partial ? "Выполнено с ограничениями" : "Выполнено"}</p>
                 {runResult.message ? <p className="mt-1">{runResult.message}</p> : null}
                 {runResult.warnings?.length ? <ul className="mt-2 list-inside list-disc space-y-1">{runResult.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul> : null}
                 {freshReportHref ? (
