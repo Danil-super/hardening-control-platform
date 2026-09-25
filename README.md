@@ -20,6 +20,111 @@ sudo python3 ansible/scripts/hcp-host-readiness.py --include-oval-metadata > ast
 
 Нужен Python 3.5+. Команда читает сведения ОС, готовность инструментов и метаданные локального `oval-db`; настройки не меняются. Если репозитория на ВМ ещё нет, достаточно перенести один файл скрипта, как описано в [инструкции](docs/astra-lab.md). Наличие файлов базы не считается подтверждением её подлинности, применимости или выполненного CVE-аудита.
 
+## Короткая инструкция: запустить и обновлять HCP локально
+
+Этим маршрутом пользуйтесь для рабочей платформы на своём control node. Все команды выполняются в **корне репозитория**. Скрипт `deployment/lab/up.sh` предназначен только для изолированного тестового стенда и для обычного запуска HCP не нужен.
+
+Во всех примерах ниже используется команда `docker compose` с пробелом — это Docker Compose **v2.20+**. Если команда `docker compose version` выводит ошибку доступа к Docker daemon, добавляйте `sudo` перед каждой командой Docker, например `sudo docker compose ps`. Старый вариант `docker-compose` с дефисом (Compose v1) не подходит.
+
+### Если платформа уже была запущена
+
+Это обычный порядок обновления. Он пересобирает приложение, но сохраняет добавленные хосты, отчёты, SQLite и доверенные SSH-ключи в постоянном Docker volume.
+
+1. Откройте терминал и перейдите в каталог проекта. Если вы клонировали его в другое место, замените путь на свой.
+
+   ```bash
+   cd ~/Desktop/hardening-control-platform
+   git status --short
+   ```
+
+   Пустой вывод `git status --short` означает, что можно продолжать. Если появились файлы, не выполняйте `git pull` вслепую: сначала сохраните свои изменения или пришлите этот вывод для разбора.
+
+2. Загрузите новую версию и дождитесь запуска контейнера.
+
+   ```bash
+   git pull --ff-only
+   docker compose config --quiet
+   docker compose up -d --build --wait --wait-timeout 180
+   docker compose ps
+   ```
+
+   Успешный результат — сервис `hcp` в состоянии `running (healthy)`. Первые три минуты после обновления — нормальное время ожидания healthcheck.
+
+3. Откройте в браузере на том же компьютере:
+
+   ```text
+   http://127.0.0.1:3000/login
+   ```
+
+   Войдите с паролем из `HCP_ADMIN_PASSWORD` в вашем файле `.env`.
+
+**Не выполняйте при обычном обновлении** `cp .env.production.example .env`, `docker compose down -v`, `docker volume rm`, `git reset --hard` или `git clean -fd`. Эти команды могут перезаписать настройки либо удалить сохранённые данные. Обычная команда `docker compose down` безопасно останавливает платформу и не удаляет volume.
+
+### Если HCP запускается на этом компьютере впервые
+
+1. Проверьте, что установлены Git, Docker Engine и Compose v2:
+
+   ```bash
+   git --version
+   docker --version
+   docker compose version
+   ```
+
+   Нужен именно вывод `Docker Compose version v2.20` или новее. Если доступ к Docker запрещён, повторяйте Docker-команды через `sudo`.
+
+2. Один раз скачайте проект и подготовьте локальные файлы. Эти команды нельзя повторять поверх уже работающей установки.
+
+   ```bash
+   git clone https://github.com/Danil-super/hardening-control-platform.git
+   cd hardening-control-platform
+   cp .env.production.example .env
+   cp ansible/inventory.example.ini ansible/inventory.ini
+   install -d -m 700 secrets
+   install -m 600 /dev/null secrets/known_hosts
+   chmod 600 .env
+   ```
+
+3. Откройте `.env` и задайте свои значения четырёх обязательных параметров:
+
+   ```bash
+   nano .env
+   ```
+
+   ```env
+   HCP_ADMIN_PASSWORD=длинный-уникальный-пароль-для-входа
+   HCP_AUTH_SECRET=случайная-строка-не-короче-32-символов
+   HCP_AUDIT_HMAC_KEY=другая-случайная-строка-не-короче-32-символов
+   HCP_SCHEDULE_API_KEY=третья-случайная-строка-не-короче-32-символов
+   HCP_BIND_ADDRESS=127.0.0.1
+   HCP_PORT=3000
+   ```
+
+   Для каждого ключа можно сгенерировать отдельную строку командой `openssl rand -base64 48`. Не отправляйте содержимое `.env`, `secrets/` и пароли в чат или репозиторий.
+
+4. Проверьте конфигурацию, запустите контейнер и убедитесь, что он стал healthy:
+
+   ```bash
+   docker compose config --quiet
+   docker compose up -d --build --wait --wait-timeout 180
+   docker compose ps
+   ```
+
+   Затем откройте `http://127.0.0.1:3000/login` и войдите с `HCP_ADMIN_PASSWORD`.
+
+### Если страница не открылась
+
+Выполните эти безопасные диагностические команды из каталога проекта:
+
+```bash
+docker compose ps
+docker compose logs --tail=200 hcp
+curl -i http://127.0.0.1:3000/login
+curl -i http://127.0.0.1:3000/api/ansible/session
+```
+
+Для `/login` ожидается `HTTP/1.1 200`. Для `/api/ansible/session` до входа нормален ответ `401`: он означает, что контейнер и сеть работают, а API запрашивает авторизацию. Не присылайте `.env`; для разбора достаточно вывода этих команд без паролей.
+
+
 ## Возможности
 
 - SSH-мастер: отдельный ключ control node, независимая проверка SSH fingerprint, persistent `known_hosts`.
@@ -391,17 +496,23 @@ docker compose exec --user node -T hcp cat /var/lib/hcp/inventory.ini > secrets/
 
 Для согласованной резервной копии SQLite остановите плановые задания и HCP перед копированием всего `hcp-runtime`; не копируйте только файл `.sqlite` во время записи. Сохранение volume также сохраняет WAL/SHM, отчёты, SBOM и `known_hosts`.
 
-Для обновления:
+Перед обновлением выполните краткий порядок из раздела [«Если платформа уже была запущена»](#если-платформа-уже-была-запущена). Для удобства он повторён здесь:
 
 ```bash
+cd ~/Desktop/hardening-control-platform
+git status --short
 git pull --ff-only
-docker compose up -d --build
+docker compose config --quiet
+docker compose up -d --build --wait --wait-timeout 180
+docker compose ps
 ```
+
+Продолжайте только при пустом выводе `git status --short`. Команда `git pull --ff-only` не перезаписывает локальные коммиты: если она остановилась, сначала разберите расхождение веток, а не используйте принудительный reset. После обновления откройте `http://127.0.0.1:3000/login`.
 
 Если включён Dependency-Track:
 
 ```bash
-docker compose --profile dependency-track up -d --build
+docker compose --profile dependency-track up -d --build --wait --wait-timeout 180
 ```
 
 Остановить сервисы, сохранив данные:
