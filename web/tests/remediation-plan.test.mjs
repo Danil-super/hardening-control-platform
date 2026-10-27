@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
@@ -26,4 +27,34 @@ test("plan keeps audit evidence immutable and requires agreement fields before w
   assert.equal(store.listRemediationPlanHistory(item.id).length, 4);
   assert.equal(store.getRemediationPlanItem(item.id).evidence[0].reportSha256, "a".repeat(64));
   assert.equal(store.verifyAuditChain().valid, true);
+});
+
+function draft(key) {
+  return store.createRemediationPlanItem({hostAlias:"astra-1",findingKey:key,title:"Draft",category:"Test",risk:"info",description:"Fixture",recommendation:"Review",evidence:[{reportId:"draft-source",findingId:"fixture",source:"agentless",mode:"agentless",createdAt:null,evidence:"fixture",reportSha256:"b".repeat(64)}]});
+}
+
+test("draft deletion releases report references and preserves the audited snapshot", () => {
+  const item=draft("draft-delete");
+  assert.ok(store.listStoredReportReferences("draft-source").some(ref=>ref.id===item.id));
+  assert.equal(item.canDeleteDraft, true);
+  store.deleteDraftRemediationPlanItem(item.id);
+  const database = new DatabaseSync(path.join(state, "hcp.sqlite"));
+  const event = database.prepare("SELECT payload_json FROM audit_events WHERE event_type = 'remediation_plan_deleted' AND entity_id = ?").get(item.id);
+  const snapshot = JSON.parse(event.payload_json);
+  assert.equal(snapshot.item.evidence[0].reportSha256, "b".repeat(64));
+  assert.equal(snapshot.history.length, 1);
+  database.close();
+  assert.equal(store.getRemediationPlanItem(item.id),null);
+  assert.ok(!store.listStoredReportReferences("draft-source").some(ref=>ref.id===item.id));
+  assert.equal(store.verifyAuditChain().valid,true);
+});
+
+test("a plan once agreed cannot be deleted after returning to proposed", () => {
+  const item=draft("agreed-delete");
+  store.transitionRemediationPlanItem(item.id,{status:"proposed",note:"Proposal for fixture operation"});
+  store.transitionRemediationPlanItem(item.id,{status:"agreed",note:"Approved fixture operation",owner:"Reviewer",dueAt:new Date(Date.now()+86400000).toISOString(),approvalReference:"TEST-1"});
+  assert.throws(()=>store.deleteDraftRemediationPlanItem(item.id),{code:"plan_delete_not_available"});
+  store.transitionRemediationPlanItem(item.id,{status:"proposed",note:"Returning fixture for additional review"});
+  assert.throws(()=>store.deleteDraftRemediationPlanItem(item.id),{code:"plan_delete_not_available"});
+  assert.equal(store.getRemediationPlanItem(item.id).canDeleteDraft,false);
 });

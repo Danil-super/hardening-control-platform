@@ -65,7 +65,8 @@ export function useActionResult<T extends { ok?: boolean; partial?: boolean; mes
     if (value) notify(value.message || (value.ok ? "Готово." : "Не удалось выполнить действие."),
       value.ok ? value.partial ? "warning" : "success" : "error");
   }, [notify]);
-  return [result, update] as const;
+  // Restoring saved history is not a newly completed user action.
+  return [result, update, setResult] as const;
 }
 
 export function useFeedbackMessage() {

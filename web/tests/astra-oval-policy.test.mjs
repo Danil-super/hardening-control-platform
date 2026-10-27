@@ -6,7 +6,7 @@ import test, { after } from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
 
 const compiled = compileServerModules(["astra-oval-config", "astra-oval-policy", "state-store", "inventory"]);
-const { validateAstraOvalConfig } = await import(compiled.url("astra-oval-config"));
+const { validateAstraOvalConfig, astraOvalApplicabilityIssue } = await import(compiled.url("astra-oval-config"));
 const { selectAstraOvalPolicy } = await import(compiled.url("astra-oval-policy"));
 const store = await import(compiled.url("state-store"));
 const state = mkdtempSync(path.join(tmpdir(), "hcp-oval-settings-"));
@@ -51,4 +51,12 @@ test("OVAL input guards reject path traversal, malformed scopes and unbounded pa
   for (const releasePattern of ["1.6.7.15", "1.7.*", "1.8.*", "future-release", "*"]) {
     assert.equal(validateAstraOvalConfig({ ...local(), releasePattern }).releasePattern, releasePattern);
   }
+});
+
+test("OVAL rejects a publication date as an OS release and an Artifactory browser URL", () => {
+  assert.throws(() => validateAstraOvalConfig({ ...local(), releasePattern: "06-10-2026" }), /дата/);
+  assert.throws(() => validateAstraOvalConfig({ ...local(), mode: "online", url: "https://dl.astralinux.ru/ui/native/al-oval/1.7_x86-64/oval-definitions-alse-1.7.xml" }), /прямой.*XML/);
+  assert.match(astraOvalApplicabilityIssue({ ...local(), releasePattern: "06-10-2026" }, "1.7.6"), /1\.7\.6.*06-10-2026/);
+  assert.equal(astraOvalApplicabilityIssue({ ...local(), releasePattern: "1.7.*" }, "1.7.6"), null);
+  assert.match(astraOvalApplicabilityIssue({ ...local(), releasePattern: "1.8.*" }, "1.7.6"), /не входит/);
 });

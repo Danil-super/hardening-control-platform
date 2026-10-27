@@ -11,6 +11,24 @@ export type AstraOvalConfig = {
   sourceReviewedAt: string | null;
 };
 
+function isAstraBrowserUrl(url: string) {
+  try {
+    const parsed = new URL(url);
+    return parsed.hostname === "dl.astralinux.ru" && parsed.pathname.startsWith("/ui/");
+  } catch { return false; }
+}
+
+export function astraOvalApplicabilityIssue(config: AstraOvalConfig, release: string | null) {
+  if (config.mode === "online" && isAstraBrowserUrl(config.url)) return "Сохранён адрес веб-интерфейса Astra. Укажите прямой HTTPS-адрес XML вместо /ui/native/.";
+  if (release) {
+    const pattern = config.releasePattern;
+    if (!(pattern === "*" || pattern === release || (pattern.endsWith(".*") && (release === pattern.slice(0, -2) || release.startsWith(pattern.slice(0, -1)))))) {
+      return `Выпуск хоста ${release} не входит в область выбранной базы ${pattern}. Укажите выпуск Astra, а не дату публикации XML.`;
+    }
+  }
+  return null;
+}
+
 export function validateAstraOvalConfig(value: unknown): AstraOvalConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Укажите настройки OVAL-базы.");
   const input = value as Record<string, unknown>;
@@ -33,6 +51,7 @@ export function validateAstraOvalConfig(value: unknown): AstraOvalConfig {
       throw new Error("Нужен HTTPS-адрес без пароля, параметров запроса и фрагмента. Для закрытой сети используйте внутреннее HTTPS-зеркало.");
     }
     if (!sha256) throw new Error("Для сетевой базы укажите ожидаемый SHA-256 из доверенного источника.");
+    if (isAstraBrowserUrl(url)) throw new Error("Укажите прямой адрес XML: /ui/native/ открывает веб-интерфейс Astra. Адрес файла указан в каталоге https://dl.astralinux.ru/astra/oval/.");
   }
   if (sha256 && !/^[a-f0-9]{64}$/.test(sha256)) throw new Error("SHA-256 должен содержать 64 шестнадцатеричных символа.");
   if (sourceName && (sourceName.length > 160 || /[\x00-\x1f\x7f]/.test(sourceName))) throw new Error("Название источника OVAL содержит недопустимые символы.");
@@ -41,6 +60,7 @@ export function validateAstraOvalConfig(value: unknown): AstraOvalConfig {
   if (!/^(?:\*|[A-Za-z0-9][A-Za-z0-9_.+-]{0,100}(?:\.\*)?)$/.test(releasePattern)) {
     throw new Error("Укажите точный выпуск, ветку с .* на конце или * для базы с собственными условиями применимости.");
   }
+  if (/^\d{2}[-.]\d{2}[-.]\d{4}$/.test(releasePattern)) throw new Error("В поле выпуска указана дата. Нужна версия Astra из /etc/astra_version, например 1.7.*; дата XML указывается самим источником.");
   if (!Array.isArray(input.architectures) || input.architectures.length > 16 || !input.architectures.every((item) => typeof item === "string" && /^[A-Za-z0-9_-]{1,32}$/.test(item))) {
     throw new Error("Архитектуры задаются списком значений uname -m; пустой список не вводит дополнительного ограничения.");
   }

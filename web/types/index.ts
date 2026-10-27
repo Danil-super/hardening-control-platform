@@ -20,6 +20,10 @@ export type Finding = {
   category: string;
   risk: RiskLevel;
   severityUnknown?: boolean;
+  severityAssessment?: {
+    level: "critical" | "high" | "medium" | "low";
+    source: "oval_metadata" | "chromium_description" | "scanner_metadata";
+  };
   status: FindingStatus;
   source: FindingSource;
   description: string;
@@ -28,4 +32,16 @@ export type Finding = {
   remediationId?: string;
   affectedFiles?: string[];
   evidence?: string;
+  lynis?: {
+    ruleId: string;
+    kind: "warning" | "suggestion";
+    message: string;
+    details: string;
+    solution: string;
+    rawRecord: string;
+    reference: string;
+    impact: string;
+    explanationKnown: boolean;
+    messageTranslated: boolean;
+  };
 };

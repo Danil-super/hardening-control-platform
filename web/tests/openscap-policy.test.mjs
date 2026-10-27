@@ -50,6 +50,56 @@ test("OpenSCAP profile precedence has no implicit Linux fallback and rejects amb
   assert.throws(() => policies.selectOpenScapPolicy("host", ["linux_hosts", "web", "db"], [profile("web"), profile("db")]), /несколько/);
 });
 
+test("an unconfigured OpenSCAP host is rejected before starting Ansible, while explicit group and environment profiles remain valid", () => {
+  let configured = [];
+  const resolver = load("lib/openscap-policy.ts", {
+    "@/lib/inventory": { getInventoryHost: () => ({ alias: "host", groups: ["linux_hosts"] }) },
+    "@/lib/ansible-reports": {},
+    "@/lib/state-store": { listOpenScapPolicies: () => configured },
+  });
+  const previous = [process.env.HCP_OPENSCAP_DATASTREAM, process.env.HCP_OPENSCAP_PROFILE];
+  try {
+    for (const [datastream, selectedProfile] of [["", ""], ["/content/scap.xml", ""], ["", "xccdf_profile_test"], [" ", "\t"]]) {
+      process.env.HCP_OPENSCAP_DATASTREAM = datastream;
+      process.env.HCP_OPENSCAP_PROFILE = selectedProfile;
+      assert.throws(() => resolver.resolveOpenScapPolicyForHost("host"), /профиль OpenSCAP.*не задан/);
+    }
+    process.env.HCP_OPENSCAP_DATASTREAM = "/content/scap.xml";
+    process.env.HCP_OPENSCAP_PROFILE = "xccdf_profile_test";
+    assert.equal(resolver.resolveOpenScapPolicyForHost("host").source, "environment");
+    delete process.env.HCP_OPENSCAP_DATASTREAM; delete process.env.HCP_OPENSCAP_PROFILE;
+    configured = [profile("linux_hosts")];
+    assert.equal(resolver.resolveOpenScapPolicyForHost("host").policy.profile, "profile_linux_hosts");
+  } finally {
+    for (const [index, key] of ["HCP_OPENSCAP_DATASTREAM", "HCP_OPENSCAP_PROFILE"].entries()) {
+      if (previous[index] === undefined) delete process.env[key]; else process.env[key] = previous[index];
+    }
+  }
+});
+
+test("OpenSCAP completion exposes the prerequisite reason in existing reports instead of a generic partial warning", () => {
+  const helper = load("lib/audit-result.ts", {
+    "@/lib/inventory": { getInventoryTargetHosts: () => [{ alias: "host", groups: ["linux_hosts"] }] },
+    "@/lib/ansible-control": { reportIdForRun: () => "host-openscap-run-test" },
+    "@/lib/ansible-reports": { readAnsibleReport: () => ({ partial: true, available: false, reportTimeValid: true,
+      raw: { scanner: { reason: "Не задан профиль OpenSCAP для этой группы." } } }) },
+  });
+  const result = helper.inspectAuditReports({ action: "openScapAudit", profileId: "basic_linux", limit: "host", reportRunId: "run-test" });
+  assert.equal(result.partial, true);
+  assert.match(result.warnings[0], /сканер не выполнил проверку/);
+  assert.match(result.warnings[0], /Не задан профиль OpenSCAP/);
+  assert.doesNotMatch(result.warnings[0], /ограничения указаны в отчёте/);
+});
+
+test("existing OpenSCAP reports with all rules notapplicable explain platform applicability", () => {
+  const helper = load("lib/audit-result.ts", {
+    "@/lib/inventory": {}, "@/lib/ansible-control": {}, "@/lib/ansible-reports": {},
+  });
+  const reasons = helper.auditReportLimitations({scanner:{ruleResultCounts:{notapplicable:18,notselected:4}},findings:[{id:"openscap_no_rule_results",description:"Пустой результат не означает соответствие."}]});
+  assert.equal(reasons.length,1); assert.match(reasons[0], /18/); assert.match(reasons[0], /неприменим/);
+  assert.deepEqual(helper.auditReportLimitations({scanner:{ruleResultCounts:{notapplicable:1,pass:17}}}),[]);
+});
+
 const baseFinding = {
   id: "openscap_rule_1", source: "openscap", status: "failed", risk: "high", title: "Control",
   description: "Original evidence", evidence: "rule=rule_1; result=fail", recommendation: "Fix control", remediationAvailable: false,
@@ -119,7 +169,7 @@ test("scheduled OpenSCAP resolves each host's policy and returns a partial resul
   assert.deepEqual(calls.map((call) => [call.limit, call.extraVars.hcp_openscap_profile]), [["web-1", "profile_web"], ["db-1", "profile_db"]]);
   assert.equal(annotations.length, 2);
   assert.equal(annotations[0].exceptions[0].id, "approved");
-  assert.equal(events[0].status, "failed");
+  assert.equal(events[0].status, "partial");
 });
 
 test("manual audit exposes annotation failures instead of reporting full success", async () => {

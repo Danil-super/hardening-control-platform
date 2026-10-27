@@ -1,5 +1,6 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
+import { hostname } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { assertAstraOvalProvenance, validateAstraOvalConfig, type AstraOvalConfig } from "@/lib/astra-oval-config";
@@ -14,13 +15,16 @@ export type IncidentRecord = {
   createdAt: string;
   action: string;
   kind: "audit" | "response" | "system";
-  status: "success" | "failed";
+  status: "success" | "partial" | "failed";
   profileId: string;
   limit: string | null;
   message: string;
   command?: string;
   runId?: string;
 };
+
+export type ArchiveView = "active" | "archive" | "all";
+export type ArchiveRecord = { kind: "report" | "pdf" | "incident"; id: string };
 
 export type RemediationTransaction = {
   id: string;
@@ -29,7 +33,7 @@ export type RemediationTransaction = {
   hostAlias: string;
   action: string;
   profileId: string;
-  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back";
+  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back" | "cancelled";
   reason: string;
   parameters: Record<string, string>;
   backupRef: string | null;
@@ -52,6 +56,7 @@ export type PlanEvidence = {
 };
 
 export type RemediationPlanItem = {
+  canDeleteDraft?: boolean;
   id: string;
   hostAlias: string;
   findingKey: string;
@@ -163,6 +168,20 @@ function getDatabase() {
   chmodSync(databasePath, 0o600);
   database.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
   database.exec(`
+    CREATE TABLE IF NOT EXISTS archived_records (
+      kind TEXT NOT NULL CHECK(kind IN ('report', 'pdf', 'incident')),
+      record_id TEXT NOT NULL,
+      archived_at TEXT NOT NULL,
+      PRIMARY KEY(kind, record_id)
+    );
+    CREATE TABLE IF NOT EXISTS audit_jobs (
+      id TEXT PRIMARY KEY, action TEXT NOT NULL, host_alias TEXT NOT NULL,
+      profile_id TEXT NOT NULL, request_key TEXT NOT NULL, owner TEXT NOT NULL,
+      status TEXT NOT NULL, phase TEXT NOT NULL, created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL, result_json TEXT
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS audit_jobs_active_host ON audit_jobs(host_alias)
+      WHERE status IN ('queued', 'running');
     CREATE TABLE IF NOT EXISTS audit_events (
       id TEXT PRIMARY KEY,
       created_at TEXT NOT NULL,
@@ -598,13 +617,44 @@ export function appendIncident(record: Omit<IncidentRecord, "id" | "createdAt">)
   return incident;
 }
 
-export function readIncidents(limit = 300) {
+export function readIncidents(limit = 300, view: ArchiveView = "active") {
+  const visibility = view === "all" ? "" : `AND ${view === "archive" ? "" : "NOT "}EXISTS (SELECT 1 FROM archived_records WHERE kind = 'incident' AND record_id = audit_events.entity_id)`;
   const records = getDatabase()
-    .prepare("SELECT created_at, event_type, entity_id, payload_json FROM audit_events WHERE event_type = 'execution' ORDER BY created_at DESC, rowid DESC LIMIT ?")
+    .prepare(`SELECT created_at, event_type, entity_id, payload_json FROM audit_events WHERE event_type = 'execution'
+      ${visibility}
+      ORDER BY created_at DESC, rowid DESC LIMIT ?`)
     .all(limit)
     .map(toIncident)
     .filter((record): record is IncidentRecord => Boolean(record));
   return records;
+}
+
+export function getArchivedRecordIds(kind: ArchiveRecord["kind"]) {
+  // Standalone report readers need not create a database just to read files.
+  if (!existsSync(getDatabasePath())) return new Set<string>();
+  return new Set(getDatabase().prepare("SELECT record_id FROM archived_records WHERE kind = ?").all(kind).map((row) => String(row.record_id)));
+}
+
+export function archiveIncidentIds(view: ArchiveView = "active") {
+  const archived = getArchivedRecordIds("incident");
+  return getDatabase().prepare("SELECT entity_id FROM audit_events WHERE event_type = 'execution'").all().map((row) => String(row.entity_id))
+    .filter((id) => view === "all" || archived.has(id) === (view === "archive"));
+}
+
+export function setRecordArchive(records: ArchiveRecord[], action: "archive" | "restore") {
+  if (!["archive", "restore"].includes(action) || records.some((item) => !["report", "pdf", "incident"].includes(item.kind) || !/^[A-Za-z0-9_.:-]{1,180}$/.test(item.id))) throw new Error("Некорректные данные архива.");
+  return inTransaction((database) => {
+    if (database.prepare("SELECT id FROM audit_jobs WHERE status IN ('queued', 'running') LIMIT 1").get()
+      || database.prepare("SELECT id FROM remediation_transactions WHERE status IN ('preparing', 'backed_up', 'rolling_back') LIMIT 1").get()) {
+      throw Object.assign(new Error("Дождитесь завершения выполняемых проверок и изменений перед очисткой или восстановлением списков."), { code: "operation_in_progress" });
+    }
+    const timestamp = new Date().toISOString();
+    const statement = action === "archive" ? database.prepare("INSERT OR IGNORE INTO archived_records (kind, record_id, archived_at) VALUES (?, ?, ?)") : database.prepare("DELETE FROM archived_records WHERE kind = ? AND record_id = ?");
+    let changed = 0;
+    for (const item of records) changed += Number((action === "archive" ? statement.run(item.kind, item.id, timestamp) : statement.run(item.kind, item.id)).changes);
+    if (changed) appendAuditEvent(action === "archive" ? "records_archived" : "records_restored", "active-lists", { records, changed });
+    return changed;
+  });
 }
 
 export function verifyAuditChain() {
@@ -689,6 +739,26 @@ export function hasActiveRemediationForHost(hostAlias: string) {
     WHERE host_alias = ? AND status IN ('preparing', 'backed_up', 'rolling_back') LIMIT 1`).get(hostAlias));
 }
 
+/** Finish a failed operation which never reached the firewall change stage. */
+export function cancelRemediationTransaction(id: string, confirmedHost: string): RemediationTransaction {
+  return inTransaction((database) => {
+    const current = getRemediationTransaction(id);
+    if (!current) throw Object.assign(new Error("Операция не найдена."), { code: "transaction_not_found" });
+    if (confirmedHost !== current.hostAlias) {
+      throw Object.assign(new Error("Для отмены введите точный alias целевого хоста."), { code: "host_confirmation_required" });
+    }
+    if (current.status === "cancelled") return current;
+    const row = database.prepare(`UPDATE remediation_transactions SET status = 'cancelled', updated_at = ?
+      WHERE id = ? AND status = 'failed' AND backup_ref IS NULL RETURNING *`).get(new Date().toISOString(), id);
+    if (!row) {
+      throw Object.assign(new Error("Отменить можно только операцию, завершившуюся ошибкой до создания резервной копии. Для начатых изменений используйте откат."), { code: "cancel_not_available" });
+    }
+    appendAuditEvent("remediation_cancelled", id, { hostAlias: current.hostAlias, action: current.action,
+      error: current.error, preAuditReportId: current.preAuditReportId, postAuditReportId: current.postAuditReportId });
+    return rowToTransaction(row);
+  });
+}
+
 export function claimRemediationRollback(id: string): RemediationTransaction {
   return inTransaction((database) => {
     const current = getRemediationTransaction(id);
@@ -755,7 +825,7 @@ export function listStoredReportReferences(reportId: string): StoredReportRefere
   const database = getDatabase();
   const references: StoredReportReference[] = [];
   const transactions = database.prepare(`SELECT id, host_alias FROM remediation_transactions
-    WHERE pre_audit_report_id = ? OR post_audit_report_id = ?`).all(reportId, reportId);
+    WHERE status != 'cancelled' AND (pre_audit_report_id = ? OR post_audit_report_id = ?)`).all(reportId, reportId);
   for (const row of transactions) {
     const data = row as Record<string, unknown>;
     references.push({ kind: "remediation", id: String(data.id), hostAlias: String(data.host_alias) });
@@ -842,6 +912,7 @@ function parsePlanEvidence(value: unknown): PlanEvidence[] {
 
 function rowToPlanItem(row: Record<string, unknown>): RemediationPlanItem {
   return {
+    canDeleteDraft: Boolean(row.can_delete_draft),
     id: String(row.id), hostAlias: String(row.host_alias), findingKey: String(row.finding_key), title: String(row.title), category: String(row.category),
     risk: row.risk as RemediationPlanItem["risk"], description: String(row.description), recommendation: String(row.recommendation),
     evidence: parsePlanEvidence(JSON.parse(String(row.evidence_json))), status: planStatus(row.status),
@@ -874,16 +945,21 @@ function addPlanHistory(database: DatabaseSync, input: Omit<RemediationPlanHisto
   return { id, createdAt };
 }
 
+const planItemSelect = `SELECT item.*, (item.status IN ('discovered', 'proposed') AND NOT EXISTS (
+  SELECT 1 FROM remediation_plan_history history WHERE history.plan_id = item.id
+    AND history.to_status NOT IN ('discovered', 'proposed')
+)) AS can_delete_draft FROM remediation_plan_items item`;
+
 export function listRemediationPlanItems(hostAlias?: string) {
   const rows = hostAlias
-    ? getDatabase().prepare("SELECT * FROM remediation_plan_items WHERE host_alias = ? ORDER BY updated_at DESC").all(hostAlias)
-    : getDatabase().prepare("SELECT * FROM remediation_plan_items ORDER BY updated_at DESC").all();
+    ? getDatabase().prepare(`${planItemSelect} WHERE host_alias = ? ORDER BY updated_at DESC`).all(hostAlias)
+    : getDatabase().prepare(`${planItemSelect} ORDER BY updated_at DESC`).all();
   return rows.map((row) => rowToPlanItem(row as Record<string, unknown>));
 }
 
 export function getRemediationPlanItem(id: string) {
   if (!/^plan_[a-f0-9-]{36}$/.test(id)) return null;
-  const row = getDatabase().prepare("SELECT * FROM remediation_plan_items WHERE id = ?").get(id);
+  const row = getDatabase().prepare(`${planItemSelect} WHERE item.id = ?`).get(id);
   return row ? rowToPlanItem(row as Record<string, unknown>) : null;
 }
 
@@ -891,6 +967,22 @@ export function listRemediationPlanHistory(planId: string) {
   if (!/^plan_[a-f0-9-]{36}$/.test(planId)) return [];
   return getDatabase().prepare("SELECT * FROM remediation_plan_history WHERE plan_id = ? ORDER BY created_at ASC").all(planId)
     .map((row) => rowToPlanHistory(row as Record<string, unknown>));
+}
+
+export function deleteDraftRemediationPlanItem(id: string) {
+  return inTransaction((database) => {
+    const item = getRemediationPlanItem(id);
+    if (!item) throw Object.assign(new Error("Пункт плана не найден."), { code: "plan_not_found" });
+    const history = listRemediationPlanHistory(id);
+    if (!["discovered", "proposed"].includes(item.status) || history.some((entry) => !["discovered", "proposed"].includes(entry.toStatus))) {
+      throw Object.assign(new Error("Удалить можно только черновой пункт, который ещё не согласовывался. Согласованные решения сохраняются в плане."), { code: "plan_delete_not_available" });
+    }
+    // Keep the complete draft and its history in the append-only audit journal.
+    appendAuditEvent("remediation_plan_deleted", id, { item, history });
+    database.prepare("DELETE FROM remediation_plan_history WHERE plan_id = ?").run(id);
+    database.prepare("DELETE FROM remediation_plan_items WHERE id = ?").run(id);
+    return item;
+  });
 }
 
 export function createRemediationPlanItem(input: Omit<RemediationPlanItem, "id" | "status" | "owner" | "dueAt" | "approvalReference" | "implementationNote" | "verificationReportId" | "riskAcceptedUntil" | "createdAt" | "updatedAt">) {
@@ -985,8 +1077,63 @@ export function getProjectReportRecord(id: string) {
   return row ? rowToProjectReport(row as Record<string, unknown>) : null;
 }
 
-export function listProjectReportRecords(hostAlias?: string) {
+export function listProjectReportRecords(hostAlias?: string, view: ArchiveView = "active") {
   const rows = hostAlias ? getDatabase().prepare("SELECT * FROM project_reports WHERE host_alias = ? ORDER BY created_at DESC").all(hostAlias)
     : getDatabase().prepare("SELECT * FROM project_reports ORDER BY created_at DESC").all();
-  return rows.map((row) => rowToProjectReport(row as Record<string, unknown>));
+  const archived = getArchivedRecordIds("pdf");
+  return rows.map((row) => rowToProjectReport(row as Record<string, unknown>)).filter((row) => view === "all" || archived.has(row.id) === (view === "archive"));
+}
+
+export type AuditJobResult = {
+  ok?: boolean; partial?: boolean; message?: string; action?: string;
+  reportId?: string | null; reportRunId?: string | null;
+  warnings?: string[]; nextStep?: { ready: boolean; message: string; href: string } | null;
+};
+export type AuditJob = {
+  id: string; action: string; hostAlias: string; profileId: string;
+  status: 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'interrupted';
+  phase: string; createdAt: string; updatedAt: string; result: AuditJobResult | null;
+};
+// All bundles in this Node process use the same OS process identity. A new
+// container/process cannot silently inherit an unfinished audit or restart it.
+const auditJobOwner = `${hostname()}:${process.pid}:${performance.timeOrigin}`;
+function toAuditJob(row: Record<string, unknown>): AuditJob {
+  return { id: String(row.id), action: String(row.action), hostAlias: String(row.host_alias),
+    profileId: String(row.profile_id), status: row.status as AuditJob['status'], phase: String(row.phase),
+    createdAt: String(row.created_at), updatedAt: String(row.updated_at),
+    result: row.result_json ? JSON.parse(String(row.result_json)) : null };
+}
+export function recoverAuditJobs(owner = auditJobOwner) {
+  getDatabase().prepare(`UPDATE audit_jobs SET status = 'interrupted', updated_at = ?, result_json = ?
+    WHERE status IN ('queued', 'running') AND owner != ?`).run(new Date().toISOString(),
+    JSON.stringify({ ok: false, message: 'Проверка прервана перезапуском HCP. Проверьте отчёты перед повторным запуском.' }), owner);
+}
+export function createAuditJob(input: { action: string; hostAlias: string; profileId: string; requestKey: string }) {
+  recoverAuditJobs();
+  return inTransaction((database) => {
+    const active = database.prepare("SELECT * FROM audit_jobs WHERE host_alias = ? AND status IN ('queued', 'running')").get(input.hostAlias);
+    if (active) return { created: false, matches: active.request_key === input.requestKey, job: toAuditJob(active) };
+    const id = `job_${randomUUID()}`;
+    const now = new Date().toISOString();
+    database.prepare(`INSERT INTO audit_jobs VALUES (?, ?, ?, ?, ?, ?, 'queued', 'Ожидает запуска', ?, ?, NULL)`)
+      .run(id, input.action, input.hostAlias, input.profileId, input.requestKey, auditJobOwner, now, now);
+    return { created: true, matches: true, job: toAuditJob(database.prepare('SELECT * FROM audit_jobs WHERE id = ?').get(id)!) };
+  });
+}
+export function listAuditJobs() {
+  recoverAuditJobs();
+  return getDatabase().prepare(`SELECT * FROM audit_jobs WHERE status IN ('queued', 'running') OR id IN (SELECT id FROM audit_jobs ORDER BY created_at DESC LIMIT 50) ORDER BY created_at DESC`).all().map(toAuditJob);
+}
+export function setAuditJobPhase(id: string, phase: string) {
+  getDatabase().prepare("UPDATE audit_jobs SET status = 'running', phase = ?, updated_at = ? WHERE id = ? AND status IN ('queued', 'running')")
+    .run(phase, new Date().toISOString(), id);
+}
+export function finishAuditJob(id: string, result: AuditJobResult) {
+  // Persist only the public result, never request bodies, passwords, or stdout.
+  const safe: AuditJobResult = { ok: result.ok, partial: result.partial, message: result.message,
+    action: result.action, reportId: result.reportId, reportRunId: result.reportRunId,
+    warnings: result.warnings, nextStep: result.nextStep };
+  const status = !safe.ok ? 'failed' : safe.partial ? 'partial' : 'completed';
+  getDatabase().prepare("UPDATE audit_jobs SET status = ?, phase = 'Завершено', updated_at = ?, result_json = ? WHERE id = ? AND status IN ('queued', 'running')")
+    .run(status, new Date().toISOString(), JSON.stringify(safe), id);
 }

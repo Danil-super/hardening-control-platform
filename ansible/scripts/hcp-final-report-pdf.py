@@ -12,7 +12,7 @@ import json
 import os
 import sys
 
-MAX_INPUT = 1024 * 1024
+MAX_INPUT = 32 * 1024 * 1024
 
 
 def clean(value, limit=3000):
@@ -38,6 +38,15 @@ def item_label(value):
 
 def risk_label(value):
     return {'high': 'Высокий', 'medium': 'Средний', 'low': 'Низкий', 'info': 'Информационный'}.get(value, clean(value, 60))
+
+
+def finding_risk_label(item):
+    if item.get('severityUnknown') is True:
+        return 'Не оценён'
+    assessment = item.get('severityAssessment')
+    if isinstance(assessment, dict) and assessment.get('level') == 'critical':
+        return 'Критический'
+    return risk_label(item.get('risk'))
 
 
 def list_value(values, fallback='—'):
@@ -105,7 +114,7 @@ def render(snapshot):
     story.append(Paragraph('2. Покрытие и свежесть аудита', heading))
     if coverage:
         rows = [[Paragraph('<b>Отчёт</b>', small), Paragraph('<b>Тип</b>', small), Paragraph('<b>Время</b>', small), Paragraph('<b>Состояние</b>', small)]]
-        for item in coverage[:80]:
+        for item in coverage:
             if not isinstance(item, dict):
                 continue
             state = 'полный, свежий' if item.get('fresh') and not item.get('partial') and item.get('available') else 'частичный, недоступный или устаревший'
@@ -117,12 +126,21 @@ def render(snapshot):
         story.append(Paragraph('Для хоста не найдено отчётов, пригодных для сводки покрытия.', body))
 
     findings = snapshot.get('findings', []) if isinstance(snapshot.get('findings'), list) else []
+    unplanned = snapshot.get('unplannedFindings', []) if isinstance(snapshot.get('unplannedFindings'), list) else []
     story.append(Paragraph('3. Находки и решения', heading))
+    story.append(Paragraph('В плане: %d. Свежих наблюдений вне плана: %d. Неоценённая критичность не означает низкий риск. Оценки Chromium взяты из явно указанного поля в описаниях OVAL; они не являются CVSS или отдельной оценкой Astra.' % (len(findings), len(unplanned)), body))
+    counts = {}
+    for item in unplanned:
+        if isinstance(item, dict):
+            label = finding_risk_label(item)
+            counts[label] = counts.get(label, 0) + 1
+    if counts:
+        story.append(Paragraph('Критичность свежих наблюдений вне плана: ' + esc('; '.join('%s — %d' % (label, count) for label, count in counts.items())) + '.', body))
     if findings:
-        for index, item in enumerate(findings[:120], 1):
+        for index, item in enumerate(findings, 1):
             if not isinstance(item, dict):
                 continue
-            content = [Paragraph(str(index) + '. ' + esc(item.get('title'), 300) + ' <font color="#475569">[' + esc(risk_label(item.get('risk')), 50) + '; ' + esc(item_label(item.get('status')), 80) + ']</font>', subheading),
+            content = [Paragraph(str(index) + '. ' + esc(item.get('title'), 300) + ' <font color="#475569">[' + esc(finding_risk_label(item), 50) + '; ' + esc(item_label(item.get('status')), 80) + ']</font>', subheading),
                        Paragraph('<b>Описание:</b> ' + esc(item.get('description'), 1400), body),
                        Paragraph('<b>Рекомендация:</b> ' + esc(item.get('recommendation'), 1400), body)]
             if item.get('owner') or item.get('dueAt') or item.get('approvalReference'):
@@ -141,17 +159,29 @@ def render(snapshot):
     else:
         story.append(Paragraph('Пункты плана устранения не зафиксированы. Это не означает отсутствия уязвимостей: проверьте раздел покрытия и исходные отчёты.', body))
 
-    unplanned = snapshot.get('unplannedFindings', []) if isinstance(snapshot.get('unplannedFindings'), list) else []
     if unplanned:
         story.append(Paragraph('Непереведённые в план свежие наблюдения', subheading))
-        for item in unplanned[:80]:
-            if isinstance(item, dict):
-                story.append(Paragraph('• ' + esc(item.get('title'), 300) + ' [' + esc(risk_label(item.get('risk')), 50) + ']. ' + esc(item.get('recommendation'), 800), body))
+        recommendations = list(dict.fromkeys(clean(item.get('recommendation'), 800) for item in unplanned if isinstance(item, dict)))
+        for recommendation in recommendations:
+            story.append(Paragraph('Рекомендация: ' + esc(recommendation, 800), body))
+        # Batches keep ReportLab table splitting bounded while including every
+        # observation. Full descriptions and source IDs remain in the snapshot.
+        for start in range(0, len(unplanned), 100):
+            rows = [[Paragraph('<b>№</b>', small), Paragraph('<b>Наблюдение / CVE</b>', small), Paragraph('<b>Критичность</b>', small), Paragraph('<b>Источник оценки</b>', small)]]
+            for index, item in enumerate(unplanned[start:start + 100], start + 1):
+                if not isinstance(item, dict):
+                    continue
+                assessment = item.get('severityAssessment') or {}
+                origin = {'chromium_description': 'Chromium, описание OVAL', 'oval_metadata': 'Метаданные OVAL'}.get(assessment.get('source'), 'Исходный отчёт' if not item.get('severityUnknown') else 'Не предоставлен')
+                rows.append([Paragraph(str(index), small), Paragraph(esc(item.get('title'), 500), small), Paragraph(esc(finding_risk_label(item)), small), Paragraph(esc(origin), small)])
+            observations_table = Table(rows, colWidths=(12 * mm, 96 * mm, 30 * mm, 40 * mm), repeatRows=1)
+            observations_table.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#dbeafe')), ('LINEBELOW', (0, 0), (-1, -1), 0.25, colors.HexColor('#cbd5e1')), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 4), ('RIGHTPADDING', (0, 0), (-1, -1), 4), ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4)]))
+            story.append(observations_table)
 
     transactions = snapshot.get('transactions', []) if isinstance(snapshot.get('transactions'), list) else []
     story.append(Paragraph('4. Выполненные управляемые изменения', heading))
     if transactions:
-        for transaction in transactions[:80]:
+        for transaction in transactions:
             if not isinstance(transaction, dict):
                 continue
             story.append(Paragraph('<b>' + esc(transaction.get('action'), 180) + '</b> — ' + esc(transaction.get('status'), 80) + '. Основание: ' + esc(transaction.get('reason'), 900) + '. Исходный/повторный отчёт: ' + esc(transaction.get('preAuditReportId')) + ' / ' + esc(transaction.get('postAuditReportId')) + '.', body))
@@ -165,7 +195,7 @@ def render(snapshot):
     manifest = snapshot.get('sourceManifest', []) if isinstance(snapshot.get('sourceManifest'), list) else []
     if manifest:
         story.append(Paragraph('Исходные отчёты', subheading))
-        for item in manifest[:150]:
+        for item in manifest:
             if isinstance(item, dict):
                 story.append(Paragraph('• ' + esc(item.get('id'), 130) + ' · ' + esc(item.get('mode'), 80) + ' · ' + esc(item.get('createdAt'), 100) + ' · SHA-256 ' + esc(item.get('sha256'), 90), small))
 

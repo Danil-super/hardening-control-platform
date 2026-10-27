@@ -1,11 +1,14 @@
-import { Activity, AlertTriangle, FileText, Server, ShieldCheck } from "lucide-react";
+import { AlertTriangle, FileText, Server, ShieldCheck } from "lucide-react";
 import Link from "next/link";
 import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { DeleteRecordButton } from "@/components/reports/delete-record-button";
+import { ArchiveControls } from "@/components/reports/archive-controls";
 import { readIncidents } from "@/lib/ansible-control";
 import { verifyAuditChain } from "@/lib/state-store";
-import { listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
+import { listAnsibleReports, targetAliasFromReport, type AnsibleReportSummary } from "@/lib/ansible-reports";
+
+import { incidentDisplayStatus } from "@/lib/incident-status";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -29,6 +32,19 @@ function scoreTone(score: number | null) {
     return "border-amber-400/40 bg-amber-500/15 text-amber-100";
   }
   return "border-red-400/40 bg-red-500/15 text-red-100";
+}
+
+function reportResultLabel(report: AnsibleReportSummary) {
+  if (!report.reportTimeValid) return "Некорректная дата";
+  if (!report.available) return "Не выполнена";
+  if (report.partial) return "Частичный результат";
+  return "Завершена";
+}
+
+function reportResultTone(report: AnsibleReportSummary) {
+  return report.partial || !report.available || !report.reportTimeValid
+    ? "border-amber-400/40 bg-amber-500/15 text-amber-100"
+    : "border-slate-700 bg-slate-900 text-slate-300";
 }
 
 function reportModeLabel(mode: string) {
@@ -77,6 +93,7 @@ function actionLabel(action: string) {
     networkPortScan: "Проверка портов",
     lynisTemporaryAudit: "Проверка Lynis",
     openScapAudit: "Проверка OpenSCAP",
+    astraOvalAudit: "CVE Astra — OVAL",
     closePort: "Закрытие порта",
     blockIp: "Блокировка IP",
   };
@@ -84,33 +101,26 @@ function actionLabel(action: string) {
 }
 
 function CommandCell({ value }: { value: string }) {
-  return (
-    <details className="group">
-      <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">
-        <code className="block break-all rounded-md bg-slate-900 px-2 py-1 text-xs leading-5 text-slate-300 line-clamp-2 group-open:hidden" title={value}>
-          {value}
-        </code>
-        <span className="mt-1 block text-xs text-slate-500 group-open:hidden">Показать команду полностью</span>
-      </summary>
-      <code className="hidden break-all whitespace-pre-wrap rounded-md bg-slate-900 px-2 py-1 text-xs leading-5 text-slate-300 group-open:block">
-        {value}
-      </code>
-    </details>
-  );
+  return <details className="mt-2"><summary className="cursor-pointer text-xs text-sky-200">Технические подробности</summary>
+    <code className="mt-2 block max-h-60 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-slate-900 p-3 text-xs leading-5 text-slate-400">{value}</code>
+  </details>;
 }
 
 export default async function AgentlessReportsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ host?: string }>;
+  searchParams: Promise<{ host?: string; view?: string; journal?: string }>;
 }) {
-  const { host: requestedHost } = await searchParams;
+  const { host: requestedHost, view, journal } = await searchParams;
+  const reportView = view === "archive" ? "archive" : "active";
+  const journalView = journal === "archive" ? "archive" : "active";
   const hostFilter = requestedHost && /^[a-zA-Z0-9_.-]{1,64}$/.test(requestedHost) ? requestedHost : null;
-  const reports = listAnsibleReports();
+  const reports = listAnsibleReports(reportView);
   const scopedReports = hostFilter
     ? reports.filter((report) => targetAliasFromReport(report) === hostFilter)
     : reports;
-  const incidents = readIncidents();
+  const incidents = readIncidents(journalView);
+  const viewHref = (nextReportView: string, nextJournalView: string) => `/reports/agentless?${new URLSearchParams({ ...(hostFilter ? { host: hostFilter } : {}), view: nextReportView, journal: nextJournalView })}`;
   const auditIntegrity = verifyAuditChain();
   const auditReports = scopedReports.filter((report) => report.mode === "agentless");
   const latestAuditsByHost = new Map<string, (typeof auditReports)[number]>();
@@ -134,20 +144,12 @@ export default async function AgentlessReportsPage({
     const mainAudit = hostReports.find((report) => report.mode === "agentless" && report.reportTimeValid) ?? null;
     return { host, hostReports, latestReport, mainAudit };
   });
-  const scores = latestAudits
-    .map((report) => report.score)
-    .filter((score): score is number => typeof score === "number");
-  const matchingProfiles = new Set(latestAudits.map((report) => report.profileId)).size === 1;
-  const averageScore = scores.length && scores.length === latestAudits.length && matchingProfiles
-    ? Math.round(scores.reduce((sum, score) => sum + score, 0) / scores.length)
-    : null;
-
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">История проверок</p>
-          <h1 className="mt-2 text-3xl font-semibold text-white">Отчёты</h1>
+          <h1 className="mt-2 text-3xl font-semibold text-white">{reportView === "archive" ? "Архив отчётов" : "Отчёты"}</h1>
           <p className="mt-2 max-w-3xl text-slate-400">
             {hostFilter
               ? `История всех запусков для хоста ${hostFilter}.`
@@ -155,16 +157,17 @@ export default async function AgentlessReportsPage({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {hostFilter ? <LinkButton href="/reports/agentless" variant="secondary">Все хосты</LinkButton> : null}
+          <LinkButton href={viewHref(reportView === "archive" ? "active" : "archive", journalView)} prefetch={false} variant="secondary">{reportView === "archive" ? "Активные отчёты" : "Архив отчётов"}</LinkButton>
+          <ArchiveControls key={reportView} target="reports" archived={reportView === "archive"} />
+          {hostFilter ? <LinkButton href={`/reports/agentless?view=${reportView}&journal=${journalView}`} variant="secondary">Все хосты</LinkButton> : null}
           {hostFilter ? <LinkButton href={`/reports/correlation/${encodeURIComponent(hostFilter)}`} variant="secondary">Единая сводка</LinkButton> : null}
           <LinkButton href="/hosts" variant="secondary">Открыть хосты</LinkButton>
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
         <SummaryCard label="Всего отчётов" value={scopedReports.length} detail={hostFilter ? "По выбранному хосту" : "Сохранённые результаты"} icon={<FileText size={18} />} />
-        <SummaryCard label="Аудиты" value={auditReports.length} detail="С проблемами и оценкой" icon={<ShieldCheck size={18} />} />
-        <SummaryCard label="Выполнение правил" value={averageScore === null ? "нет общей оценки" : `${averageScore}%`} detail="Полные аудиты одного профиля; не вероятность защиты" icon={<Activity size={18} />} />
+        <SummaryCard label="Аудиты" value={auditReports.length} detail="Проверки конфигурации" icon={<ShieldCheck size={18} />} />
         <SummaryCard label="Высокие риски" value={latestAudits.reduce((sum, report) => sum + report.high, 0)} detail="В последних аудитах" icon={<AlertTriangle size={18} />} />
       </div>
 
@@ -181,7 +184,7 @@ export default async function AgentlessReportsPage({
                 <tr>
                   <th className="px-4 py-3">Хост / отчёт</th>
                   <th className="px-4 py-3">Тип</th>
-                  <th className="px-4 py-3">Оценка</th>
+                  <th className="px-4 py-3">Результат</th>
                   <th className="px-4 py-3">Риски</th>
                   <th className="px-4 py-3">Данные</th>
                   <th className="px-4 py-3">Дата</th>
@@ -205,13 +208,13 @@ export default async function AgentlessReportsPage({
                       <p className="mt-1 text-xs text-slate-500">{report.profileId ?? "без профиля"}</p>
                     </td>
                     <td className="px-4 py-4">
-                      <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${scoreTone(report.score)}`}>
-                        {report.partial ? "частичный результат" : !report.reportTimeValid ? "некорректная дата" : report.score === null ? "без общей оценки" : `${report.score}%`}
+                      <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${reportResultTone(report)}`}>
+                        {reportResultLabel(report)}
                       </span>
-                      {report.mode === "lynis" ? <p className="mt-1 text-xs text-slate-500">индекс Lynis</p> : null}
+                      {report.mode === "lynis" ? <p className="mt-2 text-xs text-slate-400">Индекс Lynis: <span className={`inline-flex rounded-md border px-2 py-1 font-semibold ${scoreTone(report.score)}`}>{report.score === null ? "не рассчитан" : `${report.score}/100`}</span></p> : null}
                     </td>
                     <td className="px-4 py-4 text-xs text-slate-300">
-                      {report.findingsCount ? (
+                      {report.mode === "lynis" ? <div className="space-y-1 text-xs"><p className="text-amber-100">Предупреждения: {report.lynisWarnings ?? 0}</p><p className="text-slate-300">Советы: {report.lynisSuggestions ?? 0}</p><p className="text-slate-500">Критичность не указана Lynis</p></div> : report.findingsCount ? (
                         <div className="grid grid-cols-4 gap-1">
                           <span className="rounded-md bg-red-500/15 px-2 py-1 text-red-100">H {report.high}</span>
                           <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-100">M {report.medium}</span>
@@ -223,19 +226,20 @@ export default async function AgentlessReportsPage({
                       )}
                     </td>
                     <td className="px-4 py-4 text-slate-300">
-                      <p>Проблем: {report.findingsCount}</p>
+                      <p>{report.mode === "lynis" ? "Пунктов" : "Проблем"}: {report.findingsCount}</p>
                       <p className="mt-1 text-xs text-slate-500">Событий: {report.eventsCount}</p>
                     </td>
                     <td className="px-4 py-4 text-slate-300">{formatDate(report.createdAt ?? report.modifiedAt)}</td>
                     <td className="px-4 py-4">
                       <div className="flex flex-wrap gap-2">
                         <LinkButton href={`/reports/agentless/${encodeURIComponent(report.id)}`} variant="secondary">Открыть</LinkButton>
-                        <DeleteRecordButton
+                        {reportView === "active" ? <DeleteRecordButton
                           endpoint={`/api/ansible/reports/${encodeURIComponent(report.id)}`}
+                          dependenciesEndpoint={`/api/ansible/reports/${encodeURIComponent(report.id)}?dependencies=1`}
                           body={{ confirmReportId: report.id }}
                           confirmation={`Удалить отчёт «${report.fileName}»? Если он не используется другими сохранёнными результатами, будет удалён и связанный SBOM. Журнал действий и итоговые PDF не изменятся.`}
                           label="Удалить"
-                        />
+                        /> : <span className="text-xs text-slate-500">В архиве · доказательства сохранены</span>}
                       </div>
                     </td>
                   </tr>
@@ -259,7 +263,7 @@ export default async function AgentlessReportsPage({
                 <thead className="border-b border-slate-800 bg-slate-900/70 text-xs uppercase text-slate-500">
                   <tr>
                     <th className="px-4 py-3">Хост</th>
-                    <th className="px-4 py-3">Основная оценка</th>
+                    <th className="px-4 py-3">Основной аудит</th>
                     <th className="px-4 py-3">Последний тест</th>
                     <th className="px-4 py-3">Тестов</th>
                     <th className="px-4 py-3">Действие</th>
@@ -269,7 +273,7 @@ export default async function AgentlessReportsPage({
                   {hostRows.map(({ host, hostReports, latestReport, mainAudit }) => (
                     <tr key={host} className="align-top">
                       <td className="px-4 py-4">
-                        <Link href={`/reports/agentless?host=${encodeURIComponent(host)}`} className="inline-flex items-start gap-3 rounded-md text-left outline-none transition hover:text-sky-200 focus:ring-2 focus:ring-sky-300">
+                        <Link href={`/reports/agentless?host=${encodeURIComponent(host)}&view=${reportView}&journal=${journalView}`} className="inline-flex items-start gap-3 rounded-md text-left outline-none transition hover:text-sky-200 focus:ring-2 focus:ring-sky-300">
                           <Server size={18} className="mt-0.5 text-sky-200" aria-hidden="true" />
                           <span>
                             <span className="block font-semibold text-white">{host}</span>
@@ -280,8 +284,8 @@ export default async function AgentlessReportsPage({
                       <td className="px-4 py-4">
                         {mainAudit ? (
                           <>
-                            <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${scoreTone(mainAudit.score)}`}>
-                              {mainAudit.score === null ? "нет score" : `${mainAudit.score}%`}
+                            <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${reportResultTone(mainAudit)}`}>
+                              {reportResultLabel(mainAudit)}
                             </span>
                             <p className="mt-1 text-xs text-slate-500">agentless-аудит</p>
                           </>
@@ -295,7 +299,7 @@ export default async function AgentlessReportsPage({
                       <td className="px-4 py-4">
                         <div className="flex flex-wrap gap-2">
                           <LinkButton href={`/reports/correlation/${encodeURIComponent(host)}`} variant="secondary">Сводка</LinkButton>
-                          <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host)}`} variant="secondary">Все тесты ({hostReports.length})</LinkButton>
+                          <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host)}&view=${reportView}&journal=${journalView}`} variant="secondary">Все тесты ({hostReports.length})</LinkButton>
                         </div>
                       </td>
                     </tr>
@@ -315,8 +319,9 @@ export default async function AgentlessReportsPage({
         <div className="flex flex-col gap-2 border-b border-slate-800 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">Журнал действий</h2>
-            <p className="mt-1 text-sm text-slate-400">Нельзя изменить или удалить через панель.</p>
+            <p className="mt-1 text-sm text-slate-400">{journalView === "archive" ? "Архив журнала. Полная подписанная история сохранена." : "Очистка убирает записи в архив и сохраняет подписанную историю."}</p>
           </div>
+          <div className="flex flex-wrap gap-2"><LinkButton href={viewHref(reportView, journalView === "archive" ? "active" : "archive")} prefetch={false} variant="secondary">{journalView === "archive" ? "Активный журнал" : "Архив журнала"}</LinkButton><ArchiveControls key={journalView} target="journal" archived={journalView === "archive"} /></div>
           <span className={`inline-flex w-fit rounded-md border px-2 py-1 text-xs font-semibold ${auditIntegrity.valid && auditIntegrity.payloadProtected ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100" : "border-amber-400/30 bg-amber-500/10 text-amber-100"}`}>
             {!auditIntegrity.valid ? "Проверка целостности не пройдена" : auditIntegrity.payloadProtected ? `Цепочка целостна · ${auditIntegrity.entries}` : `Ограниченная проверка · ${auditIntegrity.legacyEntries} старых записей`}
           </span>
@@ -344,7 +349,7 @@ export default async function AgentlessReportsPage({
                   <th className="px-4 py-3">Тип</th>
                   <th className="px-4 py-3">Хост/группа</th>
                   <th className="px-4 py-3">Статус</th>
-                  <th className="px-4 py-3">Команда</th>
+                  <th className="px-4 py-3">Результат</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
@@ -356,15 +361,16 @@ export default async function AgentlessReportsPage({
                     <td className="break-words px-4 py-4 text-slate-300">{incident.limit ?? "Все хосты"}</td>
                     <td className="px-4 py-4">
                       <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${
-                        incident.status === "success"
+                        incidentDisplayStatus(incident) === "success"
                           ? "border-emerald-400/40 bg-emerald-500/15 text-emerald-100"
-                          : "border-red-400/40 bg-red-500/15 text-red-100"
+                          : incidentDisplayStatus(incident) === "partial" ? "border-amber-400/40 bg-amber-500/15 text-amber-100" : "border-red-400/40 bg-red-500/15 text-red-100"
                       }`}>
-                        {incident.status === "success" ? "успешно" : "ошибка"}
+                        {incidentDisplayStatus(incident) === "success" ? "успешно" : incidentDisplayStatus(incident) === "partial" ? "частичный результат" : "ошибка"}
                       </span>
                     </td>
                     <td className="px-4 py-4">
-                      <CommandCell value={incident.command ?? incident.message} />
+                      <p className="break-words text-sm leading-6 text-slate-300">{incident.message}</p>
+                      {incident.command ? <CommandCell value={incident.command} /> : null}
                     </td>
                   </tr>
                 ))}

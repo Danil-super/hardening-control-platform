@@ -490,30 +490,26 @@ def lynis_report(args: argparse.Namespace) -> dict[str, Any]:
         read_error = ""
 
     findings: list[dict[str, Any]] = []
-    for value in values_from_lynis_report(content, "warning"):
-        rule, _, detail = value.partition("|")
-        findings.append(finding(
-            identifier=f"lynis_warning_{rule or len(findings)}",
-            title=f"Lynis warning: {rule or value}",
-            risk="medium",
-            status="failed",
-            source="lynis",
-            description="Lynis отметил настройку, которую необходимо проверить перед исправлением.",
-            recommendation="Оцените рекомендацию Lynis, влияние на роль сервера и применяйте изменение отдельным approval-playbook.",
-            evidence=detail or value,
-        ))
-    for value in values_from_lynis_report(content, "suggestion"):
-        rule, _, detail = value.partition("|")
-        findings.append(finding(
-            identifier=f"lynis_suggestion_{rule or len(findings)}",
-            title=f"Lynis suggestion: {rule or value}",
-            risk="low",
-            status="manual",
-            source="lynis",
-            description="Lynis предложил дополнительное усиление конфигурации.",
-            recommendation="Проверьте применимость рекомендации для этой роли сервера.",
-            evidence=detail or value,
-        ))
+    seen: dict[str, int] = {}
+    for kind in ("warning", "suggestion"):
+        for value in values_from_lynis_report(content, kind):
+            parts = value.split("|")
+            rule = parts[0] or "LYNIS"
+            message, details, solution = [(parts[i] if len(parts) > i and parts[i] != "-" else "") for i in (1, 2, 3)]
+            digest = hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+            base_id = f"lynis_{kind}_{rule}_{digest}"
+            seen[base_id] = seen.get(base_id, 0) + 1
+            item = finding(
+                identifier=base_id if seen[base_id] == 1 else f"{base_id}_{seen[base_id]}",
+                title=f"Lynis {'предупреждение' if kind == 'warning' else 'рекомендация'}: {rule}",
+                risk="info", status="manual", source="lynis",
+                description=message or "Lynis не сохранил текст наблюдения.",
+                recommendation="Сверьте сообщение с описанием правила и назначением хоста. Оригинальные контекст и предложение Lynis сохранены отдельно.",
+                evidence="|".join(parts[1:]) or value,
+            )
+            item["severityUnknown"] = True
+            item["lynis"] = {"ruleId": rule, "kind": kind, "message": message, "details": details, "solution": solution, "rawRecord": value}
+            findings.append(item)
 
     if args.exit_code != 0:
         findings.append(finding(
@@ -704,19 +700,27 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
         ))
 
     partial = not findings or args.exit_code not in {0, 2} or any(item["status"] == "manual" for item in findings)
+    partial_reasons = []
     if not findings:
+        reason = (f"OpenSCAP отметил {result_counts['notapplicable']} правил как неприменимые к хосту. Проверьте соответствие профиля ОС и определение платформы CPE; настройки хоста не оценены."
+                  if result_counts.get("notapplicable") else "Пустой результат не означает соответствие: выбранный профиль или ARF нужно проверить вручную.")
+        partial_reasons.append(reason)
         findings.append(finding(
             identifier="openscap_no_rule_results",
             title="OpenSCAP не вернул оцениваемые правила",
             risk="info",
             status="manual",
             source="openscap",
-            description="Пустой результат не означает соответствие: выбранный профиль или ARF нужно проверить вручную.",
+            description=reason,
             recommendation="Проверьте идентификатор профиля командой oscap info и повторите проверку.",
             evidence=f"exit={args.exit_code}",
         ))
     if args.exit_code not in {0, 2}:
         findings.append(incomplete_finding("openscap", f"exit={args.exit_code}; oscap eval did not complete successfully"))
+        partial_reasons.append(f"OpenSCAP не завершил оценку профиля: код завершения {args.exit_code}.")
+    unresolved = sum(count for status, count in result_counts.items() if status not in {"pass", "fail", "notapplicable", "notselected", "informational"})
+    if unresolved:
+        partial_reasons.append(f"OpenSCAP не смог однозначно оценить правил: {unresolved}. Подробности приведены в результатах этих правил.")
 
     return base_report(
         args,
@@ -725,6 +729,7 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
         findings,
         available=True,
         partial=partial,
+        partialReasons=partial_reasons,
         ruleResultCounts=result_counts,
         profile=args.profile,
         datastream=args.datastream,
@@ -736,6 +741,7 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def openscap_unavailable(args: argparse.Namespace) -> dict[str, Any]:
+    reason = args.reason or "На хосте или control node не выполнены условия для точной SCAP-проверки."
     return base_report(
         args,
         "openscap",
@@ -746,14 +752,15 @@ def openscap_unavailable(args: argparse.Namespace) -> dict[str, Any]:
             risk="info",
             status="manual",
             source="openscap",
-            description=args.reason or "На хосте или control node не выполнены условия для точной SCAP-проверки.",
-            recommendation="Подготовьте oscap и SSG datastream на целевой ВМ, явно задайте HCP_OPENSCAP_DATASTREAM и HCP_OPENSCAP_PROFILE, затем повторите аудит.",
+            description=reason,
+            recommendation="В разделе «OpenSCAP и исключения» назначьте группе хоста профиль: для Astra доступен встроенный базовый набор HCP, для других ОС — подходящий SCAP datastream. На целевом хосте нужен oscap; встроенный профиль Astra также требует SCE. Затем повторите проверку с правами sudo.",
         )],
         available=False,
         profile=args.profile,
         datastream=args.datastream,
         policyGroup=args.policy_group or "environment",
         reason=args.reason or None,
+        partialReasons=[reason],
     )
 
 
@@ -762,6 +769,19 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
         root = element_tree.parse(args.input).getroot()
     except (OSError, element_tree.ParseError) as error:
         raise ValueError("Не удалось прочитать XML-отчёт Greenbone. Экспортируйте report XML повторно.") from error
+
+    anonymous_format_id = "5057e5cc-b825-11e4-9d0e-28d24461215b"
+    for element in root.iter():
+        is_anonymous = (
+            local_name(element) == "report" and element.get("format_id", "").lower() == anonymous_format_id
+        ) or (
+            local_name(element) == "report_format" and (
+                element.get("id", "").lower() == anonymous_format_id
+                or child_text(element, "name").casefold() == "anonymous xml"
+            )
+        )
+        if is_anonymous:
+            raise ValueError("Загружен Anonymous XML — обезличенный отчёт Greenbone: адреса хостов заменены. Скачайте тот же отчёт в формате XML без обезличивания. Повторное сканирование не требуется.")
 
     # Only consume direct results of one report; never merge delta/previous
     # reports or assign another host's results to the selected inventory host.

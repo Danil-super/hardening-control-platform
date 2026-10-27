@@ -200,7 +200,7 @@ export async function POST(request: Request) {
       }
     } catch (error) {
       return NextResponse.json(
-        { ok: false, error: "openscap_policy_ambiguous", message: error instanceof Error ? error.message : "Не удалось выбрать OpenSCAP-профиль." },
+        { ok: false, error: error instanceof Error && "code" in error && error.code === "openscap_profile_missing" ? "openscap_profile_missing" : "openscap_policy_ambiguous", message: error instanceof Error ? error.message : "Не удалось выбрать OpenSCAP-профиль." },
         { status: 400 },
       );
     }
@@ -251,7 +251,7 @@ export async function POST(request: Request) {
     appendIncident({
       action,
       kind: "audit",
-      status: outcome.partial ? "failed" : "success",
+      status: outcome.partial ? "partial" : "success",
       profileId,
       limit: limit || null,
       message: auditMessage,

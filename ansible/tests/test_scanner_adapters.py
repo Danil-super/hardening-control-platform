@@ -204,10 +204,27 @@ class ScannerAdaptersTest(unittest.TestCase):
     def test_lynis_preserves_all_warnings(self):
         content = "lynis_version=3.1.6\nhardening_index=64\nfinish=true\n" + "\n".join(f"warning[]=TEST-{i}|Evidence {i}|" for i in range(100))
         report = self.parse_file(content, scanner.lynis_report)
-        self.assertEqual(report["summary"]["medium"], 100)
+        self.assertEqual(len(report["findings"]), 100)
+        self.assertEqual(report["summary"]["medium"], 0)
+        self.assertTrue(all(item["severityUnknown"] for item in report["findings"]))
         self.assertEqual(report["summary"]["score"], 64)
         self.assertFalse(report["scanner"]["partial"])
         self.assertTrue(report["scanner"]["available"])
+
+    def test_lynis_keeps_source_fields_and_does_not_invent_severity(self):
+        content = "lynis_version=3.0.8\nfinish=true\nwarning[]=NAME-4210|Found BIND version in banner|localhost|text:Mask version|\n"
+        result = self.parse_file(content, scanner.lynis_report)["findings"][0]
+        self.assertTrue(result["severityUnknown"])
+        self.assertEqual(result["status"], "manual")
+        self.assertEqual(result["lynis"]["message"], "Found BIND version in banner")
+        self.assertEqual(result["lynis"]["details"], "localhost")
+        self.assertEqual(result["lynis"]["solution"], "text:Mask version")
+
+    def test_lynis_repeated_rule_retains_distinct_parameter_identities(self):
+        content = "lynis_version=3.0.8\nfinish=true\nsuggestion[]=SSH-7408|Consider hardening SSH configuration|AllowTcpForwarding (set YES to NO)|-|\nsuggestion[]=SSH-7408|Consider hardening SSH configuration|Port (set 22 to )|-|\n"
+        results = self.parse_file(content, scanner.lynis_report)["findings"]
+        self.assertEqual(len(set(item["id"] for item in results)), 2)
+        self.assertEqual(results[1]["lynis"]["details"], "Port (set 22 to )")
 
     def test_openscap_uses_rule_result_severity_and_preserves_over_800(self):
         xml = '<TestResult xmlns="http://checklists.nist.gov/xccdf/1.2">' + ''.join(f'<rule-result idref="rule-{i}" severity="high"><result>fail</result></rule-result>' for i in range(850)) + '</TestResult>'
@@ -230,10 +247,20 @@ class ScannerAdaptersTest(unittest.TestCase):
         report = self.parse_file(xml.replace('<result>fail</result>', '<result>notapplicable</result>'), scanner.openscap_arf)
         self.assertTrue(report['scanner']['partial'])
         self.assertEqual(report['scanner']['ruleResultCounts'], {'notapplicable': 1})
+        self.assertIn("неприменим", report['scanner']['partialReasons'][0])
 
     def test_openscap_rule_errors_are_partial(self):
         report = self.parse_file('<TestResult><rule-result idref="rule"><result>error</result></rule-result></TestResult>', scanner.openscap_arf)
         self.assertTrue(report["scanner"]["partial"])
+
+    def test_openscap_missing_configuration_explains_setup_without_claiming_a_scan(self):
+        reason = "Не задан профиль OpenSCAP для группы хоста."
+        report = scanner.openscap_unavailable(arguments(reason=reason, profile=None, datastream=None))
+        self.assertFalse(report["scanner"]["available"])
+        self.assertEqual(report["scanner"]["partialReasons"], [reason])
+        self.assertIn("Astra", report["findings"][0]["recommendation"])
+        self.assertIn("OpenSCAP и исключения", report["findings"][0]["recommendation"])
+        self.assert_no_pass(report)
 
     def test_greenbone_only_selected_host_and_rich_evidence(self):
         content = '<report><scan_run_status>Done</scan_run_status><results>' + greenbone_result() + greenbone_result(host="192.0.2.20", identifier="foreign") + '</results></report>'
@@ -247,6 +274,24 @@ class ScannerAdaptersTest(unittest.TestCase):
         for content in ('<html/>', '<report><results>' + greenbone_result(host="192.0.2.20") + '</results></report>', '<broken'):
             with self.subTest(content=content), self.assertRaises(ValueError):
                 self.parse_file(content, scanner.greenbone_report)
+
+    def test_greenbone_anonymous_export_explains_format_even_when_host_matches(self):
+        inner = '<report><scan_run_status>Done</scan_run_status><results>' + greenbone_result(host="127.0.0.1") + '</results></report>'
+        for metadata in (
+            '<report_format><name>Anonymous XML</name></report_format>',
+            '<report_format id="5057e5cc-b825-11e4-9d0e-28d24461215b"><name>Renamed format</name></report_format>',
+        ):
+            for selected_host in ("192.0.2.10", "127.0.0.1"):
+                with self.subTest(metadata=metadata, host=selected_host), self.assertRaisesRegex(ValueError, "Anonymous XML.*обезличенный"):
+                    self.parse_file('<report>' + metadata + inner + '</report>', scanner.greenbone_report, host=selected_host)
+        with self.assertRaisesRegex(ValueError, "Anonymous XML"):
+            self.parse_file('<report format_id="5057e5cc-b825-11e4-9d0e-28d24461215b">' + inner + '</report>', scanner.greenbone_report)
+
+    def test_greenbone_standard_xml_wrapper_keeps_original_host(self):
+        content = '<report><report_format><name>XML</name></report_format><report><scan_run_status>Done</scan_run_status><results>' + greenbone_result() + '</results></report></report>'
+        report = self.parse_file(content, scanner.greenbone_report)
+        self.assertEqual(report["scanner"]["matchedResults"], 1)
+        self.assertFalse(report["scanner"]["partial"])
 
     def test_greenbone_preserves_over_1000_results(self):
         content = '<report><scan_run_status>Done</scan_run_status><results>' + ''.join(greenbone_result(identifier=str(i)) for i in range(1001)) + '</results></report>'

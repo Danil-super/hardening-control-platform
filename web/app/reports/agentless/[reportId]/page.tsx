@@ -1,10 +1,15 @@
 import { notFound } from "next/navigation";
 import { AlertTriangle, Download, FileText, ListChecks, Server, ShieldCheck } from "lucide-react";
 import { FindingsExplorer } from "@/components/findings/findings-explorer";
+import { SecurityEventsView } from "@/components/reports/security-events-view";
+import { OvalFindingsView } from "@/components/reports/oval-findings-view";
+import { LynisFindingsView } from "@/components/reports/lynis-findings-view";
 import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { describeIncompleteAuditChecks } from "@/lib/audit-coverage";
 import { readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
+import { describeAstraOvalNextStep } from "@/lib/astra-oval-policy";
+import { auditReportLimitations } from "@/lib/audit-result";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -39,6 +44,9 @@ function profileTitle(profileId: string | null) {
     ssh_security: "SSH-сервер",
     web_server: "Веб-сервер",
     docker_host: "Docker-хост",
+    facts: "Сбор сведений",
+    events: "Сбор событий",
+    packages: "Инвентаризация пакетов",
   };
   return profileId ? titles[profileId] ?? profileId : "без профиля";
 }
@@ -72,19 +80,30 @@ export default async function AgentlessReportDetailPage({
   }
   const targetAlias = targetAliasFromReport(report);
   const raw = asRecord(report.raw);
+  const defaultIpv4 = asRecord(raw.defaultIpv4);
   const packageInventory = asRecord(raw.packageInventory);
   const vulnerabilityScan = asRecord(raw.vulnerabilityScan);
+  const isAstraTrivyReport = report.mode === "vulnerabilities" && report.available && vulnerabilityScan.provider === "Trivy" && /astra/i.test(report.os ?? "");
+  const sourcePackages = isAstraTrivyReport && typeof vulnerabilityScan.sourcePackageReportId === "string" ? readAnsibleReport(vulnerabilityScan.sourcePackageReportId) : null;
+  const astraVersion = asRecord(asRecord(sourcePackages?.raw).packageInventory).astraVersion;
+  const astraNextStep = isAstraTrivyReport ? describeAstraOvalNextStep(targetAlias, typeof astraVersion === "string" ? astraVersion : null) : null;
   const trivyFreshness = asRecord(vulnerabilityScan.databaseFreshness);
   const scanner = asRecord(raw.scanner);
   const incompleteChecks = describeIncompleteAuditChecks(scanner.incompleteChecks);
+  const scannerPartialReasons = auditReportLimitations(report.raw);
   const ovalDatabase = asRecord(scanner.database);
   const ovalIdentity = asRecord(scanner.hostIdentity);
+  const ovalValidation = asRecord(scanner.sourceValidation);
   const ovalDefinitions = Array.isArray(scanner.definitionResults) ? scanner.definitionResults.map(asRecord) : [];
   const vendorAssessment = asRecord(vulnerabilityScan.vendorAssessment);
   const vendorStatuses = Object.entries(asRecord(vendorAssessment.statuses))
     .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
     .map(([status, count]) => `${status}: ${count}`);
   const isLynisReport = report.mode === "lynis";
+  const isOvalReport = report.mode === "astra-oval";
+  const ovalFindings = report.findings.filter((finding) => finding.status === "failed");
+  const ovalCritical = ovalFindings.filter((finding) => finding.severityAssessment?.level === "critical").length;
+  const ovalUnknown = ovalFindings.filter((finding) => finding.severityUnknown).length;
   const isOpenScapReport = report.mode === "openscap";
   const isNmapReport = report.mode === "nmap";
   const freshnessLabels: Record<string, string> = { fresh: "актуальна", stale: "устарела", missing: "отсутствует", unknown: "актуальность неизвестна" };
@@ -99,8 +118,8 @@ export default async function AgentlessReportDetailPage({
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-        <div>
-          <h1 className="text-3xl font-semibold text-white">{report.host}</h1>
+        <div className="min-w-0">
+          <h1 className="break-words text-3xl font-semibold text-white">{report.host}</h1>
           <p className="mt-2 max-w-3xl text-slate-400">
             {reportModeTitle(report.mode)} ·{" "}
             {formatDate(report.createdAt ?? report.modifiedAt)}
@@ -109,7 +128,7 @@ export default async function AgentlessReportDetailPage({
         <div className="flex flex-wrap gap-3">
           <LinkButton href={`/reports/agentless?host=${encodeURIComponent(targetAlias)}`} variant="secondary">История хоста</LinkButton>
           <LinkButton href={`/reports/correlation/${encodeURIComponent(targetAlias)}`} variant="secondary">Единая сводка</LinkButton>
-          <LinkButton href={`/remediation-plan?host=${encodeURIComponent(targetAlias)}`}>Выбрать изменения</LinkButton>
+          {["facts", "events", "packages"].includes(report.mode) ? <LinkButton href="/hosts">Перейти к проверкам</LinkButton> : <LinkButton href={`/remediation-plan?host=${encodeURIComponent(targetAlias)}`}>Выбрать изменения</LinkButton>}
           <LinkButton href={`/api/ansible/reports/${encodeURIComponent(report.id)}`} variant="secondary">
             <Download size={16} aria-hidden="true" />
             JSON
@@ -135,7 +154,7 @@ export default async function AgentlessReportDetailPage({
           </div>
           <div>
             <p className="text-xs font-semibold uppercase text-slate-500">Источник</p>
-            <p className="mt-2 text-sm text-slate-300">Control node Ansible</p>
+            <p className="mt-2 text-sm text-slate-300">{vulnerabilityScan.provider === "Trivy" ? "Trivy на управляющей машине" : "Control node Ansible"}</p>
           </div>
         </div>
       </section>
@@ -144,8 +163,8 @@ export default async function AgentlessReportDetailPage({
         <section role="status" className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-6 text-amber-100">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
-              <p className="font-semibold">{report.available ? "Проверка неполная" : "Сканер не выполнил проверку"}</p>
-              <p className="mt-1">{!report.reportTimeValid ? "Дата отчёта некорректна: его нельзя использовать как актуальное свидетельство." : "Часть контролей не дала достоверный ответ. Поэтому отсутствие находок и общая оценка не означают, что хост защищён."}</p>
+              <p className="font-semibold">{!report.available ? "Сканер не выполнил проверку" : isAstraTrivyReport ? "Для CVE Astra нужен OVAL-аудит" : "Проверка неполная"}</p>
+              <p className="mt-1">{!report.reportTimeValid ? "Дата отчёта некорректна: его нельзя использовать как актуальное свидетельство." : isAstraTrivyReport ? "Пакеты собраны, но Trivy не поддерживает базу CVE производителя Astra. Даже свежая база Trivy не позволяет подтвердить отсутствие уязвимостей этой ОС." : "Часть контролей не дала достоверный ответ. Поэтому отсутствие находок и общая оценка не означают, что хост защищён."}</p>
             </div>
             {report.mode === "agentless" ? <LinkButton href="/hosts" variant="secondary">Повторить после исправления</LinkButton> : null}
           </div>
@@ -165,8 +184,8 @@ export default async function AgentlessReportDetailPage({
                 ))}
               </ol>
             </div>
-          ) : report.partial ? <p className="mt-3 text-slate-200">Точная причина не записана этим источником. Откройте JSON или технические данные отчёта, устраните ошибку сбора и повторите проверку.</p> : null}
-          {typeof vulnerabilityScan.message === "string" ? <p className="mt-3 text-slate-200">{vulnerabilityScan.message}</p> : null}
+          ) : scannerPartialReasons.length ? <div className="mt-3 text-slate-200"><p className="font-semibold">Причины ограничения</p><ul className="mt-2 list-inside list-disc space-y-1">{scannerPartialReasons.slice(0, 20).map((reason, index) => <li key={index} className="break-words">{reason}</li>)}</ul>{scannerPartialReasons.length > 20 ? <p className="mt-2">Остальные причины доступны в JSON.</p> : null}</div> : report.partial && !isAstraTrivyReport && !vulnerabilityScan.message ? <p className="mt-3 text-slate-200">Точная причина не записана этим источником. Откройте JSON или технические данные отчёта, устраните ошибку сбора и повторите проверку.</p> : null}
+          {astraNextStep ? <div className="mt-3"><p className="text-slate-200">{astraNextStep.message}</p><LinkButton href={astraNextStep.href} variant="secondary" className="mt-3">{astraNextStep.ready ? "Перейти к проверке CVE Astra" : "Исправить OVAL-источник"}</LinkButton></div> : typeof vulnerabilityScan.message === "string" ? <p className="mt-3 text-slate-200">{vulnerabilityScan.message}</p> : null}
         </section>
       ) : null}
 
@@ -180,20 +199,30 @@ export default async function AgentlessReportDetailPage({
         </section>
       ) : null}
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <SummaryCard
-          label={isLynisReport ? "Индекс Lynis" : "Оценка"}
-          value={report.score === null ? "не рассчитана" : isLynisReport ? `${report.score}/100` : `${report.score}%`}
-          detail={report.partial ? "Не рассчитывается, пока есть непроверенные пункты" : isLynisReport ? "Индекс харденинга Lynis" : isOpenScapReport ? "По правилам выбранного профиля" : report.mode === "vulnerabilities" ? "CVE не переводятся в процент защищённости" : "В пределах выполненных проверок"}
-          icon={<ShieldCheck size={18} />}
-        />
+      {report.mode === "facts" || report.mode === "events" ? (
+        <section className="rounded-md border border-sky-400/25 bg-sky-500/5 p-5 text-sm leading-6 text-sky-100">
+          <h2 className="font-semibold">{report.partial || !report.available ? "Полученные данные" : report.mode === "facts" ? "Сведения о хосте собраны" : `Сбор событий завершён · записей: ${report.eventsCount}`}</h2>
+          <p className="mt-1 text-slate-300">{report.mode === "facts" ? "Ansible получил параметры системы, оборудования и сети. Они приведены ниже. Этот тест собирает сведения и не рассчитывает оценку безопасности." : "Ниже — сообщения журналов с пояснениями. Количество событий не является количеством уязвимостей; оценка безопасности в этом тесте не рассчитывается."}</p>
+        </section>
+      ) : isOvalReport ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
+        <SummaryCard label="Уникальных CVE" value={textValue(scanner.uniqueCveCount)} detail={`${ovalFindings.length} срабатываний OVAL`} icon={<ListChecks size={18} />} />
+        <SummaryCard label="Критические" value={ovalCritical} detail="Срабатывания с явной оценкой" icon={<AlertTriangle size={18} />} />
+        <SummaryCard label="Высокие" value={report.high - ovalCritical} detail="Без критических" icon={<AlertTriangle size={18} />} />
+        <SummaryCard label="Средние" value={report.medium} detail="Срабатывания с явной оценкой" icon={<FileText size={18} />} />
+        <SummaryCard label="Риск не оценён" value={ovalUnknown} detail="Критичность неизвестна" icon={<ShieldCheck size={18} />} />
+      </div> : isLynisReport ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <SummaryCard label="Индекс Lynis" value={report.score === null ? "не рассчитан" : `${report.score}/100`} detail="Индекс усиления, не процент безопасности" icon={<ShieldCheck size={18} />} />
+        <SummaryCard label="Предупреждения" value={report.lynisWarnings ?? 0} detail="Требуют проверки применимости" icon={<AlertTriangle size={18} />} />
+        <SummaryCard label="Советы по усилению" value={report.lynisSuggestions ?? 0} detail="Оцените необходимость для роли хоста" icon={<FileText size={18} />} />
+        <SummaryCard label="Сбор данных" value={report.partial ? "Незавершён" : "Завершён"} detail={`Lynis ${textValue(scanner.version)} · ${report.findingsCount} записей`} icon={<ListChecks size={18} />} />
+      </div> : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Высокий" value={report.high} detail="Срочный приоритет" icon={<AlertTriangle size={18} />} />
         <SummaryCard label="Средний" value={report.medium} detail="Плановое действие" icon={<FileText size={18} />} />
         <SummaryCard label="Проверки" value={report.findingsCount} detail="Записи в отчёте" icon={<Server size={18} />} />
         <SummaryCard label="События" value={report.eventsCount} detail="События безопасности" icon={<ListChecks size={18} />} />
-      </div>
+      </div>}
 
-      {report.needsReview && !report.partial ? <p className="text-sm leading-6 text-amber-100">Часть результатов требует ручной оценки. Завершение сбора данных не означает, что все настройки признаны безопасными.</p> : null}
+      {isOvalReport && ovalUnknown > 0 ? <p className="rounded-lg border border-amber-400/25 bg-amber-500/5 p-4 text-sm leading-6 text-amber-100">У {ovalUnknown} срабатываний критичность неизвестна. Оценки Chromium взяты из явно указанного поля в описаниях базы; CVSS не вычислялся. Нули в отдельных категориях не подтверждают отсутствие опасных уязвимостей.</p> : report.needsReview && !report.partial && !isOvalReport ? <p className="text-sm leading-6 text-amber-100">Часть результатов требует ручной оценки. Завершение сбора данных не означает, что все настройки признаны безопасными.</p> : null}
 
       {report.mode === "facts" ? (
         <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
@@ -204,8 +233,13 @@ export default async function AgentlessReportDetailPage({
             <div><p className="text-slate-500">Память</p><p className="mt-1 text-slate-200">{textValue(raw.memoryMb)} MB</p></div>
             <div><p className="text-slate-500">vCPU</p><p className="mt-1 text-slate-200">{textValue(raw.processorCount)}</p></div>
             <div><p className="text-slate-500">Виртуализация</p><p className="mt-1 text-slate-200">{textValue(raw.virtualizationType)}</p></div>
+            <div><p className="text-slate-500">Тип системы</p><p className="mt-1 text-slate-200">{raw.virtualizationRole === "guest" ? "Виртуальная машина" : raw.virtualizationRole === "host" ? "Хост виртуализации" : textValue(raw.virtualizationRole)}</p></div>
             <div><p className="text-slate-500">Интерфейсы</p><p className="mt-1 break-words text-slate-200">{Array.isArray(raw.interfaces) ? raw.interfaces.join(", ") : "нет данных"}</p></div>
           </div>
+          <h3 className="mt-6 font-semibold text-white">Основное сетевое подключение</h3>
+          <dl className="mt-3 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+            {[ ["IPv4-адрес", defaultIpv4.address], ["Маска сети", defaultIpv4.netmask], ["Шлюз", defaultIpv4.gateway], ["Интерфейс", defaultIpv4.interface], ["MAC-адрес", defaultIpv4.macaddress], ["Сеть", defaultIpv4.network], ["MTU", defaultIpv4.mtu] ].map(([label, value]) => <div key={String(label)}><dt className="text-slate-400">{String(label)}</dt><dd className="mt-1 break-words text-slate-200">{textValue(value)}</dd></div>)}
+          </dl>
         </section>
       ) : null}
 
@@ -236,12 +270,14 @@ export default async function AgentlessReportDetailPage({
 
       {report.mode === "astra-oval" ? <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
         <h2 className="text-xl font-semibold text-white">Результат OVAL-аудита Astra</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-400">Оценка относится только к определениям выбранной OVAL-базы. В отчёте зафиксированы реквизиты источника и контрольная сумма; подпись производителя и охват всех известных CVE платформа автоматически не подтверждает.</p>
+        <p className="mt-2 text-sm leading-6 text-slate-300">Проверено {textValue(scanner.evaluatedDefinitionCount)} из {textValue(scanner.definitionCount)} определений. Выпуск хоста: {textValue(ovalIdentity.astraVersion)}. База: {formatDate(typeof ovalDatabase.generatedAt === "string" ? ovalDatabase.generatedAt : null)}.</p>
+        <p className="mt-2 text-sm leading-6 text-slate-400">Результат относится к выбранной базе OVAL. Список ниже содержит сработавшие определения; подробности раскрываются по нажатию на строку.</p>
+        <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-sky-200">Источник базы и технические сведения</summary>
         <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
-          <div><p className="text-slate-500">Уникальных CVE обнаружено</p><p className="mt-1 text-2xl font-semibold text-white">{textValue(scanner.uniqueCveCount)}</p></div>
           <div><p className="text-slate-500">Определений в базе / результатов</p><p className="mt-1 text-slate-200">{textValue(scanner.definitionCount)} / {textValue(scanner.evaluatedDefinitionCount)}</p></div>
           <div><p className="text-slate-500">Выпуск хоста / область базы</p><p className="mt-1 break-words text-slate-200">{textValue(ovalIdentity.astraVersion)} / {textValue(ovalDatabase.releasePattern)}</p></div>
           <div><p className="text-slate-500">Сканер</p><p className="mt-1 break-words text-slate-200">{textValue(scanner.version)}</p></div>
+          {ovalValidation.location === "control_node" ? <div className="sm:col-span-2"><p className="text-slate-500">Проверка XML базы</p><p className="mt-1 text-slate-200">Управляющий узел · XSD: успешно · Schematron: {ovalValidation.schematronExitCode === 0 ? "успешно" : "превышено время проверки"}</p><p className="mt-1 text-xs text-slate-500">{textValue(ovalValidation.validator)}</p></div> : null}
           <div><p className="text-slate-500">База сформирована</p><p className="mt-1 text-slate-200">{formatDate(typeof ovalDatabase.generatedAt === "string" ? ovalDatabase.generatedAt : null)}</p></div>
           <div><p className="text-slate-500">Свежесть / возраст</p><p className="mt-1 text-slate-200">{{ current: "в пределах срока", stale: "устарела", future: "дата в будущем" }[String(ovalDatabase.freshness)] ?? "не подтверждена"} / {textValue(ovalDatabase.ageDays)} дн.</p></div>
           <div className="min-w-0 sm:col-span-2"><p className="text-slate-500">Файл базы / URL</p><p className="mt-1 break-all text-slate-200">{textValue(ovalDatabase.url ?? ovalDatabase.path)}</p></div>
@@ -251,12 +287,13 @@ export default async function AgentlessReportDetailPage({
         </div>
         <p className="mt-4 break-all text-xs leading-5 text-slate-400">SHA-256: {textValue(ovalDatabase.sha256)} · {ovalDatabase.checksumVerified === true ? "совпадает с заданным" : "доверенная сумма не подтверждена"}</p>
         <p className="mt-3 text-sm leading-6 text-slate-400">CVE учитывается при истинном определении класса vulnerability. Результаты других классов сохраняются отдельно. Если база не содержит оценку критичности, CVSS и уровень риска не придумываются.</p>
-        {Array.isArray(scanner.partialReasons) && scanner.partialReasons.length ? <ul className="mt-3 list-disc space-y-1 pl-5 text-sm text-amber-100">{scanner.partialReasons.slice(0, 20).map((reason, index) => <li className="break-words" key={index}>{textValue(reason)}</li>)}{scanner.partialReasons.length > 20 ? <li>Остальные причины доступны в JSON.</li> : null}</ul> : null}
+        <p className="mt-2 text-sm leading-6 text-slate-400">В JSON {report.findingsCount} записей, включая сведения об области оценки. Полнота всех известных CVE и подпись производителя автоматически не подтверждаются.</p>
         {ovalDefinitions.length ? <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-sky-200">Результаты определений ({ovalDefinitions.length})</summary>
           <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[620px] text-left text-xs"><thead><tr className="border-b border-slate-700 text-slate-400"><th className="p-2">Определение</th><th className="p-2">Класс</th><th className="p-2">Результат</th><th className="p-2">Связанные CVE</th></tr></thead>
             <tbody>{ovalDefinitions.slice(0, 100).map((definition, index) => <tr key={index} className="border-b border-slate-800 text-slate-300"><td className="max-w-sm break-words p-2">{textValue(definition.id)}<br />{textValue(definition.title)}</td><td className="p-2">{textValue(definition.class)}</td><td className="p-2">{textValue(definition.result)}</td><td className="max-w-xs break-words p-2">{Array.isArray(definition.cveIds) ? definition.cveIds.join(", ") || "—" : "—"}</td></tr>)}</tbody>
           </table></div><p className="mt-2 text-xs text-slate-500">Показаны первые {Math.min(100, ovalDefinitions.length)} определений. Полные результаты, условия и сведения о пакетах доступны в JSON. Ссылка на CVE сама по себе не означает её обнаружение.</p>
         </details> : null}
+        </details>
       </section> : null}
 
       {isOpenScapReport ? (
@@ -269,13 +306,15 @@ export default async function AgentlessReportDetailPage({
             <div><p className="text-slate-500">Datastream</p><p className="mt-1 break-all text-slate-200">{textValue(scanner.datastream)}</p></div>
             <div><p className="text-slate-500">Контрольная сумма datastream</p><p className="mt-1 break-all text-slate-200">{textValue(scanner.datastreamChecksum)}</p><p className="mt-1 text-xs text-slate-500">Изменён: {fileModifiedDate(scanner.datastreamLastModified)}</p></div>
           </div>
+          <LinkButton href="/policies" variant="secondary" className="mt-3">Настроить профиль OpenSCAP</LinkButton>
           {exceptionsApplied.length ? <p className="mt-4 rounded-md border border-amber-400/25 bg-amber-500/5 px-3 py-2 text-sm leading-6 text-amber-100">Согласованных исключений: {exceptionsApplied.length}. Причина и срок указаны в находках. Исходный результат проверки и уровень риска сохранены.</p> : null}
         </section>
       ) : null}
 
-      {report.findings.length ? (
+      {isLynisReport ? <LynisFindingsView findings={report.findings} reportId={report.id} /> : isOvalReport ? <OvalFindingsView findings={report.findings} reportId={report.id} /> : report.findings.length ? (
         <FindingsExplorer
-          findings={report.findings}
+          reportId={report.id}
+          findings={astraNextStep ? report.findings.map((finding) => finding.id === "trivy_incomplete_coverage" ? { ...finding, recommendation: astraNextStep.message } : finding) : report.findings}
           profileId={report.profileId ?? "basic_linux"}
           hostAlias={targetAlias}
           remediationLinkHref="/hosts"
@@ -284,24 +323,11 @@ export default async function AgentlessReportDetailPage({
         />
       ) : null}
 
-      {report.events.length ? (
-        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <div className="flex items-center gap-3">
-            <ListChecks size={22} className="text-sky-200" aria-hidden="true" />
-            <h2 className="text-xl font-semibold text-white">События безопасности</h2>
-          </div>
-          <div className="mt-4 max-h-[520px] overflow-auto rounded-md border border-slate-800 bg-slate-900/70">
-            {report.events.map((event, index) => (
-              <div key={`${event.source ?? "event"}-${index}`} className="border-b border-slate-800 p-4 text-sm last:border-b-0">
-                <p className="font-semibold text-slate-200">{event.source ?? "source"}</p>
-                <p className="mt-2 break-words leading-6 text-slate-400">{event.message ?? "Пустое событие"}</p>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
+      {report.events.length ? <SecurityEventsView events={report.events} /> : null}
 
-      {!report.findings.length && !report.events.length ? (
+      {report.mode === "events" && !report.events.length ? <p className="rounded-md border border-slate-800 p-5 text-sm text-slate-300">В доступной выборке журналов подходящих событий нет. Этот результат относится только к прочитанным журналам.</p> : null}
+
+      {!report.findings.length && !report.events.length && !["facts", "events", "packages"].includes(report.mode) ? (
         <section className="rounded-md border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-6 text-amber-100">
           В отчёте нет записей о находках и событиях. Объём и полноту проверки уточняйте по статусу отчёта и исходному JSON.
         </section>

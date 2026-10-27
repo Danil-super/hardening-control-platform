@@ -2,7 +2,8 @@ import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } fro
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { getReportsDir, listAnsibleReports } from "@/lib/ansible-reports";
+import { getReportsDir, listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
+import { buildHostRiskSummary, isSecurityAudit, type HostRiskSummary } from "@/lib/host-risk-summary";
 import { isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 import { HostCredentialError, credentialKeyPath, publicCredentialSummary, validateHostCredential } from "@/lib/host-credentials";
 import { hasActiveRemediationForHost } from "@/lib/state-store";
@@ -21,6 +22,7 @@ type InventoryHost = {
   credentialId: string | null;
   lastReport: HostReport | null;
   reportCount: number;
+  riskSummary?: HostRiskSummary;
 };
 
 type HostReport = {
@@ -260,14 +262,13 @@ function attachReports(hosts: InventoryHost[], reportsPath: string) {
   const reports = listAnsibleReports();
 
   return hosts.map((host) => {
-    const hostReports = reports.filter((report) => (report.inventoryHost ?? report.host) === host.alias);
-    // The host score is a hardening score. Package CVE and event reports have
-    // different semantics and must not replace it merely because they are newer.
-    const reportFile = hostReports.find((report) => report.mode === "agentless");
+    const hostReports = reports.filter((report) => targetAliasFromReport(report) === host.alias);
+    const reportFile = hostReports.find((report) => report.reportTimeValid && isSecurityAudit(report.mode));
     return {
       ...host,
       lastReport: reportFile ?? null,
       reportCount: hostReports.length,
+      riskSummary: buildHostRiskSummary(host.alias, reports),
     };
   });
 }

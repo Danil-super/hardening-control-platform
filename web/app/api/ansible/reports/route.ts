@@ -4,8 +4,8 @@ import { getReportsDir, listAnsibleReports } from "@/lib/ansible-reports";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
-  const reports = listAnsibleReports();
+export async function GET(request: Request) {
+  const reports = listAnsibleReports(new URL(request.url).searchParams.get("view") === "archive" ? "archive" : "active");
   const auditReports = reports.filter((report) => report.findingsCount > 0);
   const eventReports = reports.filter((report) => report.mode === "events" || report.eventsCount > 0);
   const scores = auditReports

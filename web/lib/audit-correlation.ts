@@ -1,5 +1,6 @@
 import { listAnsibleReports, readAnsibleReport, targetAliasFromReport, reportTimestamp, type AnsibleReportSummary } from "@/lib/ansible-reports";
 import type { Finding, FindingSource, RiskLevel } from "@/types";
+import { statSync } from "node:fs";
 
 export type CorrelationEvidence = {
   source: FindingSource;
@@ -19,6 +20,7 @@ export type CorrelatedFinding = {
   category: string;
   risk: RiskLevel;
   severityUnknown: boolean;
+  severityAssessment?: Finding["severityAssessment"];
   status: Finding["status"];
   confidence: "observed" | "manual";
   sources: CorrelationEvidence[];
@@ -42,7 +44,7 @@ function safeHostAlias(value: string) {
   return /^[a-zA-Z0-9_.:-]{1,96}$/.test(value);
 }
 
-function maxAgeHours() {
+export function correlationMaxAgeHours() {
   const requested = Number(process.env.HCP_CORRELATION_MAX_AGE_HOURS ?? "168");
   return Number.isFinite(requested) ? Math.min(24 * 90, Math.max(1, Math.floor(requested))) : 168;
 }
@@ -113,14 +115,20 @@ function statusFor(findings: Finding[]) {
   return "passed" as const;
 }
 
-export function buildHostCorrelation(hostAlias: string) {
+type HostCorrelation = {
+  hostAlias: string; maxAgeHours: number; findings: CorrelatedFinding[]; coverage: CorrelationCoverage[];
+  staleReports: CorrelationCoverage[]; freshReports: CorrelationCoverage[]; partialReports: CorrelationCoverage[];
+};
+const correlationCache = new Map<string, { signature: string; result: HostCorrelation }>();
+
+export function buildHostCorrelation(hostAlias: string, availableReports?: AnsibleReportSummary[]) {
   if (!safeHostAlias(hostAlias)) {
     return null;
   }
   const now = Date.now();
-  const ageHours = maxAgeHours();
+  const ageHours = correlationMaxAgeHours();
   const minimumTime = now - ageHours * 60 * 60 * 1000;
-  const reports = listAnsibleReports().filter((report) => (
+  const reports = (availableReports ?? listAnsibleReports()).filter((report) => (
     targetAliasFromReport(report) === hostAlias
   ));
   const latestByKind = new Map<string, AnsibleReportSummary>();
@@ -142,6 +150,12 @@ export function buildHostCorrelation(hostAlias: string) {
     auditEvidence: !["facts", "events", "packages", "dependency-track"].includes(report.mode),
   }));
   const grouped = new Map<string, { identity: ReturnType<typeof identityForFinding>; findings: Finding[]; sources: CorrelationEvidence[] }>();
+  const signature = JSON.stringify([ageHours, coverage, ...Array.from(latestByKind.values(), (report) => {
+    const info = statSync(report.path, { throwIfNoEntry: false });
+    return [report.id, report.path, info?.dev, info?.ino, info?.size, info?.mtimeMs, info?.ctimeMs];
+  })]);
+  const cached = correlationCache.get(hostAlias);
+  if (cached?.signature === signature) return cached.result;
   for (const report of latestByKind.values()) {
     if (!report.reportTimeValid || reportTime(report) < minimumTime || ["facts", "events", "packages", "dependency-track"].includes(report.mode)) continue;
     const detail = readAnsibleReport(report.id);
@@ -174,26 +188,32 @@ export function buildHostCorrelation(hostAlias: string) {
       ? "manual"
       : "observed";
     const sourceText = Array.from(independentSources).map(sourceLabel).join(", ");
+    const severityOrder = { critical: 4, high: 3, medium: 2, low: 1 };
+    const severityAssessment = group.findings.flatMap((finding) => finding.severityAssessment ? [finding.severityAssessment] : [])
+      .sort((a, b) => severityOrder[b.level] - severityOrder[a.level])[0];
     return {
       id: key.replace(/[^a-zA-Z0-9_.:-]+/g, "_").slice(0, 160),
       title: group.identity.title,
       category: group.identity.category,
       risk: maxRisk(group.findings),
       severityUnknown: maxRisk(group.findings) === "info" && group.findings.some((finding) => finding.severityUnknown),
+      severityAssessment,
       status,
       confidence,
       sources,
-      description: confidence === "manual"
+      description: group.findings.every((finding) => finding.source === "lynis") ? Array.from(new Set(group.findings.map((finding) => finding.description))).join("\n") : confidence === "manual"
           ? `Есть неполное или требующее ручной оценки доказательство из: ${sourceText}.`
           : `Признаки обнаружены: ${sourceText}. Совпадение идентификаторов не подтверждает применимость уязвимости; проверьте компонент, его версию и данные поставщика ОС.`,
       recommendation: group.findings[0]?.recommendation ?? "Проверьте техническое доказательство и назначьте владельца исправления.",
     };
   }).sort((left, right) => {
     const riskOrder: Record<RiskLevel, number> = { high: 3, medium: 2, low: 1, info: 0 };
-    return riskOrder[right.risk] - riskOrder[left.risk] || right.sources.length - left.sources.length || left.title.localeCompare(right.title, "ru");
+    return riskOrder[right.risk] - riskOrder[left.risk]
+      || Number(right.severityAssessment?.level === "critical") - Number(left.severityAssessment?.level === "critical")
+      || right.sources.length - left.sources.length || left.title.localeCompare(right.title, "ru");
   });
 
-  return {
+  const result: HostCorrelation = {
     hostAlias,
     maxAgeHours: ageHours,
     findings,
@@ -202,4 +222,11 @@ export function buildHostCorrelation(hostAlias: string) {
     freshReports: coverage.filter((item) => item.fresh && item.auditEvidence),
     partialReports: coverage.filter((item) => item.auditEvidence && (item.partial || !item.fresh)),
   };
+  const size = findings.reduce((total, finding) => total + finding.title.length + finding.description.length + finding.recommendation.length
+    + finding.sources.reduce((sourceTotal, source) => sourceTotal + source.evidence.length, 0), 0);
+  if (size <= 24 * 1024 * 1024) {
+    if (correlationCache.size >= 2) correlationCache.delete(correlationCache.keys().next().value!);
+    correlationCache.set(hostAlias, { signature, result });
+  }
+  return result;
 }

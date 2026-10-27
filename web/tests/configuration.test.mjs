@@ -46,11 +46,13 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.match(shell, /href: "\/playbooks"/);
   assert.match(shell, /w-60/);
   assert.doesNotMatch(shell, /label: "Вход"/);
-  assert.match(hosts, /Дополнительные проверки/);
+  assert.match(hosts, /Инструменты проверки/);
+  assert.match(hosts, /Локальные правила HCP — Ansible/);
+  assert.match(hosts, /Набор правил HCP/);
   assert.match(hosts, /Внешний аудит/);
   assert.match(hosts, /не запускает команды на Astra/);
   assert.match(hosts, /runsOnlyOnControlNode/);
-  assert.match(hosts, /Глубина Nmap/);
+  assert.match(hosts, /Охват проверки портов/);
   assert.match(hosts, /Полная TCP: 1–65 535/);
   assert.match(hosts, /nmap_scan_scope/);
   assert.match(hosts, /Обратимые изменения firewall/);

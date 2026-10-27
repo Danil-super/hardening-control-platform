@@ -41,7 +41,11 @@ export function resolveOpenScapPolicyForHost(target: string): ResolvedOpenScapPo
   if (!host || !host.groups.includes("linux_hosts")) {
     throw new Error("OpenSCAP требует точный alias одного хоста из linux_hosts. Группы и списки alias в ручном запуске не поддерживаются.");
   }
-  return selectOpenScapPolicy(target, host.groups, listOpenScapPolicies());
+  const resolved = selectOpenScapPolicy(target, host.groups, listOpenScapPolicies());
+  if (!resolved.policy && (!process.env.HCP_OPENSCAP_DATASTREAM?.trim() || !process.env.HCP_OPENSCAP_PROFILE?.trim())) {
+    throw Object.assign(new Error(`Для хоста ${target} профиль OpenSCAP не задан. В разделе «Политики» → «OpenSCAP и исключения» назначьте группе хоста базовый профиль HCP для Astra или собственный SCAP-профиль. Проверка не запущена.`), { code: "openscap_profile_missing" });
+  }
+  return resolved;
 }
 
 function ruleIdFromFinding(finding: Finding) {

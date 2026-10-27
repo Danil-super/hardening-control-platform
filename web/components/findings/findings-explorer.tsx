@@ -1,8 +1,11 @@
 "use client";
 
+import { Select } from "@/components/ui/select";
+
 import { useMemo, useState } from "react";
 import { RiskBadge, StatusBadge } from "@/components/ui/badge";
 import { LinkButton } from "@/components/ui/button";
+import { FindingDescription } from "@/components/reports/finding-description";
 import type { Finding, RiskLevel } from "@/types";
 
 type RiskFilter = RiskLevel | "all" | "unknown";
@@ -45,6 +48,7 @@ function categoryLabel(category: string) {
 
 export function FindingsExplorer({
   findings,
+  reportId,
   profileId,
   hostAlias,
   remediationLinkHref,
@@ -52,6 +56,7 @@ export function FindingsExplorer({
   planLinkHref,
 }: {
   findings: Finding[];
+  reportId?: string;
   profileId: string;
   hostAlias?: string;
   remediationLinkHref?: string;
@@ -93,10 +98,10 @@ export function FindingsExplorer({
             </button>
           ))}
         </div>
-        <select
+        <Select
           value={category}
           aria-label="Категория проверки"
-          onChange={(event) => setCategory(event.target.value)}
+          onValueChange={(value) => setCategory(value)}
           className="h-10 rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
         >
           {categories.map((value) => (
@@ -104,7 +109,7 @@ export function FindingsExplorer({
               {value === "all" ? "Все категории" : categoryLabel(value)}
             </option>
           ))}
-        </select>
+        </Select>
       </div>
 
       <div className="space-y-3">
@@ -112,8 +117,8 @@ export function FindingsExplorer({
           <article key={finding.id} className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
-                <h3 className="font-semibold text-white">{finding.title}</h3>
-                <p className="mt-1 leading-6 text-slate-400">{finding.description}</p>
+                <h3 className="font-semibold text-white">{finding.source === "greenbone" && reportId ? <FindingDescription original={finding.title} reportId={reportId} findingId={finding.id} field="title" expanded inline lazy /> : finding.title}</h3>
+                <div className="mt-1 leading-6 text-slate-400">{finding.source === "greenbone" && reportId ? <FindingDescription original={finding.description} reportId={reportId} findingId={finding.id} expanded lazy /> : finding.description}</div>
               </div>
               <div className="flex shrink-0 flex-wrap gap-2"><RiskBadge risk={finding.risk} unknown={finding.severityUnknown} /><StatusBadge status={finding.status} /></div>
             </div>
@@ -124,7 +129,7 @@ export function FindingsExplorer({
             </dl>
             <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/60 p-3">
               <p className="text-xs font-semibold uppercase text-slate-500">Рекомендация</p>
-              <p className="mt-1 leading-6 text-slate-200">{finding.recommendation}</p>
+              <div className="mt-1 leading-6 text-slate-200">{finding.source === "greenbone" && reportId ? <FindingDescription original={finding.recommendation} reportId={reportId} findingId={finding.id} field="recommendation" expanded lazy /> : finding.recommendation}</div>
             </div>
             {finding.evidence ? (
               <details className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3">

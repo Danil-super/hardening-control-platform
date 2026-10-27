@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import type { Finding } from "@/types";
+import { getArchivedRecordIds, type ArchiveView } from "@/lib/state-store";
+import { normalizeLynisFindings } from "@/lib/lynis-findings";
 
 export type AnsibleReportSummary = {
   id: string;
@@ -19,11 +21,15 @@ export type AnsibleReportSummary = {
   mode: string;
   score: number | null;
   high: number;
+  critical: number;
+  unknown: number;
   medium: number;
   low: number;
   info: number;
   findingsCount: number;
   eventsCount: number;
+  lynisWarnings?: number;
+  lynisSuggestions?: number;
 };
 
 export type AnsibleReportDetail = AnsibleReportSummary & {
@@ -65,6 +71,7 @@ type ReportJson = {
     partial?: boolean;
     available?: boolean;
     error?: unknown;
+    definitionResults?: unknown;
   };
   vulnerabilityScan?: { partial?: boolean };
   packageInventory?: { error?: string };
@@ -163,9 +170,64 @@ function isFinding(value: unknown): value is Finding {
   return ["id", "title", "description", "recommendation", "category", "profileId"].every((key) => typeof item[key] === "string")
     && ["high", "medium", "low", "info"].includes(String(item.risk))
     && (item.severityUnknown === undefined || typeof item.severityUnknown === "boolean")
+    && (item.severityAssessment === undefined || (item.severityAssessment !== null && typeof item.severityAssessment === "object"
+      && ["critical", "high", "medium", "low"].includes(String((item.severityAssessment as Record<string, unknown>).level))
+      && ["oval_metadata", "chromium_description", "scanner_metadata"].includes(String((item.severityAssessment as Record<string, unknown>).source))))
     && ["failed", "passed", "manual", "fixed"].includes(String(item.status))
     && ["agentless", "custom", "ssh_audit", "nmap", "lynis", "openscap", "trivy", "greenbone", "dependency_track"].includes(String(item.source))
     && (item.evidence === undefined || typeof item.evidence === "string");
+}
+
+/** Interpret explicit vendor labels only; never infer CVSS from prose. Historical
+ * source JSON stays intact, including its digest and original classification. */
+export function normalizeOvalFinding(finding: Finding, vendorMetadata?: { vendorSeverity?: unknown }): Finding {
+  if (finding.profileId !== "astra-oval" || finding.source !== "openscap" || finding.status !== "failed") return finding;
+  let metadata: unknown = vendorMetadata?.vendorSeverity;
+  if (!vendorMetadata) {
+    try { metadata = JSON.parse(finding.evidence ?? "{}").vendorSeverity; } catch {
+      // Current adapters retain an explicit assessment even when criteria make
+      // the evidence excerpt too long to remain valid JSON.
+      if (finding.severityAssessment?.source === "oval_metadata") metadata = finding.severityAssessment.level;
+    }
+  }
+  const levels: Record<string, "critical" | "high" | "medium" | "low"> = { critical: "critical", high: "high", important: "high", medium: "medium", moderate: "medium", low: "low" };
+  let level = typeof metadata === "string" ? levels[metadata.trim().toLowerCase()] : undefined;
+  let source: "oval_metadata" | "chromium_description" = "oval_metadata";
+  // Chromium's own explicit label is not an Astra/CVSS assessment. Require the
+  // component and exact named field, and reject conflicting labels.
+  if (!metadata && /\b(?:chromium|chrome)\b/i.test(finding.title)) {
+    const matches = Array.from(finding.description.matchAll(/\(Chromium security severity:\s*(Critical|High|Medium|Low)\)/gi), (match) => match[1].toLowerCase());
+    const unique = new Set(matches);
+    if (unique.size === 1) { level = levels[matches[0]]; source = "chromium_description"; }
+  }
+  if (!level) return { ...finding, risk: "info", severityUnknown: true, severityAssessment: undefined };
+  return { ...finding, risk: level === "critical" ? "high" : level, severityUnknown: false, severityAssessment: { level, source } };
+}
+
+function reportFindings(parsed: ReportJson) {
+  const metadata = new Map<string, { vendorSeverity?: unknown }>();
+  if (parsed.mode === "astra-oval" && Array.isArray(parsed.scanner?.definitionResults)) {
+    for (const definition of parsed.scanner.definitionResults) {
+      if (definition && typeof definition === "object" && typeof definition.id === "string") metadata.set(definition.id, definition);
+    }
+  }
+  return Array.isArray(parsed.findings) ? normalizeLynisFindings(parsed.findings.filter(isFinding)).map((finding) => {
+    const normalized = normalizeOvalFinding(finding, metadata.get(finding.id));
+    // Older Trivy/XCCDF adapters kept Critical in their structured evidence but
+    // folded it into the high-priority band. Recover the explicit scanner label
+    // without interpreting arbitrary prose or unversioned numerical scores.
+    if (normalized.status === "failed" && normalized.risk === "high" && !normalized.severityUnknown && !normalized.severityAssessment
+        && (normalized.source === "trivy" || (normalized.source === "openscap" && normalized.profileId !== "astra-oval"))
+        && /(?:^|;\s*)severity=critical(?:;|$)/i.test(normalized.evidence ?? "")) {
+      return { ...normalized, severityAssessment: { level: "critical" as const, source: "scanner_metadata" as const } };
+    }
+    if (normalized.source === "trivy" && normalized.status === "failed" && normalized.risk === "info"
+        && (/(?:^|;\s*)severity=unknown(?:;|$)/i.test(normalized.evidence ?? "")
+          || (!/(?:^|;\s*)severity=/i.test(normalized.evidence ?? "") && /\bCVE-\d{4}-\d{4,}\b/.test(normalized.title)))) {
+      return { ...normalized, severityUnknown: true };
+    }
+    return normalized;
+  }) : [];
 }
 
 function readReportJson(reportPath: string): ReportJson | null {
@@ -180,8 +242,7 @@ function readReportJson(reportPath: string): ReportJson | null {
   }
 }
 
-function buildReportSummary(fileName: string, fullPath: string): AnsibleReportSummary | null {
-  const parsed = readReportJson(fullPath);
+function buildReportSummary(fileName: string, fullPath: string, parsed = readReportJson(fullPath)): AnsibleReportSummary | null {
   if (!parsed) {
     return null;
   }
@@ -189,7 +250,7 @@ function buildReportSummary(fileName: string, fullPath: string): AnsibleReportSu
   const stats = statSync(fullPath);
   const mode = parsed.mode ?? "agentless";
   const profileId = parsed.profileId ?? null;
-  const findings = Array.isArray(parsed.findings) ? parsed.findings.filter(isFinding) : [];
+  const findings = reportFindings(parsed);
   const events = Array.isArray(parsed.events) ? parsed.events : [];
   const createdAt = typeof parsed.createdAt === "string" ? parsed.createdAt : null;
   const inventoryHost = typeof parsed.inventoryHost === "string" && /^[a-zA-Z0-9_.:-]{1,96}$/.test(parsed.inventoryHost)
@@ -218,25 +279,47 @@ function buildReportSummary(fileName: string, fullPath: string): AnsibleReportSu
     mode,
     score: partial || !reportTimeValid ? null : scoreFromReport(parsed, mode),
     high: findings.filter((finding) => finding.status === "failed" && finding.risk === "high").length,
+    critical: findings.filter((finding) => finding.status === "failed" && !finding.severityUnknown && finding.severityAssessment?.level === "critical").length,
+    unknown: findings.filter((finding) => ["failed", "manual"].includes(finding.status) && finding.severityUnknown).length,
     medium: findings.filter((finding) => finding.status === "failed" && finding.risk === "medium").length,
     low: findings.filter((finding) => finding.status === "failed" && finding.risk === "low").length,
     info: findings.filter((finding) => finding.risk === "info").length,
     findingsCount: findings.length,
     eventsCount: events.length,
+    ...(mode === "lynis" ? { lynisWarnings: findings.filter((finding) => finding.lynis?.kind === "warning").length,
+      lynisSuggestions: findings.filter((finding) => finding.lynis?.kind === "suggestion").length } : {}),
   };
 }
 
-export function listAnsibleReports() {
+const summaryCache = new Map<string, { signature: string; summary: AnsibleReportSummary }>();
+function cachedReportSummary(fileName: string, fullPath: string) {
+  const info = statSync(fullPath);
+  const signature = `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  const cached = summaryCache.get(fullPath);
+  if (cached?.signature === signature && reportTimestamp(cached.summary) > 0) return { ...cached.summary };
+  const summary = buildReportSummary(fileName, fullPath);
+  // Future/invalid timestamps must be re-evaluated as time passes. Only keep
+  // compact, already valid summaries; never retain the raw OVAL evidence tree.
+  if (summary?.reportTimeValid) {
+    if (summaryCache.size >= 256) summaryCache.delete(summaryCache.keys().next().value!);
+    summaryCache.set(fullPath, { signature, summary });
+  } else summaryCache.delete(fullPath);
+  return summary;
+}
+
+export function listAnsibleReports(view: ArchiveView = "active") {
   const reportsDir = getReportsDir();
   if (!existsSync(reportsDir)) {
     return [];
   }
 
+  const archived = getArchivedRecordIds("report");
   return readdirSync(reportsDir)
     .filter((fileName) => fileName.endsWith(".json"))
+    .filter((fileName) => view === "all" || archived.has(fileName.slice(0, -5)) === (view === "archive"))
     .map((fileName) => {
       const fullPath = path.join(reportsDir, fileName);
-      try { return buildReportSummary(fileName, fullPath); } catch { return null; }
+      try { return cachedReportSummary(fileName, fullPath); } catch { return null; }
     })
     .filter((report): report is AnsibleReportSummary => Boolean(report))
     .sort((left, right) => {
@@ -259,7 +342,7 @@ export function readAnsibleReport(reportId: string): AnsibleReportDetail | null 
   }
 
   const parsed = readReportJson(reportPath);
-  const summary = buildReportSummary(fileName, reportPath);
+  const summary = buildReportSummary(fileName, reportPath, parsed);
   if (!parsed || !summary) {
     return null;
   }
@@ -268,7 +351,7 @@ export function readAnsibleReport(reportId: string): AnsibleReportDetail | null 
     ...summary,
     hostname: parsed.hostname ?? null,
     os: parsed.os ?? null,
-    findings: Array.isArray(parsed.findings) ? parsed.findings.filter(isFinding) : [],
+    findings: reportFindings(parsed),
     events: Array.isArray(parsed.events) ? parsed.events : [],
     raw: parsed,
   };
@@ -292,7 +375,7 @@ function sbomFileFromReport(report: Pick<AnsibleReportDetail, "mode" | "raw">) {
 export function listAnsibleReportDependents(reportId: string): AnsibleReportDependent[] {
   if (!fileNameFromReportId(reportId)) return [];
   const dependents: AnsibleReportDependent[] = [];
-  for (const summary of listAnsibleReports()) {
+  for (const summary of listAnsibleReports("all")) {
     const report = readAnsibleReport(summary.id);
     if (!report) continue;
     const raw = record(report.raw);
@@ -344,7 +427,7 @@ export function deleteAnsibleReport(reportId: string): DeletedAnsibleReport | nu
     throw new Error("Файл CycloneDX SBOM недоступен или имеет недопустимый тип.");
   }
   const sbomUsedElsewhere = sbomFile
-    ? listAnsibleReports().some((candidate) => {
+    ? listAnsibleReports("all").some((candidate) => {
       if (candidate.id === report.id) return false;
       const detail = readAnsibleReport(candidate.id);
       return detail ? sbomFileFromReport(detail) === sbomFile : false;

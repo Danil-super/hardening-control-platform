@@ -39,6 +39,7 @@
               - /usr/bin/python3
               - "{{ playbook_dir }}/../scripts/hcp-oval-audit.py"
               - prepare
+              - --validate
               - --config
               - "{{ oval_config_json }}"
               - --output
@@ -81,6 +82,8 @@
               - "{{ ansible_python_interpreter | default('/usr/bin/python3') }}"
               - "{{ oval_target_dir.path }}/hcp-oval-audit.py"
               - evaluate
+              - --source-validation
+              - "{{ (oval_download.stdout | from_json).sourceValidation | to_json if oval_settings.mode | default('local') == 'online' else '{}' }}"
               - --config
               - "{{ oval_config_json }}"
               - --input

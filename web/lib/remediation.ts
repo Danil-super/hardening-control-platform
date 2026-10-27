@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { firewallAccessProblem } from "@/lib/ansible-error";
 import { networkInterfaces } from "node:os";
 import { readAnsibleReport } from "@/lib/ansible-reports";
 import {
@@ -102,7 +103,9 @@ export function assessFirewallBaseline(report: ReturnType<typeof readAnsibleRepo
   }
   const firewallEvidence = typeof firewallFinding?.evidence === "string" ? firewallFinding.evidence : "";
   const firewallBackend = /^backend=([^;]+);/.exec(firewallEvidence)?.[1];
-  if (firewallBackend && !["ufw", "firewalld"].includes(firewallBackend)) {
+  const accessProblem = firewallAccessProblem(firewallEvidence);
+  if (accessProblem) blockers.push(accessProblem);
+  else if (firewallBackend && !["ufw", "firewalld"].includes(firewallBackend)) {
     blockers.push(`обнаружен ${firewallBackend}; автоматические изменения пока поддерживают только UFW и firewalld`);
   }
   if (incompleteChecks.includes("open_ports") || portsUnavailable === "manual") {

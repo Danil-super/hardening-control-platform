@@ -4,7 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, 
 import path from "node:path";
 import { buildHostCorrelation } from "@/lib/audit-correlation";
 import { hashAnsibleReport, listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
-import { getHcpStateDirectory, createProjectReportRecord, getProjectReportRecord, listProjectReportRecords, listRemediationPlanItems, listRemediationTransactions, verifyAuditChain, type ProjectReportRecord } from "@/lib/state-store";
+import { getHcpStateDirectory, getArchivedRecordIds, createProjectReportRecord, getProjectReportRecord, listProjectReportRecords, listRemediationPlanItems, listRemediationTransactions, verifyAuditChain, type ArchiveView, type ProjectReportRecord } from "@/lib/state-store";
 
 export type ProjectReportSubject = { clientName: string; projectName: string; period: string; specialist: string };
 export type ProjectReportSourceReference = { id: string; hostAlias: string; snapshotReadable: boolean };
@@ -68,13 +68,17 @@ function writeSecure(pathname: string, content: string | Buffer) {
 }
 
 function runPdfRenderer(snapshot: Record<string, unknown>): Promise<Buffer> {
+  const input = Buffer.from(JSON.stringify(snapshot), "utf8");
+  // A complete 30,000-definition OVAL audit can produce thousands of CVEs.
+  // Raw scanner trees never enter this bounded, projected snapshot.
+  if (input.length > 32 * 1024 * 1024) return Promise.reject(new Error("Снимок отчёта превышает допустимый размер (32 МБ)."));
   return new Promise((resolve, reject) => {
     const script = path.join(process.cwd(), "..", "ansible", "scripts", "hcp-final-report-pdf.py");
     const child = spawn("/usr/bin/python3", [script], { stdio: ["pipe", "pipe", "pipe"] });
     const chunks: Buffer[] = [];
     let size = 0;
     let stopped = false;
-    const timer = setTimeout(() => { stopped = true; child.kill("SIGKILL"); }, 60_000);
+    const timer = setTimeout(() => { stopped = true; child.kill("SIGKILL"); }, 120_000);
     child.stdout.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > 12 * 1024 * 1024) { stopped = true; child.kill("SIGKILL"); return; }
@@ -90,8 +94,6 @@ function runPdfRenderer(snapshot: Record<string, unknown>): Promise<Buffer> {
       } else resolve(output);
     });
     child.stdin.on("error", () => {});
-    const input = Buffer.from(JSON.stringify(snapshot), "utf8");
-    if (input.length > 1024 * 1024) { stopped = true; child.kill("SIGKILL"); reject(new Error("Снимок отчёта превышает допустимый размер.")); return; }
     child.stdin.end(input);
   });
 }
@@ -101,8 +103,8 @@ function evidenceSnapshot(value: { reportId: string; findingId: string; source: 
     evidence: value.evidence.slice(0, 1000), reportSha256: value.reportSha256 };
 }
 
-export function listProjectReports(hostAlias?: string) {
-  return listProjectReportRecords(hostAlias);
+export function listProjectReports(hostAlias?: string, view: ArchiveView = "active") {
+  return listProjectReportRecords(hostAlias, view);
 }
 
 /**
@@ -112,7 +114,7 @@ export function listProjectReports(hostAlias?: string) {
 export function listProjectReportSourceReferences(reportId: string, hostAlias: string): ProjectReportSourceReference[] {
   if (!/^[A-Za-z0-9_.:-]{1,180}$/.test(reportId) || !safeAlias(hostAlias)) return [];
   const references: ProjectReportSourceReference[] = [];
-  for (const projectReport of listProjectReportRecords(hostAlias)) {
+  for (const projectReport of listProjectReportRecords(hostAlias, "all")) {
     const snapshotFileName = projectReport.fileName.replace(/\.pdf$/, ".json");
     try {
       const snapshotPath = safeProjectPath(snapshotFileName);
@@ -140,7 +142,12 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   const hostAlias = input.hostAlias;
   const subject = normalizeSubject(input.subject);
   const createdAt = new Date().toISOString();
-  const reports = listAnsibleReports().filter((report) => targetAliasFromReport(report) === hostAlias);
+  const planItems = listRemediationPlanItems(hostAlias);
+  const storedTransactions = listRemediationTransactions(500).filter((item) => item.hostAlias === hostAlias);
+  const requiredSources = new Set([...planItems.flatMap((item) => [...item.evidence.map((source) => source.reportId), item.verificationReportId]),
+    ...storedTransactions.flatMap((item) => [item.preAuditReportId, item.postAuditReportId])]);
+  const archived = getArchivedRecordIds("report");
+  const reports = listAnsibleReports("all").filter((report) => targetAliasFromReport(report) === hostAlias && (!archived.has(report.id) || requiredSources.has(report.id)));
   if (!reports.length) throw new Error("Для итогового отчёта нужен хотя бы один сохранённый отчёт этого хоста.");
   const sourceManifest: SourceManifestEntry[] = reports.map((report) => ({
     id: report.id, mode: report.mode, profileId: report.profileId, createdAt: report.createdAt, partial: report.partial,
@@ -148,20 +155,23 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   })).sort((left, right) => left.id.localeCompare(right.id));
   const sourceManifestSha256 = sha256(canonical({ version: 1, hostAlias, sourceManifest }));
   const correlation = buildHostCorrelation(hostAlias);
-  const planItems = listRemediationPlanItems(hostAlias);
+  const observations = new Map(correlation?.findings.map((finding) => [finding.id, finding]) ?? []);
   const activeKeys = new Set(planItems.map((item) => item.findingKey));
   const findings = planItems.map((item) => ({
     id: item.id, findingKey: item.findingKey, title: item.title, category: item.category, risk: item.risk, status: item.status,
+    severityUnknown: observations.get(item.findingKey)?.severityUnknown ?? false,
+    severityAssessment: observations.get(item.findingKey)?.severityAssessment ?? null,
     description: item.description, recommendation: item.recommendation, owner: item.owner, dueAt: item.dueAt,
     approvalReference: item.approvalReference, implementationNote: item.implementationNote, verificationReportId: item.verificationReportId,
     riskAcceptedUntil: item.riskAcceptedUntil, evidence: item.evidence.map(evidenceSnapshot), createdAt: item.createdAt, updatedAt: item.updatedAt,
   }));
   const unplannedFindings = (correlation?.findings ?? []).filter((item) => !activeKeys.has(item.id)).map((item) => ({
     id: item.id, title: item.title, category: item.category, risk: item.risk, description: item.description.slice(0, 1200),
+    status: item.status, severityUnknown: item.severityUnknown, severityAssessment: item.severityAssessment ?? null,
     recommendation: item.recommendation.slice(0, 1200), sources: item.sources.map((source) => ({ reportId: source.reportId, findingId: source.findingId, mode: source.mode, source: source.source })),
   }));
   const coverage = correlation?.coverage ?? [];
-  const transactions = listRemediationTransactions(500).filter((item) => item.hostAlias === hostAlias).map((item) => ({
+  const transactions = storedTransactions.map((item) => ({
     id: item.id, createdAt: item.createdAt, updatedAt: item.updatedAt, action: item.action, profileId: item.profileId, status: item.status,
     reason: item.reason, preAuditReportId: item.preAuditReportId, postAuditReportId: item.postAuditReportId,
   }));

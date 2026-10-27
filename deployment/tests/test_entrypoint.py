@@ -89,6 +89,21 @@ class EntrypointTest(unittest.TestCase):
         self.assertIn("operator-added-host", (self.root / "var/lib/hcp/inventory.ini").read_text())
         self.assertEqual((self.root / "var/lib/hcp/known_hosts").read_text(), "operator-confirmed-key\n")
 
+    def test_root_diagnostic_temp_directory_does_not_block_node_audits(self):
+        ansible_dir = self.root / "home/node/.ansible"
+        temporary_dir = ansible_dir / "tmp"
+        temporary_dir.mkdir(parents=True)
+        ansible_dir.chmod(0o700)
+        temporary_dir.chmod(0o700)
+        # A docker exec diagnostic can create this directory as root before
+        # the web process starts Ansible under its normal node account.
+        result = self.start("mkdir /home/node/.ansible/tmp/node-audit && id -u")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), "1000")
+        for directory in (ansible_dir, temporary_dir):
+            self.assertEqual(directory.stat().st_uid, 1000)
+            self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+
     def test_new_installation_starts_without_a_shared_key(self):
         self.key.unlink()
         result = self.start()

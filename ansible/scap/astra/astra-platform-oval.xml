@@ -41,7 +41,9 @@
   <objects>
     <ind:textfilecontent54_object id="oval:org.hcp.astra:obj:1" version="1">
       <ind:behaviors multiline="true"/>
-      <ind:filepath var_ref="oval:org.hcp.astra:var:1"/>
+      <!-- os-release may exist at either standard location. The OVAL default
+           var_check=all requires one filepath to equal both different paths. -->
+      <ind:filepath var_ref="oval:org.hcp.astra:var:1" var_check="at least one"/>
       <ind:pattern operation="pattern match">^(?:ID=["']?astra["']?|ID_LIKE=["']?(?:[A-Za-z0-9_.-]+[ \t]+)*astra(?:[ \t]+[A-Za-z0-9_.-]+)*["']?)[ \t]*$</ind:pattern>
       <ind:instance datatype="int" operation="greater than or equal">1</ind:instance>
     </ind:textfilecontent54_object>

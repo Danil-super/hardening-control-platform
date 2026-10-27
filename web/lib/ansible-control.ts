@@ -12,7 +12,10 @@ import {
   appendIncident as appendStoredIncident,
   readIncidents as readStoredIncidents,
   type IncidentRecord,
+  type ArchiveView,
 } from "@/lib/state-store";
+
+import { ansibleFailureMessage } from "@/lib/ansible-error";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,7 +36,7 @@ export const playbooks = {
   networkPortScan: { file: "nmap-scan.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true, executionLocation: "control-node" },
   lynisTemporaryAudit: { file: "lynis-temporary-audit.yml", timeout: 1_200_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   openScapAudit: { file: "openscap-audit.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
-  astraOvalAudit: { file: "astra-oval-audit.yml", timeout: 1_800_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
+  astraOvalAudit: { file: "astra-oval-audit.yml", timeout: 2_400_000, kind: "audit", requiresLimit: true, requiresConfirmation: true },
   closePort: { file: "close-port.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   blockIp: { file: "block-ip.yml", timeout: 240_000, kind: "response", requiresLimit: true },
   backupRemediation: { file: "backup-remediation.yml", timeout: 240_000, kind: "audit", requiresLimit: true, internal: true },
@@ -174,8 +177,8 @@ export function validateExtraVars(action: PlaybookAction, extraVars: unknown): E
   return { ok: true, values: {} };
 }
 
-export function readIncidents() {
-  return readStoredIncidents();
+export function readIncidents(view: ArchiveView = "active") {
+  return readStoredIncidents(300, view);
 }
 
 export function appendIncident(record: Omit<IncidentRecord, "id" | "createdAt">) {
@@ -292,6 +295,20 @@ export async function runAnsiblePlaybook({
     args.push("--check", "--diff");
   }
 
+  const result = await executeAnsiblePlaybook({ args, timeout: selected.timeout, becomePassword });
+  return { ...result, reportRunId };
+}
+
+/** Run one Ansible child with the same private credential lifecycle for built-in and custom playbooks. */
+export async function executeAnsiblePlaybook({ args, timeout, becomePassword }: {
+  args: string[];
+  timeout: number;
+  becomePassword?: string;
+}) {
+  if (!validOneTimeSudoPassword(becomePassword)) {
+    throw new Error("Пароль sudo должен быть одной строкой длиной до 1024 символов.");
+  }
+  const repoRoot = getRepoRoot();
   const command = `ansible-playbook ${args.join(" ")}`;
   let secretDirectory = "";
   try {
@@ -308,14 +325,14 @@ export async function runAnsiblePlaybook({
     }
     const result = await execFileAsync("ansible-playbook", executionArgs, {
       cwd: repoRoot,
-      timeout: selected.timeout,
+      timeout,
       maxBuffer: 1024 * 1024 * 8,
       // Password-prompting sudo on Astra can require a terminal.  It is
       // applied only to ssh, not sftp/scp: a TTY on a transfer protocol makes
       // an otherwise valid elevated audit fail before sudo is reached.
       env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ...ansibleSshEnvironment({ useTty: Boolean(becomePassword) }), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
     });
-    return { ...result, stdout: redactSecret(result.stdout, becomePassword), stderr: redactSecret(result.stderr, becomePassword), command, repoRoot, reportRunId };
+    return { ...result, stdout: redactSecret(result.stdout, becomePassword), stderr: redactSecret(result.stderr, becomePassword), command, repoRoot };
   } catch (error) {
     const output = error as { stdout?: string; stderr?: string; message?: string };
     if (becomePassword) {
@@ -323,6 +340,7 @@ export async function runAnsiblePlaybook({
       output.stderr = redactSecret(output.stderr, becomePassword);
       output.message = redactSecret(output.message, becomePassword);
     }
+    output.message = ansibleFailureMessage(output);
     throw error;
   } finally {
     if (secretDirectory) rmSync(secretDirectory, { recursive: true, force: true });

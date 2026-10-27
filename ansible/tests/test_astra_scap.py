@@ -3,6 +3,7 @@ import errno
 import importlib.util
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +19,29 @@ X = "{http://checklists.nist.gov/xccdf/1.2}"
 
 
 class AstraBaselineTests(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("oscap"), "native OpenSCAP engine is required")
+    def test_native_identity_accepts_either_os_release_location_and_rejects_other_families(self):
+        oval = "{http://oval.mitre.org/XMLSchema/oval-definitions-5}"
+        results = "{http://oval.mitre.org/XMLSchema/oval-results-5}"
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first, second = root / "etc-os-release", root / "usr-os-release"
+            doc = ET.parse(CONTENT / "astra-platform-oval.xml")
+            values = doc.find(oval + "variables/" + oval + "constant_variable").findall(oval + "value")
+            self.assertEqual(len(values), 2)
+            values[0].text, values[1].text = str(first), str(second)
+            source, output = root / "identity.xml", root / "results.xml"
+            doc.write(source, encoding="UTF-8", xml_declaration=True)
+            for location in (first, second):
+                for identity, expected in (("ID=astra\n", "true"), ('ID="astra"\n', "true"), ("ID=derived\nID_LIKE=debian astra\n", "true"), ("ID=ubuntu\nID_LIKE=debian\n", "false")):
+                    location.write_text(identity)
+                    run = subprocess.run([shutil.which("oscap"), "oval", "eval", "--results", str(output), str(source)], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=30)
+                    self.assertEqual(run.returncode, 0, run.stderr.decode())
+                    evaluated = ET.parse(output).findall(".//" + results + "results//" + results + "definition")
+                    observed = next(e.get("result") for e in evaluated if e.get("definition_id") == "oval:org.hcp.astra:def:1")
+                    self.assertEqual(observed, expected, (str(location), identity))
+                location.unlink()
+
     def test_every_selected_rule_has_readonly_check_and_stdout_evidence(self):
         root = ET.parse(CONTENT / "astra-baseline.xml").getroot()
         rules = root.findall(X + "Rule")

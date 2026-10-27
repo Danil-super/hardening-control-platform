@@ -2,9 +2,11 @@
 import argparse
 import datetime
 import hashlib
+import io
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import tempfile
 import unittest
@@ -50,6 +52,204 @@ def arguments(**values):
 
 
 class OvalAuditTests(unittest.TestCase):
+    def test_indexed_stylesheet_preserves_all_template_priorities_and_rules(self):
+        stylesheet = b'''<axsl:stylesheet xmlns:axsl="http://www.w3.org/1999/XSL/Transform"
+          xmlns:oval-def="http://oval.mitre.org/XMLSchema/oval-definitions-5" version="1.0">
+          <axsl:param name="example"/><axsl:template match="/">
+          <axsl:apply-templates select="/" mode="M1"/></axsl:template>
+          <axsl:template match="oval-def:tests/*/oval-def:object" priority="1001" mode="M1">
+          <axsl:if test="@object_ref=ancestor::oval-def:oval_definitions/oval-def:objects/oval-def:example_object/@id">OBJECT RULE</axsl:if>
+          <axsl:apply-templates select="@*|*" mode="M1"/></axsl:template>
+          <axsl:template match="oval-def:tests/*/oval-def:state" priority="1000" mode="M1">STATE RULE
+          <axsl:apply-templates select="@*|*" mode="M1"/></axsl:template>
+          <axsl:template match="text()" priority="-1" mode="M1"/>
+          <axsl:template match="@*|node()" priority="-2" mode="M1"><axsl:apply-templates select="@*|*" mode="M1"/></axsl:template>
+          </axsl:stylesheet>'''
+        optimized, proof = oval.indexed_schematron(stylesheet)
+        self.assertEqual(proof['rules'], 2)
+        self.assertEqual(proof['indexedLookups'], 1)
+        self.assertIn(b'OBJECT RULE', optimized)
+        self.assertIn(b'STATE RULE', optimized)
+        self.assertIn(b'//oval-def:tests/*/oval-def:object | //oval-def:tests/*/oval-def:state', optimized)
+        self.assertIn(b'priority="1001"', optimized)
+        self.assertNotIn(b'@object_ref=ancestor::', optimized)
+        # An unknown traversal with side effects must use the original validator.
+        unexpected = stylesheet.replace(b'<axsl:template match="text()" priority="-1" mode="M1"/>',
+            b'<axsl:template match="text()" priority="-1" mode="M1"><axsl:value-of select="."/></axsl:template>')
+        self.assertIsNone(oval.indexed_schematron(unexpected))
+
+    @unittest.skipUnless(shutil.which('oscap') and Path('/usr/share/openscap/schemas/oval/5.11.1').is_dir(), 'Requires actual controller OpenSCAP')
+    def test_indexed_and_stock_openscap_agree_on_valid_sources_and_invalid_reference_types(self):
+        spec = importlib.util.spec_from_file_location('oval_acceptance_fixture',
+            SCRIPT.parents[2] / 'deployment/tests/verify_oval.py')
+        fixture = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(fixture)
+        raw = fixture.content(oval.now().isoformat())
+        variants = [raw,
+            raw.replace(b'object_ref="oval:hcp.acceptance:obj:1"', b'object_ref="missing"'),
+            raw.replace(b'state_ref="oval:hcp.acceptance:ste:1"', b'state_ref="missing"'),
+            raw.replace(b'<linux:dpkginfo_object', b'<linux:rpminfo_object').replace(b'</linux:dpkginfo_object>', b'</linux:rpminfo_object>'),
+            raw.replace(b'<linux:dpkginfo_state', b'<linux:rpminfo_state').replace(b'</linux:dpkginfo_state>', b'</linux:rpminfo_state>'),
+            raw.replace(b'check="all"', b'check="none exist"')]
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'source.xml'
+            target.write_bytes(raw)
+            environment, proof = oval.schematron_environment(str(target), directory)
+            self.assertIsNotNone(environment)
+            self.assertGreater(proof['rules'], proof['ruleGroups'])
+            for index, value in enumerate(variants):
+                target.write_bytes(value)
+                command = [shutil.which('oscap'), 'oval', 'validate', str(target)]
+                stock = oval.run_oscap(command, directory, 30, capture_stdout=True)
+                indexed = oval.run_oscap(command, directory, 30, capture_stdout=True, environment=environment)
+                with self.subTest(index=index):
+                    self.assertEqual(stock, indexed)
+                    if index == 0: self.assertEqual(stock[0], 0)
+                    elif index < 5: self.assertNotEqual(stock[0], 0)
+
+    def test_slow_download_is_allowed_past_five_minutes_and_keeps_its_deadline(self):
+        raw = source(timestamp=oval.now().isoformat())
+        class Response(io.BytesIO):
+            headers = {'Content-Length': str(len(raw))}
+            def geturl(self): return 'https://mirror.example/db.xml'
+            def getcode(self): return 200
+        class Opener:
+            def open(self, request, timeout): return Response(raw)
+        for times, success in (([0, 301, 302], True), ([0, 0, oval.DOWNLOAD_TIMEOUT + 1], False)):
+            with tempfile.TemporaryDirectory() as directory, patch.object(urllib.request, 'build_opener', return_value=Opener()), patch.object(oval.time, 'monotonic', side_effect=times):
+                target = Path(directory) / 'source.xml'
+                settings = config(raw, mode='online', url='https://mirror.example/db.xml')
+                if success:
+                    oval.prepare(settings, str(target))
+                    self.assertEqual(target.read_bytes(), raw)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'Превышено время загрузки'):
+                        oval.prepare(settings, str(target))
+                    self.assertFalse(target.exists())
+
+    def test_controller_validation_never_accepts_schema_or_semantic_errors(self):
+        for outcomes in ([1], [None], [0, 1]):
+            with self.subTest(outcomes=outcomes), patch.object(oval, 'run_oscap', side_effect=[(code, 'invalid source') for code in outcomes]) as run:
+                with self.assertRaises(ValueError):
+                    oval.validate_for_transfer('/usr/bin/oscap', '/tmp/source.xml', 'a' * 64, 100, '/tmp')
+                self.assertEqual(run.call_count, len(outcomes))
+
+    def test_large_feed_schematron_timeout_is_recorded_as_partial_after_successful_xsd(self):
+        with patch.object(oval, 'run_oscap', side_effect=[(0, ''), (None, 'timeout'), (0, 'OpenSCAP fixture')]):
+            proof = oval.validate_for_transfer('/usr/bin/oscap', '/tmp/source.xml', 'a' * 64, 100 * 1024 * 1024, '/tmp')
+        self.assertEqual(proof['schemaExitCode'], 0)
+        self.assertIsNone(proof['schematronExitCode'])
+        scanner = {'partialReasons': []}
+        args = arguments(input='/tmp/source.xml', source_validation=json.dumps(proof))
+        settings = config(mode='online', url='https://mirror.example/db.xml', sha256='a' * 64)
+        self.assertTrue(oval.use_controller_validation(args, settings, 'a' * 64, scanner))
+        self.assertIn('Schematron', scanner['partialReasons'][0])
+
+    def test_controller_proof_is_bound_to_exact_online_bytes_and_never_accepted_for_local_sources(self):
+        proof = {'sha256': 'a' * 64, 'schemaExitCode': 0, 'schematronExitCode': 0, 'validator': 'OpenSCAP fixture', 'location': 'control_node'}
+        args = arguments(input='/tmp/source.xml', source_validation=json.dumps(proof))
+        settings = config(mode='online', url='https://mirror.example/db.xml', sha256='a' * 64)
+        for digest, current, changes in [('b' * 64, settings, {}), ('a' * 64, config(), {}), ('a' * 64, settings, {'schemaExitCode': True}), ('a' * 64, settings, {'schematronExitCode': 1}), ('a' * 64, settings, {'schematronExitCode': False}), ('a' * 64, settings, {'location': 'target'})]:
+            args.source_validation = json.dumps(dict(proof, **changes))
+            with self.subTest(changes=changes, digest=digest, mode=current['mode']), self.assertRaises(ValueError):
+                oval.use_controller_validation(args, current, digest, {'partialReasons': []})
+
+    def test_target_evaluates_controller_validated_bytes_without_repeating_old_validator(self):
+        raw = source(timestamp=datetime.datetime.now(oval.UTC).isoformat())
+        digest = hashlib.sha256(raw).hexdigest()
+        proof = {'sha256': digest, 'schemaExitCode': 0, 'schematronExitCode': None, 'validator': 'OpenSCAP fixture', 'location': 'control_node'}
+        calls = []
+        def execute(command, directory, timeout=900, capture_stdout=False):
+            if command[1] == '--version': return 0, 'OpenSCAP target'
+            calls.append(command)
+            self.assertEqual(command[2], 'eval')
+            self.assertIn('--skip-validation', command)
+            self.assertEqual(Path(command[-1]).read_bytes(), raw)
+            Path(command[4]).write_bytes(results())
+            return 0, ''
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'source.xml'
+            target.write_bytes(raw)
+            with patch.object(oval, 'host_identity', return_value={'id': 'astra', 'astraVersion': '1.7', 'architecture': 'x86_64'}), patch.object(oval.shutil, 'which', return_value='/usr/bin/oscap'), patch.object(oval, 'run_oscap', side_effect=execute):
+                report = oval.evaluate(arguments(input=str(target), source_validation=json.dumps(proof), config=json.dumps(config(raw, mode='online', url='https://mirror.example/db.xml'))))
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(report['scanner']['evaluationPerformed'])
+        self.assertEqual(report['scanner']['uniqueCveCount'], 1)
+        self.assertTrue(report['scanner']['partial'])
+        self.assertIn('Schematron', ' '.join(report['scanner']['partialReasons']))
+
+    def test_streamed_report_preserves_unicode_and_never_overwrites_existing_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            target = Path(directory) / 'report.json'
+            value = {'message': 'Проверка Astra', 'results': [{'id': str(i)} for i in range(1000)]}
+            oval.write_json(str(target), value)
+            self.assertEqual(json.loads(target.read_text(encoding='utf-8')), value)
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            with self.assertRaises(FileExistsError): oval.write_json(str(target), {})
+            self.assertEqual(json.loads(target.read_text(encoding='utf-8')), value)
+    def test_interrupted_https_download_resumes_and_still_checks_pinned_digest(self):
+        raw = source(timestamp=datetime.datetime.now(oval.UTC).isoformat())
+        split = len(raw) // 2
+        requests = []
+        class Response(io.BytesIO):
+            def __init__(self, data, headers, status):
+                super().__init__(data)
+                self.headers, self.status = headers, status
+            def geturl(self): return 'https://mirror.example/db.xml'
+            def getcode(self): return self.status
+        class Opener:
+            def open(self, request, timeout):
+                requests.append(request)
+                if len(requests) == 1:
+                    return Response(raw[:split], {'Content-Length': str(len(raw)), 'ETag': 'fixture'}, 200)
+                return Response(raw[split:], {'Content-Range': 'bytes {}-{}/{}'.format(split, len(raw)-1, len(raw)), 'ETag': 'fixture'}, 206)
+        with tempfile.TemporaryDirectory() as directory, patch.object(urllib.request, 'build_opener', return_value=Opener()):
+            target = str(Path(directory) / 'db.xml')
+            result = oval.prepare(config(raw, mode='online', url='https://mirror.example/db.xml'), target)
+            self.assertTrue(result['ok'])
+            self.assertEqual(Path(target).read_bytes(), raw)
+            self.assertEqual(requests[1].get_header('Range'), 'bytes={}-'.format(split))
+            self.assertEqual(requests[1].get_header('If-range'), 'fixture')
+            requests.clear()
+            with self.assertRaisesRegex(ValueError, 'SHA-256'):
+                oval.prepare(config(raw, mode='online', url='https://mirror.example/db.xml', sha256='0'*64), str(Path(directory) / 'wrong.xml'))
+            self.assertFalse((Path(directory) / 'wrong.xml').exists())
+
+    def test_resource_bounds_accept_the_current_vendor_feed_and_reject_complexity_overflow(self):
+        # Measured official XML: 131721258 bytes, 796021 nodes; no live fetch in tests.
+        self.assertGreater(oval.MAX_SOURCE_BYTES, 131721258)
+        self.assertGreater(oval.MAX_XML_NODES, 796021)
+        with patch.object(oval, 'MAX_XML_NODES', 3), self.assertRaises(ValueError):
+            oval.safe_xml(b'<root><a/><b/><c/></root>')
+
+    def test_download_restarts_if_range_is_ignored_and_rejects_changed_ranges(self):
+        raw = source(timestamp=datetime.datetime.now(oval.UTC).isoformat())
+        class Response(io.BytesIO):
+            def __init__(self, data, headers, status):
+                super().__init__(data)
+                self.headers, self.status = headers, status
+            def geturl(self): return 'https://mirror.example/db.xml'
+            def getcode(self): return self.status
+        for mode in ('ignored', 'changed', 'wrong-offset', 'incomplete'):
+            class Opener:
+                calls = 0
+                def open(self, request, timeout):
+                    self.calls += 1
+                    if self.calls == 1 or mode == 'incomplete':
+                        return Response(raw[:20], {'Content-Length': str(len(raw)), 'ETag': 'original'}, 200)
+                    if mode == 'ignored':
+                        return Response(raw, {'Content-Length': str(len(raw)), 'ETag': 'original'}, 200)
+                    return Response(raw[20:], {'Content-Range': 'bytes {}-{}/{}'.format(21 if mode == 'wrong-offset' else 20, len(raw)-1, len(raw)), 'ETag': 'changed' if mode == 'changed' else 'original'}, 206)
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory, patch.object(urllib.request, 'build_opener', return_value=Opener()):
+                target = Path(directory) / 'db.xml'
+                settings = config(raw, mode='online', url='https://mirror.example/db.xml')
+                if mode == 'ignored':
+                    oval.prepare(settings, str(target))
+                    self.assertEqual(target.read_bytes(), raw)
+                else:
+                    with self.assertRaises(ValueError): oval.prepare(settings, str(target))
+                    self.assertFalse(target.exists())
+
     def parse(self, classes, statuses, extra=''):
         root = oval.safe_xml(source(classes))
         report = oval.empty_report(arguments())
@@ -125,6 +325,21 @@ class OvalAuditTests(unittest.TestCase):
             self.assertEqual(failed[0]['severityUnknown'], expected)
             self.assertEqual(report['scanner']['unratedVulnerabilityCount'], int(expected))
             self.assertIsNone(failed[0]['vulnerability']['cvss'])
+
+    def test_explicit_chromium_label_is_attributed_and_conflicts_stay_unrated(self):
+        for level in ('Critical', 'High', 'Medium', 'Low'):
+            description = 'Synthetic evidence (Chromium security severity: ' + level + ')'
+            raw = source().replace(b'Fixture 1', b'Astra chromium').replace(b'Synthetic evidence', description.encode())
+            report = oval.empty_report(arguments())
+            oval.parse_results(oval.safe_xml(results()), oval.source_definitions(oval.safe_xml(raw)), report)
+            item = report['findings'][0]
+            self.assertEqual(item['severityAssessment'], {'level': level.lower(), 'source': 'chromium_description'})
+            self.assertFalse(item['severityUnknown'])
+            self.assertIsNone(item['vulnerability']['cvss'])
+        self.assertIsNone(oval.severity_assessment(None, 'openssl', '(Chromium security severity: Critical)'))
+        self.assertIsNone(oval.severity_assessment(None, 'chromium', 'critical vulnerability'))
+        self.assertIsNone(oval.severity_assessment(None, 'chromium', '(Chromium security severity: High) (Chromium security severity: Low)'))
+        self.assertIsNone(oval.severity_assessment('custom', 'chromium', '(Chromium security severity: Critical)'))
 
     def test_non_vulnerability_reference_never_becomes_cve(self):
         report = self.parse(('patch', 'compliance', 'inventory'), ('true',) * 3)
@@ -256,6 +471,7 @@ class OvalAuditTests(unittest.TestCase):
             if command[1] == '--version':
                 return 0, 'OpenSCAP command line tool (oscap) fixture\n'
             calls.append(command)
+            if command[2] == 'validate': self.assertGreaterEqual(timeout, 600)
             self.assertEqual(Path(command[-1]).read_bytes(), raw)
             if command[2] == 'eval':
                 Path(command[4]).write_bytes(results())

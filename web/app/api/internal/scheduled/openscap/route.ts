@@ -43,7 +43,7 @@ export async function POST(request: Request) {
       }
     }
     const partial = results.some((result) => result.partial);
-    appendIncident({ action: "scheduledOpenScapAudit", kind: "audit", status: partial ? "failed" : "success", profileId: "openscap", limit: body.limit,
+    appendIncident({ action: "scheduledOpenScapAudit", kind: "audit", status: partial ? "partial" : "success", profileId: "openscap", limit: body.limit,
       message: `Плановый OpenSCAP: ${results.filter((result) => !result.partial).length}/${results.length} полных проверок.`, runId: body.reportRunId });
     return NextResponse.json({ ok: !partial, partial, reportRunId: body.reportRunId, results }, { status: partial ? 207 : 200 });
   } catch (error) {

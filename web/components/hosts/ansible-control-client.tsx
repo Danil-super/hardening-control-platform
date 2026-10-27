@@ -1,5 +1,7 @@
 "use client";
 
+import { Select } from "@/components/ui/select";
+
 import {
   AlertTriangle,
   Ban,
@@ -26,6 +28,11 @@ import { DecommissionHostDialog } from "@/components/hosts/decommission-host-dia
 import { connectAndSaveHost, defaultHostAlias } from "@/lib/host-onboarding";
 import type { PreflightCheck } from "@/lib/preflight-result";
 
+import { useAuditJobs, AuditJobHistory } from "@/components/hosts/audit-jobs-provider";
+import { HostRiskSummary } from "@/components/hosts/host-risk-summary";
+import { auditReportLabels, auditCompletionMessage } from "@/lib/audit-job-status";
+import type { HostRiskSummary as RiskSummary } from "@/lib/host-risk-summary";
+
 type HealthPayload = {
   ansibleInstalled?: boolean;
   version?: string | null;
@@ -47,6 +54,7 @@ type RunPayload = {
   reportId?: string | null;
   postAuditReportId?: string | null;
   transaction?: RemediationTransaction;
+  nextStep?: { ready: boolean; message: string; href: string } | null;
 };
 
 type AuditRepeatNotice = {
@@ -67,7 +75,8 @@ type RemediationTransaction = {
   createdAt: string;
   hostAlias: string;
   action: string;
-  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back";
+  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back" | "cancelled";
+  parameters: Record<string, string>;
   reason: string;
   backupRef: string | null;
   preAuditReportId: string | null;
@@ -83,6 +92,7 @@ type ManagedHost = {
   become: boolean | null;
   groups: string[];
   reportCount: number;
+  riskSummary?: RiskSummary;
   credentialId?: string | null;
   credentialFingerprint?: string | null;
   credentialPublicKey?: string | null;
@@ -92,6 +102,7 @@ type ManagedHost = {
     fileName: string;
     createdAt: string | null;
     profileId: string | null;
+    mode: string;
     score: number | null;
     high: number;
     medium: number;
@@ -143,11 +154,17 @@ const profileOptions = [
 ] as const;
 
 const primaryAuditActions = [
-  { id: "agentlessAudit", label: "Проверить профиль", icon: ShieldCheck },
-  { id: "ping", label: "Проверить связь", icon: Server },
+  { id: "ping", label: "Проверить подключение SSH", icon: Server },
 ] as const;
 
 const additionalAuditActions = [
+  {
+    id: "agentlessAudit",
+    label: "Локальные правила HCP — Ansible",
+    group: "Безопасность и конфигурация",
+    description: "Авторский набор правил HCP: настройки SSH, firewall, служб и прав доступа. Частично пересекается с OpenSCAP и Lynis; полезен для проверки выбранной роли хоста. Настройки не изменяются.",
+    icon: ShieldCheck,
+  },
   {
     id: "packageInventory",
     label: "Пакеты и CVE — Trivy",
@@ -252,6 +269,7 @@ const transactionStatusLabels: Record<RemediationTransaction["status"], string> 
   rolling_back: "выполняется откат",
   rollback_failed: "ошибка отката",
   rolled_back: "восстановлено",
+  cancelled: "отменено без изменений",
 };
 
 const transactionActionLabels: Record<string, string> = {
@@ -265,19 +283,6 @@ function formatDate(value: string | null | undefined) {
   }
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleString("ru-RU");
-}
-
-function scoreTone(score: number | null | undefined) {
-  if (typeof score !== "number") {
-    return "border-slate-700 bg-slate-900 text-slate-300";
-  }
-  if (score >= 80) {
-    return "border-emerald-400/40 bg-emerald-500/15 text-emerald-100";
-  }
-  if (score >= 55) {
-    return "border-amber-400/40 bg-amber-500/15 text-amber-100";
-  }
-  return "border-red-400/40 bg-red-500/15 text-red-100";
 }
 
 function reportHref(fileName: string) {
@@ -294,8 +299,16 @@ export function AnsibleControlClient() {
   const [additionalAuditActionId, setAdditionalAuditActionId] = useState<AdditionalAuditActionId>("packageInventory");
   const [nmapScanScope, setNmapScanScope] = useState<NmapScanScope>("top_100");
   const [selectedAlias, setSelectedAlias] = useState("");
-  const [loading, setLoading] = useState("");
-  const [runResult, setRunResult] = useActionResult<RunPayload>();
+  const [localLoading, setLoading] = useState("");
+  const [dataLoading, setDataLoading] = useState(false);
+  const [remediationsRefreshing, setRemediationsRefreshing] = useState(false);
+  const { jobs, refresh: refreshJobs, rememberJob } = useAuditJobs();
+  const activeJob = jobs.find(job => job.hostAlias === selectedAlias && ["queued", "running"].includes(job.status));
+  const loading = localLoading || activeJob?.action || "";
+  const latestJob = jobs.find(job => job.hostAlias === selectedAlias && !["queued", "running"].includes(job.status));
+  const displayedJob = useRef("");
+  const observedJob = useRef("");
+  const [runResult, setRunResult, restoreRunResult] = useActionResult<RunPayload>();
   const [freshReportHref, setFreshReportHref] = useState("");
   const [manualAlias, setManualAlias] = useState("");
   const [manualAddress, setManualAddress] = useState("");
@@ -327,7 +340,26 @@ export function AnsibleControlClient() {
   const [greenboneMessage, setGreenboneMessage] = useState("");
   const [decommissionHost, setDecommissionHost] = useState<ManagedHost | null>(null);
   const [operationSudoPassword, setOperationSudoPassword] = useState("");
+  const [rollbackTargetId, setRollbackTargetId] = useState("");
+  const [rollbackSudoPassword, setRollbackSudoPassword] = useState("");
   const [secureCredentialTransport, setSecureCredentialTransport] = useState(false);
+
+  useEffect(() => {
+    setRollbackTargetId("");
+    setRollbackSudoPassword("");
+  }, [selectedAlias]);
+
+  useEffect(() => {
+    if (activeJob) { observedJob.current = activeJob.id; return; }
+    if (!latestJob?.result || displayedJob.current === latestJob.id) return;
+    displayedJob.current = latestJob.id;
+    restoreRunResult({ ...latestJob.result, message: auditCompletionMessage(latestJob) });
+    setFreshReportHref(latestJob.result.reportId ? reportHref(latestJob.result.reportId) : "");
+    if (observedJob.current === latestJob.id) {
+      observedJob.current = "";
+      void loadHosts().catch((error) => notify(errorMessage(error, "Не удалось обновить список хостов."), "error"));
+    }
+  }, [latestJob, activeJob, restoreRunResult, notify]);
 
   const selectedHost = useMemo(
     () => hosts?.hosts?.find((host) => host.alias === selectedAlias) ?? null,
@@ -369,7 +401,7 @@ export function AnsibleControlClient() {
   }, [copied]);
 
   async function refreshAll(announce = false) {
-    setLoading("refresh");
+    setDataLoading(true);
     try {
       const [healthResponse, hostsResponse, remediationResponse] = await Promise.all([
         fetch("/api/ansible/health"),
@@ -386,14 +418,14 @@ export function AnsibleControlClient() {
       setHosts(nextHosts);
       setTransactions(nextRemediations.transactions ?? []);
       if (!selectedAlias && nextHosts.hosts?.[0]) {
-        setSelectedAlias(nextHosts.hosts[0].alias);
+        setSelectedAlias((value) => value || nextHosts.hosts[0].alias);
       }
       if (announce) notify("Данные хостов обновлены.", "success");
       return nextHosts as HostsPayload;
     } catch (error) {
-      setRunResult({ ok: false, message: errorMessage(error, "Не удалось обновить данные. Проверьте подключение к платформе и повторите запрос.") });
+      notify(errorMessage(error, "Не удалось обновить данные. Проверьте подключение к платформе и повторите запрос."), "error");
     } finally {
-      setLoading("");
+      setDataLoading(false);
     }
   }
 
@@ -413,13 +445,13 @@ export function AnsibleControlClient() {
   }
 
   async function refreshRemediations() {
-    setLoading("remediations");
+    setRemediationsRefreshing(true);
     try {
       await loadRemediations();
       notify("Список изменений обновлён.", "success");
     } catch (error) {
       notify(errorMessage(error, "Не удалось обновить список изменений."), "error");
-    } finally { setLoading(""); }
+    } finally { setRemediationsRefreshing(false); }
   }
 
   async function copyToClipboard(value: string, label: string) {
@@ -686,7 +718,7 @@ export function AnsibleControlClient() {
       : action === "openScapAudit"
         ? "OpenSCAP проверит выбранный профиль на ВМ. Встроенный профиль HCP временно передаётся по SSH. Настройки не меняются; проверка может занять до 30 минут. Продолжить?"
       : action === "astraOvalAudit"
-        ? "OpenSCAP проверит хост по OVAL-базе, назначенной его группе в «Источниках». Настройки хоста не меняются. Продолжить?"
+        ? "OpenSCAP проверит хост по OVAL-базе, назначенной его группе в «Источниках». Крупная база может потребовать до 35 минут. Настройки хоста не меняются. Продолжить?"
       : action === "networkPortScan"
         ? nmapScanScope === "full_tcp"
           ? "Nmap проверит все TCP-порты 1–65535 выбранного хоста с control node. Это может занять до 30 минут и создаст много сетевых соединений. UDP не проверяется. Продолжить?"
@@ -723,12 +755,18 @@ export function AnsibleControlClient() {
         ...(sudoPassword ? { sudoPassword } : {}),
       });
       if (sudoPassword) setOperationSudoPassword("");
-      const response = await fetch("/api/ansible/run", {
+      const response = await fetch(isResponse ? "/api/ansible/run" : "/api/ansible/jobs", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: requestBody,
       });
       const payload = await readApiResponse(response);
+      if (!isResponse && payload.job) {
+        rememberJob(payload.job);
+        await refreshJobs();
+        if (!payload.ok) setRunResult({ ok: false, action, message: payload.message });
+        return;
+      }
       if (response.status === 409 && payload.error === "audit_already_completed" && payload.repeatAudit) {
         const repeatAudit = payload.repeatAudit as AuditRepeatNotice;
         setFreshReportHref(reportHref(repeatAudit.reportId));
@@ -744,48 +782,6 @@ export function AnsibleControlClient() {
       if (action !== "packageInventory" || !payload.ok) setRunResult(payload);
       await loadHosts();
       await loadRemediations();
-      if (payload.ok && action === "packageInventory") {
-        const cveResponse = await fetch("/api/ansible/vulnerabilities/check", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ hostAlias: selectedAlias, reportId: payload.reportId }),
-        });
-        const cvePayload = await readApiResponse(cveResponse);
-        let dependencyTrackMessage = "";
-        let dependencyTrackFailed = false;
-        // Dependency-Track is an optional, independent integration. Do not add
-        // its configuration message to a failed or partial Trivy run: it makes
-        // the actual next step (load the shared CVE database) hard to see.
-        if (cvePayload.ok && !cvePayload.partial && cvePayload.reportId && cvePayload.report?.vulnerabilityScan?.sbomFile) {
-          try {
-            const dependencyTrackResponse = await fetch("/api/ansible/dependency-track/sync", {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ hostAlias: selectedAlias, vulnerabilityReportId: cvePayload.reportId }),
-            });
-            const dependencyTrackPayload = await readApiResponse(dependencyTrackResponse);
-            dependencyTrackFailed = !dependencyTrackResponse.ok || !dependencyTrackPayload.ok;
-            if (dependencyTrackPayload.configured === true && dependencyTrackPayload.message) {
-              dependencyTrackMessage = ` ${dependencyTrackPayload.message}`;
-            }
-          } catch {
-            dependencyTrackFailed = true;
-            dependencyTrackMessage = " Передача в Dependency-Track не подтверждена: нет ответа от платформы.";
-          }
-        }
-        setRunResult({
-          ok: cvePayload.ok,
-          partial: Boolean(cvePayload.partial || dependencyTrackFailed),
-          action,
-          message: `${cvePayload.message ?? (cvePayload.ok ? "CVE-аудит пакетов выполнен." : "Не удалось выполнить CVE-аудит пакетов.")}${dependencyTrackMessage}`,
-          stdout: payload.stdout,
-          stderr: payload.stderr,
-        });
-        await loadHosts();
-        if (cvePayload.ok && cvePayload.reportId) {
-          setFreshReportHref(`/reports/agentless/${encodeURIComponent(cvePayload.reportId)}`);
-        }
-      }
       if (payload.ok && action !== "packageInventory" && payload.reportId) {
         setFreshReportHref(`/reports/agentless/${encodeURIComponent(payload.reportId)}`);
       }
@@ -829,13 +825,10 @@ export function AnsibleControlClient() {
   }
 
   async function rollbackTransaction(transaction: RemediationTransaction) {
-    const confirmedHost = window.prompt(`Введите alias ${transaction.hostAlias} для отката:`);
-    if (confirmedHost?.trim() !== transaction.hostAlias) {
-      return;
-    }
+    const confirmedHost = transaction.hostAlias;
     const target = hosts?.hosts?.find((host) => host.alias === transaction.hostAlias);
     const sudoPassword = target?.sudoMode === "on_demand"
-      ? window.prompt(`Введите пароль sudo для ${transaction.hostAlias}; он будет использован только для отката и не сохранится:`) ?? ""
+      ? rollbackSudoPassword
       : "";
     if (target?.sudoMode === "on_demand" && !sudoPassword) return;
     if (sudoPassword && !secureCredentialTransport) {
@@ -851,14 +844,32 @@ export function AnsibleControlClient() {
         headers: { "Content-Type": "application/json" },
         body: requestBody,
       });
-      setRunResult(await readApiResponse(response));
+      const result = await readApiResponse(response);
+      setRunResult(result);
+      if (result.ok) setRollbackTargetId("");
       await loadRemediations();
       await loadHosts();
     } catch (error) {
       setRunResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте данные и журнал действий перед повторной попыткой.") });
     } finally {
+      setRollbackSudoPassword("");
       setLoading("");
     }
+  }
+
+  async function cancelTransaction(transaction: RemediationTransaction) {
+    const confirmedHost = transaction.hostAlias;
+    setLoading(`cancel-${transaction.id}`);
+    setRunResult(null);
+    try {
+      const response = await fetch(`/api/ansible/remediations/${encodeURIComponent(transaction.id)}/cancel`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirmedHost: confirmedHost.trim() }),
+      });
+      setRunResult(await readApiResponse(response));
+      await loadRemediations();
+    } catch (error) {
+      setRunResult({ ok: false, message: errorMessage(error, "Не удалось отменить операцию.") });
+    } finally { setLoading(""); }
   }
 
   function startNewHost(address = "", alias = "") {
@@ -907,17 +918,18 @@ export function AnsibleControlClient() {
             Выберите хост, запустите аудит и просмотрите результат. Изменения firewall выполняются отдельно, с планом и откатом.
           </p>
         </div>
-        <Button variant="secondary" onClick={() => refreshAll(true)} disabled={Boolean(loading)}>
-          <RefreshCw size={16} className={loading === "refresh" ? "animate-spin" : ""} aria-hidden="true" />
+        <Button variant="secondary" onClick={() => refreshAll(true)} disabled={dataLoading}>
+          <RefreshCw size={16} className={dataLoading ? "animate-spin" : ""} aria-hidden="true" />
           Обновить данные
         </Button>
       </header>
+      {dataLoading ? <p role="status" className="text-sm text-slate-400">Загружаю состояние HCP, список хостов и сохранённую историю. Проверки на хостах не запускаются.</p> : null}
 
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Сводка">
-        <StatusTile label="Ansible" value={!health ? "Проверяем…" : health.ansibleInstalled ? "Готов" : "Не готов"} good={health ? Boolean(health.ansibleInstalled) : undefined} />
+        <StatusTile label="Ansible" value={!health ? "Загрузка…" : health.ansibleInstalled ? "Готов" : "Не готов"} good={health ? Boolean(health.ansibleInstalled) : undefined} />
         <StatusTile label="Список хостов" value={!hosts ? "Загружаем…" : hosts.inventoryReady ? "Готов" : "Не готов"} good={hosts ? Boolean(hosts.inventoryReady) : undefined} />
         <StatusTile label="Хосты" value={summary?.total ?? 0} />
-        <StatusTile label="Последние аудиты" value={summary?.withReports ?? 0} />
+        <StatusTile label="Хосты с аудитом" value={summary?.withReports ?? 0} />
       </section>
 
       <NetworkDiscovery cidr={scanCidr} result={discovery} loading={loading || accessLoading}
@@ -928,7 +940,7 @@ export function AnsibleControlClient() {
           <div>
             <h2 id="host-form-title" className="text-lg font-semibold text-white">{editingHost ? `2. Подключение: ${editingHost}` : "2. Подключение по паролю"}</h2>
             <p className="mt-2 text-sm leading-6 text-slate-400">Вы вводите данные на сайте. HCP сам входит на Astra по паролю, затем настраивает ключ и сохраняет подключение.</p>
-          </div>
+      </div>
           {editingHost ? <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)}>Добавить другой хост</Button> : null}
         </div>
         <fieldset disabled={Boolean(loading) || Boolean(accessLoading)} className="grid min-w-0 gap-3 sm:grid-cols-2">
@@ -1004,7 +1016,7 @@ export function AnsibleControlClient() {
         <div className="flex flex-col gap-3 border-b border-slate-800 p-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">Управляемые хосты</h2>
-            <p className="mt-1 text-sm text-slate-400">Нажмите «Выбрать», затем настройте профиль и запустите проверку в следующем блоке.</p>
+            <p className="mt-1 text-sm text-slate-400">Нажмите «Настроить» для выбора хоста и инструмента. Сводка объединяет последние проверки каждого инструмента и профиля; история запусков не суммируется.</p>
           </div>
           <div className="flex flex-wrap gap-2">
             <LinkButton href="/reports" variant="secondary">
@@ -1019,58 +1031,43 @@ export function AnsibleControlClient() {
             <table className="w-full min-w-[880px] text-left text-sm">
               <thead className="bg-slate-900/70 text-xs uppercase text-slate-500">
                 <tr>
-                  <th className="px-4 py-3">Хост</th>
-                  <th className="px-4 py-3">SSH</th>
-                  <th className="px-4 py-3">Оценка</th>
-                  <th className="px-4 py-3">Риски</th>
-                  <th className="px-4 py-3">Последний аудит</th>
-                  <th className="px-4 py-3">Действия</th>
+                  <th className="px-3 py-2">Хост</th>
+                  <th className="px-3 py-2">SSH</th>
+                  <th className="px-3 py-2">Находки по последним проверкам</th>
+                  <th className="px-3 py-2">Последняя проверка</th>
+                  <th className="px-3 py-2">Действия</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
                 {hosts.hosts.map((host) => (
                   <tr key={host.alias} className={selectedAlias === host.alias ? "bg-sky-500/5" : ""}>
-                    <td className="px-4 py-4">
-                      <button onClick={() => fillHostForm(host)} className="text-left">
-                        <span className="block font-semibold text-white">{host.alias}</span>
-                        <span className="mt-1 block text-xs text-slate-500">{host.address}</span>
+                    <td className="px-3 py-2">
+                      <button onClick={() => fillHostForm(host)} title={host.alias} className="block max-w-36 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300">
+                        <span className="block truncate font-semibold text-white">{host.alias}</span>
+                        <span className="block text-xs text-slate-500">{host.address}</span>
                       </button>
                     </td>
-                    <td className="px-4 py-4 text-slate-300">
-                      <span>{host.user ?? "не указан"}</span>
-                      <span className={host.become ? "ml-2 text-emerald-200" : "ml-2 text-slate-500"}>
+                    <td className="px-3 py-2 text-slate-300">
+                      <span className="block max-w-28 truncate" title={host.user ?? undefined}>{host.user ?? "не указан"}</span>
+                      <span className={`block text-xs ${host.become ? "text-emerald-200" : "text-slate-500"}`}>
                         {host.become ? host.sudoMode === "on_demand" ? "sudo по паролю" : "административный режим" : "права учётной записи"}
                       </span>
                     </td>
-                    <td className="px-4 py-4">
-                      <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${scoreTone(host.lastReport?.score)}`}>
-                        {host.lastReport?.score === null || host.lastReport?.score === undefined ? "нет" : `${host.lastReport.score}%`}
-                      </span>
+                    <td className="px-3 py-2 text-xs">
+                      <HostRiskSummary summary={host.riskSummary} hostAlias={host.alias} />
                     </td>
-                    <td className="px-4 py-4 text-xs">
-                      {host.lastReport ? (
-                        <div className="grid grid-cols-4 gap-1">
-                          <span className="rounded-md bg-red-500/15 px-2 py-1 text-red-100" title="Высокий риск">Выс. {host.lastReport.high}</span>
-                          <span className="rounded-md bg-amber-500/15 px-2 py-1 text-amber-100" title="Средний риск">Ср. {host.lastReport.medium}</span>
-                          <span className="rounded-md bg-sky-500/15 px-2 py-1 text-sky-100" title="Низкий риск">Низ. {host.lastReport.low}</span>
-                          <span className="rounded-md bg-slate-800 px-2 py-1 text-slate-300" title="Информационная запись">Инф. {host.lastReport.info}</span>
-                        </div>
-                      ) : (
-                        <span className="text-slate-500">нет данных</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-4 text-slate-300">{formatDate(host.lastReport?.createdAt)}</td>
-                    <td className="px-4 py-4">
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="secondary" onClick={() => fillHostForm(host)}>
+                    <td className="px-3 py-2 text-xs text-slate-300"><p className="max-w-32">{formatDate(host.lastReport?.createdAt)}</p>{host.lastReport ? <p title={auditReportLabels[host.lastReport.mode] ?? host.lastReport.mode} className="max-w-32 truncate text-[11px] text-slate-400">{auditReportLabels[host.lastReport.mode] ?? host.lastReport.mode}</p> : null}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex max-w-60 flex-wrap items-center gap-1.5">
+                        <Button variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" onClick={() => fillHostForm(host)}>
                           Настроить
                         </Button>
                         {host.lastReport ? (
-                          <LinkButton href={reportHref(host.lastReport.fileName)} variant="secondary">
-                            Последний аудит
+                          <LinkButton href={reportHref(host.lastReport.fileName)} prefetch={false} variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" aria-label={`Последний отчёт хоста ${host.alias}`} title="Последний отчёт">
+                            Отчёт
                           </LinkButton>
                         ) : null}
-                        <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host.alias)}`} variant="secondary">
+                        <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host.alias)}`} prefetch={false} variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs">
                           История ({host.reportCount})
                         </LinkButton>
                       </div>
@@ -1085,7 +1082,7 @@ export function AnsibleControlClient() {
         )}
       </section>
 
-      <section className="grid gap-5">
+      <section className="grid grid-cols-[minmax(0,1fr)] gap-5">
         <div className="rounded-md border border-sky-400/20 bg-sky-400/5 p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
@@ -1108,14 +1105,14 @@ export function AnsibleControlClient() {
           <div className="mt-3 grid gap-3 border-t border-sky-400/15 pt-3 md:grid-cols-[minmax(0,320px)_1fr] md:items-end">
             <label className="block">
               <span className="text-xs font-semibold uppercase text-slate-400">Охват проверки портов</span>
-              <select
+              <Select
                 value={nmapScanScope}
-                onChange={(event) => setNmapScanScope(event.target.value as NmapScanScope)}
+                onValueChange={(value) => setNmapScanScope(value as NmapScanScope)}
                 disabled={Boolean(loading) || !selectedHost}
                 className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {nmapScanScopeOptions.map((scope) => <option key={scope.id} value={scope.id}>{scope.label}</option>)}
-              </select>
+              </Select>
             </label>
             <p className="text-xs leading-5 text-slate-400">{selectedNmapScanScope.description} Внешняя проверка создаёт сетевые соединения с выбранным хостом, но не изменяет его.</p>
           </div>
@@ -1124,29 +1121,17 @@ export function AnsibleControlClient() {
         <div id="ansible-actions" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-white">Основной аудит</h2>
+              <h2 className="text-lg font-semibold text-white">Проверки выбранного хоста</h2>
               <p className="mt-1 text-sm text-slate-400">
                 Хост: <span className="font-semibold text-slate-100">{selectedHost?.alias ?? "не выбран"}</span>
               </p>
-              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-500">HCP сам выполняет только read-only команды Ansible по уже настроенному SSH: в терминале Astra ничего запускать не нужно. Этот режим видит локальные настройки роли хоста; внешний аудит выше их не заменяет.</p>
+              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-400">Выберите нужный инструмент ниже. Проверка подключения подтверждает доступ по SSH и готовность Ansible; настройки безопасности она не оценивает.</p>
             </div>
             <div className="flex flex-wrap gap-2">
-              <label className="block">
-                <span className="sr-only">Профиль аудита</span>
-                <select
-                  value={profileId}
-                  onChange={(event) => setProfileId(event.target.value)}
-                  className="h-10 rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100"
-                >
-                  {profileOptions.map((profile) => (
-                    <option key={profile.id} value={profile.id}>{profile.label}</option>
-                  ))}
-                </select>
-              </label>
               {primaryAuditActions.map((action) => {
                 const Icon = action.icon;
                 return (
-                  <Button key={action.id} variant={action.id === "agentlessAudit" ? "primary" : "secondary"} onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
+                  <Button key={action.id} variant="secondary" className="max-w-full whitespace-normal" onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
                     <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
                     {action.label}
                   </Button>
@@ -1166,58 +1151,63 @@ export function AnsibleControlClient() {
             </div>
           ) : null}
 
-          <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Дополнительные проверки на хосте</summary>
+          <details open className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
+            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Инструменты проверки</summary>
             <p className="mt-1 text-xs leading-5 text-slate-400">Эти инструменты получают сведения с Astra через уже настроенный доступ. Они не меняют настройки хоста; выберите только одну нужную проверку.</p>
-            <div className="mt-3 grid gap-3 xl:grid-cols-[minmax(0,360px)_minmax(0,250px)_minmax(0,1fr)_auto] xl:items-end">
-              <label className="block min-w-0">
-                <span className="text-xs font-semibold uppercase text-slate-500">Инструмент</span>
-                <select
-                  value={additionalAuditActionId}
-                  onChange={(event) => setAdditionalAuditActionId(event.target.value as AdditionalAuditActionId)}
-                  disabled={Boolean(loading) || !selectedHost}
-                  className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-                >
-                  {additionalAuditGroups.map((group) => (
-                    <optgroup key={group} label={group}>
-                      {additionalAuditActions.filter((action) => action.group === group && !controlNodeOnlyAuditActionIds.has(action.id)).map((action) => (
-                        <option key={action.id} value={action.id}>{action.label}</option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-              </label>
-              {additionalAuditActionId === "networkPortScan" ? (
-                <label className="block min-w-0">
-                  <span className="text-xs font-semibold uppercase text-slate-500">Глубина Nmap</span>
-                  <select
-                    value={nmapScanScope}
-                    onChange={(event) => setNmapScanScope(event.target.value as NmapScanScope)}
+            <div className="mt-3 grid min-w-0 gap-x-3 gap-y-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+              <div className={`grid min-w-0 gap-3 ${additionalAuditActionId === "agentlessAudit" ? "md:grid-cols-[minmax(0,360px)_minmax(0,250px)]" : ""}`}>
+                <label className="block min-w-0 max-w-[360px]">
+                  <span className="text-xs font-semibold uppercase text-slate-500">Инструмент</span>
+                  <Select
+                    value={additionalAuditActionId}
+                    fitContent
+                    onValueChange={(value) => setAdditionalAuditActionId(value as AdditionalAuditActionId)}
                     disabled={Boolean(loading) || !selectedHost}
                     className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
                   >
-                    {nmapScanScopeOptions.map((scope) => <option key={scope.id} value={scope.id}>{scope.label}</option>)}
-                  </select>
+                    {additionalAuditGroups.map((group) => (
+                      <optgroup key={group} label={group}>
+                        {additionalAuditActions.filter((action) => action.group === group && !controlNodeOnlyAuditActionIds.has(action.id)).map((action) => (
+                          <option key={action.id} value={action.id}>{action.label}</option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </Select>
                 </label>
-              ) : <div className="hidden xl:block" aria-hidden="true" />}
-              <p className="text-xs leading-5 text-slate-400">{additionalAuditActionId === "networkPortScan" ? selectedNmapScanScope.description : selectedAdditionalAction.description}</p>
+                {additionalAuditActionId === "agentlessAudit" ? (
+                  <label className="block min-w-0">
+                    <span className="text-xs font-semibold uppercase text-slate-500">Набор правил HCP</span>
+                    <Select
+                      value={profileId}
+                      aria-label="Набор правил HCP"
+                      onValueChange={(value) => setProfileId(value)}
+                      disabled={Boolean(loading) || !selectedHost}
+                      className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+                    >
+                      {profileOptions.map((profile) => <option key={profile.id} value={profile.id}>{profile.label}</option>)}
+                    </Select>
+                  </label>
+                ) : null}
+              </div>
               <Button variant="secondary" onClick={() => runAction(selectedAdditionalAction.id)} disabled={Boolean(loading) || !selectedHost}>
                 <SelectedAdditionalActionIcon size={16} className={loading === selectedAdditionalAction.id ? "animate-spin" : ""} aria-hidden="true" />
                 Запустить проверку
               </Button>
+              <p className="text-xs leading-5 text-slate-400 sm:col-span-2">{selectedAdditionalAction.description}</p>
+              {additionalAuditActionId === "openScapAudit" ? <LinkButton href="/policies" variant="secondary" className="justify-self-start text-xs">Настроить профиль OpenSCAP</LinkButton> : null}
             </div>
           </details>
 
           <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
             <summary className="cursor-pointer text-sm font-semibold text-slate-200">Сетевой сканер Greenbone / OpenVAS — импорт XML</summary>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
-              Greenbone работает отдельной ВМ или сервисом в сети. HCP не запускает его по SSH и не передаёт ему ключи: он безопасно принимает только готовый XML-отчёт для выбранной машины.
+              Установите Greenbone на управляющей Ubuntu отдельным Docker-проектом или на отдельной ВМ сканера. Astra — только цель проверки. Задача запускается в веб-интерфейсе Greenbone; сюда загружается её готовый XML-отчёт.
             </p>
             <ol className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 md:grid-cols-2">
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">1. Сканер</span><br />В Greenbone создайте цель с точным адресом <code>{selectedHost?.address ?? "выбранного хоста"}</code>. Сканируйте только разрешённую ВМ или подсеть.</li>
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">2. Задача</span><br />Запустите сетевую задачу и дождитесь статуса <code>Done</code>. Первый запуск лучше делать без учётных данных Greenbone.</li>
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">3. Экспорт</span><br />В разделе Reports скачайте именно <strong>Report → XML</strong>. PDF, CSV, конфигурация задачи и незавершённый отчёт не подходят.</li>
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">4. Импорт</span><br />Вернитесь сюда, оставьте выбранным тот же хост и загрузите XML. HCP сверит адрес и исключит результаты других хостов.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">1. Greenbone: цель</span><br />В браузере откройте Greenbone: на Ubuntu со сканером это <code>https://localhost</code>. В Configuration → Targets укажите адрес именно того хоста, который выбран выше в HCP. Возьмите его из настроек подключения.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">2. Greenbone: запуск</span><br />В Scans → Tasks создайте задачу для этой цели, выберите Full and fast и запустите. Дождитесь <code>Done</code>. Первый запуск — без учётных данных Astra.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">3. Greenbone: скачивание</span><br />В Scans → Reports скачайте завершённый отчёт в формате <strong>XML</strong>, со всеми результатами. Anonymous XML заменяет адреса хостов и не подходит. Файл появится в загрузках компьютера с браузером.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">4. HCP: импорт</span><br />Вернитесь сюда, оставьте выбранной ту же Astra и выберите скачанный XML в поле ниже. Нажмите «Импортировать XML»: новая проверка при этом не запускается.</li>
             </ol>
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <LinkButton href="/guide#greenbone" variant="secondary">Полная инструкция Greenbone</LinkButton>
@@ -1268,10 +1258,10 @@ export function AnsibleControlClient() {
                   <Field label="Порт" value={targetPort} onChange={setTargetPort} placeholder="23" />
                   <label className="block">
                     <span className="text-xs font-semibold uppercase text-slate-500">Протокол</span>
-                    <select value={targetProtocol} onChange={(event) => setTargetProtocol(event.target.value)} className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100">
+                    <Select value={targetProtocol} onValueChange={(value) => setTargetProtocol(value)} className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100">
                       <option value="tcp">TCP</option>
                       <option value="udp">UDP</option>
-                    </select>
+                    </Select>
                   </label>
                 </div>
                 <ActionPair action={responseActions[0]} loading={loading} disabled={!selectedHost} onRun={runAction} />
@@ -1285,47 +1275,78 @@ export function AnsibleControlClient() {
           </details>
         </div>
 
-        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+        <section id="recent-remediations" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-white">Последние изменения</h2>
-              <p className="mt-1 text-sm text-slate-400">Резервную копию можно восстановить после применения или ошибки изменения.</p>
+              <p className="mt-1 text-sm text-slate-400">После начатого изменения можно восстановить резервную копию. Операцию, остановленную до создания копии, можно отменить без подключения к хосту.</p>
             </div>
-            <Button variant="secondary" onClick={refreshRemediations} disabled={Boolean(loading)}>
+            <Button variant="secondary" onClick={refreshRemediations} disabled={remediationsRefreshing}>
               <RefreshCw size={16} aria-hidden="true" />
               Обновить
             </Button>
           </div>
-          {transactions.length ? (
+          {transactions.some((transaction) => transaction.status !== "cancelled") ? (
             <div className="mt-4 space-y-2">
-              {transactions.slice(0, 8).map((transaction) => (
-                <div key={transaction.id} className="flex flex-col gap-3 rounded-md border border-slate-800 bg-slate-900/70 p-3 lg:flex-row lg:items-center lg:justify-between">
+              {transactions.filter((transaction) => transaction.status !== "cancelled").slice(0, 8).map((transaction) => {
+                const requiresSudo = hosts?.hosts?.find((host) => host.alias === transaction.hostAlias)?.sudoMode === "on_demand";
+                return (
+                <div key={transaction.id} className="rounded-md border border-slate-800 bg-slate-900/70 p-3">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
                   <div className="min-w-0 text-sm">
                     <p className="font-semibold text-slate-100">{transactionActionLabels[transaction.action] ?? transaction.action} · {transaction.hostAlias}</p>
                     <p className="mt-1 text-xs text-slate-400">{formatDate(transaction.createdAt)} · {transactionStatusLabels[transaction.status]} · {transaction.reason}</p>
-                    {transaction.error ? <p className="mt-1 text-xs text-red-200">{transaction.error}</p> : null}
+                    {transaction.error ? <p className="mt-1 break-words text-xs text-red-200">{transaction.error}</p> : null}
+                    {transaction.status === "failed" && !transaction.backupRef ? <p className="mt-1 text-xs text-slate-400">Изменение не начато: доступна отмена операции.</p> : null}
                   </div>
                   <div className="flex flex-wrap gap-2">
+                    {transaction.status === "failed" && !transaction.backupRef ? (
+                      <Button variant="secondary" onClick={() => void cancelTransaction(transaction)} disabled={Boolean(loading)}>
+                        Отменить операцию
+                      </Button>
+                    ) : null}
                     {transaction.postAuditReportId ? (
                       <LinkButton href={`/reports/agentless/${encodeURIComponent(transaction.postAuditReportId)}`} variant="secondary">
                         Отчёт после изменения
                       </LinkButton>
                     ) : null}
                     {transaction.backupRef && ["applied", "failed", "rollback_failed"].includes(transaction.status) ? (
-                      <Button variant="danger" onClick={() => rollbackTransaction(transaction)} disabled={Boolean(loading)}>
+                      <Button variant="danger" onClick={() => { setRollbackSudoPassword(""); setRollbackTargetId(transaction.id); }} disabled={Boolean(loading) || rollbackTargetId === transaction.id}>
                         <RotateCcw size={16} aria-hidden="true" />
                         Откатить
                       </Button>
                     ) : null}
                   </div>
+                  </div>
+                  {rollbackTargetId === transaction.id ? (
+                    <form aria-label="Подтверждение отката firewall" className="mt-3 space-y-3 border-t border-slate-700 pt-3" onSubmit={(event) => { event.preventDefault(); void rollbackTransaction(transaction); }}>
+                      <p className="text-sm text-slate-200">Восстановить firewall на <strong className="break-all">{transaction.hostAlias}</strong> из копии перед изменением{transaction.parameters?.target_port ? ` порта ${transaction.parameters.target_port}/${transaction.parameters.target_protocol ?? "tcp"}` : ""}?</p>
+                      <p className="text-xs leading-5 text-slate-400">Настройки firewall, изменённые после этой резервной копии, будут заменены. Другие настройки хоста откат не затрагивает.</p>
+                      {requiresSudo ? (
+                        <div className="max-w-md">
+                          <Field label="Пароль sudo для отката" value={rollbackSudoPassword} onChange={setRollbackSudoPassword} type="password" disabled={Boolean(loading)} />
+                          <p className="mt-1 text-xs leading-5 text-slate-400">Пароль пользователя SSH нужен для восстановления файлов на Astra. HCP не сохраняет его; после попытки поле очищается.</p>
+                        </div>
+                      ) : null}
+                      <div className="flex flex-wrap gap-2">
+                        <Button type="submit" variant="danger" disabled={Boolean(loading) || (requiresSudo && !rollbackSudoPassword)}>
+                          <RotateCcw size={16} className={loading === `rollback-${transaction.id}` ? "animate-spin" : ""} aria-hidden="true" />
+                          Подтвердить откат
+                        </Button>
+                        <Button type="button" variant="secondary" disabled={Boolean(loading)} onClick={() => { setRollbackTargetId(""); setRollbackSudoPassword(""); }}>Отмена</Button>
+                      </div>
+                    </form>
+                  ) : null}
                 </div>
-              ))}
+                );
+              })}
             </div>
-          ) : <p className="mt-4 text-sm text-slate-500">Изменений пока не было.</p>}
+          ) : <p className="mt-4 text-sm text-slate-300">Текущих изменений нет. Отменённые операции сохранены в журнале действий.</p>}
         </section>
 
         <aside className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <h2 className="text-lg font-semibold text-white">Последний запуск</h2>
+          <AuditJobHistory hostAlias={selectedAlias} />
           {runResult ? (
             <div className="mt-3 space-y-3 text-sm">
               <div className={`rounded-md border p-3 ${
@@ -1338,6 +1359,10 @@ export function AnsibleControlClient() {
                   <LinkButton href={freshReportHref} variant="secondary" className="mt-3 w-full bg-slate-950/60">
                     Открыть отчет
                   </LinkButton>
+                ) : null}
+                {runResult.action === "packageInventory" && runResult.nextStep ? (
+                  runResult.nextStep.ready ? <Button className="mt-3 w-full" disabled={Boolean(loading)} onClick={() => void runAction("astraOvalAudit")}>Проверить CVE Astra по OVAL</Button>
+                    : <LinkButton href="/data-sources#astra-oval-title" variant="secondary" className="mt-3 w-full">Исправить OVAL-источник</LinkButton>
                 ) : null}
               </div>
               {(runResult.stdout || runResult.stderr) ? (

@@ -27,6 +27,13 @@ RUN python3 -m venv /opt/hcp-tools/ssh-audit \
   && ln -s /opt/hcp-tools/ssh-audit/bin/ssh-audit /usr/local/bin/ssh-audit \
   && ssh-audit --help
 
+# Public CVE prose is translated offline. Pin both the engine and model bytes;
+# runtime translation never sends host reports to a third-party service.
+COPY deployment/install-description-model.py /opt/hcp-tools/install-description-model.py
+RUN python3 -m venv /opt/hcp-tools/translation \
+  && /opt/hcp-tools/translation/bin/pip install --no-cache-dir --only-binary=:all: ctranslate2==4.6.0 sentencepiece==0.2.1 \
+  && python3 /opt/hcp-tools/install-description-model.py --destination /opt/hcp-tools/translation/model
+
 ENV NODE_ENV=production \
   HOME=/home/node \
   PORT=3000 \
@@ -45,9 +52,9 @@ COPY --chown=node:node ansible.cfg ./ansible.cfg
 COPY --chown=node:node deployment/docker-entrypoint.sh /usr/local/bin/hcp-entrypoint
 COPY --chown=node:node deployment/hcp-scheduled-audit /usr/local/bin/hcp-scheduled-audit
 
-RUN mkdir -p /var/lib/hcp/reports /var/lib/hcp/sbom /var/lib/hcp/trivy-cache /home/node/.ssh \
-  && chown -R node:node /var/lib/hcp /home/node/.ssh /app \
-  && chmod 700 /home/node/.ssh \
+RUN mkdir -p /var/lib/hcp/reports /var/lib/hcp/sbom /var/lib/hcp/trivy-cache /home/node/.ssh /home/node/.ansible/tmp \
+  && chown -R node:node /var/lib/hcp /home/node/.ssh /home/node/.ansible /app \
+  && chmod 700 /home/node/.ssh /home/node/.ansible /home/node/.ansible/tmp \
   && chmod 755 /usr/local/bin/hcp-entrypoint /usr/local/bin/hcp-scheduled-audit
 
 WORKDIR /app/web

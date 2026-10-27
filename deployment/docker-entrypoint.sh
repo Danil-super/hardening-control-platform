@@ -3,11 +3,15 @@ set -eu
 umask 077
 
 runtime_ssh_dir="/home/node/.ssh"
-mkdir -p /var/lib/hcp "$runtime_ssh_dir"
+runtime_ansible_dir="/home/node/.ansible"
+mkdir -p /var/lib/hcp "$runtime_ssh_dir" "$runtime_ansible_dir/tmp"
+chmod 700 "$runtime_ansible_dir" "$runtime_ansible_dir/tmp"
 is_root="false"
 if [ "$(id -u)" -eq 0 ]; then
   is_root="true"
-  chown -R node:node /var/lib/hcp "$runtime_ssh_dir"
+  # A root diagnostic must not leave Ansible's local workspace inaccessible
+  # to the node account used by the application.
+  chown -R node:node /var/lib/hcp "$runtime_ssh_dir" "$runtime_ansible_dir"
 fi
 
 install_key() {

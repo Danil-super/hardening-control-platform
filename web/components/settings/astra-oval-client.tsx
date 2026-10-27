@@ -1,5 +1,7 @@
 "use client";
 
+import { Select } from "@/components/ui/select";
+
 import { useEffect, useState } from "react";
 import { useFeedbackMessage } from "@/components/ui/feedback";
 import { readApiResponse, errorMessage } from "@/lib/client-api";
@@ -54,14 +56,14 @@ export function AstraOvalClient() {
     <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Обычный пакетный аудит и общая база Trivy не требуют этой настройки. Добавьте OVAL-источник один раз для группы хостов одного выпуска Astra, если нужно подтверждённое CVE-покрытие от производителя. При сетевом варианте XML скачивает только control node; Astra не нужен интернет.</p>
     <form className="mt-5 grid gap-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); void saveOrRemove("POST"); }}>
       <label className="min-w-0 text-sm text-slate-300">Группа хостов
-        <select className={inputClass} value={group} onChange={(event) => setGroup(event.target.value)} required>
+        <Select className={inputClass} value={group} onValueChange={(value) => setGroup(value)} required>
           {(data.inventoryGroups ?? ["linux_hosts"]).map((name) => <option key={name} value={name}>{name}</option>)}
-        </select>
+        </Select>
       </label>
       <label className="text-sm text-slate-300">Источник базы
-        <select className={inputClass} value={config.mode} onChange={(event) => update({ mode: event.target.value as AstraOvalConfig["mode"] })}>
+        <Select className={inputClass} value={config.mode} onValueChange={(value) => update({ mode: value as AstraOvalConfig["mode"] })}>
           <option value="online">HTTPS-источник или внутреннее зеркало</option><option value="local">Локальный XML на проверяемом хосте</option>
-        </select>
+        </Select>
       </label>
       <label className="min-w-0 text-sm text-slate-300 md:col-span-2">{config.mode === "local" ? "Полный путь к XML на хосте" : "HTTPS-адрес XML-базы"}
         <input className={inputClass} value={config.mode === "local" ? config.path : config.url} onChange={(event) => update(config.mode === "local" ? { path: event.target.value } : { url: event.target.value })} required placeholder={config.mode === "local" ? "/usr/share/oval/db.xml" : "https://mirror.example/oval/astra.xml"} />
@@ -73,7 +75,7 @@ export function AstraOvalClient() {
       </label>
       <label className="text-sm text-slate-300">Область применения: выпуск Astra
         <input className={inputClass} value={config.releasePattern} onChange={(event) => update({ releasePattern: event.target.value })} required placeholder="Например, 1.7.*" />
-        <span className="mt-1 block text-xs leading-5 text-slate-400">Точный выпуск, ветка с .* или *. Это ваше ограничение; условия внутри OVAL также проверяет сканер. * не подтверждает охват всех выпусков.</span>
+        <span className="mt-1 block text-xs leading-5 text-slate-400">Версия ОС из /etc/astra_version, например 1.7.6 или 1.7.*. Здесь нужна версия Astra, а не дата публикации базы. Условия внутри OVAL также проверяет сканер.</span>
       </label>
       <details className="rounded-md border border-slate-800 bg-slate-900/60 p-3 md:col-span-2">
         <summary className="cursor-pointer text-sm font-semibold text-slate-200">Дополнительные ограничения и реквизиты источника</summary>

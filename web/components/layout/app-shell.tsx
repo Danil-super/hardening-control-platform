@@ -6,6 +6,8 @@ import Link from "next/link";
 import type { ReactNode } from "react";
 import { LogoutButton } from "@/components/auth/logout-button";
 
+import { AuditJobActivity } from "@/components/hosts/audit-jobs-provider";
+
 const navItems = [
   { href: "/", label: "Обзор", icon: LayoutDashboard },
   { href: "/hosts", label: "Хосты", icon: Server },
@@ -81,7 +83,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           </nav>
         </header>
 
-        <main className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">{children}</main>
+        <main className="mx-auto w-full max-w-[1440px] px-4 py-6 sm:px-6 lg:px-8 lg:py-8"><AuditJobActivity />{children}</main>
       </div>
     </div>
   );

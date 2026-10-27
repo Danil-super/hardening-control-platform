@@ -1,0 +1,9 @@
+# Linux only: opt in when a VPN or VMware network is reachable from Ubuntu
+# but does not forward connections from Docker's bridge.
+services:
+  hcp:
+    network_mode: host
+    ports: !reset []
+    command: ["npm", "start", "--", "--hostname", "${HCP_BIND_ADDRESS:-127.0.0.1}", "--port", "${HCP_PORT:-3000}"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:${HCP_PORT:-3000}/login').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

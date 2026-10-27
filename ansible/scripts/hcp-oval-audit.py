@@ -10,6 +10,7 @@ from __future__ import print_function
 import argparse
 import datetime
 import hashlib
+import html
 import json
 import os
 import re
@@ -26,10 +27,13 @@ import xml.etree.ElementTree as ET
 
 DEFINITIONS_NS = 'http://oval.mitre.org/XMLSchema/oval-definitions-5'
 RESULTS_NS = 'http://oval.mitre.org/XMLSchema/oval-results-5'
-MAX_SOURCE_BYTES = 64 * 1024 * 1024
-MAX_RESULT_BYTES = 128 * 1024 * 1024
-MAX_XML_NODES = 600000
+# The official Astra 1.7 feed on 2026-10-06 has 131721258 bytes and
+# 796021 XML nodes. Keep bounded headroom for it and OpenSCAP results.
+MAX_SOURCE_BYTES = 192 * 1024 * 1024
+MAX_RESULT_BYTES = 384 * 1024 * 1024
+MAX_XML_NODES = 2400000
 MAX_DEFINITIONS = 30000
+DOWNLOAD_TIMEOUT = 900
 UTC = datetime.timezone.utc
 # Local, read-only probes only. SQL objects could open network connections.
 LOCAL_OBJECTS = frozenset(('dpkginfo', 'rpminfo', 'family', 'uname', 'textfilecontent',
@@ -195,6 +199,160 @@ def source_definitions(root):
     return result
 
 
+def indexed_schematron(raw):
+    """Keep every installed Schematron rule; index references and dispatch.
+
+    OpenSCAP's generated XSLT walks the whole XML once per rule group and
+    searches every object/state for each reference. On large vendor feeds this
+    is quadratic. XSLT keys preserve the same lookup node sets; dispatching to
+    the union of *all* rule matches preserves normal template priority and
+    document order, without hundreds of full recursive walks.
+
+    Only the recognized generated format is optimized. Unknown stylesheets
+    remain untouched and use ordinary OpenSCAP validation.
+    """
+    source = raw.decode('utf-8')
+    if ('<axsl:stylesheet ' not in source or
+            'xmlns:oval-def="' + DEFINITIONS_NS + '"' not in source or
+            '<axsl:param ' not in source or 'hcp-index-' in source):
+        return None
+    rewritten = 0
+    for section in ('objects', 'states', 'variables'):
+        key = 'hcp-index-' + section
+        source, count = re.subn(
+            r'ancestor::oval-def:oval_definitions/oval-def:' + section + r'/\*\[@id=(\$\w+|current\(\))\]',
+            lambda match: "key('" + key + "', " + match.group(1) + ")", source)
+        rewritten += count
+        if section != 'variables':
+            attribute = 'object_ref' if section == 'objects' else 'state_ref'
+            source, count = re.subn(
+                r'@' + attribute + r'=ancestor::oval-def:oval_definitions/oval-def:' + section + r'/([\w-]+:[\w-]+)/@id',
+                lambda match: "key('" + key + "', @" + attribute + ")[self::" + match.group(1) + "]", source)
+            rewritten += count
+        declaration = '<axsl:key name="' + key + '" match="oval-def:oval_definitions/oval-def:' + section + '/*" use="@id"/>'
+        source = source.replace('<axsl:param ', declaration + '<axsl:param ', 1)
+
+    namespace = '{http://www.w3.org/1999/XSL/Transform}'
+    root = ET.fromstring(source)
+    if root.tag != namespace + 'stylesheet':
+        return None
+    modes = {}
+    rules = 0
+    for template in root.findall(namespace + 'template'):
+        mode = template.get('mode', '')
+        if not re.match(r'^M[0-9]+$', mode):
+            continue
+        priority = float(template.get('priority', '0'))
+        if priority >= 1000:
+            match = template.get('match', '')
+            # Union separators inside literals/predicates are not supported.
+            # Fall back rather than guess about a new compiler's match grammar.
+            parts = match.split('|')
+            if any(not re.match(r'^[A-Za-z_@*]', part.strip()) or
+                   part.count("'") % 2 or part.count('"') % 2 or
+                   part.count('[') != part.count(']') or '$' in part or
+                   'key(' in part or 'id(' in part or 'current(' in part for part in parts):
+                return None
+            modes.setdefault(mode, []).extend(parts)
+            rules += 1
+        elif priority < 0:
+            if any(child.tag != namespace + 'apply-templates' or
+                   child.get('select') != '@*|*' or child.get('mode') != mode for child in template):
+                return None
+        else:
+            return None
+    if not modes:
+        return None
+    for mode, matches in modes.items():
+        original = '<axsl:apply-templates select="/" mode="' + mode + '"/>'
+        if source.count(original) != 1:
+            return None
+        select = ' | '.join('//' + match.strip() for match in matches)
+        source = source.replace(original, '<axsl:apply-templates select="' + html.escape(select, quote=True) + '" mode="' + mode + '"/>')
+        source = source.replace('<axsl:apply-templates select="@*|*" mode="' + mode + '"/>', '')
+    optimized = source.encode('utf-8')
+    return optimized, {'method': 'indexed-references-and-rule-dispatch',
+        'originalSha256': hashlib.sha256(raw).hexdigest(),
+        'optimizedSha256': hashlib.sha256(optimized).hexdigest(),
+        'indexedLookups': rewritten, 'ruleGroups': len(modes),
+        'rules': rules}
+
+
+def schematron_environment(path, directory):
+    """Use a private schema copy for this controller process only."""
+    version = None
+    with open(path, 'rb') as stream:
+        for event, node in ET.iterparse(stream, events=('end',)):
+            if local_name(node.tag) == 'schema_version' and not node.get('platform'):
+                version = node_text(node)
+                break
+    if not version or not re.match(r'^\d+\.\d+(?:\.\d+)?$', version):
+        return None, None
+    base = os.environ.get('OSCAP_SCHEMA_PATH', '/usr/share/openscap/schemas')
+    original = os.path.join(base, 'oval', version)
+    stylesheet = os.path.join(original, 'oval-definitions-schematron.xsl')
+    if not os.path.isfile(stylesheet):
+        return None, None
+    result = indexed_schematron(read_regular(stylesheet, 4 * 1024 * 1024))
+    if result is None:
+        return None, None
+    optimized, evidence = result
+    private = os.path.join(directory, 'schemas')
+    target = os.path.join(private, 'oval', version)
+    shutil.copytree(original, target)
+    shutil.copytree(os.path.join(base, 'common'), os.path.join(private, 'common'))
+    with open(os.path.join(target, 'oval-definitions-schematron.xsl'), 'wb') as stream:
+        stream.write(optimized)
+    environment = dict(os.environ, OSCAP_SCHEMA_PATH=private)
+    return environment, evidence
+
+
+def validate_for_transfer(binary, path, digest, size, directory):
+    """Validate online bytes on the controller before the old target imports them.
+
+    XSD is mandatory. A bounded optional Schematron pass can time out on a
+    large feed; that remains an explicit partial-audit reason on the target.
+    Any actual validation error stops evaluation. No XML rules are rewritten.
+    """
+    code, detail = run_oscap([binary, 'oval', 'validate', '--skip-schematron', path], directory, 120, capture_stdout=True)
+    if code != 0:
+        raise ValueError('Проверка XML OVAL по XSD на control node не пройдена: ' + detail)
+    with tempfile.TemporaryDirectory(prefix='hcp-oval-validation-', dir=directory) as temporary:
+        # Unit callers may substitute the XSD runner without a source file.
+        environment, optimization = schematron_environment(path, temporary) if os.path.isfile(path) else (None, None)
+        options = {'environment': environment} if environment is not None else {}
+        code, detail = run_oscap([binary, 'oval', 'validate', path], directory,
+                                120 if size > 64 * 1024 * 1024 else 600, capture_stdout=True, **options)
+    if code not in (0, None):
+        raise ValueError('Проверка Schematron OVAL на control node не пройдена: ' + detail)
+    version_code, version = run_oscap([binary, '--version'], directory, 10, capture_stdout=True)
+    return {'sha256': digest, 'schemaExitCode': 0, 'schematronExitCode': code,
+            'schematronOptimization': optimization,
+            'validator': version.splitlines()[0][:300] if version_code == 0 and version else 'OpenSCAP',
+            'location': 'control_node'}
+
+
+def use_controller_validation(args, config, digest, scanner):
+    raw = getattr(args, 'source_validation', '{}')
+    proof = json.loads(raw)
+    if proof == {}:
+        return False
+    if (not isinstance(proof, dict) or config['mode'] != 'online' or not args.input
+            or proof.get('sha256') != digest or digest != config['sha256']
+            or type(proof.get('schemaExitCode')) is not int or proof['schemaExitCode'] != 0
+            or proof.get('schematronExitCode', 'missing') not in (0, None)
+            or (proof.get('schematronExitCode') is not None and type(proof.get('schematronExitCode')) is not int)
+            or proof.get('location') != 'control_node'
+            or not isinstance(proof.get('validator'), str) or len(proof['validator']) > 300):
+        raise ValueError('Результат проверки control node не относится к этим байтам OVAL.')
+    scanner['sourceValidation'] = proof
+    scanner['schemaValidationExitCode'] = 0
+    scanner['validationExitCode'] = proof['schematronExitCode']
+    if proof['schematronExitCode'] is None:
+        scanner['partialReasons'].append('XML базы проверен по XSD на control node. Дополнительная проверка Schematron не завершилась за отведённое время; результат CVE-аудита считается частичным.')
+    return True
+
+
 def parse_timestamp(value):
     match = re.match(r'^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})(?:\.\d+)?(Z|[+-]\d{2}:\d{2})?$', value)
     if not match:
@@ -299,33 +457,81 @@ def check_scope(identity, config):
         raise ValueError('Архитектура хоста не входит в область выбранной базы OVAL.')
 
 
-def prepare(config, output):
+def prepare(config, output, validate=False):
     if config['mode'] != 'online':
         raise ValueError('Подготовка загрузки используется только для online источника.')
     origin = https_origin(config['url'])
     opener = urllib.request.build_opener(SameOriginRedirect(origin))
-    request = urllib.request.Request(config['url'], headers={'User-Agent': 'HCP-OVAL/1', 'Accept': 'application/xml'})
     chunks, size = [], 0
+    expected_size, etag = None, None
     started = time.monotonic()
-    with opener.open(request, timeout=30) as response:
-        if https_origin(response.geturl()) != origin:
-            raise ValueError('HTTPS источник изменился при загрузке OVAL.')
-        if response.headers.get('Content-Encoding', 'identity') not in ('identity', ''):
-            raise ValueError('Сжатая передача OVAL не поддерживается; выберите прямой XML.')
-        while True:
-            piece = response.read1(65536)
-            if not piece:
-                break
-            size += len(piece)
-            if size > MAX_SOURCE_BYTES or time.monotonic() - started > 120:
-                raise ValueError('Превышен лимит размера или времени загрузки OVAL.')
-            chunks.append(piece)
+    for attempt in range(3):
+        if time.monotonic() - started > DOWNLOAD_TIMEOUT:
+            raise ValueError('Превышено время загрузки OVAL (' + str(DOWNLOAD_TIMEOUT) + ' секунд).')
+        headers = {'User-Agent': 'HCP-OVAL/1', 'Accept': 'application/xml'}
+        if size:
+            headers['Range'] = 'bytes=' + str(size) + '-'
+            if etag:
+                headers['If-Range'] = etag
+        request = urllib.request.Request(config['url'], headers=headers)
+        try:
+            with opener.open(request, timeout=30) as response:
+                if https_origin(response.geturl()) != origin:
+                    raise ValueError('HTTPS источник изменился при загрузке OVAL.')
+                if response.headers.get('Content-Encoding', 'identity') not in ('identity', ''):
+                    raise ValueError('Сжатая передача OVAL не поддерживается; выберите прямой XML.')
+                if size and response.getcode() == 206:
+                    interval = re.match(r'^bytes (\d+)-(\d+)/(\d+)$', response.headers.get('Content-Range', ''))
+                    if (not interval or int(interval.group(1)) != size or int(interval.group(2)) + 1 != int(interval.group(3))
+                            or (expected_size is not None and int(interval.group(3)) != expected_size)
+                            or (etag and response.headers.get('ETag') != etag)):
+                        raise ValueError('Источник OVAL изменился или вернул неверный диапазон при продолжении загрузки.')
+                    expected_size = int(interval.group(3))
+                elif response.getcode() == 200:
+                    # A server may ignore Range: restart, never append a full file.
+                    chunks, size = [], 0
+                    length = response.headers.get('Content-Length', '')
+                    expected_size = int(length) if length.isdigit() else None
+                    etag = response.headers.get('ETag')
+                else:
+                    raise ValueError('Источник вернул неожиданный HTTP-статус при загрузке OVAL.')
+                if expected_size is not None and expected_size > MAX_SOURCE_BYTES:
+                    raise ValueError('База OVAL превышает допустимый размер 192 МиБ.')
+                while True:
+                    piece = response.read1(65536)
+                    if not piece:
+                        break
+                    size += len(piece)
+                    if size > MAX_SOURCE_BYTES:
+                        raise ValueError('База OVAL превышает допустимый размер 192 МиБ.')
+                    if time.monotonic() - started > DOWNLOAD_TIMEOUT:
+                        raise ValueError('Превышено время загрузки OVAL (' + str(DOWNLOAD_TIMEOUT) + ' секунд). Получено ' + str(size) + ' байт. Проверьте скорость HTTPS-источника или используйте внутреннее зеркало.')
+                    chunks.append(piece)
+        except OSError:
+            if attempt == 2:
+                raise
+            continue
+        if expected_size is None or size == expected_size:
+            break
+        if size > expected_size:
+            raise ValueError('Размер загрузки OVAL не совпадает с HTTP-ответом.')
+    if expected_size is not None and size != expected_size:
+        raise ValueError('Источник оборвал загрузку OVAL; файл получен не полностью после трёх попыток.')
     raw = b''.join(chunks)
+    # Check pinned bytes before allocating a potentially large XML tree.
+    if hashlib.sha256(raw).hexdigest() != config['sha256']:
+        raise ValueError('SHA-256 OVAL не совпадает с ожидаемым: выполнение остановлено.')
     root = safe_xml(raw)
     source_definitions(root)
     metadata, reasons = source_metadata(root, raw, config)
     write_bytes(output, raw)
-    return {'ok': True, 'path': output, 'database': metadata, 'warnings': reasons}
+    result = {'ok': True, 'path': output, 'database': metadata, 'warnings': reasons}
+    if validate:
+        binary = shutil.which('oscap')
+        if not binary:
+            raise ValueError('OpenSCAP не установлен на control node: XML нельзя проверить перед передачей.')
+        result['sourceValidation'] = validate_for_transfer(binary, output, metadata['sha256'], len(raw), os.path.dirname(output))
+    return result
 
 
 def write_bytes(path, value):
@@ -334,13 +540,22 @@ def write_bytes(path, value):
         stream.write(value)
 
 
-def run_oscap(command, directory, timeout=900, capture_stdout=False):
+def write_json(path, value):
+    # Large vendor feeds produce large evidence snapshots. Stream JSON rather
+    # than keeping both a complete Unicode string and its UTF-8 copy in RAM.
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+        json.dump(value, stream, ensure_ascii=False, indent=2)
+        stream.write('\n')
+
+
+def run_oscap(command, directory, timeout=900, capture_stdout=False, environment=None):
     # Bound logs and result files as well as run time; kill the entire probe
     # process group on timeout. No shell, package installation or fetch option.
     def limits():
         resource.setrlimit(resource.RLIMIT_FSIZE, (MAX_RESULT_BYTES, MAX_RESULT_BYTES))
     with tempfile.TemporaryFile() as stdout, tempfile.TemporaryFile() as stderr:
-        process = subprocess.Popen(command, cwd=directory, stdout=stdout, stderr=stderr,
+        process = subprocess.Popen(command, cwd=directory, stdout=stdout, stderr=stderr, env=environment,
                                    start_new_session=True, preexec_fn=limits)
         try:
             code = process.wait(timeout=timeout)
@@ -389,6 +604,20 @@ def platform_applicability(affected):
                 'vendorReleaseApplicability': 'not_verified'}
     return {'status': 'astra_named' if astra else 'not_verified',
             'foreignPlatforms': foreign, 'vendorReleaseApplicability': 'not_verified'}
+
+
+def severity_assessment(severity, title, description):
+    levels = {'critical': 'critical', 'high': 'high', 'important': 'high',
+              'medium': 'medium', 'moderate': 'medium', 'low': 'low'}
+    if severity:
+        level = levels.get(severity.strip().lower())
+        return {'level': level, 'source': 'oval_metadata'} if level else None
+    if re.search(r'\b(?:chromium|chrome)\b', title, re.I):
+        labels = set(m.lower() for m in re.findall(
+            r'\(Chromium security severity:\s*(Critical|High|Medium|Low)\)', description, re.I))
+        if len(labels) == 1:
+            return {'level': labels.pop(), 'source': 'chromium_description'}
+    return None
 
 
 def definition_metadata(node):
@@ -508,16 +737,17 @@ def parse_results(root, definitions, report):
                             'referencedCveIds': entry['cveIds']}, ensure_ascii=False)))
         elif status == 'true' and entry['class'] == 'vulnerability':
             positive_cves.update(entry['cveIds'])
-            severity = (entry['vendorSeverity'] or '').lower()
-            risk = {'critical': 'high', 'high': 'high', 'important': 'high', 'medium': 'medium',
-                    'moderate': 'medium', 'low': 'low'}.get(severity, 'info')
+            assessment = severity_assessment(entry['vendorSeverity'], entry['title'], entry['description'])
+            risk = ('high' if assessment['level'] == 'critical' else assessment['level']) if assessment else 'info'
             item = finding(identifier, (', '.join(entry['cveIds']) + ': ' if entry['cveIds'] else '') + (entry['title'] or identifier),
                 'failed', entry['description'] or 'OpenSCAP подтвердил условия vulnerability-определения OVAL.',
                 json.dumps({'definitionId': identifier, 'cveIds': entry['cveIds'], 'result': status,
                             'vendorSeverity': entry['vendorSeverity'], 'criteria': entry['resultCriteria']}, ensure_ascii=False), risk)
             item['severityUnknown'] = risk == 'info'
+            if assessment:
+                item['severityAssessment'] = assessment
             item['vulnerability'] = {'cveIds': entry['cveIds'], 'definitionId': identifier,
-                'severitySource': 'oval_metadata' if severity else 'not_provided', 'cvss': None}
+                'severitySource': assessment['source'] if assessment else 'not_provided', 'cvss': None}
             report['findings'].append(item)
         elif status == 'true' and entry['class'] not in ('vulnerability', 'inventory'):
             report['findings'].append(finding(identifier, 'OVAL ' + entry['class'] + ': ' + (entry['title'] or identifier),
@@ -582,11 +812,18 @@ def evaluate(args):
             write_bytes(source_path, raw)
             version_code, version_text = run_oscap([binary, '--version'], directory, 10, capture_stdout=True)
             scanner['version'] = version_text.splitlines()[0][:300] if version_code == 0 and version_text else None
-            code, detail = run_oscap([binary, 'oval', 'validate', source_path], directory, 120)
-            scanner['validationExitCode'] = code
-            if code != 0:
-                raise ValueError('Проверка формата OVAL не пройдена: ' + detail)
-            code, detail = run_oscap([binary, 'oval', 'eval', '--results', result_path, source_path], directory)
+            controller_validated = use_controller_validation(args, config, hashlib.sha256(raw).hexdigest(), scanner)
+            if not controller_validated:
+                code, detail = run_oscap([binary, 'oval', 'validate', source_path], directory, 600, capture_stdout=True)
+                scanner['validationExitCode'] = code
+                if code != 0:
+                    raise ValueError('Проверка формата OVAL не пройдена: ' + detail)
+            command = [binary, 'oval', 'eval', '--results', result_path]
+            if controller_validated:
+                # These exact pinned bytes already passed mandatory XSD on
+                # the controller. Do not repeat the slow old-target validator.
+                command.append('--skip-validation')
+            code, detail = run_oscap(command + [source_path], directory)
             scanner['exitCode'] = code
             if code not in (0, 2):
                 scanner['partialReasons'].append('OpenSCAP завершился с ошибкой: ' + str(code) + '; ' + detail)
@@ -603,6 +840,8 @@ def main():
     parser.add_argument('command', choices=('prepare', 'evaluate', 'unavailable'))
     parser.add_argument('--config', default='{}')
     parser.add_argument('--input', default='')
+    parser.add_argument('--validate', action='store_true')
+    parser.add_argument('--source-validation', default='{}')
     parser.add_argument('--output', required=True)
     parser.add_argument('--inventory-host', default='localhost')
     parser.add_argument('--run-id', default='manual')
@@ -610,14 +849,14 @@ def main():
     args = parser.parse_args()
     if args.command == 'prepare':
         try:
-            result = prepare(parse_config(args.config), args.output)
+            result = prepare(parse_config(args.config), args.output, validate=args.validate)
         except (OSError, ValueError, ET.ParseError, UnicodeError) as error:
             result = {'ok': False, 'error': str(error)}
         print(json.dumps(result, ensure_ascii=False))
         return 0
     report = evaluate(args) if args.command == 'evaluate' else finish(empty_report(args, args.reason))
     # Existing report IDs should be unique; no silent overwrite or symlink follow.
-    write_bytes(args.output, (json.dumps(report, ensure_ascii=False, indent=2) + '\n').encode('utf-8'))
+    write_json(args.output, report)
     return 0
 
 

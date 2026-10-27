@@ -3,6 +3,7 @@ import { createProjectReport, listProjectReports } from "@/lib/project-report";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
+export const maxDuration = 180;
 
 function failure(error: unknown, status = 400) {
   return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "Не удалось подготовить итоговый отчёт." }, { status });
@@ -31,7 +32,8 @@ export async function GET(request: Request) {
   try {
     const hostAlias = new URL(request.url).searchParams.get("hostAlias") ?? undefined;
     if (hostAlias !== undefined && !/^[A-Za-z0-9_.:-]{1,96}$/.test(hostAlias)) return failure(new Error("Выберите корректный хост."));
-    return NextResponse.json({ ok: true, reports: listProjectReports(hostAlias) });
+    const view = new URL(request.url).searchParams.get("view") === "archive" ? "archive" : "active";
+    return NextResponse.json({ ok: true, reports: listProjectReports(hostAlias, view) });
   } catch (error) { return failure(error); }
 }
 

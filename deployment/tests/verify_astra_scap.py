@@ -130,6 +130,9 @@ def prepare_fixture(work):
     for value in variable.findall(namespace + "value"):
         variable.remove(value)
     ET.SubElement(variable, namespace + "value").text = str(identity)
+    # Keep two distinct alternatives like the production content. A one-value
+    # fixture hides a missing var_check="at least one" on filepath.
+    ET.SubElement(variable, namespace + "value").text = str(fixture / "absent-os-release")
     oval.write(fixture / "astra-platform-oval.xml", encoding="UTF-8", xml_declaration=True)
     passwd = fixture / "passwd"
     passwd.write_text("root:x:0:0:root:/root:/bin/sh\n")

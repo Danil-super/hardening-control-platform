@@ -129,3 +129,34 @@ test("failed reload stays rollback_failed and remains retryable", async () => {
   control.failAction = null;
   assert.equal((await remediation.rollbackRemediation(result.transaction.id, "host-one")).transaction.status, "rolled_back");
 });
+
+test("failed operation before backup can be cancelled without contacting the host", async () => {
+  control.missingReport = true;
+  await assert.rejects(remediation.applyRemediation(request));
+  const transaction = store.listRemediationTransactions()[0];
+  const runs = [...control.runs];
+  assert.throws(() => store.cancelRemediationTransaction(transaction.id, "other-host"), {code:"host_confirmation_required"});
+  const cancelled = store.cancelRemediationTransaction(transaction.id, "host-one");
+  assert.equal(cancelled.status, "cancelled");
+  assert.equal(cancelled.error, transaction.error);
+  assert.deepEqual(control.runs, runs);
+  assert.equal(store.verifyAuditChain().valid, true);
+  assert.equal(store.cancelRemediationTransaction(transaction.id, "host-one").status, "cancelled");
+});
+
+test("active operations and failures with a backup cannot be cancelled", async () => {
+  store.createRemediationTransaction({id:"active",hostAlias:"host-one",action:"closePort",profileId:"basic_linux",reason:"test",parameters:{}});
+  assert.throws(() => store.cancelRemediationTransaction("active", "host-one"), {code:"cancel_not_available"});
+  store.updateRemediationTransaction("active", {status:"failed",backupRef:"/var/lib/hcp-backups/active/firewall-state.tar.gz"});
+  assert.throws(() => store.cancelRemediationTransaction("active", "host-one"), {code:"cancel_not_available"});
+  assert.equal(store.getRemediationTransaction("active").status, "failed");
+});
+
+
+test("UFW lock refusal is diagnosed before the nftables fallback and never starts backup", async () => {
+  control.report = verifiedButPartlyLimitedAudit();
+  control.report.raw.findings[0].evidence = "backend=nftables; ufw=PermissionError: Permission denied: '/run/ufw.lock'; nftables=rules";
+  await assert.rejects(remediation.applyRemediation(request), /UFW.*ufw.lock/);
+  assert.deepEqual(control.runs, ["agentlessAudit"]);
+  assert.equal(store.listRemediationTransactions()[0].backupRef, null);
+});
