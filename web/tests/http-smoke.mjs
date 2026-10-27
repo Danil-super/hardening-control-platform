@@ -274,7 +274,7 @@ try {
   await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "nonexistent-smoke-group", config: {} }, status: 400 });
   const ovalPage = await (await request(`/reports/agentless/${ovalReportId}`)).text();
   assert.match(ovalPage, /Результат OVAL-аудита Astra/);
-  assert.match(ovalPage, /Уникальных CVE обнаружено/);
+  assert.equal(ovalPage.match(/Уникальных CVE<\/p>[\s\S]*?<p[^>]*>([^<]*)<\/p>/)?.[1], "1", "OVAL summary shows the fixture's unique CVE count");
   assert.match(ovalPage, /CVE-2099-999999/);
   assert.match(ovalPage, /test-release/);
   assert.match(ovalPage, /Риск не оценён/);
