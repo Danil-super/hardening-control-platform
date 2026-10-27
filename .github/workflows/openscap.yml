@@ -26,7 +26,7 @@ jobs:
     # Full unmodified official profile plus a bounded permission violation.
     # Baseline findings are expected; scanner errors must remain partial.
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 60
     env:
       SSG_VERSION: 0.1.79
       # Digest published by the official v0.1.79 GitHub release asset API.
@@ -44,12 +44,14 @@ jobs:
         working-directory: web
         run: npm ci --ignore-scripts
       - name: Install the real scanner and Ansible on the disposable VM
-        timeout-minutes: 5
+        timeout-minutes: 10
         run: |
           set -euo pipefail
           test "$(. /etc/os-release; printf '%s' "$ID:$VERSION_ID")" = "ubuntu:24.04"
-          sudo apt-get update -o Acquire::Retries=2
-          sudo apt-get install -y --no-install-recommends ansible openscap-scanner python3-lxml
+          sudo apt-get update -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+            ansible-core openscap-scanner python3-lxml
           mkdir -p "$RUNNER_TEMP/hcp-openscap/artifacts/reports"
           oscap --version > "$RUNNER_TEMP/hcp-openscap/artifacts/oscap-version.txt"
           ansible --version > "$RUNNER_TEMP/hcp-openscap/artifacts/ansible-version.txt"
