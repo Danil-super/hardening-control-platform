@@ -60,7 +60,10 @@ def main():
         return
     with tempfile.TemporaryDirectory(prefix='hcp-language-download-') as directory:
         archive = Path(directory) / 'model.zip'
-        with urllib.request.urlopen(URL, timeout=900) as response, archive.open('wb') as output:
+        # Use the upstream Argos client's identity: the model CDN rejects the
+        # default Python-urllib user agent with HTTP 403.
+        request = urllib.request.Request(URL, headers={'User-Agent': 'ArgosTranslate'})
+        with urllib.request.urlopen(request, timeout=900) as response, archive.open('wb') as output:
             size = 0
             while True:
                 block = response.read(1024 * 1024)
