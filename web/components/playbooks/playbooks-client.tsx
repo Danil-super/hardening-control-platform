@@ -1,7 +1,10 @@
 "use client";
 
+import { Select } from "@/components/ui/select";
+
 import { CheckCircle2, CircleAlert, FileCode2, LockKeyhole, Play, Plus, RefreshCw, Save, ShieldAlert, TestTube2, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AuditJobHistory, useAuditJobs } from "@/components/hosts/audit-jobs-provider";
 import { useActionResult, useNotify } from "@/components/ui/feedback";
 import { readApiResponse, errorMessage } from "@/lib/client-api";
 import { Button } from "@/components/ui/button";
@@ -23,6 +26,8 @@ type RegisteredPlaybook = {
   source: "builtin" | "custom";
   requiresLimit: boolean;
   variables: Variable[];
+  requiresConfirmation?: boolean;
+  requiresTargetSudo?: boolean;
 };
 
 type Template = {
@@ -50,7 +55,15 @@ export function PlaybooksClient() {
   const [kind, setKind] = useState<"audit" | "response">("audit");
   const [requiresLimit, setRequiresLimit] = useState(false);
   const [variablesJson, setVariablesJson] = useState("[]");
-  const [limit, setLimit] = useState("linux_hosts");
+  const [limit, setLimit] = useState("");
+  const [hosts, setHosts] = useState<{alias: string; address: string; sudoMode?: string}[]>([]);
+  const [sudoPassword, setSudoPassword] = useState("");
+  const [confirmAudit, setConfirmAudit] = useState(false);
+  const [profileId, setProfileId] = useState("basic_linux");
+  const [nmapScope, setNmapScope] = useState("top_100");
+  const [savedSignature, setSavedSignature] = useState("");
+  const openSequence = useRef(0);
+  const {jobs, rememberJob} = useAuditJobs();
   const [runVariables, setRunVariables] = useState<Record<string, string>>({});
   const [newId, setNewId] = useState("package-check");
   const [newTitle, setNewTitle] = useState("Проверка пакета");
@@ -64,6 +77,10 @@ export function PlaybooksClient() {
   const [loading, setLoading] = useState("");
   const [result, setResult] = useActionResult<{ ok?: boolean; message?: string; stdout?: string; stderr?: string; command?: string }>();
   const notify = useNotify();
+  const selectedHost = hosts.find((host) => host.alias === limit);
+  const requiresSudo = selectedHost?.sudoMode === "on_demand" && selected?.requiresTargetSudo !== false;
+  const dirty = selected?.source === "custom" && savedSignature !== JSON.stringify([content, title, kind, requiresLimit, variablesJson]);
+  const activeJob = jobs.some((job) => job.hostAlias === limit && ["queued", "running"].includes(job.status));
 
   const template = useMemo(
     () => templates.find((item) => item.id === templateId),
@@ -76,7 +93,18 @@ export function PlaybooksClient() {
 
   useEffect(() => {
     void loadPlaybooks();
+    let ignore = false;
+    void fetch("/api/ansible/hosts").then(readApiResponse).then((payload) => {
+      if (ignore) return;
+      if (!payload.ok) throw new Error(payload.message || "Не удалось загрузить хосты.");
+      const available = (payload.hosts ?? []).filter((host: {groups: string[]}) => host.groups.includes("linux_hosts"));
+      setHosts(available);
+      setLimit((current) => available.some((host: {alias: string}) => host.alias === current) ? current : available[0]?.alias ?? "");
+    }).catch((error) => { if (!ignore) setResult({ok: false, message: errorMessage(error, "Не удалось загрузить хосты.")}); });
+    return () => { ignore = true; openSequence.current++; };
   }, []);
+
+  useEffect(() => { setSudoPassword(""); setConfirmAudit(false); }, [selectedId, limit]);
 
   useEffect(() => {
     if (!selectedId && playbooks[0]) {
@@ -115,11 +143,13 @@ export function PlaybooksClient() {
   }
 
   async function openPlaybook(id: string) {
+    const sequence = ++openSequence.current;
     setLoading("open");
     setResult(null);
     try {
       const response = await fetch(`/api/ansible/playbooks/${encodeURIComponent(id)}`);
       const payload = await readApiResponse(response);
+      if (sequence !== openSequence.current) return;
       if (!payload.ok) {
         setResult(payload);
         return;
@@ -131,11 +161,12 @@ export function PlaybooksClient() {
       setKind(playbook.kind);
       setRequiresLimit(playbook.requiresLimit);
       setVariablesJson(JSON.stringify(playbook.variables ?? [], null, 2));
+      setSavedSignature(JSON.stringify([payload.content ?? "", playbook.title, playbook.kind, playbook.requiresLimit, JSON.stringify(playbook.variables ?? [], null, 2)]));
       setRunVariables(Object.fromEntries((playbook.variables ?? []).map((variable) => [variable.name, variable.defaultValue ?? ""])));
     } catch (error) {
-      setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
+      if (sequence === openSequence.current) setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
-      setLoading("");
+      if (sequence === openSequence.current) setLoading("");
     }
   }
 
@@ -162,7 +193,7 @@ export function PlaybooksClient() {
   }
 
   async function savePlaybook() {
-    if (!selected) {
+    if (!selected || selected.id !== selectedId) {
       return;
     }
 
@@ -199,7 +230,7 @@ export function PlaybooksClient() {
   }
 
   async function deletePlaybook() {
-    if (!selected || !window.confirm(`Удалить ${selected.title}?`)) {
+    if (!selected || selected.id !== selectedId || !window.confirm(`Удалить ${selected.title}?`)) {
       return;
     }
 
@@ -223,7 +254,7 @@ export function PlaybooksClient() {
   }
 
   async function syntaxCheck() {
-    if (!selected) {
+    if (!selected || selected.id !== selectedId || dirty) {
       return;
     }
     setLoading("syntax");
@@ -239,8 +270,13 @@ export function PlaybooksClient() {
   }
 
   async function runPlaybook() {
-    if (!selected) {
+    if (!selected || selected.id !== selectedId || dirty || !selectedHost || activeJob) {
       return;
+    }
+    if (selected.requiresConfirmation && !confirmAudit) return;
+    if (requiresSudo && !sudoPassword) { setResult({ok: false, message: "Введите пароль sudo для этой операции."}); return; }
+    if (sudoPassword && window.location.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(window.location.hostname)) {
+      setResult({ok: false, message: "Для пароля sudo используйте HTTPS либо localhost."}); return;
     }
     if (selected.kind === "response" && !window.confirm("Запустить response-playbook? Он может изменить выбранные хосты.")) {
       return;
@@ -248,15 +284,36 @@ export function PlaybooksClient() {
     setLoading("run");
     setResult(null);
     try {
-      const response = await fetch(`/api/ansible/playbooks/${encodeURIComponent(selected.id)}/run`, {
+      const builtin = selected.source === "builtin";
+      let confirmRepeatAudit = false;
+      if (builtin) {
+        const params = new URLSearchParams({action: selected.id, profileId, limit});
+        if (selected.id === "networkPortScan") params.set("nmapScanScope", nmapScope);
+        const response = await fetch(`/api/ansible/audit-repeat?${params}`);
+        const payload = await readApiResponse(response);
+        if (!response.ok || !payload.ok) throw new Error(payload.message || "Не удалось проверить историю запусков.");
+        if (payload.repeatAudit) {
+          if (!window.confirm(`${payload.repeatAudit.message}\n\nЗапустить проверку повторно?`)) {
+            setResult({ok: true, message: "Повторный запуск отменён. Существующий отчёт доступен в истории проверок."});
+            return;
+          }
+          confirmRepeatAudit = true;
+        }
+      }
+      const response = await fetch(builtin ? "/api/ansible/jobs" : `/api/ansible/playbooks/${encodeURIComponent(selected.id)}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ limit, variables: runVariables }),
+        body: JSON.stringify({ limit, ...(requiresSudo ? {sudoPassword} : {}), ...(builtin
+          ? {action: selected.id, profileId, confirmAudit, confirmRepeatAudit, extraVars: selected.id === "networkPortScan" ? {nmap_scan_scope: nmapScope} : {}}
+          : {variables: runVariables}) }),
       });
-      setResult(await readApiResponse(response));
+      const payload = await readApiResponse(response);
+      if (payload.ok && payload.job) { rememberJob(payload.job); setResult({ok: true, message: "Проверка запущена на сервере. Её состояние и отчёт появятся в истории проверок."}); }
+      else setResult(payload);
     } catch (error) {
       setResult({ ok: false, message: errorMessage(error, "Ответ не получен. Проверьте журнал действий перед повторным запуском.") });
     } finally {
+      setSudoPassword("");
       setLoading("");
     }
   }
@@ -378,7 +435,7 @@ export function PlaybooksClient() {
                 <Button
                   variant="secondary"
                   onClick={syntaxCheck}
-                  disabled={Boolean(loading) || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
+                  disabled={Boolean(loading) || dirty || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
                   title={selected.source === "custom" && !customPlaybooks.executionEnabled ? "Проверка пользовательского YAML разрешена только на тестовом control node." : undefined}
                 >
                   <CheckCircle2 size={16} className={loading === "syntax" ? "animate-spin" : ""} aria-hidden="true" />
@@ -387,7 +444,7 @@ export function PlaybooksClient() {
                 <Button
                   variant={selected.kind === "response" ? "danger" : "primary"}
                   onClick={runPlaybook}
-                  disabled={Boolean(loading) || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
+                  disabled={Boolean(loading) || dirty || !selectedHost || activeJob || (selected.requiresConfirmation && !confirmAudit) || (requiresSudo && !sudoPassword) || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
                   title={selected.source === "custom" && !customPlaybooks.executionEnabled ? "Запуск черновиков разрешён только на тестовом control node." : undefined}
                 >
                   <Play size={16} className={loading === "run" ? "animate-spin" : ""} aria-hidden="true" />
@@ -412,28 +469,30 @@ export function PlaybooksClient() {
               <Field label="Название" value={title} onChange={setTitle} disabled={selected.source !== "custom"} />
               <label className="block">
                 <span className="text-xs font-semibold uppercase text-slate-500">Тип</span>
-                <select
+                <Select
                   value={kind}
-                  onChange={(event) => setKind(event.target.value === "audit" ? "audit" : "response")}
+                  onValueChange={(value) => setKind(value === "audit" ? "audit" : "response")}
                   disabled={selected.source !== "custom"}
                   className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 disabled:opacity-60"
                 >
                   <option value="audit">audit</option>
-                  <option value="response">response</option>
-                </select>
+                </Select>
               </label>
-              <label className="flex h-10 items-center gap-2 self-end rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-200">
-                <input
-                  type="checkbox"
-                  checked={requiresLimit}
-                  onChange={(event) => setRequiresLimit(event.target.checked)}
-                  disabled={selected.source !== "custom"}
-                  className="h-4 w-4 rounded border-slate-600 bg-slate-950"
-                />
-                Требуется цель
+              <p className="self-end rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-300">Запуск на выбранном хосте</p>
+              <label className="block"><span className="text-xs font-semibold uppercase text-slate-500">Целевой хост</span>
+                <Select aria-label="Целевой хост" value={limit} onValueChange={setLimit} className="mt-2 w-full">
+                  {hosts.length ? hosts.map((host) => <option key={host.alias} value={host.alias}>{host.alias} · {host.address}</option>) : <option value="">Нет подключённых хостов</option>}
+                </Select>
               </label>
-              <Field label="Цель запуска" value={limit} onChange={setLimit} placeholder="точный хост или группа" />
             </div>
+
+            {dirty ? <p className="mt-3 text-sm text-amber-200">Есть несохранённые изменения. Сохраните их перед проверкой синтаксиса и запуском.</p> : null}
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              {requiresSudo ? <div><Field label="Пароль sudo для одного запуска" value={sudoPassword} onChange={setSudoPassword} type="password" /><p className="mt-1 text-xs text-slate-400">Пароль пользователя SSH используется только для этого запуска и не сохраняется.</p></div> : null}
+              {selected.id === "agentlessAudit" ? <label><span className="text-xs font-semibold text-slate-400">Профиль аудита</span><Select aria-label="Профиль аудита" className="mt-2 w-full" value={profileId} onValueChange={setProfileId}><option value="basic_linux">Базовый Linux</option><option value="ssh_security">SSH-сервер</option><option value="web_server">Веб-сервер</option><option value="docker_host">Docker-хост</option></Select></label> : null}
+              {selected.id === "networkPortScan" ? <label><span className="text-xs font-semibold text-slate-400">Глубина сканирования</span><Select aria-label="Глубина сканирования" className="mt-2 w-full" value={nmapScope} onValueChange={setNmapScope}><option value="top_100">100 популярных портов</option><option value="top_1000">1000 популярных портов</option><option value="full_tcp">Все TCP-порты</option></Select></label> : null}
+            </div>
+            {selected.requiresConfirmation ? <label className="mt-3 flex items-start gap-2 text-sm text-slate-300"><input type="checkbox" checked={confirmAudit} onChange={(event) => setConfirmAudit(event.target.checked)} className="mt-1" />Подтверждаю запуск выбранной проверки на указанном хосте</label> : null}
 
             {selected.variables.length ? (
               <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -492,6 +551,7 @@ export function PlaybooksClient() {
         ) : null}
 
         <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+          <AuditJobHistory hostAlias={limit} />
           <h2 className="text-lg font-semibold text-white">Результат</h2>
           {result ? (
             <div className="mt-3 space-y-3 text-sm">
@@ -522,17 +582,20 @@ function Field({
   onChange,
   disabled = false,
   placeholder,
+  type = "text",
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   disabled?: boolean;
   placeholder?: string;
+  type?: "text" | "password";
 }) {
   return (
     <label className="block">
       <span className="text-xs font-semibold uppercase text-slate-500">{label}</span>
       <input
+        type={type}
         value={value}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}

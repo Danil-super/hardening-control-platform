@@ -2,7 +2,8 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { appendIncident, getRepoRoot, isSafeLimit, playbooks } from "@/lib/ansible-control";
+import { actionRequiresTargetSudo, appendIncident, executeAnsiblePlaybook, getRepoRoot, isSafeLimit, onDemandSudoHostForLimit, playbooks } from "@/lib/ansible-control";
+import { getInventoryTargetHosts } from "@/lib/inventory";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,6 +25,8 @@ export type RegisteredPlaybook = {
   requiresLimit: boolean;
   timeout: number;
   variables: PlaybookVariable[];
+  requiresConfirmation?: boolean;
+  requiresTargetSudo?: boolean;
 };
 
 type PlaybookMeta = Omit<RegisteredPlaybook, "source" | "file" | "timeout"> & {
@@ -105,7 +108,7 @@ export const playbookTemplates = [
 - name: Check package installation
   hosts: linux_hosts
   become: true
-  gather_facts: true
+  gather_facts: false
 
   tasks:
     - name: Validate package_name
@@ -113,25 +116,53 @@ export const playbookTemplates = [
         that:
           - package_name is defined
           - package_name | length > 0
+          - package_name is match('^[A-Za-z0-9][A-Za-z0-9+_.:-]*$')
         fail_msg: "Set package_name."
 
-    - name: Check package on Debian family
-      ansible.builtin.command: "dpkg-query -W -f='\${Status} \${Version}\\n' {{ package_name }}"
-      changed_when: false
-      failed_when: false
-      register: deb_package
-      when: ansible_os_family == "Debian"
+    - name: Find dpkg-query
+      ansible.builtin.stat:
+        path: /usr/bin/dpkg-query
+        follow: true
+      register: query_dpkg
 
-    - name: Check package on RedHat family
-      ansible.builtin.command: "rpm -q {{ package_name }}"
+    - name: Find rpm
+      ansible.builtin.stat:
+        path: /usr/bin/rpm
+        follow: true
+      register: query_rpm
+
+    - name: Require a supported package tool
+      ansible.builtin.assert:
+        that:
+          - (query_dpkg.stat.executable | default(false)) or (query_rpm.stat.executable | default(false))
+        fail_msg: "Не найден dpkg-query или rpm; проверка пакета не выполнена."
+
+    - name: Check package with dpkg-query
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/dpkg-query
+          - -W
+          - '-f=\${Status} \${Version}'
+          - "{{ package_name }}"
       changed_when: false
-      failed_when: false
+      failed_when: deb_package.rc not in [0, 1]
+      register: deb_package
+      when: query_dpkg.stat.executable | default(false)
+
+    - name: Check package with rpm
+      ansible.builtin.command:
+        argv:
+          - /usr/bin/rpm
+          - -q
+          - "{{ package_name }}"
+      changed_when: false
+      failed_when: rpm_package.rc not in [0, 1]
       register: rpm_package
-      when: ansible_os_family == "RedHat"
+      when: not (query_dpkg.stat.executable | default(false)) and (query_rpm.stat.executable | default(false))
 
     - name: Show package status
       ansible.builtin.debug:
-        msg: "{{ deb_package.stdout | default(rpm_package.stdout | default('package not found')) }}"
+        msg: "{{ (deb_package.stdout | default('', true)) or (rpm_package.stdout | default('', true)) or 'Пакет не установлен' }}"
 `,
   },
 ];
@@ -191,6 +222,8 @@ export function listRegisteredPlaybooks(repoRoot = getRepoRoot()): RegisteredPla
     requiresLimit: Boolean("requiresLimit" in config && config.requiresLimit),
     timeout: config.timeout,
     variables: builtinVariables[id] ?? [],
+    requiresConfirmation: Boolean("requiresConfirmation" in config && config.requiresConfirmation),
+    requiresTargetSudo: actionRequiresTargetSudo(id as keyof typeof playbooks),
     }));
 
   if (!customPlaybookAuthoringEnabled()) {
@@ -233,6 +266,23 @@ export function readPlaybookContent(playbook: RegisteredPlaybook, repoRoot = get
   return readFileSync(registeredPlaybookPath(playbook, repoRoot), "utf8");
 }
 
+function validateVariables(variables: PlaybookVariable[]) {
+  if (!Array.isArray(variables) || variables.length > 50) throw new Error("Укажите не более 50 переменных.");
+  const names = new Set<string>();
+  for (const variable of variables) {
+    if (!variable || typeof variable !== "object" || typeof variable.name !== "string"
+      || !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(variable.name) || /^(?:ansible_|hcp_)/.test(variable.name)
+      || names.has(variable.name) || typeof variable.label !== "string" || !variable.label.trim() || variable.label.length > 160
+      || !["string", "number"].includes(variable.type) || (variable.required !== undefined && typeof variable.required !== "boolean")
+      || [variable.defaultValue, variable.placeholder].some((value) => value !== undefined && (typeof value !== "string" || value.length > 4096))) {
+      throw new Error("Проверьте переменные: нужны уникальное допустимое имя, название и тип string или number; системные имена ansible_ и hcp_ запрещены.");
+    }
+    if (variable.type === "number" && variable.defaultValue && !Number.isFinite(Number(variable.defaultValue))) throw new Error("Значение числовой переменной по умолчанию должно быть числом.");
+    names.add(variable.name);
+  }
+  return variables;
+}
+
 export function updateCustomPlaybook({
   playbook,
   title,
@@ -264,7 +314,7 @@ export function updateCustomPlaybook({
     title: title.trim() || playbook.title,
     kind,
     requiresLimit,
-    variables,
+    variables: validateVariables(variables),
     timeout: playbook.timeout,
   };
 
@@ -295,6 +345,7 @@ export function createCustomPlaybook({
   if (!isSafePlaybookId(id)) {
     throw new Error("ID может содержать латиницу, цифры, дефис и подчёркивание, от 3 до 64 символов.");
   }
+  if (Object.hasOwn(playbooks, id)) throw new Error("Этот ID занят встроенным сценарием.");
 
   const template = playbookTemplates.find((item) => item.id === templateId);
   if (!template) {
@@ -341,10 +392,12 @@ export async function runRegisteredPlaybook({
   playbook,
   limit,
   variables,
+  becomePassword,
 }: {
   playbook: RegisteredPlaybook;
   limit?: string;
   variables: Record<string, string>;
+  becomePassword?: string;
 }) {
   if (playbook.source === "builtin") {
     throw new Error("Встроенные проверки запускаются через /api/ansible/run с подтверждением и проверкой целей.");
@@ -361,9 +414,13 @@ export async function runRegisteredPlaybook({
   if (limit && !isSafeLimit(limit)) {
     throw new Error("Limit может содержать только имена хостов/групп без пробелов.");
   }
+  if (!getInventoryTargetHosts(limit).some((host) => host.groups.includes("linux_hosts"))) {
+    throw new Error("В выбранной цели нет подключённых хостов группы linux_hosts.");
+  }
+  if (onDemandSudoHostForLimit(limit) && !becomePassword) throw new Error("Введите пароль sudo для этой операции. HCP не сохраняет его.");
 
   for (const variable of playbook.variables) {
-    const value = variables[variable.name];
+    const value = variables[variable.name] ?? variable.defaultValue;
     if (variable.required && !value) {
       throw new Error(`Заполните переменную ${variable.name}.`);
     }
@@ -375,7 +432,7 @@ export async function runRegisteredPlaybook({
   const args = ["-i", inventoryPath, playbookPath];
   const extraVars: Record<string, string> = {};
   for (const variable of playbook.variables) {
-    const value = variables[variable.name] || variable.defaultValue;
+    const value = variables[variable.name] ?? variable.defaultValue;
     if (value) {
       if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(variable.name) || /^(?:ansible_|hcp_)/.test(variable.name)) {
         throw new Error("Недопустимое имя переменной пользовательского playbook.");
@@ -383,6 +440,7 @@ export async function runRegisteredPlaybook({
       if (typeof value !== "string" || value.length > 4096) {
         throw new Error(`Значение ${variable.name} должно быть строкой не длиннее 4096 символов.`);
       }
+      if (variable.type === "number" && !Number.isFinite(Number(value))) throw new Error(`Значение ${variable.name} должно быть числом.`);
       extraVars[variable.name] = value;
     }
   }
@@ -393,12 +451,14 @@ export async function runRegisteredPlaybook({
     args.push("--limit", limit);
   }
 
-  const result = await execFileAsync("ansible-playbook", args, {
-    cwd: repoRoot,
-    timeout: playbook.timeout,
-    maxBuffer: 1024 * 1024 * 8,
-    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False" },
-  });
+  let result;
+  try {
+    result = await executeAnsiblePlaybook({ args, timeout: playbook.timeout, becomePassword });
+    if (/skipping: no hosts matched/i.test(result.stdout) && !/\s+ok=\d+\s+changed=\d+/.test(result.stdout)) throw new Error("Сценарий не выполнил задачи: его hosts не совпадает с выбранной целью.");
+  } catch (error) {
+    appendIncident({ action: playbook.id, kind: playbook.kind, status: "failed", profileId: "custom", limit, message: error instanceof Error ? error.message : "Сценарий завершился ошибкой." });
+    throw error;
+  }
 
   appendIncident({
     action: playbook.id,

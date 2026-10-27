@@ -33,6 +33,7 @@ test("legacy builtin runner delegates to the managed action without inventing co
       runRegisteredPlaybook: () => { throw new Error("raw runner must not run"); },
     },
     "@/app/api/ansible/run/route": { POST: async (request) => { delegated = await request.json(); return Response.json({ error: "confirmation_required" }, { status: 400 }); } },
+    "@/lib/ssh-bootstrap": { credentialTransportAllowed: () => true },
   });
   const response = await route.POST(new Request("http://localhost/api/ansible/playbooks/networkPortScan/run", {
     method: "POST", body: JSON.stringify({ action: "closePort", limit: "target" }),
@@ -103,6 +104,72 @@ test("a standalone confirmed report is removed and the deletion is recorded", as
   assert.equal(events[0][0], "ansible_report_deleted");
 });
 
+test("read-only deletion preview names the exact PDF and links to its host and export", async () => {
+  const id = "project_report_53f754a3-6c4c-4cf9-8791-17aa3e856e4e";
+  const route = load("app/api/ansible/reports/[reportId]/route.ts", {
+    "@/lib/ansible-reports": {
+      listAnsibleReports: () => [{ id: "host-1-facts-run", mode: "facts" }],
+      targetAliasFromReport: () => "host-1",
+      listAnsibleReportDependents: () => [],
+      readAnsibleReport: () => { throw new Error("preview must not load raw scanner trees"); },
+      deleteAnsibleReport: () => { throw new Error("preview must never delete"); },
+    },
+    "@/lib/state-store": { listStoredReportReferences: () => [], getProjectReportRecord: () => ({ id, createdAt: "2026-10-10T10:07:47Z", subject: { projectName: "test_mk1", clientName: "Organisation" } }) },
+    "@/lib/project-report": { listProjectReportSourceReferences: () => [{ id, hostAlias: "host-1", snapshotReadable: true }] },
+  });
+  const response = await route.GET(new Request("http://localhost/api/ansible/reports/host-1-facts-run?dependencies=1"), { params: Promise.resolve({ reportId: "host-1-facts-run" }) });
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.ok, true);
+  assert.equal(result.canDelete, false);
+  assert.match(result.message, /PDF/);
+  assert.equal(result.references.length, 1);
+  assert.match(result.references[0].label, /test_mk1/);
+  assert.match(result.references[0].description, /Organisation/);
+  assert.match(result.references[0].description, /13:07:47/);
+  assert.equal(result.references[0].href, `/project-reports?host=host-1&report=${id}#${id}`);
+});
+
+test("unreferenced preview is deletable and a later PDF reference still blocks DELETE", async () => {
+  let saved = false;
+  let removed = false;
+  const route = load("app/api/ansible/reports/[reportId]/route.ts", {
+    "@/lib/ansible-reports": {
+      listAnsibleReports: () => [{ id: "host-1-facts-run", mode: "facts" }],
+      readAnsibleReport: () => ({ id: "host-1-facts-run", mode: "facts" }),
+      targetAliasFromReport: () => "host-1", listAnsibleReportDependents: () => [],
+      deleteAnsibleReport: () => { removed = true; },
+    },
+    "@/lib/state-store": { listStoredReportReferences: () => [], getProjectReportRecord: () => null },
+    "@/lib/project-report": { listProjectReportSourceReferences: () => saved ? [{ id: "missing-export", snapshotReadable: false }] : [] },
+  });
+  const params = { params: Promise.resolve({ reportId: "host-1-facts-run" }) };
+  const preview = await route.GET(new Request("http://localhost/api/ansible/reports/host-1-facts-run?dependencies=1"), params);
+  assert.equal((await preview.json()).canDelete, true);
+  saved = true;
+  const result = await route.DELETE(new Request("http://localhost/api/ansible/reports/host-1-facts-run", { method: "DELETE", body: JSON.stringify({ confirmReportId: "host-1-facts-run" }) }), params);
+  assert.equal(result.status, 409);
+  assert.match((await result.json()).references[0].description, /не удалось проверить/);
+  assert.equal(removed, false);
+});
+
+test("bulk archive endpoint requires its reviewed token and explicit confirmation", async () => {
+  let calls = 0;
+  const token = "a".repeat(64);
+  const route = load("app/api/ansible/archive/route.ts", {
+    "@/lib/archive": {
+      archivePreview: () => ({target:"reports",action:"archive",total:2,reports:1,pdf:1,journal:0,token,records:[{kind:"report",id:"private-path-must-not-be-returned"}]}),
+      applyArchive: (target,action,provided) => {calls++;assert.equal(target,"reports");assert.equal(action,"archive");assert.equal(provided,token);return 2;},
+    },
+  });
+  const preview = await route.GET(new Request("http://localhost/api/ansible/archive?target=reports&action=archive"));
+  assert.equal((await preview.json()).preview.records,undefined);
+  const rejected = await route.POST(new Request("http://localhost/api/ansible/archive",{method:"POST",body:JSON.stringify({target:"reports",action:"archive",token})}));
+  assert.equal(rejected.status,400);assert.equal(calls,0);
+  const accepted = await route.POST(new Request("http://localhost/api/ansible/archive",{method:"POST",body:JSON.stringify({target:"reports",action:"archive",token,confirmation:"archive:reports"})}));
+  assert.equal(accepted.status,200);assert.equal(calls,1);
+});
+
 test("custom variable values remain one JSON value rather than injected Ansible options", async () => {
   const previousEnable = process.env.HCP_ENABLE_CUSTOM_AUDITS;
   const previousProduction = process.env.HCP_PRODUCTION_MODE;
@@ -113,12 +180,18 @@ test("custom variable values remain one JSON value rather than injected Ansible 
   exec[promisify.custom] = async (_binary, args) => { executedArgs = args; return { stdout: "", stderr: "" }; };
   const registry = load("lib/playbook-registry.ts", {
     "node:child_process": { execFile: exec },
-    "@/lib/ansible-control": { getRepoRoot: () => "/tmp/fake-hcp-test", isSafeLimit: () => true, appendIncident: () => {}, playbooks: {} },
+    "@/lib/ansible-control": { getRepoRoot: () => "/tmp/fake-hcp-test", isSafeLimit: () => true, appendIncident: () => {}, playbooks: {}, onDemandSudoHostForLimit: () => null,
+      executeAnsiblePlaybook: async ({args}) => { executedArgs = args; return { stdout: "", stderr: "" }; } },
+    "@/lib/inventory": { getInventoryTargetHosts: target => target === "target" ? [{ alias: "target", groups: ["linux_hosts"] }] : [] },
   });
   const playbook = { id: "custom-test", kind: "audit", source: "custom", file: "playbook.yml", requiresLimit: false, timeout: 10, variables: [{ name: "package_name", required: true }] };
   try {
     await registry.runRegisteredPlaybook({ playbook, limit: "target", variables: { package_name: "openssl ansible_connection=local" } });
     assert.deepEqual(JSON.parse(executedArgs[executedArgs.indexOf("-e") + 1]), { package_name: "openssl ansible_connection=local" });
+    await registry.runRegisteredPlaybook({playbook:{...playbook,variables:[{name:"package_name",required:true,defaultValue:"bash"}]},limit:"target",variables:{}});
+    assert.deepEqual(JSON.parse(executedArgs[executedArgs.indexOf("-e") + 1]),{package_name:"bash"});
+    await assert.rejects(registry.runRegisteredPlaybook({playbook,limit:"missing",variables:{package_name:"bash"}}),/подключённых хостов/);
+    await assert.rejects(registry.runRegisteredPlaybook({playbook:{...playbook,variables:[{name:"count",type:"number",required:true}]},limit:"target",variables:{count:"invalid"}}),/должно быть числом/);
     await assert.rejects(registry.runRegisteredPlaybook({ playbook: { ...playbook, source: "builtin" }, variables: {} }), /\/api\/ansible\/run/);
     await assert.rejects(registry.runRegisteredPlaybook({ playbook: { ...playbook, kind: "response" }, variables: {} }), /транзакционный/);
     process.env.HCP_PRODUCTION_MODE = "true";
@@ -130,10 +203,25 @@ test("custom variable values remain one JSON value rather than injected Ansible 
   }
 });
 
+test("custom runner rejects malformed bodies and insecure sudo transport before execution", async () => {
+  let executed = false;
+  const route = load("app/api/ansible/playbooks/[playbookId]/run/route.ts", {
+    "@/lib/playbook-registry": { customPlaybooksEnabled:()=>true, customPlaybookCapabilities:()=>({}), getRegisteredPlaybook:()=>({id:"custom-test",source:"custom"}), runRegisteredPlaybook:()=>{executed=true;} },
+    "@/app/api/ansible/run/route": {},
+    "@/lib/ssh-bootstrap": {credentialTransportAllowed:()=>false},
+  });
+  for (const body of [null, [], {sudoPassword:"bad\npassword"}, {sudoPassword:"fixture-only"}]) {
+    const response = await route.POST(new Request("http://untrusted.invalid/api/ansible/playbooks/custom-test/run",{method:"POST",body:JSON.stringify(body)}),{params:Promise.resolve({playbookId:"custom-test"})});
+    assert.equal(response.status,400);
+  }
+  assert.equal(executed,false);
+});
+
 test("custom playbook drafts use the durable HCP state directory when it is configured", () => {
   const previousStateDirectory = process.env.HCP_STATE_DIR;
   const registry = load("lib/playbook-registry.ts", {
     "@/lib/ansible-control": { getRepoRoot: () => "/tmp/fake-hcp-test", isSafeLimit: () => true, appendIncident: () => {}, playbooks: {} },
+    "@/lib/inventory": {},
   });
   try {
     process.env.HCP_STATE_DIR = "/tmp/hcp-durable-state";
@@ -162,4 +250,18 @@ test("subnet suggestions remain available when both OS interface enumeration met
   assert.equal(manual.ok, true);
   assert.equal(manual.defaultCidr, "");
   assert.match(manual.message, /вручную/);
+});
+
+test("invalid variable definitions cannot corrupt a saved draft", () => {
+  let writes=0;
+  const registry=load("lib/playbook-registry.ts",{
+    "node:fs":{...nativeRequire("node:fs"),writeFileSync:()=>{writes++;}},
+    "@/lib/ansible-control":{getRepoRoot:()=>"/tmp/fake-hcp-test",playbooks:{}},
+    "@/lib/inventory":{},
+  });
+  const variable={name:"package_name",label:"Пакет",type:"string",required:true};
+  for(const variables of [[null],[{}],[variable,variable],[{...variable,name:"ansible_connection"}]]) {
+    assert.throws(()=>registry.updateCustomPlaybook({playbook:{id:"test-draft",source:"custom",timeout:1000},title:"Draft",kind:"audit",requiresLimit:true,variables,content:"---\n"}),/переменн/i);
+  }
+  assert.equal(writes,0);
 });
