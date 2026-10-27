@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -75,6 +76,33 @@ test("Dependency-Track upload uses the correct contract and preserves a pending 
   assert.equal(report.scanner.analysisStatus, "pending");
   assert.equal(report.scanner.partial, true);
   assert.equal(report.findings[0].status, "manual");
+});
+
+test("Dependency-Track acceptance command loads the full production graph including JSON resources", async () => {
+  const acceptance = readFileSync(new URL("../../deployment/tests/verify_dependency_track.py", import.meta.url), "utf8");
+  const program = acceptance.match(/NODE_ADAPTER = r"""([\s\S]*?)"""/)?.[1];
+  assert.ok(program, "the acceptance script must provide its Node adapter command");
+  const result = await new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ["--input-type=module", "-e", program], {
+      cwd: new URL("..", import.meta.url),
+      env: { ...process.env, HCP_STATE_DIR: directory, HCP_REPORTS_DIR: path.join(directory, "reports") },
+      timeout: 15000,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+    child.stdin.end(JSON.stringify({ hostAlias: "host-one", vulnerabilityReportId: "cve-test" }));
+  });
+  assert.equal(result.code, 0, result.stderr);
+  const { report } = JSON.parse(result.stdout);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].url, "/api/v1/bom");
+  assert.equal(report.scanner.processingToken, token);
+  assert.equal(report.scanner.analysisStatus, "pending");
+  assert.equal(report.scanner.partial, true);
 });
 
 test("Dependency-Track rejects a report belonging to a different host before transmission", async () => {

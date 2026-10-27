@@ -37,15 +37,7 @@ import { readFileSync, rmSync } from 'node:fs';
 import path from 'node:path';
 import { compileServerModules } from './tests/_typescript-loader.mjs';
 const input = JSON.parse(readFileSync(0, 'utf8'));
-const names = new Set();
-function visit(name) {
-  if (names.has(name)) return;
-  names.add(name);
-  const source = readFileSync(path.join('lib', name + '.ts'), 'utf8');
-  for (const match of source.matchAll(/from\s+["']@\/lib\/([^"']+)["']/g)) visit(match[1]);
-}
-visit('dependency-track');
-const compiled = compileServerModules([...names]);
+const compiled = compileServerModules(['dependency-track']);
 try {
   const { syncDependencyTrack } = await import(compiled.url('dependency-track'));
   const result = await syncDependencyTrack(input);
