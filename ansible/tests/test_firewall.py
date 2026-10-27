@@ -1,6 +1,8 @@
 """Behavioural firewall tests. All commands and /etc paths are isolated."""
 import argparse
 import importlib.util
+import errno
+import json
 from pathlib import Path
 import subprocess
 import tarfile
@@ -34,7 +36,7 @@ class FirewallTests(unittest.TestCase):
                 with patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run", return_value=subprocess.CompletedProcess([], 0, output, "")) as command:
                     self.assertFalse(fw.close_or_block(args())["changed"])
                     self.assertEqual(command.call_count, 2)
-                    self.assertTrue(all(call.args == ("ufw", "status", "numbered") for call in command.call_args_list))
+                    self.assertTrue(all(call[0] == ("ufw", "status", "numbered") for call in command.call_args_list))
 
     def test_compact_source_deny_is_recognized_as_incoming(self):
         output = "[ 1] Anywhere                   DENY        198.51.100.42\n"
@@ -226,6 +228,110 @@ class FirewallTests(unittest.TestCase):
                 with self.assertRaisesRegex(fw.FirewallError, "checksum"):
                     fw.rollback(args())
                 self.assertEqual(rules.read_text(), "original rules")
+
+    def test_rollback_preserves_astra_labels_and_prepares_high_integrity_staging(self):
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                configuration = root / "etc"
+                (configuration / "ufw").mkdir(parents=True)
+                (configuration / "machine-id").write_text("test-machine-id")
+                rules = configuration / "ufw/user.rules"
+                rules.write_text("original rules")
+                labels = {str(p): b"high-integrity" for p in (configuration, configuration / "ufw", rules)}
+                original_rename = Path.rename
+
+                def get_label(path, name, **kwargs):
+                    self.assertEqual(name, "security.PDPL")
+                    return labels.get(str(path), b"low-integrity")
+
+                def set_label(path, name, value, **kwargs):
+                    self.assertEqual(name, "security.PDPL")
+                    labels[str(path)] = value
+
+                def mandatory_rename(source, target):
+                    target = Path(target)
+                    if source == configuration / "ufw" and get_label(target.parent, "security.PDPL") != get_label(source, "security.PDPL"):
+                        raise PermissionError(errno.EACCES, "mandatory integrity mismatch", str(source))
+                    result = original_rename(source, target)
+                    moved = {name: value for name, value in labels.items() if name == str(source) or name.startswith(str(source) + "/")}
+                    for name, value in moved.items():
+                        labels.pop(name)
+                        labels[str(target) + name[len(str(source)):]] = value
+                    return result
+
+                with patch.object(fw, "CONFIG_ROOT", configuration), patch.object(fw, "BACKUP_ROOT", root / "backups"), patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run") as command:
+                    if legacy:
+                        # Reproduce the existing on-host backup, which has no
+                        # PARSEC attributes stored in its tar members.
+                        fw.backup(args())
+                        metadata_path = root / "backups" / args().transaction / "metadata.json"
+                        metadata = json.loads(metadata_path.read_text())
+                        metadata.pop("securityLabels", None)
+                        metadata_path.write_text(json.dumps(metadata))
+                        # The archive itself must also have the old tar layout.
+                        archive_path = metadata_path.parent / "firewall-state.tar.gz"
+                        with tarfile.open(str(archive_path), "w:gz") as archive:
+                            archive.add(str(configuration / "ufw"), arcname="etc/ufw")
+                        metadata["sha256"] = fw.hashlib.sha256(archive_path.read_bytes()).hexdigest()
+                        metadata_path.write_text(json.dumps(metadata))
+                    with patch.object(fw.os, "getxattr", side_effect=get_label), patch.object(fw.os, "setxattr", side_effect=set_label):
+                        if not legacy:
+                            labels[str(rules)] = b"original-file-label"
+                            fw.backup(args())
+                            labels[str(rules)] = b"high-integrity"
+                        rules.write_text("modified rules")
+                        (configuration / "ufw/extra.rules").write_text("added rules")
+                        with patch.object(Path, "rename", mandatory_rename):
+                            fw.rollback(args())
+                        self.assertEqual(rules.read_text(), "original rules")
+                        self.assertFalse((configuration / "ufw/extra.rules").exists())
+                        self.assertEqual(labels[str(configuration / "ufw")], b"high-integrity")
+                        self.assertEqual(labels[str(rules)], b"high-integrity" if legacy else b"original-file-label")
+                        command.assert_called_once_with("ufw", "reload")
+
+    def test_failure_to_set_staging_label_leaves_configuration_and_runtime_untouched(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "etc"
+            (configuration / "ufw").mkdir(parents=True)
+            (configuration / "machine-id").write_text("test-machine-id")
+            rules = configuration / "ufw/user.rules"
+            rules.write_text("original rules")
+            with patch.object(fw, "CONFIG_ROOT", configuration), patch.object(fw, "BACKUP_ROOT", root / "backups"), patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run") as command:
+                fw.backup(args())
+                rules.write_text("current rules")
+                def get_label(path, *args, **kwargs):
+                    return b"high" if Path(path) == configuration else b"low"
+                with patch.object(fw.os, "getxattr", side_effect=get_label), patch.object(fw.os, "setxattr", side_effect=PermissionError("cannot set mandatory label")):
+                    with self.assertRaisesRegex(PermissionError, "cannot set mandatory label"):
+                        fw.rollback(args())
+                self.assertEqual(rules.read_text(), "current rules")
+                command.assert_not_called()
+
+    def test_failed_replacement_and_failed_recovery_keep_previous_configuration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "etc"
+            (configuration / "ufw").mkdir(parents=True)
+            (configuration / "machine-id").write_text("test-machine-id")
+            rules = configuration / "ufw/user.rules"
+            rules.write_text("original rules")
+            original_rename = Path.rename
+            def failing_rename(source, target):
+                if Path(target) == configuration / "ufw":
+                    raise PermissionError("injected install/recovery failure")
+                return original_rename(source, target)
+            with patch.object(fw, "CONFIG_ROOT", configuration), patch.object(fw, "BACKUP_ROOT", root / "backups"), patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run") as command:
+                fw.backup(args())
+                rules.write_text("current rules")
+                with patch.object(Path, "rename", failing_rename):
+                    with self.assertRaisesRegex(fw.FirewallError, "previous"):
+                        fw.rollback(args())
+                preserved = list(configuration.glob(".hcp-rollback-*/previous/user.rules"))
+                self.assertEqual(len(preserved), 1)
+                self.assertEqual(preserved[0].read_text(), "current rules")
+                command.assert_not_called()
 
 
 if __name__ == "__main__":

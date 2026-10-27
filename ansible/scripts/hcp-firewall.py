@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validated firewall operations used by HCP. Never enables a firewall implicitly."""
 import argparse
+import errno
 import hashlib
 import ipaddress
 import json
@@ -14,6 +15,8 @@ import tempfile
 
 CONFIG_ROOT = Path("/etc")
 BACKUP_ROOT = Path("/var/lib/hcp-backups")
+SECURITY_LABEL = "security.PDPL"
+LABEL_HEADER = "HCP.security.PDPL"
 
 class FirewallError(RuntimeError):
     pass
@@ -209,6 +212,56 @@ def validate_members(archive, selected):
             raise FirewallError("Unsupported or unsafe member in firewall backup archive.")
 
 
+def security_label(path):
+    try:
+        return os.getxattr(str(path), SECURITY_LABEL, follow_symlinks=False)
+    except OSError as error:
+        if error.errno in (errno.ENODATA, errno.ENOTSUP):
+            return None
+        raise
+
+
+def restore_security_label(path, value):
+    current = security_label(path)
+    if current == value:
+        return
+    if value is None:
+        os.removexattr(str(path), SECURITY_LABEL, follow_symlinks=False)
+    else:
+        os.setxattr(str(path), SECURITY_LABEL, value, follow_symlinks=False)
+    if security_label(path) != value:
+        raise FirewallError("Mandatory security label was not restored: {}".format(path))
+
+
+def archive_security_label(member):
+    source = CONFIG_ROOT.joinpath(*Path(member.name).parts[1:])
+    value = security_label(source)
+    member.pax_headers[LABEL_HEADER] = value.hex() if value is not None else ""
+    return member
+
+
+def restore_archive_labels(archive, staging, metadata):
+    # Old archives predate label preservation. Keep the label of each existing
+    # object; for a missing object, inherit its nearest surviving ancestor.
+    # Never guess a numerical Astra label or lower /etc's protection.
+    for member in sorted(archive.getmembers(), key=lambda item: len(Path(item.name).parts)):
+        if LABEL_HEADER in member.pax_headers:
+            encoded = member.pax_headers[LABEL_HEADER]
+            if len(encoded) > 4096 or not re.fullmatch(r"(?:[0-9a-fA-F]{2})*", encoded):
+                raise FirewallError("Invalid mandatory label in firewall backup.")
+            value = bytes.fromhex(encoded) if encoded else None
+        else:
+            if metadata.get("securityLabels") == "pax-v1":
+                raise FirewallError("Mandatory label metadata is missing from firewall backup.")
+            source = CONFIG_ROOT.joinpath(*Path(member.name).parts[1:])
+            while not source.exists() and not source.is_symlink() and source != CONFIG_ROOT:
+                source = source.parent
+            if source.is_symlink():
+                raise FirewallError("Firewall configuration must not contain symlinks.")
+            value = security_label(source)
+        restore_security_label(staging / member.name, value)
+
+
 def backup(args):
     selected = backend()
     if selected == "firewalld":
@@ -217,12 +270,12 @@ def backup(args):
     directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     archive_path = directory / "firewall-state.tar.gz"
-    with tarfile.open(str(archive_path), "w:gz") as archive:
-        archive.add(str(CONFIG_ROOT / selected), arcname='etc/{}'.format(selected))
+    with tarfile.open(str(archive_path), "w:gz", format=tarfile.PAX_FORMAT) as archive:
+        archive.add(str(CONFIG_ROOT / selected), arcname='etc/{}'.format(selected), filter=archive_security_label)
     os.chmod(str(archive_path), 0o600)
     with tarfile.open(str(archive_path)) as archive:
         validate_members(archive, selected)
-    metadata = {"backend": selected, "machineId": machine_id(), "transactionId": args.transaction,
+    metadata = {"backend": selected, "machineId": machine_id(), "transactionId": args.transaction, "securityLabels": "pax-v1",
                 "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest()}
     (directory / "metadata.json").write_text(json.dumps(metadata))
     os.chmod(str(directory / "metadata.json"), 0o600)
@@ -242,20 +295,35 @@ def rollback(args):
         raise FirewallError("The active firewall backend changed since backup.")
     # Extract into staging first. Replacement also removes files created since
     # backup (plain tar extraction over / would leave those new rules behind).
-    with tempfile.TemporaryDirectory(prefix=".hcp-rollback-", dir=str(CONFIG_ROOT)) as staging:
+    staging = Path(tempfile.mkdtemp(prefix=".hcp-rollback-", dir=str(CONFIG_ROOT)))
+    keep_staging = False
+    try:
+        # mkdir/tar extraction do not preserve PARSEC attributes. In particular,
+        # moving high-integrity /etc/ufw into an unlabelled directory is denied.
+        restore_security_label(staging, security_label(CONFIG_ROOT))
+        (staging / "etc").mkdir()
+        restore_security_label(staging / "etc", security_label(CONFIG_ROOT))
         with tarfile.open(str(archive_path)) as archive:
             validate_members(archive, selected)
-            archive.extractall(staging, **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+            archive.extractall(str(staging), **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+            restore_archive_labels(archive, staging, metadata)
         destination = CONFIG_ROOT / selected
         if destination.is_symlink():
             raise FirewallError("Firewall configuration must not be a symlink.")
-        previous = Path(staging) / "previous"
+        previous = staging / "previous"
         destination.rename(str(previous))
         try:
-            (Path(staging) / "etc" / selected).rename(str(destination))
+            (staging / "etc" / selected).rename(str(destination))
         except OSError:
-            previous.rename(str(destination))
+            try:
+                previous.rename(str(destination))
+            except OSError as recovery_error:
+                keep_staging = True
+                raise FirewallError("Configuration replacement and recovery failed; previous configuration retained at {}: {}".format(previous, recovery_error)) from recovery_error
             raise
+    finally:
+        if not keep_staging:
+            shutil.rmtree(str(staging))
     run("ufw", "reload") if selected == "ufw" else run("firewall-cmd", "--reload")
     if backend() != selected:
         raise FirewallError("Firewall is not active after rollback.")
