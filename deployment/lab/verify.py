@@ -218,11 +218,16 @@ def main():
                     raise AssertionError(f"Offline CVE precondition returned an unexpected error: {unavailable.get('message')}")
                 record("Offline CVE requires a preloaded Trivy database", {"reportId": packages["id"]})
         with independent_check('Unprepared OpenSCAP handling'):
-            unprepared = run("openScapAudit")
-            unprepared_report = report(unprepared, "openscap")
-            if not unprepared.get("partial") or not unprepared_report["partial"]:
-                raise AssertionError("Unprepared OpenSCAP target was treated as a complete audit")
-            record("Unprepared OpenSCAP is explicitly incomplete", {"reportId": unprepared_report["id"]})
+            unprepared = request("/api/ansible/run", {
+                "action": "openScapAudit", "limit": args.host,
+                "profileId": "basic_linux", "confirmAudit": True,
+                "sudoPassword": sudo_password,
+            }, expected=400)
+            if (unprepared.get("ok") is not False
+                    or unprepared.get("error") != "openscap_profile_missing"
+                    or unprepared.get("reportId")):
+                raise AssertionError("OpenSCAP without an assigned profile must be rejected before a scan starts")
+            record("Unconfigured OpenSCAP is rejected before starting a scan")
         if failures:
             raise AssertionError("; ".join(failures))
         protocol["status"] = "passed"
