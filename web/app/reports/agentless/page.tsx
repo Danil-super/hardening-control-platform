@@ -229,7 +229,7 @@ export default async function AgentlessReportsPage({
                       <p>{report.mode === "lynis" ? "Пунктов" : "Проблем"}: {report.findingsCount}</p>
                       <p className="mt-1 text-xs text-slate-500">Событий: {report.eventsCount}</p>
                     </td>
-                    <td className="px-4 py-4 text-slate-300">{formatDate(report.createdAt ?? report.modifiedAt)}</td>
+                    <td className="px-4 py-4 text-slate-300">{formatDate(report.createdAt ?? (report.mode === "greenbone" ? null : report.modifiedAt))}</td>
                     <td className="px-4 py-4">
                       <div className="flex flex-wrap gap-2">
                         <LinkButton href={`/reports/agentless/${encodeURIComponent(report.id)}`} variant="secondary">Открыть</LinkButton>
@@ -293,7 +293,7 @@ export default async function AgentlessReportsPage({
                       </td>
                       <td className="px-4 py-4 text-slate-300">
                         <p>{reportModeLabel(latestReport.mode)}</p>
-                        <p className="mt-1 text-xs text-slate-500">{formatDate(latestReport.createdAt ?? latestReport.modifiedAt)}</p>
+                        <p className="mt-1 text-xs text-slate-500">{formatDate(latestReport.createdAt ?? (latestReport.mode === "greenbone" ? null : latestReport.modifiedAt))}</p>
                       </td>
                       <td className="px-4 py-4 text-slate-300">{hostReports.length}</td>
                       <td className="px-4 py-4">

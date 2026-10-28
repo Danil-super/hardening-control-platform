@@ -16,6 +16,7 @@ import {
 } from "@/lib/state-store";
 
 import { ansibleFailureMessage } from "@/lib/ansible-error";
+import { ansibleLiteralExtraVars } from "@/lib/ansible-literal-vars";
 
 const execFileAsync = promisify(execFile);
 
@@ -277,16 +278,16 @@ export async function runAnsiblePlaybook({
     throw Object.assign(new Error(`Для хоста ${onDemandHost} введите пароль sudo для этой операции. HCP не сохраняет его.`), { code: "sudo_password_required" });
   }
   const playbookPath = path.join(repoRoot, "ansible", "playbooks", selected.file);
-  const args = ["-i", inventoryPath, playbookPath, "-e", `audit_profile=${profileId}`];
+  const args = ["-i", inventoryPath, playbookPath, "-e", ansibleLiteralExtraVars({ audit_profile: profileId })];
   if (process.env.HCP_REPORTS_DIR) {
-    args.push("-e", `hcp_reports_dir=${getReportsDir(repoRoot)}`);
+    args.push("-e", ansibleLiteralExtraVars({ hcp_reports_dir: getReportsDir(repoRoot) }));
   }
   const reportRunId = selected.kind === "audit" && !("internal" in selected && selected.internal) && action !== "ping" ? newReportRunId() : null;
   if (reportRunId) {
-    args.push("-e", `report_run_id=${reportRunId}`);
+    args.push("-e", ansibleLiteralExtraVars({ report_run_id: reportRunId }));
   }
   if (Object.keys(extraVars).length) {
-    args.push("-e", JSON.stringify(extraVars));
+    args.push("-e", ansibleLiteralExtraVars(extraVars));
   }
   if (limit) {
     args.push("--limit", limit);
@@ -320,7 +321,7 @@ export async function executeAnsiblePlaybook({ args, timeout, becomePassword }: 
       // Keep the secret out of command arguments, environment variables,
       // inventory and report/incident data.  It is removed immediately after
       // this one Ansible child exits.
-      writeFileSync(secretFile, JSON.stringify({ ansible_become_password: becomePassword }), { mode: 0o600 });
+      writeFileSync(secretFile, ansibleLiteralExtraVars({ ansible_become_password: becomePassword }), { mode: 0o600 });
       executionArgs = [...args.slice(0, 2), "--extra-vars", `@${secretFile}`, ...args.slice(2)];
     }
     const result = await execFileAsync("ansible-playbook", executionArgs, {

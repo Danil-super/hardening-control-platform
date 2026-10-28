@@ -110,3 +110,121 @@ test("manual policy recommendations do not make completed probes unavailable", (
   assert.equal(report.score, 80);
   assert.equal(buildHostCorrelation("host-one").findings[0].confidence, "manual");
 });
+
+const checksum = character => `sha256:${character.repeat(64)}`;
+const ago = milliseconds => new Date(Date.now() - milliseconds).toISOString();
+function saveScap(name, { profile = "profile-a", digest = checksum("a"), time = ago(60_000), findings = [], ...rest } = {}) {
+  save(name, { mode: "openscap", profileId: "openscap", createdAt: time,
+    scanner: { available: true, partial: false, profile, datastreamChecksum: digest }, findings, ...rest });
+}
+
+test("old Greenbone observations remain stale after a current import, including legacy JSON", () => {
+  save("host-one-greenbone-run-imported", { mode: "greenbone", profileId: "greenbone", createdAt: ago(1000),
+    scanner: { available: true, partial: false, scanStartedAt: "2020-01-01T00:00:00Z", scanEndedAt: "2020-01-01T01:00:00Z" },
+    findings: [finding("old", "greenbone", "port=443/tcp")] });
+  const report = reports.listAnsibleReports()[0];
+  assert.equal(report.createdAt, "2020-01-01T01:00:00.000Z");
+  assert.equal(report.observedAt, report.createdAt);
+  assert.ok(Date.parse(report.importedAt) > Date.parse(report.observedAt));
+  assert.equal(report.reportTimeValid, true);
+  assert.equal(buildHostCorrelation("host-one").findings.length, 0);
+  assert.equal(buildHostCorrelation("host-one").coverage[0].fresh, false);
+});
+
+test("Greenbone requires a valid native completion time instead of fresh createdAt or file mtime", () => {
+  for (const end of [undefined, "invalid", "2025-02-30T00:00:00Z", "2025-01-01T00:00:00", "2099-01-01T00:00:00Z"]) {
+    save("host-one-greenbone-run-bad-time", { mode: "greenbone", profileId: "greenbone", scanner: { available: true, partial: false, scanEndedAt: end } });
+    const report = reports.readAnsibleReport("host-one-greenbone-run-bad-time");
+    assert.equal(report.reportTimeValid, false, String(end));
+    assert.equal(report.partial, true);
+    assert.equal(report.createdAt, null);
+    assert.equal(reports.reportTimestamp(report), 0);
+    assert.equal(buildHostCorrelation("host-one").freshReports.length, 0);
+  }
+});
+
+test("a reimport cannot replace a newer Greenbone observation and valid offset timestamps work", () => {
+  const recent = ago(60_000);
+  save("host-one-greenbone-run-recent", { mode: "greenbone", profileId: "greenbone", scanner: { available: true, scanEndedAt: recent },
+    findings: [finding("recent", "greenbone", "port=443/tcp")] });
+  save("host-one-greenbone-run-reimport", { mode: "greenbone", profileId: "greenbone", createdAt: ago(1000),
+    scanner: { available: true, scanEndedAt: "2020-01-01T04:00:00+03:00" }, findings: [finding("old", "greenbone", "port=443/tcp")] });
+  const result = buildHostCorrelation("host-one");
+  assert.deepEqual(result.findings.map(item => item.title), ["recent"]);
+  assert.equal(result.coverage[0].fresh, true);
+  assert.equal(reports.readAnsibleReport("host-one-greenbone-run-reimport").createdAt, "2020-01-01T01:00:00.000Z");
+});
+
+test("OpenSCAP different real profiles preserve a coverage gap without merging old failures", () => {
+  saveScap("host-one-openscap-run-a", { time: ago(120_000), findings: [finding("old-failure", "openscap", "rule=rule-a")] });
+  saveScap("host-one-openscap-run-b", { profile: "profile-b", findings: [finding("pass-b", "openscap", "rule=rule-b", { status: "passed" })] });
+  const result = buildHostCorrelation("host-one");
+  assert.equal(result.findings.length, 0);
+  assert.equal(result.lostCoverage.length, 1);
+  assert.equal(result.lostCoverage[0].reason, "scope_changed");
+  assert.equal(result.lostCoverage[0].profileId, "profile-a");
+  const previous = result.coverage.find(item => item.profileId === "profile-a");
+  assert.equal(previous.current, false);
+  assert.equal(previous.fresh, false);
+  assert.equal(previous.partial, true);
+  assert.equal(previous.auditEvidence, false);
+  assert.ok(result.coverage.find(item => item.current).coverageIssues.includes("previous_coverage_not_verified"));
+  assert.equal(reports.reportScopesCompatible(reports.readAnsibleReport("host-one-openscap-run-a"), reports.readAnsibleReport("host-one-openscap-run-b")), false);
+});
+
+test("same OpenSCAP profile and content replaces previous results; content changes cannot clear them silently", () => {
+  saveScap("host-one-openscap-run-old", { time: ago(120_000), findings: [finding("failed", "openscap", "rule=rule-a")] });
+  saveScap("host-one-openscap-run-new", { findings: [finding("passed", "openscap", "rule=rule-a", { status: "passed" })] });
+  assert.equal(buildHostCorrelation("host-one").findings.length, 0);
+  assert.equal(buildHostCorrelation("host-one").lostCoverage.length, 0);
+  assert.equal(reports.reportScopesCompatible(reports.readAnsibleReport("host-one-openscap-run-old"), reports.readAnsibleReport("host-one-openscap-run-new")), true);
+  saveScap("host-one-openscap-run-new", { digest: checksum("b"), findings: [finding("passed", "openscap", "rule=rule-a", { status: "passed" })] });
+  assert.equal(buildHostCorrelation("host-one").lostCoverage[0].reason, "scope_changed");
+  assert.equal(reports.reportScopesCompatible(reports.readAnsibleReport("host-one-openscap-run-old"), reports.readAnsibleReport("host-one-openscap-run-new")), false);
+});
+
+test("a future-dated OpenSCAP policy never supplants a valid current scope", () => {
+  saveScap("host-one-openscap-run-normal", { findings: [finding("real", "openscap", "rule=rule-a")] });
+  saveScap("host-one-openscap-run-future", { profile: "profile-b", time: "2099-01-01T00:00:00Z", findings: [finding("future", "openscap", "rule=rule-b")] });
+  const result = buildHostCorrelation("host-one");
+  assert.deepEqual(result.findings.map(item => item.title), ["real"]);
+  assert.equal(result.lostCoverage.length, 0);
+  assert.equal(result.coverage.find(item => item.profileId === "profile-b").validTime, false);
+  assert.equal(result.coverage.find(item => item.profileId === "profile-b").supersededBy, null);
+});
+
+test("OpenSCAP unknown legacy scope and missing previously evaluated rules remain explicit", () => {
+  saveScap("host-one-openscap-run-legacy", { digest: undefined, scanner: { available: true, partial: false, profile: "profile-a" }, time: ago(120_000) });
+  const legacy = reports.readAnsibleReport("host-one-openscap-run-legacy");
+  assert.equal(legacy.profileId, "profile-a");
+  assert.equal(legacy.scopeKnown, false);
+  assert.equal(legacy.partial, true);
+  assert.equal(reports.reportScopesCompatible(legacy, legacy), false);
+  saveScap("host-one-openscap-run-before", { time: ago(90_000), findings: [finding("failed", "openscap", "rule=rule-a")] });
+  saveScap("host-one-openscap-run-after", { findings: [finding("pass-b", "openscap", "rule=rule-b", { status: "passed" })] });
+  const result = buildHostCorrelation("host-one");
+  assert.ok(result.lostCoverage.some(item => item.reason === "scope_unknown"));
+  assert.deepEqual(result.lostCoverage.find(item => item.reason === "rules_missing").ruleIds, ["rule-a"]);
+  assert.equal(result.coverage.find(item => item.current).partial, true);
+  assert.equal(result.findings.length, 0);
+});
+
+test("stable bundled source identity survives regenerated datastream bytes while retaining their exact hash", () => {
+  const scanner = { available: true, partial: false, profile: "profile-a", contentIdentity: `bundle-sha256:${"c".repeat(64)}` };
+  saveScap("host-one-openscap-run-old", { time: ago(120_000), scanner: { ...scanner, datastreamChecksum: checksum("a") }, findings: [finding("a", "openscap", "rule=rule-a")] });
+  saveScap("host-one-openscap-run-new", { scanner: { ...scanner, datastreamChecksum: checksum("b") }, findings: [finding("a", "openscap", "rule=rule-a", { status: "passed" })] });
+  const old = reports.readAnsibleReport("host-one-openscap-run-old"), current = reports.readAnsibleReport("host-one-openscap-run-new");
+  assert.equal(reports.reportScopesCompatible(old, current), true);
+  assert.equal(current.raw.scanner.datastreamChecksum, checksum("b"));
+  assert.equal(buildHostCorrelation("host-one").lostCoverage.length, 0);
+});
+
+test("Astra OVAL verification requires the actual same database digest", () => {
+  save("host-one-astra-oval-run-old", { mode: "astra-oval", profileId: "astra-oval", scanner: { database: { sha256: "a".repeat(64) } } });
+  save("host-one-astra-oval-run-new", { mode: "astra-oval", profileId: "astra-oval", scanner: { database: { sha256: "b".repeat(64) } } });
+  const old = reports.readAnsibleReport("host-one-astra-oval-run-old"), current = reports.readAnsibleReport("host-one-astra-oval-run-new");
+  assert.equal(old.contentId, checksum("a"));
+  assert.equal(reports.reportScopesCompatible(old, current), false);
+  assert.equal(reports.reportScopesCompatible(old, old), true);
+  assert.equal(reports.reportScopesCompatible({ ...old, contentId: null }, old), false);
+});

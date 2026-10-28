@@ -1,5 +1,6 @@
 import { buildHostCorrelation } from "@/lib/audit-correlation";
-import { hashAnsibleReport, readAnsibleReport, reportTimestamp } from "@/lib/ansible-reports";
+import { hashAnsibleReport, readAnsibleReport } from "@/lib/ansible-reports";
+import { assertPlanVerification, resolvePlanSeverity } from "@/lib/remediation-plan-evidence";
 import {
   createRemediationPlanItem,
   getRemediationPlanItem,
@@ -19,7 +20,7 @@ function safeFindingKey(value: unknown) {
 
 export function remediationPlanForHost(hostAlias: string) {
   if (!safeAlias(hostAlias)) throw new Error("Укажите корректный alias хоста.");
-  return { items: listRemediationPlanItems(hostAlias), correlation: buildHostCorrelation(hostAlias) };
+  return { items: listRemediationPlanItems(hostAlias).map(resolvePlanSeverity), correlation: buildHostCorrelation(hostAlias) };
 }
 
 export function addCorrelatedFindingToPlan(hostAlias: string, findingKey: string) {
@@ -47,6 +48,8 @@ export function addCorrelatedFindingToPlan(hostAlias: string, findingKey: string
     title: finding.title,
     category: finding.category,
     risk: finding.risk,
+    severityUnknown: finding.severityUnknown,
+    severityAssessment: finding.severityAssessment ?? null,
     description: finding.description,
     recommendation: finding.recommendation,
     evidence,
@@ -62,17 +65,13 @@ export function advanceRemediationPlanItem(input: {
   if (input.status === "confirmed") {
     if (typeof input.verificationReportId !== "string") throw new Error("Для подтверждения выберите повторный отчёт.");
     const report = readAnsibleReport(input.verificationReportId);
-    if (!report || report.inventoryHost !== current.hostAlias && report.host !== current.hostAlias) {
-      throw new Error("Повторный отчёт не относится к этому хосту.");
-    }
-    if (report.partial || !report.available || !report.reportTimeValid || reportTimestamp(report) <= Date.parse(current.updatedAt)) {
-      throw new Error("Для подтверждения нужен полный свежий отчёт, созданный после выполнения меры.");
-    }
+    if (!report) throw new Error("Повторный отчёт не найден.");
+    assertPlanVerification(current, report);
   }
-  return transitionRemediationPlanItem(input.id, input);
+  return transitionRemediationPlanItem(input.id, { ...input, expectedUpdatedAt: current.updatedAt });
 }
 
 export function planItemDetail(id: string) {
   const item = getRemediationPlanItem(id);
-  return item ? { item, history: listRemediationPlanHistory(id) } : null;
+  return item ? { item: resolvePlanSeverity(item), history: listRemediationPlanHistory(id) } : null;
 }

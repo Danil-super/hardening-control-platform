@@ -86,6 +86,49 @@ def persistent_firewalld():
     for option in ("--get-all-rules", "--get-all-chains", "--get-all-passthroughs"):
         if run("firewall-cmd", "--direct", option).stdout != run("firewall-cmd", "--permanent", "--direct", option).stdout:
             raise FirewallError("firewalld runtime and permanent direct rules differ; rollback cannot be guaranteed.")
+    persistent_firewalld_ipsets()
+
+
+def firewalld_ipset_info(output):
+    """Compare the membership that reload would replace, not just zone names.
+
+    Timeout entries are not tracked by firewalld. Refuse them even when the
+    printed lists happen to agree; a filesystem backup cannot preserve them.
+    """
+    fields = {}
+    lines = output.splitlines()
+    if not lines or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", lines[0].strip()):
+        raise FirewallError("Cannot verify firewalld IP set definition.")
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        match = re.fullmatch(r"\s+(type|options|entries):\s*(.*)", line)
+        if not match or match.group(1) in fields:
+            raise FirewallError("Unsupported firewalld IP set output; rollback cannot be guaranteed.")
+        fields[match.group(1)] = tuple(sorted(match.group(2).split()))
+    if set(fields) != {"type", "options", "entries"} or len(fields["type"]) != 1:
+        raise FirewallError("Incomplete firewalld IP set definition; rollback cannot be guaranteed.")
+    if any(option.split("=", 1)[0] == "timeout" for option in fields["options"]):
+        raise FirewallError("firewalld IP sets with timeout entries cannot be safely backed up for rollback.")
+    return fields
+
+
+def persistent_firewalld_ipsets():
+    names = []
+    for persistence in ([], ["--permanent"]):
+        # Do not silently skip a missing/failed capability. In that case the
+        # operator needs to reconcile or back up the firewall independently.
+        values = run("firewall-cmd", *persistence, "--get-ipsets").stdout.split()
+        if len(values) != len(set(values)) or any(not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value) for value in values):
+            raise FirewallError("Cannot verify firewalld IP set names.")
+        names.append(set(values))
+    if names[0] != names[1]:
+        raise FirewallError("firewalld runtime and permanent IP sets differ; rollback cannot be guaranteed.")
+    for name in sorted(names[0]):
+        runtime = firewalld_ipset_info(run("firewall-cmd", "--info-ipset=" + name).stdout)
+        permanent = firewalld_ipset_info(run("firewall-cmd", "--permanent", "--info-ipset=" + name).stdout)
+        if runtime != permanent:
+            raise FirewallError("firewalld runtime and permanent IP set definitions or entries differ; rollback cannot be guaranteed.")
 
 
 def ufw_numbered_rules(status):

@@ -130,6 +130,22 @@ test("failed reload stays rollback_failed and remains retryable", async () => {
   assert.equal((await remediation.rollbackRemediation(result.transaction.id, "host-one")).transaction.status, "rolled_back");
 });
 
+test("recovered rollback retains its host lock on failure and preserves connection guards", async () => {
+  const result = await remediation.applyRemediation(request);
+  store.updateRemediationTransaction(result.transaction.id, { status: "recovery_ready" });
+  control.address = "192.0.2.99";
+  await assert.rejects(remediation.rollbackRemediation(result.transaction.id, "host-one"), { code: "host_connection_changed" });
+  assert.equal(store.getRemediationTransaction(result.transaction.id).status, "recovery_ready");
+  control.address = "192.0.2.20";
+  control.failAction = "rollbackRemediation";
+  await assert.rejects(remediation.rollbackRemediation(result.transaction.id, "host-one"), /remote operation failed/);
+  assert.equal(store.getRemediationTransaction(result.transaction.id).status, "recovery_ready");
+  assert.equal(store.hasActiveRemediationForHost("host-one"), true);
+  control.failAction = null;
+  assert.equal((await remediation.rollbackRemediation(result.transaction.id, "host-one")).transaction.status, "rolled_back");
+  assert.equal(store.hasActiveRemediationForHost("host-one"), false);
+});
+
 test("failed operation before backup can be cancelled without contacting the host", async () => {
   control.missingReport = true;
   await assert.rejects(remediation.applyRemediation(request));

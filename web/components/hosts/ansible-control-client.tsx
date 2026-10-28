@@ -25,6 +25,7 @@ import { copyText } from "@/lib/clipboard";
 import { NetworkDiscovery, type DiscoveryPayload } from "@/components/hosts/network-discovery";
 import { SshCredentialSetup, type CredentialSetupResult, type SetupSecrets } from "@/components/hosts/ssh-credential-setup";
 import { DecommissionHostDialog } from "@/components/hosts/decommission-host-dialog";
+import { RemediationRecovery } from "@/components/hosts/remediation-recovery";
 import { connectAndSaveHost, defaultHostAlias } from "@/lib/host-onboarding";
 import type { PreflightCheck } from "@/lib/preflight-result";
 
@@ -75,7 +76,9 @@ type RemediationTransaction = {
   createdAt: string;
   hostAlias: string;
   action: string;
-  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back" | "cancelled";
+  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back" | "cancelled" | "interrupted" | "recovery_ready";
+  recoveryRequired?: boolean;
+  recoveryVersion: string;
   parameters: Record<string, string>;
   reason: string;
   backupRef: string | null;
@@ -270,6 +273,8 @@ const transactionStatusLabels: Record<RemediationTransaction["status"], string> 
   rollback_failed: "ошибка отката",
   rolled_back: "восстановлено",
   cancelled: "отменено без изменений",
+  interrupted: "прервано; требуется сверка",
+  recovery_ready: "сверено; требуется откат",
 };
 
 const transactionActionLabels: Record<string, string> = {
@@ -1278,7 +1283,7 @@ export function AnsibleControlClient() {
         <section id="recent-remediations" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
-              <h2 className="text-lg font-semibold text-white">Последние изменения</h2>
+              <h2 className="text-lg font-semibold text-white">Незавершённые и последние изменения</h2>
               <p className="mt-1 text-sm text-slate-400">После начатого изменения можно восстановить резервную копию. Операцию, остановленную до создания копии, можно отменить без подключения к хосту.</p>
             </div>
             <Button variant="secondary" onClick={refreshRemediations} disabled={remediationsRefreshing}>
@@ -1288,7 +1293,7 @@ export function AnsibleControlClient() {
           </div>
           {transactions.some((transaction) => transaction.status !== "cancelled") ? (
             <div className="mt-4 space-y-2">
-              {transactions.filter((transaction) => transaction.status !== "cancelled").slice(0, 8).map((transaction) => {
+              {transactions.filter((transaction) => transaction.status !== "cancelled").filter((transaction, index) => transaction.recoveryRequired || index < 8).map((transaction) => {
                 const requiresSudo = hosts?.hosts?.find((host) => host.alias === transaction.hostAlias)?.sudoMode === "on_demand";
                 return (
                 <div key={transaction.id} className="rounded-md border border-slate-800 bg-slate-900/70 p-3">
@@ -1310,7 +1315,7 @@ export function AnsibleControlClient() {
                         Отчёт после изменения
                       </LinkButton>
                     ) : null}
-                    {transaction.backupRef && ["applied", "failed", "rollback_failed"].includes(transaction.status) ? (
+                    {transaction.backupRef && ["applied", "failed", "rollback_failed", "recovery_ready"].includes(transaction.status) ? (
                       <Button variant="danger" onClick={() => { setRollbackSudoPassword(""); setRollbackTargetId(transaction.id); }} disabled={Boolean(loading) || rollbackTargetId === transaction.id}>
                         <RotateCcw size={16} aria-hidden="true" />
                         Откатить
@@ -1318,6 +1323,7 @@ export function AnsibleControlClient() {
                     ) : null}
                   </div>
                   </div>
+                  {transaction.recoveryRequired ? <RemediationRecovery key={`${transaction.id}:${transaction.recoveryVersion}`} transaction={transaction} onRecovered={refreshRemediations} /> : null}
                   {rollbackTargetId === transaction.id ? (
                     <form aria-label="Подтверждение отката firewall" className="mt-3 space-y-3 border-t border-slate-700 pt-3" onSubmit={(event) => { event.preventDefault(); void rollbackTransaction(transaction); }}>
                       <p className="text-sm text-slate-200">Восстановить firewall на <strong className="break-all">{transaction.hostAlias}</strong> из копии перед изменением{transaction.parameters?.target_port ? ` порта ${transaction.parameters.target_port}/${transaction.parameters.target_protocol ?? "tcp"}` : ""}?</p>

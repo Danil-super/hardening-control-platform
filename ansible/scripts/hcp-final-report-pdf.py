@@ -118,12 +118,26 @@ def render(snapshot):
             if not isinstance(item, dict):
                 continue
             state = 'полный, свежий' if item.get('fresh') and not item.get('partial') and item.get('available') else 'частичный, недоступный или устаревший'
+            if item.get('current') is False:
+                state = 'историческая область; повторно не проверена'
+            elif 'previous_coverage_not_verified' in (item.get('coverageIssues') or []):
+                state += '; прежний охват не подтверждён'
             rows.append([Paragraph(esc(item.get('reportId'), 120), small), Paragraph(esc(item.get('mode'), 70), small), Paragraph(esc(item.get('createdAt'), 100), small), Paragraph(esc(state, 100), small)])
         coverage_table = Table(rows, colWidths=(49 * mm, 29 * mm, 52 * mm, 48 * mm), repeatRows=1)
         coverage_table.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#dbeafe')), ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#cbd5e1')), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 4), ('RIGHTPADDING', (0, 0), (-1, -1), 4), ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4)]))
         story.append(coverage_table)
     else:
         story.append(Paragraph('Для хоста не найдено отчётов, пригодных для сводки покрытия.', body))
+
+    lost_coverage = snapshot.get('lostCoverage', []) if isinstance(snapshot.get('lostCoverage'), list) else []
+    if lost_coverage:
+        story.append(Paragraph('<b>Прежний охват не подтверждён.</b> Более новый профиль или набор правил не доказывает устранение нарушений, которые он не проверяет. Текущие находки относятся только к фактически выполненной области.', body))
+        for item in lost_coverage:
+            if not isinstance(item, dict):
+                continue
+            reason = {'scope_changed': 'изменена область проверки', 'scope_unknown': 'идентичность области не установлена', 'rules_missing': 'исходные правила отсутствуют в повторной проверке'}.get(item.get('reason'), 'прежний охват не подтверждён')
+            story.append(Paragraph('• ' + esc(item.get('reportId'), 120) + ' → ' + esc(item.get('replacedByReportId'), 120)
+                + '; профиль ' + esc(item.get('profileId'), 180) + '; ' + esc(reason) + '.', small))
 
     findings = snapshot.get('findings', []) if isinstance(snapshot.get('findings'), list) else []
     unplanned = snapshot.get('unplannedFindings', []) if isinstance(snapshot.get('unplannedFindings'), list) else []

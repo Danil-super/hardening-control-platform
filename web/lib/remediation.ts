@@ -326,7 +326,7 @@ export async function rollbackRemediation(transactionId: string, confirmedHost: 
   if (!transaction) {
     throw Object.assign(new Error("Транзакция remediation не найдена."), { code: "transaction_not_found" });
   }
-  if (!["applied", "failed", "rollback_failed"].includes(transaction.status) || !transaction.backupRef) {
+  if (!["applied", "failed", "rollback_failed", "recovery_ready"].includes(transaction.status) || !transaction.backupRef) {
     throw Object.assign(new Error("Откат доступен для завершённой или неуспешной транзакции с резервной копией."), { code: "rollback_not_available" });
   }
   if (confirmedHost !== transaction.hostAlias) {
@@ -360,7 +360,7 @@ export async function rollbackRemediation(transactionId: string, confirmedHost: 
     return { result, transaction: getRemediationTransaction(transaction.id) };
   } catch (error) {
     const message = error instanceof Error ? error.message : "Откат завершился ошибкой.";
-    updateRemediationTransaction(transaction.id, { status: "rollback_failed", error: message });
+    updateRemediationTransaction(transaction.id, { status: transaction.status === "recovery_ready" ? "recovery_ready" : "rollback_failed", error: message });
     appendIncident({ action: transaction.action, kind: "response", status: "failed", profileId: transaction.profileId, limit: transaction.hostAlias, message, runId: transaction.id });
     throw error;
   }

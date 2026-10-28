@@ -19,8 +19,9 @@ logging.disable(logging.CRITICAL)
 
 
 class RevokeError(Exception):
-    def __init__(self, code):
+    def __init__(self, code, key_removed=None):
         self.code = code
+        self.key_removed = key_removed
         Exception.__init__(self, code)
 
 
@@ -187,8 +188,9 @@ def connect(config):
 
 
 def revoke(config):
+    import paramiko
     if not isinstance(config.get('credentialId'), str) or not re.fullmatch(r'[a-f0-9]{64}', config['credentialId']):
-        raise RevokeError('bad_request')
+        raise RevokeError('bad_request', False)
     encoded = base64.b64encode(REMOTE_PROGRAM.encode('utf-8')).decode('ascii')
     python = "import base64;exec(compile(base64.b64decode(%r), '<hcp-key-revoke>', 'exec'))" % encoded
     # The current default enrollment never creates a sudoers file.  In that
@@ -200,7 +202,23 @@ def revoke(config):
         command = "exec python3 -c %s" % shlex.quote(python)
     else:
         command = "if [ \"$(id -u)\" = 0 ]; then exec python3 -c %s; else exec sudo -n -- python3 -c %s; fi" % (shlex.quote(python), shlex.quote(python))
-    client = connect(config)
+    # No remote command has been dispatched yet. These failures prove that
+    # this attempt did not remove the key, so an explicit later retry is safe.
+    # Once exec_command starts, a transport failure must remain unknown.
+    try:
+        client = connect(config)
+    except RevokeError as error:
+        raise RevokeError(error.code, False)
+    except paramiko.BadHostKeyException:
+        raise RevokeError('host_key_changed', False)
+    except paramiko.AuthenticationException:
+        raise RevokeError('key_auth_failed', False)
+    except (socket.timeout, TimeoutError):
+        raise RevokeError('ssh_timeout', False)
+    except FileNotFoundError:
+        raise RevokeError('host_not_trusted', False)
+    except Exception:
+        raise RevokeError('revocation_failed', False)
     try:
         stdin, stdout, stderr = client.exec_command('/bin/sh -c ' + shlex.quote(command), timeout=30, get_pty=False)
         stdin.write(json.dumps({'user': config['user'], 'publicKey': config['publicKey'], 'credentialId': config['credentialId']}) + '\n')
@@ -215,7 +233,8 @@ def revoke(config):
             raise RevokeError('revocation_failed')
         if status or not result.get('ok') or result.get('status') != 'removed':
             code = result.get('error') if isinstance(result.get('error'), str) else 'revocation_failed'
-            raise RevokeError(code)
+            removed = result.get('keyRemoved')
+            raise RevokeError(code, removed if isinstance(removed, bool) else None)
         return {'ok': True, 'status': 'removed'}
     finally:
         client.close()
@@ -225,18 +244,20 @@ def main():
     try:
         import paramiko
     except ImportError:
-        print(json.dumps({'ok': False, 'error': 'ssh_dependency_missing'}))
+        print(json.dumps({'ok': False, 'error': 'ssh_dependency_missing', 'keyRemoved': False}))
         return 1
     try:
         raw = sys.stdin.buffer.read(16385)
         if len(raw) > 16384:
-            raise RevokeError('bad_request')
+            raise RevokeError('bad_request', False)
         config = json.loads(raw.decode('utf-8'))
         if not isinstance(config, dict):
-            raise RevokeError('bad_request')
+            raise RevokeError('bad_request', False)
         result = revoke(config)
     except RevokeError as error:
         result = {'ok': False, 'error': error.code}
+        if error.key_removed is not None:
+            result['keyRemoved'] = error.key_removed
     except paramiko.BadHostKeyException:
         result = {'ok': False, 'error': 'host_key_changed'}
     except paramiko.AuthenticationException:

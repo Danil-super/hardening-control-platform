@@ -10,6 +10,8 @@ export type AnsibleReportSummary = {
   fileName: string;
   path: string;
   createdAt: string | null;
+  observedAt?: string | null;
+  importedAt?: string | null;
   modifiedAt: string;
   host: string;
   inventoryHost: string | null;
@@ -18,6 +20,9 @@ export type AnsibleReportSummary = {
   available: boolean;
   reportTimeValid: boolean;
   profileId: string | null;
+  contentId?: string | null;
+  scopeKey?: string;
+  scopeKnown?: boolean;
   mode: string;
   score: number | null;
   high: number;
@@ -59,6 +64,8 @@ export type DeletedAnsibleReport = {
 type ReportJson = {
   inventoryHost?: string;
   createdAt?: string;
+  observedAt?: string | null;
+  importedAt?: string | null;
   hostname?: string;
   os?: string;
   profileId?: string;
@@ -72,6 +79,13 @@ type ReportJson = {
     available?: boolean;
     error?: unknown;
     definitionResults?: unknown;
+    profile?: unknown;
+    contentIdentity?: unknown;
+    datastreamChecksum?: unknown;
+    scanStartedAt?: unknown;
+    scanEndedAt?: unknown;
+    observationTimeValid?: unknown;
+    database?: { sha256?: unknown };
   };
   vulnerabilityScan?: { partial?: boolean };
   packageInventory?: { error?: string };
@@ -140,10 +154,49 @@ export function targetAliasFromReport(report: Pick<AnsibleReportSummary, "invent
   return report.inventoryHost ?? targetAliasFromReportFileName(report.fileName, report.profileId, report.mode);
 }
 
-export function reportTimestamp(report: Pick<AnsibleReportSummary, "createdAt" | "modifiedAt">, now = Date.now()) {
-  const timestamp = Date.parse(report.createdAt ?? report.modifiedAt);
+export function reportTimestamp(report: Pick<AnsibleReportSummary, "createdAt" | "modifiedAt" | "observedAt">, now = Date.now()) {
+  // An explicitly unknown observation time must never fall back to import or mtime.
+  const timestamp = Date.parse(report.observedAt !== undefined ? report.observedAt ?? "" : report.createdAt ?? report.modifiedAt);
   // Invalid or future dates may remain in history, but never outrank a real run.
   return Number.isFinite(timestamp) && timestamp <= now ? timestamp : 0;
+}
+
+/** Content changes or different XCCDF profiles cannot verify each other. Unknown
+ * legacy scopes remain individually identifiable but are never compatible. */
+export function reportScopeKey(report: Pick<AnsibleReportSummary, "mode" | "profileId" | "id" | "contentId">) {
+  if (report.mode !== "openscap") return `${report.mode}:${report.profileId ?? "default"}`;
+  return report.profileId && report.profileId !== "openscap" && report.contentId
+    ? `openscap:${encodeURIComponent(report.profileId)}:${report.contentId}`
+    : `openscap:unknown:${report.id}`;
+}
+
+export function reportScopesCompatible(left: AnsibleReportSummary, right: AnsibleReportSummary) {
+  return left.mode === right.mode && (left.mode !== "openscap" || left.scopeKnown === true && right.scopeKnown === true)
+    && (left.mode !== "astra-oval" || Boolean(left.contentId) && left.contentId === right.contentId)
+    && reportScopeKey(left) === reportScopeKey(right);
+}
+
+function importedScanTime(value: unknown) {
+  if (typeof value !== "string") return null;
+  const parts = value.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
+  if (!parts) return null;
+  const [, year, month, day, hour, minute, second] = parts.map(Number);
+  if (month < 1 || month > 12 || day < 1 || day > new Date(Date.UTC(year, month, 0)).getUTCDate()
+      || hour > 23 || minute > 59 || second > 59) return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function greenboneObservation(parsed: ReportJson) {
+  const importedAt = parsed.importedAt ?? parsed.createdAt ?? null;
+  const imported = importedScanTime(importedAt);
+  const end = importedScanTime(parsed.scanner?.scanEndedAt ?? parsed.observedAt);
+  const start = importedScanTime(parsed.scanner?.scanStartedAt);
+  const declaredEnd = parsed.observedAt === undefined ? end : importedScanTime(parsed.observedAt);
+  const valid = parsed.scanner?.observationTimeValid !== false && end !== null && end > 0
+    && end <= Math.min(Date.now(), imported ?? Date.now()) && declaredEnd === end
+    && (!parsed.scanner?.scanStartedAt || start !== null && start <= end);
+  return { observedAt: valid ? new Date(end!).toISOString() : null, importedAt };
 }
 
 function numberOrNull(value: unknown) {
@@ -234,7 +287,7 @@ function readReportJson(reportPath: string): ReportJson | null {
   try {
     const value = JSON.parse(readFileSync(reportPath, "utf8"));
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-    if (["createdAt", "hostname", "os", "profileId", "mode", "inventoryHost"].some((key) => value[key] != null && typeof value[key] !== "string")) return null;
+    if (["createdAt", "observedAt", "importedAt", "hostname", "os", "profileId", "mode", "inventoryHost"].some((key) => value[key] != null && typeof value[key] !== "string")) return null;
     if (value.inventoryHost != null && !/^[a-zA-Z0-9_.:-]{1,96}$/.test(value.inventoryHost)) return null;
     return value as ReportJson;
   } catch {
@@ -249,25 +302,35 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
 
   const stats = statSync(fullPath);
   const mode = parsed.mode ?? "agentless";
-  const profileId = parsed.profileId ?? null;
+  // Older adapters stored only "openscap" at the top level. Read their actual
+  // evaluated profile and content digest without rewriting historical evidence.
+  const profileId = mode === "openscap" && typeof parsed.scanner?.profile === "string" && parsed.scanner.profile
+    ? parsed.scanner.profile : parsed.profileId ?? null;
+  const digest = mode === "astra-oval" && typeof parsed.scanner?.database?.sha256 === "string"
+    ? `sha256:${parsed.scanner.database.sha256}` : parsed.scanner?.contentIdentity ?? parsed.scanner?.datastreamChecksum;
+  const contentId = ["openscap", "astra-oval"].includes(mode) && typeof digest === "string" && /^(?:sha256|bundle-sha256):[a-fA-F0-9]{64}$/.test(digest)
+    ? digest.toLowerCase() : null;
+  const scopeKnown = mode !== "openscap" || Boolean(profileId && profileId !== "openscap" && contentId);
   const findings = reportFindings(parsed);
   const events = Array.isArray(parsed.events) ? parsed.events : [];
-  const createdAt = typeof parsed.createdAt === "string" ? parsed.createdAt : null;
+  const observation: Pick<AnsibleReportSummary, "observedAt" | "importedAt"> = mode === "greenbone" ? greenboneObservation(parsed) : {};
+  const createdAt = mode === "greenbone" ? observation.observedAt ?? null : typeof parsed.createdAt === "string" ? parsed.createdAt : null;
   const inventoryHost = typeof parsed.inventoryHost === "string" && /^[a-zA-Z0-9_.:-]{1,96}$/.test(parsed.inventoryHost)
     ? parsed.inventoryHost : null;
   const available = parsed.scanner?.available !== false;
   const partial = !available || parsed.partial === true || parsed.scanner?.partial === true || Boolean(parsed.scanner?.error)
     || parsed.vulnerabilityScan?.partial === true || Boolean(parsed.packageInventory?.error)
     || (parsed.findings !== undefined && (!Array.isArray(parsed.findings) || findings.length !== parsed.findings.length))
-    || mode === "dependency-track";
-  const needsReview = findings.some((finding) => finding.status === "manual");
-  const reportTimeValid = reportTimestamp({ createdAt, modifiedAt: stats.mtime.toISOString() }) > 0;
+    || mode === "dependency-track" || !scopeKnown || mode === "greenbone" && !observation.observedAt;
+  const needsReview = !scopeKnown || mode === "greenbone" && !observation.observedAt || findings.some((finding) => finding.status === "manual");
+  const reportTimeValid = reportTimestamp({ createdAt, modifiedAt: stats.mtime.toISOString(), ...observation }) > 0;
 
   return {
     id: reportIdFromFileName(fileName),
     fileName,
     path: fullPath,
     createdAt,
+    ...observation,
     modifiedAt: stats.mtime.toISOString(),
     host: parsed.hostname ?? targetAliasFromReportFileName(fileName, profileId, mode),
     inventoryHost,
@@ -276,6 +339,9 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
     needsReview,
     reportTimeValid,
     profileId,
+    contentId,
+    scopeKnown,
+    scopeKey: reportScopeKey({ id: reportIdFromFileName(fileName), mode, profileId, contentId }),
     mode,
     score: partial || !reportTimeValid ? null : scoreFromReport(parsed, mode),
     high: findings.filter((finding) => finding.status === "failed" && finding.risk === "high").length,

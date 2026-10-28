@@ -28,6 +28,17 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def scan_time(value: str) -> datetime | None:
+    """An imported observation needs an explicit timezone, never file/import time."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})", value):
+        return None
+    try:
+        timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return timestamp.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
 def run(command: list[str], timeout: int) -> tuple[int | None, str, str]:
     try:
         result = subprocess.run(command, capture_output=True, text=True, timeout=timeout, check=False)
@@ -96,7 +107,7 @@ def base_report(args: argparse.Namespace, mode: str, source: str, findings: list
         "createdAt": now(),
         "hostname": args.inventory_host,
         "os": None,
-        "profileId": mode,
+        "profileId": (extra.get("profile") or mode) if mode == "openscap" else mode,
         "mode": mode,
         "scanner": {"source": source, "available": True, "partial": extra.get("available") is False, **extra},
         "summary": summary,
@@ -642,6 +653,7 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
             policyGroup=args.policy_group or "environment",
             datastreamLastModified=args.datastream_mtime or None,
             datastreamChecksum=args.datastream_checksum or None,
+            contentIdentity=getattr(args, "content_id", None) or args.datastream_checksum or None,
             scannerExitCode=args.exit_code,
         )
 
@@ -658,6 +670,8 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
     findings: list[dict[str, Any]] = []
     test_results = [element for element in root.iter() if local_name(element) == "TestResult"]
     result_root = test_results[-1] if test_results else root
+    result_profile = next((element.get("idref") for element in result_root
+                           if local_name(element) == "profile" and element.get("idref")), None)
     result_counts: dict[str, int] = {}
     for element in result_root.iter():
         if local_name(element) != "rule-result":
@@ -721,6 +735,9 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
     unresolved = sum(count for status, count in result_counts.items() if status not in {"pass", "fail", "notapplicable", "notselected", "informational"})
     if unresolved:
         partial_reasons.append(f"OpenSCAP не смог однозначно оценить правил: {unresolved}. Подробности приведены в результатах этих правил.")
+    if result_profile and result_profile != args.profile and not (args.profile and result_profile.endswith("_" + args.profile)):
+        partial = True
+        partial_reasons.append("Профиль в результате OpenSCAP отличается от запрошенного; применимость отчёта требует проверки.")
 
     return base_report(
         args,
@@ -731,11 +748,13 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
         partial=partial,
         partialReasons=partial_reasons,
         ruleResultCounts=result_counts,
-        profile=args.profile,
+        profile=result_profile or args.profile,
+        requestedProfile=args.profile,
         datastream=args.datastream,
         policyGroup=args.policy_group or "environment",
         datastreamLastModified=args.datastream_mtime or None,
         datastreamChecksum=args.datastream_checksum or None,
+        contentIdentity=getattr(args, "content_id", None) or args.datastream_checksum or None,
         scannerExitCode=args.exit_code,
     )
 
@@ -868,7 +887,16 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
         full_count = int(child_text(count_root, "full")) if count_root is not None else None
     except ValueError:
         full_count = None
-    partial = not findings or scan_status.lower() != "done" or invalid_severity or (full_count is not None and full_count > len(results))
+    imported_at = now()
+    scan_started_at = child_text(report_root, "scan_start")
+    scan_ended_at = child_text(report_root, "scan_end")
+    start_time, end_time = scan_time(scan_started_at), scan_time(scan_ended_at)
+    time_valid = (end_time is not None and end_time <= datetime.fromisoformat(imported_at)
+                  and (not scan_started_at or start_time is not None and start_time <= end_time))
+    partial = not findings or scan_status.lower() != "done" or invalid_severity or not time_valid or (full_count is not None and full_count > len(results))
+    partial_reasons = []
+    if not time_valid:
+        partial_reasons.append("Время окончания сканирования отсутствует, некорректно, находится в будущем или предшествует началу. Время импорта не подтверждает свежесть проверки.")
     if not findings:
         findings.append(finding(
             identifier="greenbone_no_results",
@@ -880,13 +908,17 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
             recommendation="Убедитесь, что задача завершена и экспортирован именно report XML.",
         ))
     if partial:
-        findings.append(incomplete_finding("greenbone", f"scanStatus={scan_status or 'unknown'}; exportedResults={len(results)}; fullResults={full_count}; invalidSeverity={invalid_severity}"))
+        findings.append(incomplete_finding("greenbone", f"scanStatus={scan_status or 'unknown'}; exportedResults={len(results)}; fullResults={full_count}; invalidSeverity={invalid_severity}; observationTimeValid={time_valid}"))
 
-    return base_report(args, "greenbone", "greenbone", findings, imported=True, importedFrom="Greenbone XML",
+    report = base_report(args, "greenbone", "greenbone", findings, imported=True, importedFrom="Greenbone XML",
                        partial=partial, target=args.host, scanStatus=scan_status or None,
-                       scanStartedAt=child_text(report_root, "scan_start") or None,
-                       scanEndedAt=child_text(report_root, "scan_end") or None,
+                       scanStartedAt=scan_started_at or None, scanEndedAt=scan_ended_at or None,
+                       observationTimeValid=bool(time_valid), partialReasons=partial_reasons,
                        matchedResults=len(matching_results), excludedOtherHostResults=len(results) - len(matching_results))
+    report["importedAt"] = imported_at
+    report["observedAt"] = end_time.isoformat() if time_valid else None
+    report["createdAt"] = report["observedAt"]
+    return report
 
 
 def parse_args() -> argparse.Namespace:
@@ -894,6 +926,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("mode", choices=("ssh-audit", "nmap", "lynis-report", "lynis-unavailable", "openscap-arf", "openscap-unavailable", "greenbone-report"))
     parser.add_argument("--host")
     parser.add_argument("--expected-host", action="append", default=[])
+    parser.add_argument("--content-id", default="")
     parser.add_argument("--port", type=int, default=22)
     parser.add_argument("--scan-scope", choices=tuple(NMAP_SCAN_SCOPES), default="top_100")
     parser.add_argument("--inventory-host", required=True)

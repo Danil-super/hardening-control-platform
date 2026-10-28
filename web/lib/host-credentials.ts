@@ -1,7 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
+import { currentOperationOwner, operationOwnerState } from "@/lib/operation-owner";
+import { hasUnresolvedHostCloseout } from "@/lib/state-store";
 
 export type HostIdentity = { alias: string; address: string; user: string; port: number };
 /**
@@ -88,6 +90,9 @@ export function beginHostCredential(identity: HostIdentity, existingId?: string 
   // Deterministic identity lookup; the actual cryptographic key is random and
   // generated only after successful authentication by the SSH helper.
   const id = existingId || createHash("sha256").update(JSON.stringify([identity.alias, identity.address.toLowerCase(), identity.user, identity.port])).digest("hex");
+  if (hasHostCredentialCloseoutLock(id) || hasUnresolvedHostCloseout(identity.alias)) {
+    throw credentialError("Завершение работ по этому хосту ещё не разрешено; сначала восстановите его результат.", "credential_busy");
+  }
   assertRegularLocation(id);
   mkdirSync(credentialDirectory(id), { recursive: true, mode: 0o700 });
   chmodSync(hostKeysDirectory(), 0o700); chmodSync(credentialDirectory(id), 0o700);
@@ -95,6 +100,11 @@ export function beginHostCredential(identity: HostIdentity, existingId?: string 
   try { mkdirSync(lock, { mode: 0o700 }); }
   catch { throw credentialError("Настройка этого хоста уже выполняется. Дождитесь результата.", "credential_busy"); }
   try {
+    // Pair this check with the closeout lock's bootstrap check. A request which
+    // passed the first check just before a closeout claim must not enroll keys.
+    if (hasHostCredentialCloseoutLock(id) || hasUnresolvedHostCloseout(identity.alias)) {
+      throw credentialError("Завершение работ по этому хосту ещё не разрешено.", "credential_busy");
+    }
     let credential: HostCredential;
     if (existsSync(path.join(credentialDirectory(id), "metadata.json"))) credential = validateHostCredential(id, identity, false);
     else {
@@ -180,19 +190,34 @@ export function publicCredentialSummary(id: string | null) {
   } catch { return { credentialId: id, credentialFingerprint: null, credentialPublicKey: null, credentialReady: false, sudoMode: null }; }
 }
 
-export function deleteHostCredential(id: string, identity: HostIdentity) {
+export function deleteHostCredential(id: string, identity: HostIdentity, expectedFingerprint?: string) {
   // Read and validate before removal: an inventory mismatch must never delete
   // another host's key material. A credential directory is intentionally
   // narrow and may contain only files created by this module.
-  validateHostCredential(id, identity);
+  // A recorded successful revocation may be followed by a crash between local
+  // file removals. Identity remains mandatory; another live SSH login does not.
   const directory = credentialDirectory(id);
+  assertRegularLocation(id);
+  const files = readdirSync(directory);
+  // A previous cleanup can have removed metadata last and stopped just before
+  // rmdir. No credential files remain in this case; a saved outcome is required.
+  if (files.length === 0 && expectedFingerprint) { rmdirSync(directory); return; }
+  const credential = validateHostCredential(id, identity, false);
+  if (expectedFingerprint && credential.fingerprint !== expectedFingerprint) {
+    throw credentialError("В хранилище уже другой SSH-ключ. Подтверждение старого отзыва к нему не относится.", "credential_identity_mismatch");
+  }
   const allowed = new Set(["id_ed25519", "id_ed25519.pub", "metadata.json"]);
-  for (const name of readdirSync(directory)) {
+  for (const name of files) {
     if (!allowed.has(name)) throw credentialError("Каталог SSH-ключа содержит неожиданный файл. Удалите доступ вручную после проверки хранилища.", "credential_unexpected_content");
     const info = lstatSync(path.join(directory, name));
     if (!info.isFile() || info.isSymbolicLink()) throw credentialError("Файл SSH-ключа имеет недопустимый тип.");
   }
-  rmSync(directory, { recursive: true, force: false, maxRetries: 0 });
+  // Keep identity metadata until the private/public files are gone, so a crash
+  // at any step leaves enough evidence for the supported cleanup recovery.
+  for (const name of ["id_ed25519", "id_ed25519.pub", "metadata.json"]) {
+    if (files.includes(name)) unlinkSync(path.join(directory, name));
+  }
+  rmdirSync(directory);
 }
 
 export function acquireHostCredentialCloseoutLock(id: string) {
@@ -204,5 +229,40 @@ export function acquireHostCredentialCloseoutLock(id: string) {
   if (existing) throw credentialError("Завершение работ по этому хосту уже выполняется. Дождитесь результата.", "credential_busy");
   try { mkdirSync(lock, { mode: 0o700 }); }
   catch { throw credentialError("Завершение работ по этому хосту уже выполняется. Дождитесь результата.", "credential_busy"); }
-  return () => { try { rmSync(lock, { recursive: true, force: true }); } catch { /* no-op */ } };
+  try {
+    writeFileSync(path.join(lock, "owner.json"), currentOperationOwner, { mode: 0o600, flag: "wx" });
+    if (lstatSync(path.join(credentialDirectory(id), ".bootstrap-lock"), { throwIfNoEntry: false })) {
+      throw credentialError("Настройка SSH этого хоста ещё выполняется. Дождитесь результата.", "credential_busy");
+    }
+  }
+  catch (error) { rmSync(lock, { recursive: true, force: true }); throw error; }
+  return () => {
+    try { if (readFileSync(path.join(lock, "owner.json"), "utf8") === currentOperationOwner) rmSync(lock, { recursive: true, force: true }); }
+    catch { /* A failed release remains visible and requires recovery. */ }
+  };
+}
+
+export function hasHostCredentialCloseoutLock(id: string) {
+  credentialDirectory(id);
+  return Boolean(lstatSync(path.join(hostKeysDirectory(), `${id}.decommission-lock`), { throwIfNoEntry: false }));
+}
+
+/** Only called after an audited recovery claim and independent target inspection. */
+export function releaseInterruptedHostCloseoutLock(id: string) {
+  credentialDirectory(id);
+  const lock = path.join(hostKeysDirectory(), `${id}.decommission-lock`);
+  const info = lstatSync(lock, { throwIfNoEntry: false });
+  if (!info) return;
+  if (!info.isDirectory() || info.isSymbolicLink()) throw credentialError("Небезопасный тип блокировки отзыва доступа.");
+  const files = readdirSync(lock);
+  if (files.some(name => name !== "owner.json")) throw credentialError("Блокировка содержит неожиданные файлы; требуется ручная проверка.");
+  if (files.includes("owner.json")) {
+    const ownerPath = path.join(lock, "owner.json");
+    const ownerInfo = lstatSync(ownerPath);
+    if (!ownerInfo.isFile() || ownerInfo.isSymbolicLink() || ownerInfo.size > 4096) throw credentialError("Некорректная запись владельца блокировки.");
+    if (operationOwnerState(readFileSync(ownerPath, "utf8")) === "live") {
+      throw credentialError("Прежний процесс отзыва ещё работает. Его блокировка сохранена.", "operation_owner_live");
+    }
+  }
+  rmSync(lock, { recursive: true, force: false });
 }

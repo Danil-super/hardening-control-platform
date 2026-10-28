@@ -4,6 +4,8 @@ import { hostname } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { assertAstraOvalProvenance, validateAstraOvalConfig, type AstraOvalConfig } from "@/lib/astra-oval-config";
+import type { Finding } from "@/types";
+import { currentOperationOwner, operationOwnerState, validateRecoveryAttestation, type RecoveryAttestation } from "@/lib/operation-owner";
 
 type DatabaseGlobal = typeof globalThis & {
   hcpDatabase?: DatabaseSync;
@@ -33,7 +35,9 @@ export type RemediationTransaction = {
   hostAlias: string;
   action: string;
   profileId: string;
-  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back" | "cancelled";
+  status: "preparing" | "backed_up" | "applied" | "failed" | "rolling_back" | "rollback_failed" | "rolled_back" | "cancelled" | "interrupted" | "recovery_ready";
+  recoveryRequired?: boolean;
+  recoveryVersion: string;
   reason: string;
   parameters: Record<string, string>;
   backupRef: string | null;
@@ -55,7 +59,13 @@ export type PlanEvidence = {
   reportSha256: string;
 };
 
-export type RemediationPlanItem = {
+export type PlanSeverity = {
+  severityUnknown: boolean;
+  severityAssessment: Finding["severityAssessment"] | null;
+  severityOrigin: "captured" | "source_evidence" | "unknown_legacy";
+};
+
+export type RemediationPlanItem = PlanSeverity & {
   canDeleteDraft?: boolean;
   id: string;
   hostAlias: string;
@@ -215,12 +225,23 @@ function getDatabase() {
     CREATE UNIQUE INDEX IF NOT EXISTS remediation_transactions_exclusive_host
       ON remediation_transactions(host_alias)
       WHERE status IN ('preparing', 'backed_up', 'rolling_back');
+    CREATE UNIQUE INDEX IF NOT EXISTS remediation_transactions_unresolved_host
+      ON remediation_transactions(host_alias)
+      WHERE status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready');
 
     CREATE TABLE IF NOT EXISTS runtime_settings (
       setting_key TEXT PRIMARY KEY,
       setting_value TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
+
+    CREATE TABLE IF NOT EXISTS admin_sessions (
+      token_hash TEXT PRIMARY KEY,
+      credential_generation TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS admin_sessions_expiry ON admin_sessions(expires_at);
 
     CREATE TABLE IF NOT EXISTS openscap_policies (
       group_name TEXT PRIMARY KEY,
@@ -259,6 +280,7 @@ function getDatabase() {
       description TEXT NOT NULL,
       recommendation TEXT NOT NULL,
       evidence_json TEXT NOT NULL,
+      severity_snapshot_json TEXT,
       status TEXT NOT NULL,
       owner TEXT,
       due_at TEXT,
@@ -311,9 +333,44 @@ function getDatabase() {
       if (!database.prepare("PRAGMA table_info(audit_events)").all().some((column) => column.name === "hash_version")) throw error;
     }
   }
+  const planColumns = database.prepare("PRAGMA table_info(remediation_plan_items)").all();
+  if (!planColumns.some((column) => column.name === "severity_snapshot_json")) {
+    try {
+      database.exec("ALTER TABLE remediation_plan_items ADD COLUMN severity_snapshot_json TEXT");
+    } catch (error) {
+      if (!database.prepare("PRAGMA table_info(remediation_plan_items)").all().some((column) => column.name === "severity_snapshot_json")) throw error;
+    }
+  }
+  for (const column of ["owner_json", "interrupted_from_status", "recovery_version"]) {
+    if (!database.prepare("PRAGMA table_info(remediation_transactions)").all().some((item) => item.name === column)) {
+      try { database.exec(`ALTER TABLE remediation_transactions ADD COLUMN ${column} TEXT`); }
+      catch (error) {
+        if (!database.prepare("PRAGMA table_info(remediation_transactions)").all().some((item) => item.name === column)) throw error;
+      }
+    }
+  }
   globalRef.hcpDatabase = database;
   globalRef.hcpDatabasePath = databasePath;
   return database;
+}
+
+/** Session tokens are bearer credentials; persist only their hashes. */
+export function storeAdminSession(tokenHash: string, credentialGeneration: string, createdAt: number, expiresAt: number) {
+  return inTransaction((database) => {
+    database.prepare("DELETE FROM admin_sessions WHERE expires_at <= ? OR credential_generation <> ?").run(createdAt, credentialGeneration);
+    database.prepare("INSERT INTO admin_sessions (token_hash, credential_generation, created_at, expires_at) VALUES (?, ?, ?, ?)")
+      .run(tokenHash, credentialGeneration, createdAt, expiresAt);
+  });
+}
+
+export function hasActiveAdminSession(tokenHash: string, credentialGeneration: string, now: number) {
+  return Boolean(getDatabase().prepare(`SELECT 1 FROM admin_sessions
+    WHERE token_hash = ? AND credential_generation = ? AND created_at <= ? AND expires_at > ?`)
+    .get(tokenHash, credentialGeneration, now, now));
+}
+
+export function deleteAdminSession(tokenHash: string) {
+  getDatabase().prepare("DELETE FROM admin_sessions WHERE token_hash = ?").run(tokenHash);
 }
 
 function canonicalValue(value: unknown): unknown {
@@ -645,7 +702,7 @@ export function setRecordArchive(records: ArchiveRecord[], action: "archive" | "
   if (!["archive", "restore"].includes(action) || records.some((item) => !["report", "pdf", "incident"].includes(item.kind) || !/^[A-Za-z0-9_.:-]{1,180}$/.test(item.id))) throw new Error("Некорректные данные архива.");
   return inTransaction((database) => {
     if (database.prepare("SELECT id FROM audit_jobs WHERE status IN ('queued', 'running') LIMIT 1").get()
-      || database.prepare("SELECT id FROM remediation_transactions WHERE status IN ('preparing', 'backed_up', 'rolling_back') LIMIT 1").get()) {
+      || database.prepare("SELECT id FROM remediation_transactions WHERE status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') LIMIT 1").get()) {
       throw Object.assign(new Error("Дождитесь завершения выполняемых проверок и изменений перед очисткой или восстановлением списков."), { code: "operation_in_progress" });
     }
     const timestamp = new Date().toISOString();
@@ -686,15 +743,17 @@ export function verifyAuditChain() {
   return { valid: true, entries: rows.length, brokenAt: null, legacyEntries, payloadProtected: legacyEntries === 0 };
 }
 
-export function createRemediationTransaction(input: Omit<RemediationTransaction, "createdAt" | "updatedAt" | "status" | "backupRef" | "preAuditReportId" | "postAuditReportId" | "error">) {
+export function createRemediationTransaction(input: Omit<RemediationTransaction, "createdAt" | "updatedAt" | "status" | "backupRef" | "preAuditReportId" | "postAuditReportId" | "error" | "recoveryVersion">) {
+  recoverInterruptedRemediations();
   return inTransaction((database) => {
+  assertNoUnresolvedHostCloseout(input.hostAlias);
   const now = new Date().toISOString();
   database.prepare(`
     INSERT INTO remediation_transactions (
       id, created_at, updated_at, host_alias, action, profile_id, status, reason, parameters_json,
-      backup_ref, pre_audit_report_id, post_audit_report_id, error
-    ) VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?, NULL, NULL, NULL, NULL)
-  `).run(input.id, now, now, input.hostAlias, input.action, input.profileId, input.reason, JSON.stringify(input.parameters));
+      backup_ref, pre_audit_report_id, post_audit_report_id, error, owner_json, recovery_version
+    ) VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?, NULL, NULL, NULL, NULL, ?, ?)
+  `).run(input.id, now, now, input.hostAlias, input.action, input.profileId, input.reason, JSON.stringify(input.parameters), currentOperationOwner, randomUUID());
   appendAuditEvent("remediation_preparing", input.id, {
     hostAlias: input.hostAlias,
     action: input.action,
@@ -715,12 +774,13 @@ export function updateRemediationTransaction(
   if (!current) {
     return null;
   }
-  const next = { ...current, ...update, updatedAt: new Date().toISOString() };
+  const next = { ...current, ...update, updatedAt: new Date().toISOString(), recoveryVersion: randomUUID() };
   getDatabase().prepare(`
     UPDATE remediation_transactions
-    SET updated_at = ?, status = ?, backup_ref = ?, pre_audit_report_id = ?, post_audit_report_id = ?, error = ?
+    SET updated_at = ?, status = ?, backup_ref = ?, pre_audit_report_id = ?, post_audit_report_id = ?, error = ?,
+      owner_json = CASE WHEN ? IN ('preparing', 'backed_up', 'rolling_back') THEN owner_json ELSE NULL END, recovery_version = ?
     WHERE id = ?
-  `).run(next.updatedAt, next.status, next.backupRef, next.preAuditReportId, next.postAuditReportId, next.error, id);
+  `).run(next.updatedAt, next.status, next.backupRef, next.preAuditReportId, next.postAuditReportId, next.error, next.status, next.recoveryVersion, id);
   appendAuditEvent(`remediation_${next.status}`, id, {
     hostAlias: next.hostAlias,
     action: next.action,
@@ -735,8 +795,61 @@ export function updateRemediationTransaction(
 }
 
 export function hasActiveRemediationForHost(hostAlias: string) {
+  recoverInterruptedRemediations();
   return Boolean(getDatabase().prepare(`SELECT 1 FROM remediation_transactions
-    WHERE host_alias = ? AND status IN ('preparing', 'backed_up', 'rolling_back') LIMIT 1`).get(hostAlias));
+    WHERE host_alias = ? AND status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') LIMIT 1`).get(hostAlias));
+}
+
+/** Detect a dead local owner without releasing the host or replaying remote work. */
+export function recoverInterruptedRemediations() {
+  return inTransaction((database) => {
+    for (const row of database.prepare("SELECT id, host_alias, status, owner_json FROM remediation_transactions WHERE status IN ('preparing', 'backed_up', 'rolling_back')").all()) {
+      if (operationOwnerState(row.owner_json) !== "dead") continue;
+      database.prepare("UPDATE remediation_transactions SET status = 'interrupted', interrupted_from_status = ?, updated_at = ?, error = ? WHERE id = ?")
+        .run(row.status, new Date().toISOString(), "Процесс HCP завершился. Состояние цели неизвестно; новые изменения заблокированы до ручной сверки.", row.id);
+      appendAuditEvent("remediation_interrupted", String(row.id), { hostAlias: row.host_alias, previousStatus: row.status });
+    }
+  });
+}
+
+/** Operator reconciliation only; it never runs or silently retries a remote change. */
+export function reconcileRemediationTransaction(id: string, input: RecoveryAttestation & { resolution?: unknown; backupVerified?: unknown }) {
+  return inTransaction((database) => {
+    const row = database.prepare("SELECT * FROM remediation_transactions WHERE id = ?").get(id);
+    if (!row) throw Object.assign(new Error("Операция не найдена."), { code: "transaction_not_found" });
+    const current = rowToTransaction(row);
+    if (!["preparing", "backed_up", "rolling_back", "interrupted", "recovery_ready"].includes(current.status)) {
+      throw Object.assign(new Error("Эта операция не ожидает восстановления после прерывания."), { code: "recovery_not_available" });
+    }
+    const evidence = validateRecoveryAttestation(input, current.hostAlias, id, current.recoveryVersion);
+    if (operationOwnerState(row.owner_json) === "live") {
+      throw Object.assign(new Error("Прежний процесс ещё работает. Завершите его штатно и проверьте оставшиеся процессы до восстановления."), { code: "operation_owner_live" });
+    }
+    const previousStatus = String(row.interrupted_from_status ?? current.status);
+    let status: RemediationTransaction["status"];
+    let backupRef = current.backupRef;
+    if (input.resolution === "not_applied" && previousStatus === "preparing" && !backupRef) {
+      status = "cancelled";
+    } else if (input.resolution === "prepare_rollback" && input.backupVerified === true) {
+      if (!/^txn-[A-Za-z0-9-]{8,140}$/.test(id) || !current.parameters._hcp_connection) {
+        throw Object.assign(new Error("Нет проверяемой идентичности старой резервной копии. Восстановите хост через независимую консоль и зарегистрируйте результат."), { code: "legacy_backup_identity_missing" });
+      }
+      // The remote rollback still verifies machine-id, backend, transaction and
+      // SHA-256. Keep the host locked until that rollback actually succeeds.
+      backupRef = `/var/lib/hcp-backups/${id}/firewall-state.tar.gz`;
+      status = "recovery_ready";
+    } else if (input.resolution === "restored_manually") {
+      status = "rolled_back";
+    } else {
+      throw Object.assign(new Error("Укажите подтверждённый результат: изменение не начиналось, копия проверена для отката или исходное состояние восстановлено вручную."), { code: "recovery_resolution_invalid" });
+    }
+    if (status !== "cancelled") assertNoNewerRemediation(current);
+    const recoveryVersion = randomUUID();
+    database.prepare("UPDATE remediation_transactions SET status = ?, backup_ref = ?, updated_at = ?, error = ?, owner_json = NULL, recovery_version = ? WHERE id = ?")
+      .run(status, backupRef, new Date().toISOString(), `Ручная сверка: ${evidence.inspectionNote}`, recoveryVersion, id);
+    appendAuditEvent("remediation_reconciled", id, { hostAlias: current.hostAlias, previousStatus, resolution: input.resolution, status, backupRef, ...evidence, recoveryVersion });
+    return getRemediationTransaction(id)!;
+  });
 }
 
 /** Finish a failed operation which never reached the firewall change stage. */
@@ -759,25 +872,30 @@ export function cancelRemediationTransaction(id: string, confirmedHost: string):
   });
 }
 
+function assertNoNewerRemediation(current: Pick<RemediationTransaction, "id" | "hostAlias">) {
+  const newer = getDatabase().prepare(`SELECT id FROM remediation_transactions
+    WHERE host_alias = ? AND rowid > (SELECT rowid FROM remediation_transactions WHERE id = ?)
+      AND (status IN ('interrupted', 'recovery_ready', 'preparing')
+        OR backup_ref IS NOT NULL AND status IN ('applied', 'failed', 'rollback_failed', 'rolling_back', 'backed_up')) LIMIT 1`)
+    .get(current.hostAlias, current.id);
+  if (newer) throw Object.assign(new Error("Сначала откатите более поздние изменения этого хоста."), { code: "newer_remediation_exists" });
+}
+
 export function claimRemediationRollback(id: string): RemediationTransaction {
+  recoverInterruptedRemediations();
   return inTransaction((database) => {
     const current = getRemediationTransaction(id);
-    if (!current || !current.backupRef || !["applied", "failed", "rollback_failed"].includes(current.status)) {
+    if (!current || !current.backupRef || !["applied", "failed", "rollback_failed", "recovery_ready"].includes(current.status)) {
       throw Object.assign(new Error("Эта операция недоступна для отката."), { code: "rollback_not_available" });
     }
-    if (hasActiveRemediationForHost(current.hostAlias)) {
+    assertNoUnresolvedHostCloseout(current.hostAlias);
+    if (database.prepare("SELECT 1 FROM remediation_transactions WHERE host_alias = ? AND id != ? AND status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') LIMIT 1").get(current.hostAlias, id)) {
       throw Object.assign(new Error("На хосте уже выполняется изменение или откат."), { code: "host_operation_active" });
     }
-    const newer = database.prepare(`SELECT id FROM remediation_transactions
-      WHERE host_alias = ? AND rowid > (SELECT rowid FROM remediation_transactions WHERE id = ?)
-        AND backup_ref IS NOT NULL AND status IN ('applied', 'failed', 'rollback_failed', 'rolling_back', 'backed_up') LIMIT 1`)
-      .get(current.hostAlias, id);
-    if (newer) {
-      throw Object.assign(new Error("Сначала откатите более поздние изменения этого хоста."), { code: "newer_remediation_exists" });
-    }
-    const row = database.prepare(`UPDATE remediation_transactions SET status = 'rolling_back', updated_at = ?, error = NULL
-      WHERE id = ? AND status IN ('applied', 'failed', 'rollback_failed') AND backup_ref IS NOT NULL RETURNING *`)
-      .get(new Date().toISOString(), id);
+    assertNoNewerRemediation(current);
+    const row = database.prepare(`UPDATE remediation_transactions SET status = 'rolling_back', updated_at = ?, error = NULL, owner_json = ?, interrupted_from_status = NULL, recovery_version = ?
+      WHERE id = ? AND status IN ('applied', 'failed', 'rollback_failed', 'recovery_ready') AND backup_ref IS NOT NULL RETURNING *`)
+      .get(new Date().toISOString(), currentOperationOwner, randomUUID(), id);
     if (!row) throw Object.assign(new Error("Операция уже занята или недоступна для отката."), { code: "rollback_not_available" });
     appendAuditEvent("remediation_rolling_back", id, { hostAlias: current.hostAlias, backupRef: current.backupRef });
     return rowToTransaction(row);
@@ -793,6 +911,8 @@ function rowToTransaction(row: Record<string, unknown>): RemediationTransaction 
     action: String(row.action),
     profileId: String(row.profile_id),
     status: row.status as RemediationTransaction["status"],
+    recoveryRequired: ["preparing", "backed_up", "rolling_back", "interrupted", "recovery_ready"].includes(String(row.status)) && operationOwnerState(row.owner_json) !== "live",
+    recoveryVersion: typeof row.recovery_version === "string" ? row.recovery_version : `legacy-remediation:${row.id}`,
     reason: String(row.reason),
     parameters: JSON.parse(String(row.parameters_json)) as Record<string, string>,
     backupRef: typeof row.backup_ref === "string" ? row.backup_ref : null,
@@ -808,10 +928,88 @@ export function getRemediationTransaction(id: string) {
 }
 
 export function listRemediationTransactions(limit = 50) {
+  recoverInterruptedRemediations();
   return getDatabase()
-    .prepare("SELECT * FROM remediation_transactions ORDER BY created_at DESC LIMIT ?")
+    .prepare(`SELECT * FROM remediation_transactions
+      ORDER BY CASE WHEN status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') THEN 0 ELSE 1 END, created_at DESC LIMIT ?`)
     .all(limit)
     .map(rowToTransaction);
+}
+
+export type HostCloseoutRecord = {
+  credentialId: string; identity: { alias: string; address: string; user: string; port: number }; fingerprint: string;
+  status: "in_progress" | "unknown" | "remote_revoked" | "remote_partial" | "not_changed" | "completed";
+  owner: string | null; claim: string | null; updatedAt: string; error: string | null; recoveryVersion: string;
+};
+function closeoutKey(id: string) {
+  if (!/^[a-f0-9]{64}$/.test(id)) throw new Error("Некорректный идентификатор SSH-ключа.");
+  return `host_closeout:${id}`;
+}
+export function getHostCloseout(id: string): HostCloseoutRecord | null {
+  const row = getDatabase().prepare("SELECT setting_value FROM runtime_settings WHERE setting_key = ?").get(closeoutKey(id));
+  if (!row) return null;
+  const record = JSON.parse(String(row.setting_value)) as HostCloseoutRecord;
+  return { ...record, recoveryVersion: record.recoveryVersion ?? `legacy-closeout:${id}` };
+}
+export function latestHostCloseout(alias: string) {
+  return getDatabase().prepare("SELECT setting_value FROM runtime_settings WHERE setting_key LIKE 'host_closeout:%' ORDER BY updated_at DESC").all()
+    .map(row => JSON.parse(String(row.setting_value)) as HostCloseoutRecord).find(value => value.identity.alias === alias) ?? null;
+}
+export function hasUnresolvedHostCloseout(alias: string, exceptCredentialId?: string) {
+  return getDatabase().prepare("SELECT setting_value FROM runtime_settings WHERE setting_key LIKE 'host_closeout:%'").all()
+    .map(row => JSON.parse(String(row.setting_value)) as HostCloseoutRecord)
+    .some(value => value.credentialId !== exceptCredentialId && value.identity.alias === alias && (!["not_changed", "completed"].includes(value.status)
+      || value.claim && operationOwnerState(value.owner) === "live"));
+}
+function assertNoUnresolvedHostCloseout(alias: string, exceptCredentialId?: string) {
+  if (hasUnresolvedHostCloseout(alias, exceptCredentialId)) throw Object.assign(new Error("Сначала завершите отзыв доступа к этому хосту или сверку его результата."), { code: "host_operation_active" });
+}
+function saveHostCloseout(record: HostCloseoutRecord) {
+  getDatabase().prepare("INSERT INTO runtime_settings(setting_key, setting_value, updated_at) VALUES (?, ?, ?) ON CONFLICT(setting_key) DO UPDATE SET setting_value=excluded.setting_value, updated_at=excluded.updated_at")
+    .run(closeoutKey(record.credentialId), JSON.stringify(record), record.updatedAt);
+}
+export function claimHostCloseout(input: Pick<HostCloseoutRecord, "credentialId" | "identity" | "fingerprint">, recovery?: RecoveryAttestation) {
+  return inTransaction((database) => {
+    if (database.prepare("SELECT id FROM remediation_transactions WHERE host_alias = ? AND status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') LIMIT 1").get(input.identity.alias)) {
+      throw Object.assign(new Error("Сначала завершите изменение или восстановление firewall на хосте."), { code: "host_operation_active" });
+    }
+    assertNoUnresolvedHostCloseout(input.identity.alias, input.credentialId);
+    const current = getHostCloseout(input.credentialId);
+    if (current && (current.identity.alias !== input.identity.alias || current.identity.address !== input.identity.address
+        || current.identity.user !== input.identity.user || current.identity.port !== input.identity.port)) {
+      throw Object.assign(new Error("Идентичность хоста изменилась после начала отзыва."), { code: "credential_identity_mismatch" });
+    }
+    const evidence = recovery ? validateRecoveryAttestation(recovery, input.identity.alias, input.credentialId, current?.recoveryVersion ?? `legacy-closeout:${input.credentialId}`) : null;
+    if (current?.claim && operationOwnerState(current.owner) === "live") throw Object.assign(new Error("Отзыв доступа ещё выполняется прежним процессом."), { code: "operation_owner_live" });
+    if (!recovery && current && !["not_changed", "completed"].includes(current.status)) throw Object.assign(new Error("Результат предыдущего отзыва требует сверки. Используйте восстановление завершения работ."), { code: "closeout_recovery_required" });
+    // Consume a recovery snapshot inside the same SQLite write transaction as
+    // the claim. A second container cannot reuse it even if owner liveness is
+    // unknown across PID namespaces. A normal new attempt always gets a new one.
+    const record: HostCloseoutRecord = { ...input, status: current?.status ?? "in_progress", owner: currentOperationOwner, claim: randomUUID(), recoveryVersion: randomUUID(), updatedAt: new Date().toISOString(), error: current?.error ?? null };
+    if (!recovery) record.status = "in_progress";
+    saveHostCloseout(record);
+    appendAuditEvent(recovery ? "host_decommission_recovery_claimed" : "host_decommission_claimed", input.identity.alias,
+      { credentialId: input.credentialId, identity: input.identity, previousStatus: current?.status ?? null, recoveryVersion: record.recoveryVersion, ...(evidence ?? {}) });
+    return record;
+  });
+}
+export function recordHostCloseoutResult(id: string, claim: string, status: HostCloseoutRecord["status"], error: string | null = null) {
+  return inTransaction(() => {
+    const current = getHostCloseout(id);
+    if (!current || current.claim !== claim) throw Object.assign(new Error("Отзыв доступа принадлежит другой операции."), { code: "closeout_claim_lost" });
+    const record = { ...current, status, error, updatedAt: new Date().toISOString(), recoveryVersion: randomUUID() };
+    saveHostCloseout(record);
+    appendAuditEvent("host_decommission_checkpoint", current.identity.alias, { credentialId: id, status, error, recoveryVersion: record.recoveryVersion });
+    return record;
+  });
+}
+export function releaseHostCloseout(id: string, claim: string) {
+  return inTransaction(() => {
+    const current = getHostCloseout(id);
+    if (!current || current.claim !== claim) return;
+    const status = current.status === "in_progress" ? "unknown" : current.status;
+    saveHostCloseout({ ...current, status, owner: null, claim: null, updatedAt: new Date().toISOString(), recoveryVersion: randomUUID() });
+  });
 }
 
 /**
@@ -910,8 +1108,28 @@ function parsePlanEvidence(value: unknown): PlanEvidence[] {
   });
 }
 
+function savedPlanSeverity(value: unknown): PlanSeverity | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const data = value as Record<string, unknown>;
+  if (data.version !== 1 || typeof data.severityUnknown !== "boolean") return null;
+  const assessment = data.severityAssessment;
+  if (assessment !== null) {
+    if (!assessment || typeof assessment !== "object" || Array.isArray(assessment)) return null;
+    const candidate = assessment as Record<string, unknown>;
+    if (!["critical", "high", "medium", "low"].includes(String(candidate.level))
+      || !["oval_metadata", "chromium_description", "scanner_metadata"].includes(String(candidate.source))
+      || data.severityUnknown) return null;
+  }
+  return { severityUnknown: data.severityUnknown, severityAssessment: assessment as PlanSeverity["severityAssessment"], severityOrigin: "captured" };
+}
+
 function rowToPlanItem(row: Record<string, unknown>): RemediationPlanItem {
+  let severity: PlanSeverity | null = null;
+  if (typeof row.severity_snapshot_json === "string") {
+    try { severity = savedPlanSeverity(JSON.parse(row.severity_snapshot_json)); } catch { /* Resolve legacy evidence without inventing a rating. */ }
+  }
   return {
+    ...(severity ?? { severityUnknown: true, severityAssessment: null, severityOrigin: "unknown_legacy" as const }),
     canDeleteDraft: Boolean(row.can_delete_draft),
     id: String(row.id), hostAlias: String(row.host_alias), findingKey: String(row.finding_key), title: String(row.title), category: String(row.category),
     risk: row.risk as RemediationPlanItem["risk"], description: String(row.description), recommendation: String(row.recommendation),
@@ -985,7 +1203,8 @@ export function deleteDraftRemediationPlanItem(id: string) {
   });
 }
 
-export function createRemediationPlanItem(input: Omit<RemediationPlanItem, "id" | "status" | "owner" | "dueAt" | "approvalReference" | "implementationNote" | "verificationReportId" | "riskAcceptedUntil" | "createdAt" | "updatedAt">) {
+export function createRemediationPlanItem(input: Omit<RemediationPlanItem, "id" | "status" | "owner" | "dueAt" | "approvalReference" | "implementationNote" | "verificationReportId" | "riskAcceptedUntil" | "createdAt" | "updatedAt" | keyof PlanSeverity>
+  & Partial<Pick<PlanSeverity, "severityUnknown" | "severityAssessment">>) {
   const hostAlias = planIdentifier(input.hostAlias, "хост", 96);
   const findingKey = planIdentifier(input.findingKey, "ключ находки", 180);
   const title = planText(input.title, "название", 1, 300);
@@ -994,6 +1213,8 @@ export function createRemediationPlanItem(input: Omit<RemediationPlanItem, "id" 
   const description = planText(input.description, "описание", 1, 3000);
   const recommendation = planText(input.recommendation, "рекомендация", 1, 3000);
   const evidence = parsePlanEvidence(input.evidence);
+  const severitySnapshot = { version: 1, severityUnknown: input.severityUnknown ?? true, severityAssessment: input.severityAssessment ?? null };
+  if (!savedPlanSeverity(severitySnapshot)) throw new Error("Укажите согласованную оценку серьёзности исходной находки.");
   return inTransaction((database) => {
     const existing = database.prepare(`SELECT * FROM remediation_plan_items WHERE host_alias = ? AND finding_key = ?
       AND status NOT IN ('confirmed', 'accepted_risk') ORDER BY updated_at DESC LIMIT 1`).get(hostAlias, findingKey);
@@ -1001,12 +1222,12 @@ export function createRemediationPlanItem(input: Omit<RemediationPlanItem, "id" 
     const id = `plan_${randomUUID()}`;
     const now = new Date().toISOString();
     database.prepare(`INSERT INTO remediation_plan_items
-      (id, host_alias, finding_key, title, category, risk, description, recommendation, evidence_json, status, owner, due_at,
+      (id, host_alias, finding_key, title, category, risk, description, recommendation, evidence_json, severity_snapshot_json, status, owner, due_at,
        approval_reference, implementation_note, verification_report_id, risk_accepted_until, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`)
-      .run(id, hostAlias, findingKey, title, category, input.risk, description, recommendation, JSON.stringify(evidence), now, now);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)`)
+      .run(id, hostAlias, findingKey, title, category, input.risk, description, recommendation, JSON.stringify(evidence), JSON.stringify(severitySnapshot), now, now);
     addPlanHistory(database, { planId: id, fromStatus: null, toStatus: "discovered", note: "Пункт создан из свежих доказательств аудита.", approvalReference: null, verificationReportId: null, riskAcceptedUntil: null });
-    appendAuditEvent("remediation_plan_created", id, { hostAlias, findingKey, title, risk: input.risk, evidence: evidence.map(({ reportId, findingId, reportSha256 }) => ({ reportId, findingId, reportSha256 })) });
+    appendAuditEvent("remediation_plan_created", id, { hostAlias, findingKey, title, risk: input.risk, severitySnapshot, evidence: evidence.map(({ reportId, findingId, reportSha256 }) => ({ reportId, findingId, reportSha256 })) });
     return getRemediationPlanItem(id);
   });
 }
@@ -1018,11 +1239,12 @@ const planTransitions: Record<RemediationPlanStatus, RemediationPlanStatus[]> = 
 
 export function transitionRemediationPlanItem(id: string, update: {
   status: RemediationPlanStatus; note?: unknown; owner?: unknown; dueAt?: unknown; approvalReference?: unknown;
-  verificationReportId?: unknown; riskAcceptedUntil?: unknown;
+  verificationReportId?: unknown; riskAcceptedUntil?: unknown; expectedUpdatedAt?: string;
 }) {
   return inTransaction((database) => {
     const current = getRemediationPlanItem(id);
     if (!current) throw new Error("Пункт плана устранения не найден.");
+    if (update.expectedUpdatedAt !== undefined && current.updatedAt !== update.expectedUpdatedAt) throw new Error("Пункт плана изменился во время проверки. Обновите план и повторите действие.");
     const status = planStatus(update.status);
     if (!planTransitions[current.status].includes(status)) throw new Error("Этот переход статуса плана не разрешён.");
     const note = nullablePlanText(update.note, "комментарий", 10, 2000);

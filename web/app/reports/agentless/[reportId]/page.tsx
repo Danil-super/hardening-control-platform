@@ -122,8 +122,9 @@ export default async function AgentlessReportDetailPage({
           <h1 className="break-words text-3xl font-semibold text-white">{report.host}</h1>
           <p className="mt-2 max-w-3xl text-slate-400">
             {reportModeTitle(report.mode)} ·{" "}
-            {formatDate(report.createdAt ?? report.modifiedAt)}
+            {formatDate(report.createdAt ?? (report.mode === "greenbone" ? null : report.modifiedAt))}
           </p>
+          {report.mode === "greenbone" ? <p className="mt-2 text-sm text-slate-400">Время проверки взято из scan_end исходного XML. Импорт: {formatDate(report.importedAt)}.{!report.reportTimeValid ? " Время проверки не подтверждено; импорт не делает результат свежим." : ""}</p> : null}
         </div>
         <div className="flex flex-wrap gap-3">
           <LinkButton href={`/reports/agentless?host=${encodeURIComponent(targetAlias)}`} variant="secondary">История хоста</LinkButton>

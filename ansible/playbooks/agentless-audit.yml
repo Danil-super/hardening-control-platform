@@ -39,8 +39,10 @@
       ansible.builtin.shell: |
         python3 - <<'PY'
         import json
+        import ipaddress
         import os
         import re
+        import shlex
         import shutil
         import socket
         import subprocess
@@ -128,38 +130,220 @@
                 return "missing", "firewalld", command_evidence("firewalld", output, error)
             return "unknown", "firewalld", command_evidence("firewalld", output, error)
 
+        def filter_match(field, operation, expected, protocol, port):
+            # Evaluate a NEW incoming TCP/UDP packet on a non-loopback interface.
+            # Unknown predicates branch both ways; they can never prove a deny.
+            actual = {"protocol": protocol, "dport": port, "state": "new"}.get(field)
+            if field == "protocol" and isinstance(expected, (str, int)):
+                expected = {"6": "tcp", "17": "udp"}.get(str(expected), expected)
+            if field == "iif" and expected == "lo":
+                result = False
+            elif field == "all":
+                result = True
+            elif actual is None:
+                return None
+            elif isinstance(expected, dict) and set(expected) == {"range"} and field == "dport":
+                bounds = expected["range"]
+                if not isinstance(bounds, list) or len(bounds) != 2 or not all(isinstance(value, int) for value in bounds):
+                    return None
+                result = bounds[0] <= port <= bounds[1]
+            elif isinstance(expected, dict) and set(expected) == {"set"} and isinstance(expected["set"], list):
+                values = [filter_match(field, "==", value, protocol, port) for value in expected["set"]]
+                result = True if True in values else None if None in values else False
+            elif isinstance(expected, (str, int)):
+                if field == "dport":
+                    if not str(expected).isdigit():
+                        return None
+                    result = port == int(expected)
+                else:
+                    result = str(actual) == str(expected).lower()
+            else:
+                return None
+            return (not result if operation == "!=" else result) if result is not None else None
+
+        def input_filter_state(chains, inputs):
+            if not inputs:
+                return "inactive"
+
+            remaining = [10000]
+            def walk(name, offset, protocol, port, stack):
+                remaining[0] -= 1
+                if remaining[0] < 0 or (name, offset) in stack or len(stack) > 128 or name not in chains:
+                    return {"unknown"}
+                ruleset, policy = chains[name]
+                if offset >= len(ruleset):
+                    return {policy}
+                guards, action, target = ruleset[offset]
+                matches = [filter_match(field, operation, value, protocol, port) for field, operation, value in guards]
+                next_stack = stack | {(name, offset)}
+                if False in matches:
+                    return walk(name, offset + 1, protocol, port, next_stack)
+                if action == "jump":
+                    outcomes = walk(target, 0, protocol, port, next_stack)
+                    if "return" in outcomes:
+                        outcomes = (outcomes - {"return"}) | walk(name, offset + 1, protocol, port, next_stack)
+                elif action == "continue":
+                    return walk(name, offset + 1, protocol, port, next_stack)
+                else:
+                    outcomes = {action}
+                if None in matches:
+                    outcomes |= walk(name, offset + 1, protocol, port, next_stack)
+                return outcomes
+
+            for name in inputs:
+                for protocol in ("tcp", "udp"):
+                    for port in (1, 22, 23, 80, 443, 65535):
+                        # This proves a restrictive INPUT path, not whole-host
+                        # protection or reachability of any listening service.
+                        if walk(name, 0, protocol, port, set()) == {"deny"}:
+                            return "active"
+            # Only trivially unrestricted chains are classified as inactive.
+            # Unproven complex conditions/maps/jumps stay manual, not passed.
+            def accepts_all(name):
+                ruleset, policy = chains[name]
+                for guards, action, _ in ruleset:
+                    if action == "continue" and not guards:
+                        continue
+                    return not guards and action == "accept"
+                return policy == "accept"
+            return "inactive" if all(accepts_all(name) for name in inputs) else "unknown"
+
         def nftables_firewall_state():
-            code, output, error = run(["nft", "list", "ruleset"])
+            code, output, error = run(["nft", "-j", "list", "ruleset"])
+            evidence = command_evidence("nftables", output, error)
             if code != 0:
-                return ("missing" if command_is_missing(code, error) else "unknown"), "nftables", command_evidence("nftables", output, error)
-            ruleset = output.lower()
-            if not re.search(r"\bhook\s+input\b", ruleset):
-                return "inactive", "nftables", command_evidence("nftables", output, error)
-            # A hooked input chain with a deny policy or deny rule is a real
-            # kernel-level filter even when UFW cannot read its runtime lock.
-            if re.search(r"\b(policy\s+(drop|reject)|drop|reject)\b", ruleset):
-                return "active", "nftables", command_evidence("nftables", output, error)
-            return "inactive", "nftables", command_evidence("nftables", output, error)
+                return ("missing" if command_is_missing(code, error) else "unknown"), "nftables", evidence
+            try:
+                entries = json.loads(output)["nftables"]
+                if not isinstance(entries, list):
+                    raise ValueError("invalid nftables JSON")
+                chains, inputs = {}, []
+                dormant_tables = set()
+                for entry in entries:
+                    table = entry.get("table")
+                    if not table:
+                        continue
+                    flags = table.get("flags", [])
+                    if not isinstance(flags, list) or any(flag not in {"dormant", "owner", "persist"} for flag in flags):
+                        raise ValueError("unsupported nftables table flags")
+                    if "dormant" in flags:
+                        # Dormant tables remain listed, but their base chains
+                        # are unregistered and cannot filter incoming packets.
+                        dormant_tables.add((table["family"], table["name"]))
+                for entry in entries:
+                    chain = entry.get("chain")
+                    if not chain or chain.get("family") not in {"ip", "ip6", "inet"}:
+                        continue
+                    if (chain["family"], chain["table"]) in dormant_tables:
+                        continue
+                    key = (chain["family"], chain["table"], chain["name"])
+                    chains[key] = ([], "deny" if chain.get("policy") == "drop" else "accept" if chain.get("policy") == "accept" else "return")
+                    if chain.get("hook") == "input" and chain.get("type") == "filter":
+                        inputs.append(key)
+                for entry in entries:
+                    rule = entry.get("rule")
+                    if not rule:
+                        continue
+                    key = (rule["family"], rule["table"], rule["chain"])
+                    if key not in chains:
+                        continue
+                    guards, action, target = [], "continue", None
+                    for expression in rule["expr"]:
+                        if "match" in expression:
+                            match = expression["match"]
+                            left = match.get("left", {})
+                            field = ({"l4proto": "protocol", "iifname": "iif"}.get(left.get("meta", {}).get("key"))
+                                     or ("state" if left.get("ct", {}).get("key") == "state" else None)
+                                     or ("dport" if left.get("payload", {}).get("field") == "dport" and left["payload"].get("protocol") in {"tcp", "udp"} else None)) if isinstance(left, dict) else None
+                            if match.get("op") not in {"==", "!=", "in"}:
+                                field = None
+                            guards.append((field, match.get("op"), match.get("right")))
+                            if field == "dport":
+                                guards.append(("protocol", "==", left["payload"]["protocol"]))
+                        elif "drop" in expression or "reject" in expression:
+                            action = "deny"
+                        elif "accept" in expression or "return" in expression:
+                            action = "accept" if "accept" in expression else "return"
+                        elif "jump" in expression:
+                            action, target = "jump", (key[0], key[1], expression["jump"]["target"])
+                        elif not set(expression).issubset({"counter", "log", "comment"}):
+                            # Verdict maps, goto, NAT, marks and extensions need
+                            # a full evaluator; later tokens cannot hide them.
+                            guards.append((None, "==", None))
+                            action = "unknown"
+                            break
+                    chains[key][0].append((guards, action, target))
+                state = input_filter_state(chains, inputs)
+                return state, "nftables", evidence
+            except (KeyError, ValueError, TypeError, AttributeError):
+                return "unknown", "nftables", evidence
 
         def iptables_firewall_state():
             code, output, error = run(["iptables", "-S"])
+            evidence = command_evidence("iptables_ipv4", output, error)
             if code != 0:
-                return ("missing" if command_is_missing(code, error) else "unknown"), "iptables", command_evidence("iptables", output, error)
-            lines = [line.strip() for line in output.splitlines() if line.strip()]
-            input_policy_denies = any(line in ("-P INPUT DROP", "-P INPUT REJECT") for line in lines)
-            input_rules = any(line.startswith("-A INPUT ") for line in lines)
-            return ("active" if input_policy_denies or input_rules else "inactive"), "iptables", command_evidence("iptables", output, error)
+                return ("missing" if command_is_missing(code, error) else "unknown"), "iptables", evidence
+            try:
+                lines = [shlex.split(line) for line in output.splitlines() if line.strip()]
+                chains = {line[1]: ([], {"DROP": "deny", "ACCEPT": "accept"}.get(line[2], "unknown") if line[0] == "-P" else "return")
+                          for line in lines if len(line) >= 2 and line[0] in {"-P", "-N"}}
+                for line in lines:
+                    if len(line) < 2 or line[0] != "-A":
+                        continue
+                    guards, action, target, index, negate = [], "continue", None, 2, False
+                    while index < len(line):
+                        token = line[index]
+                        if token == "!":
+                            negate, index = True, index + 1
+                            continue
+                        if token in {"-j", "--jump"}:
+                            target = line[index + 1]
+                            action = {"DROP": "deny", "REJECT": "deny", "ACCEPT": "accept", "RETURN": "return", "LOG": "continue", "NFLOG": "continue"}.get(target, "jump" if target in chains else "unknown")
+                            index += 2
+                            continue
+                        if token in {"-g", "--goto"}:
+                            action = "unknown"
+                            break
+                        if token in {"-p", "--protocol", "--dport", "--destination-port", "--dports", "--ctstate", "--state", "-i", "--in-interface", "-s", "--source", "-d", "--destination", "-m", "--match", "--comment"}:
+                            value = line[index + 1]
+                            field = {"-p": "protocol", "--protocol": "protocol", "--dport": "dport", "--destination-port": "dport", "--dports": "dport", "--ctstate": "state", "--state": "state", "-i": "iif", "--in-interface": "iif"}.get(token)
+                            if token in {"-m", "--match"} and value in {"tcp", "udp", "conntrack", "state", "comment", "multiport"} or token == "--comment":
+                                index += 2
+                                continue
+                            if field == "protocol":
+                                value = {"6": "tcp", "17": "udp"}.get(value, value)
+                                if value in {"all", "0"}: field = "all"
+                            if value in {"0.0.0.0/0", "::/0"} and token in {"-s", "--source", "-d", "--destination"}: field = "all"
+                            if field in {"state", "dport"} and "," in value:
+                                value = {"set": value.lower().split(",")}
+                            elif field == "dport" and ":" in value:
+                                lower, upper = value.split(":", 1)
+                                value = {"range": [int(lower or 0), int(upper or 65535)]}
+                            guards.append((field, "!=" if negate else "==", value))
+                            negate, index = False, index + 2
+                        else:
+                            guards.append((None, "==", None))
+                            index += 1
+                    chains[line[1]][0].append((guards, action, target))
+                return input_filter_state(chains, ["INPUT"]) if "INPUT" in chains else "unknown", "iptables", evidence
+            except (ValueError, KeyError, IndexError):
+                return "unknown", "iptables", evidence
 
         def detect_firewall():
-            states = [ufw_firewall_state(), firewalld_firewall_state(), nftables_firewall_state(), iptables_firewall_state()]
+            managers = [ufw_firewall_state(), firewalld_firewall_state()]
+            filters = [nftables_firewall_state(), iptables_firewall_state()]
+            states = managers + filters
             evidence = "; ".join(item[2] for item in states)
-            active = next((item for item in states if item[0] == "active"), None)
+            active = next((item for item in filters if item[0] == "active"), None)
             if active:
-                return True, True, "backend={}; {}".format(active[1], evidence)
+                manager = [item for item in managers if item[0] == "active"]
+                if len(manager) > 1:
+                    return False, False, "multiple_active_managers; " + evidence
+                return True, True, "backend={}; scope=local_input; external_reachability=unverified; {}".format(manager[0][1] if manager else active[1], evidence)
             # Never turn an inaccessible firewall manager into an "inactive"
             # result. It is safer to leave the audit partial than to make a
             # positive claim about a protected host.
-            if any(item[0] == "unknown" for item in states):
+            if any(item[0] == "unknown" for item in states) or all(item[0] == "missing" for item in filters):
                 return False, False, evidence
             return False, True, evidence
 
@@ -199,7 +383,14 @@
                 try:
                     port = int(address.rsplit(":", 1)[1])
                     open_ports.add(port)
-                    open_sockets.append({"protocol": parts[0], "address": address, "port": port})
+                    bind_address = address.rsplit(":", 1)[0].strip("[]")
+                    try:
+                        parsed_address = ipaddress.ip_address(bind_address.split("%", 1)[0])
+                        mapped = getattr(parsed_address, "ipv4_mapped", None)
+                        scope = "loopback" if parsed_address.is_loopback or mapped and mapped.is_loopback else "wildcard" if bind_address in {"0.0.0.0", "::"} else "specific_address"
+                    except ValueError:
+                        scope = "wildcard" if bind_address == "*" else "unknown"
+                    open_sockets.append({"protocol": parts[0], "address": address, "port": port, "bindingScope": scope})
                 except ValueError:
                     continue
         else:
@@ -216,17 +407,20 @@
 
         for rule in dangerous_ports:
             port = int(rule["port"])
-            if port in open_ports:
+            protocol = rule.get("protocol", "tcp").lower()
+            matches = [item for item in open_sockets if item["protocol"] == protocol and item["port"] == port]
+            if matches:
+                loopback_only = all(item["bindingScope"] == "loopback" for item in matches)
                 findings.append(finding(
-                    'dangerous_port_{}'.format(port),
-                    rule["title"],
+                    'dangerous_port_{}_{}'.format(protocol, port),
+                    'Прослушивается {}{}/{}'.format("локальный " if loopback_only else "", protocol, port),
                     "Сеть",
                     rule.get("risk", "medium"),
-                    "failed",
-                    'На хосте прослушивается потенциально опасный порт {}.'.format(port),
+                    "manual" if loopback_only else "failed",
+                    'Правило профиля «{}»: найден сокет {}/{}. Привязка: {}. Номер порта не подтверждает вид сервиса или доступность извне.{}'.format(rule["title"], protocol, port, ", ".join(sorted({item["address"] for item in matches})), " Сокет доступен только через loopback; проверьте необходимость локального сервиса." if loopback_only else ""),
                     rule["recommendation"],
-                    'open_port={}'.format(port),
-                    "close_port",
+                    'port={}/{}; bindings={}; bindingScopes={}; service=unverified; externalReachability=unverified'.format(protocol, port, ",".join(sorted({item["address"] for item in matches})), ",".join(sorted({item["bindingScope"] for item in matches}))),
+                    None if loopback_only else "close_port",
             ))
 
         effective_ssh_values = {}
@@ -324,13 +518,13 @@
         if ports_available and not any(item["id"].startswith("dangerous_port_") for item in findings):
             findings.append(finding(
                 "dangerous_ports_absent",
-                "Опасные сетевые порты не обнаружены",
+                "Сокеты проверенных протоколов и портов не обнаружены",
                 "Сеть",
                 "info",
                 "passed",
-                "Проверены распространенные опасные порты.",
+                "Слушающие сокеты сопоставлены с парами протокол/порт из выбранного профиля; другие протоколы и порты этим результатом не оцениваются.",
                 "Продолжайте регулярный сетевой аудит.",
-                "checked_ports=" + ",".join(str(rule["port"]) for rule in dangerous_ports),
+                "checked_ports=" + ",".join("{}/{}".format(rule.get("protocol", "tcp"), rule["port"]) for rule in dangerous_ports),
             ))
 
         firewall_active, firewall_known, firewall_evidence = detect_firewall()
@@ -338,11 +532,11 @@
             incomplete_checks.append("firewall_active")
         findings.append(finding(
             "firewall_active",
-            "Межсетевой экран активен" if firewall_active else "Межсетевой экран не активен или не определен",
+            "Обнаружена фильтрация входящего трафика INPUT" if firewall_active else "Фильтрация входящего трафика INPUT не подтверждена",
             "Сеть",
             "medium",
             "passed" if firewall_active else "failed" if firewall_known else "manual",
-            "HCP автоматически читает состояние UFW, firewalld, nftables и iptables. Команды не изменяют настройки хоста; внешний Nmap проверяет только доступные по сети порты.",
+            "Проверяются правила локального INPUT, включая порядок правил и переходы по цепочкам. Работа UFW/firewalld сама по себе не доказывает фильтрацию. Сложные неподдержанные условия требуют ручной оценки. Проверка не подтверждает внешнюю доступность портов, FORWARD, контейнерные сети или полноту защиты всех адресов и протоколов.",
             "Настройте применяемый в вашей ОС firewall по утверждённой политике и сверяйте доступные порты внешним Nmap.",
             firewall_evidence,
         ))

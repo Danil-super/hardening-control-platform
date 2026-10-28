@@ -11,6 +11,7 @@ import { connectionPrivateKey, hostCredentialSudoMode, HostCredentialError, isHo
 import { readInventoryCloseoutHost } from "@/lib/inventory-closeout";
 import { summarizePreflight } from "@/lib/preflight-result";
 import { credentialTransportAllowed } from "@/lib/ssh-bootstrap";
+import { ansibleLiteralExtraVars } from "@/lib/ansible-literal-vars";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -65,7 +66,7 @@ async function runAnsible(args: string[], inventoryPath: string, stage: string, 
       // Ansible reads this protected file only for the running child process.
       // The sudo password never appears in argv, an environment variable,
       // reports, inventory or HCP persistent state.
-      writeFileSync(secretFile, JSON.stringify({ ansible_become_password: becomePassword }), { mode: 0o600 });
+      writeFileSync(secretFile, ansibleLiteralExtraVars({ ansible_become_password: becomePassword }), { mode: 0o600 });
       secretArgs.push("--extra-vars", `@${secretFile}`);
     }
     const result = await execFileAsync("ansible", ["-i", inventoryPath, ...secretArgs, "--tree", resultDir, ...args], {

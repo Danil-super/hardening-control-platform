@@ -20,7 +20,8 @@ function load(relativePath, replacements = {}) {
   }).outputText;
   const module = { exports: {} };
   const next = { NextResponse: { json: (body, init = {}) => Response.json(body, init) } };
-  const resolve = (name) => name in replacements ? replacements[name] : name === "next/server" ? next : nativeRequire(name);
+  const resolve = (name) => name in replacements ? replacements[name] : name === "next/server" ? next
+    : name === "@/lib/ansible-literal-vars" ? load("lib/ansible-literal-vars.ts") : nativeRequire(name);
   vm.runInThisContext(`(function(require, module, exports) { ${code}\n})`, { filename })(resolve, module, module.exports);
   return module.exports;
 }
@@ -187,9 +188,9 @@ test("custom variable values remain one JSON value rather than injected Ansible 
   const playbook = { id: "custom-test", kind: "audit", source: "custom", file: "playbook.yml", requiresLimit: false, timeout: 10, variables: [{ name: "package_name", required: true }] };
   try {
     await registry.runRegisteredPlaybook({ playbook, limit: "target", variables: { package_name: "openssl ansible_connection=local" } });
-    assert.deepEqual(JSON.parse(executedArgs[executedArgs.indexOf("-e") + 1]), { package_name: "openssl ansible_connection=local" });
+    assert.deepEqual(JSON.parse(executedArgs[executedArgs.indexOf("-e") + 1]), { package_name: { __ansible_unsafe: "openssl ansible_connection=local" } });
     await registry.runRegisteredPlaybook({playbook:{...playbook,variables:[{name:"package_name",required:true,defaultValue:"bash"}]},limit:"target",variables:{}});
-    assert.deepEqual(JSON.parse(executedArgs[executedArgs.indexOf("-e") + 1]),{package_name:"bash"});
+    assert.deepEqual(JSON.parse(executedArgs[executedArgs.indexOf("-e") + 1]),{package_name:{__ansible_unsafe:"bash"}});
     await assert.rejects(registry.runRegisteredPlaybook({playbook,limit:"missing",variables:{package_name:"bash"}}),/подключённых хостов/);
     await assert.rejects(registry.runRegisteredPlaybook({playbook:{...playbook,variables:[{name:"count",type:"number",required:true}]},limit:"target",variables:{count:"invalid"}}),/должно быть числом/);
     await assert.rejects(registry.runRegisteredPlaybook({ playbook: { ...playbook, source: "builtin" }, variables: {} }), /\/api\/ansible\/run/);

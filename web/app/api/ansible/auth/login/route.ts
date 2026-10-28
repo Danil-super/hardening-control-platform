@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { authCookieName, createSessionToken, isAuthConfigured, isValidPassword } from "@/lib/auth";
+import { authCookieName, createSessionToken, isAuthConfigured, isValidPassword, sessionMaxAgeSeconds } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -33,7 +33,7 @@ export async function POST(request: Request) {
     sameSite: "lax",
     secure: new URL(request.url).protocol === "https:",
     path: "/",
-    maxAge: 60 * 60 * 8,
+    maxAge: sessionMaxAgeSeconds,
   });
 
   return response;

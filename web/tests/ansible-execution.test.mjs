@@ -12,7 +12,7 @@ writeFileSync(path.join(directory,'ansible-playbook'),`#!/usr/bin/env python3
 import sys,json,os,stat
 args=sys.argv[1:]
 file=args[args.index('--extra-vars')+1][1:]
-secret=json.load(open(file))['ansible_become_password']
+secret=json.load(open(file))['ansible_become_password']['__ansible_unsafe']
 print(json.dumps({'file':file,'fileMode':stat.S_IMODE(os.stat(file).st_mode),'directoryMode':stat.S_IMODE(os.stat(os.path.dirname(file)).st_mode),'secret':secret}))
 if os.environ.get('HCP_EXECUTION_TEST_FAIL')=='true':
  print(secret,file=sys.stderr)
