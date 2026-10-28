@@ -40,6 +40,8 @@ export function RemediationRecovery({ transaction, onRecovered }: {
         <option value="restored_manually">Исходное состояние полностью восстановлено вручную</option>
       </select></label>
       {resolution === "prepare_rollback" ? <label className="flex items-start gap-2 text-sm text-slate-200"><input type="checkbox" checked={backupVerified} onChange={event => setBackupVerified(event.target.checked)} disabled={busy} className="mt-1" />На целевом хосте проверены исходная копия этой операции, metadata.json, контрольная сумма и идентичность хоста. Хост останется заблокирован до успешного отката.</label> : null}
+      {resolution === "restored_manually" ? <p className="text-sm text-amber-100">Завершите восстановление на целевом хосте через независимую консоль: после проверки остановки прежних процессов выполните из проверенной версии проекта <code>hcp-firewall.py rollback --transaction {transaction.id} --recovery-verified</code> с правами root. Успешное завершение helper снимает блокировку HCP на хосте; эта форма регистрирует результат в журнале контроллера.</p> : null}
+      {resolution === "not_applied" ? <p className="text-sm text-amber-100">Проверьте через независимую консоль, что на хосте отсутствует незавершённая блокировка этой операции в /var/lib/hcp-backups/.operation-state.json. Если резервная копия и блокировка уже созданы, выберите подготовку отката проверенной копии. Удалять маркер вручную для обхода восстановления нельзя.</p> : null}
       {message ? <p role="status" className="text-sm text-amber-100">{message}</p> : null}
       <Button type="submit" variant="secondary" disabled={busy || !ready}>{busy ? "Сохраняем…" : "Записать результат сверки"}</Button>
     </form>

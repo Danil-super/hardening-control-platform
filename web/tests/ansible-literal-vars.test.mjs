@@ -47,6 +47,13 @@ test("real Ansible keeps metadata, policy paths, custom values and passwords lit
   vars:
 ${vars}
   tasks:
+    - name: Internal recovery flags remain strict booleans
+      ansible.builtin.assert:
+        that:
+          - rollback_recovery_verified is boolean
+          - rollback_recovery_verified == true
+          - recovery_denied is boolean
+          - recovery_denied == false
     - name: Observe values after actual Ansible templating
       ansible.builtin.command:
         argv:
@@ -65,6 +72,7 @@ ${vars}
     writeFileSync(varsFile, ansibleLiteralExtraVars({
       hcp_oval_config: serializedConfig, hcp_openscap_datastream: datastream,
       user_value: custom, ansible_become_password: password,
+      rollback_recovery_verified: true, recovery_denied: false,
     }), { mode: 0o600 });
     execFileSync("ansible-playbook", ["-i", "localhost,", "-c", "local", playbook, "--extra-vars", `@${varsFile}`], {
       encoding: "utf8", timeout: 30_000,

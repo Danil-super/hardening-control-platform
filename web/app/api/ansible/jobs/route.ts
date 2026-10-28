@@ -29,7 +29,9 @@ export async function POST(request: Request) {
   }
   const profileId = normalizeProfileId(body.profileId);
   const requestKey = createHash('sha256').update(JSON.stringify({ action: body.action, profileId, hostAlias, extraVars: body.extraVars ?? {} })).digest('hex');
-  const queued = createAuditJob({ action: body.action, hostAlias, profileId, requestKey });
+  let queued;
+  try { queued = createAuditJob({ action: body.action, hostAlias, profileId, requestKey }); }
+  catch (error) { return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : 'Актив занят другой операцией.' }, { status: 409 }); }
   if (!queued.created) return NextResponse.json({ ok: queued.matches, job: queued.job,
     message: queued.matches ? 'Эта проверка уже выполняется.' : 'На этом хосте уже выполняется другая проверка.' }, { status: queued.matches ? 202 : 409 });
   // Credentials live only in this callback's memory. after() is supported by

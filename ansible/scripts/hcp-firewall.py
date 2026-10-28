@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Validated firewall operations used by HCP. Never enables a firewall implicitly."""
 import argparse
+import contextlib
 import errno
+import fcntl
 import hashlib
 import ipaddress
 import json
@@ -13,11 +15,15 @@ import stat
 import subprocess
 import tarfile
 import tempfile
+import uuid
 
 CONFIG_ROOT = Path("/etc")
 BACKUP_ROOT = Path("/var/lib/hcp-backups")
 SECURITY_LABEL = "security.PDPL"
 LABEL_HEADER = "HCP.security.PDPL"
+STATE_NAME = ".operation-state.json"
+ROLLBACK_PHASES = {"preparing", "prepared", "move_old_intent", "old_saved", "install_intent", "installed",
+                   "reload_intent", "reload_unknown", "reload_failed", "reload_completed", "completed"}
 
 class FirewallError(RuntimeError):
     def __init__(self, message, outcome_unknown=False):
@@ -217,6 +223,7 @@ def close_or_block(args):
             # an empty ruleset; insert 1 calculates an IPv6 counterpart position.
             commands.append(["ufw", "prepend", *ufw_rule])
             for command in commands:
+                mark_apply_intent(args, selected)
                 completed = run(*command)
                 mutation_outputs.append({"argv": command, "stdout": completed.stdout[-4000:], "stderr": completed.stderr[-4000:]})
         if not args.check:
@@ -236,6 +243,7 @@ def close_or_block(args):
                     if run(*command, '--query-rich-rule={}'.format(rule), acceptable=(0, 1)).returncode == 1:
                         changed = True
                         if not args.check:
+                            mark_apply_intent(args, selected)
                             run(*command, '--add-rich-rule={}'.format(rule))
                             run(*command, '--query-rich-rule={}'.format(rule))
     return {"ok": True, "backend": selected, "changed": changed, "checkMode": args.check, "commands": mutation_outputs}
@@ -253,6 +261,196 @@ def transaction_dir(args):
 
 def machine_id():
     return (CONFIG_ROOT / "machine-id").read_text().strip()
+
+
+def ensure_private_directory(path):
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    value = path.lstat()
+    if not stat.S_ISDIR(value.st_mode) or value.st_uid != os.geteuid() or stat.S_IMODE(value.st_mode) & 0o077:
+        raise FirewallError("HCP state directory must be private and owned by the executing user: {}".format(path))
+
+
+def sync_directory(path):
+    descriptor = os.open(str(path), os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def write_control_json(path, value):
+    """Durable replacement: neither a truncated journal nor an unsynced intent."""
+    descriptor, temporary = tempfile.mkstemp(prefix=".hcp-state-", dir=str(path.parent))
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, str(path))
+        sync_directory(path.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def read_control_json(path):
+    descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        value = os.fstat(stream.fileno())
+        if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or value.st_uid != os.geteuid() or stat.S_IMODE(value.st_mode) & 0o077:
+            raise FirewallError("Unsafe HCP state file: {}".format(path))
+        raw = stream.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise FirewallError("HCP state file exceeds the supported size.")
+    result = json.loads(raw.decode("utf-8"))
+    if not isinstance(result, dict):
+        raise FirewallError("Invalid HCP state document.")
+    return result
+
+
+def optional_control_json(path):
+    try:
+        return read_control_json(path)
+    except FileNotFoundError:
+        return None
+
+
+@contextlib.contextmanager
+def target_lock():
+    # A target-wide lock is shared by all aliases and controller processes.
+    # Its persistent companion is retained when a process dies mid-operation.
+    ensure_private_directory(BACKUP_ROOT)
+    descriptor = os.open(str(BACKUP_ROOT / ".operation.lock"), os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        value = os.fstat(descriptor)
+        if not stat.S_ISREG(value.st_mode) or value.st_nlink != 1 or value.st_uid != os.geteuid() or stat.S_IMODE(value.st_mode) & 0o077:
+            raise FirewallError("Unsafe target operation lock.")
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as error:
+            if error.errno in (errno.EAGAIN, errno.EACCES):
+                raise FirewallError("Another HCP firewall operation is still running on this target.") from error
+            raise
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def active_operation():
+    value = optional_control_json(BACKUP_ROOT / STATE_NAME)
+    if value is not None and (value.get("schemaVersion") != 1 or value.get("machineId") != machine_id()
+                              or not isinstance(value.get("transactionId"), str)
+                              or not re.fullmatch(r"txn-[A-Za-z0-9-]{8,140}", value.get("transactionId", ""))
+                              or not isinstance(value.get("phase"), str)
+                              or value.get("phase") not in {"backed_up", "apply_intent", "apply_failed", "apply_unknown", "rollback"}):
+        raise FirewallError("Unrecognized target operation state; independent recovery is required.", outcome_unknown=True)
+    return value
+
+
+def record_active(args, phase, selected=None, archive_sha=None):
+    ensure_private_directory(BACKUP_ROOT)
+    write_control_json(BACKUP_ROOT / STATE_NAME, {"schemaVersion": 1, "machineId": machine_id(),
+        "transactionId": args.transaction, "phase": phase, "backend": selected, "archiveSha256": archive_sha})
+
+
+def release_active(args):
+    value = active_operation()
+    if value and value["transactionId"] == args.transaction:
+        (BACKUP_ROOT / STATE_NAME).unlink()
+        sync_directory(BACKUP_ROOT)
+
+
+def mark_apply_intent(args, selected):
+    # Public production entry points call execute_operation. Keeping the core
+    # operation separately callable permits filesystem-free command unit tests.
+    if not getattr(args, "_target_managed", False) or getattr(args, "_mutation_started", False):
+        return
+    directory, metadata, archive_path = verified_backup(args)
+    if metadata["backend"] != selected:
+        raise FirewallError("The active firewall changed after backup.")
+    if not metadata.get("configurationSha256") or tree_digest(CONFIG_ROOT / selected) != metadata["configurationSha256"]:
+        raise FirewallError("Firewall configuration no longer matches the prepared backup; create a new transaction.")
+    record_active(args, "apply_intent", selected, metadata["sha256"])
+    args._mutation_started = True
+
+
+def check_supported_attributes(path):
+    try:
+        attributes = os.listxattr(str(path), follow_symlinks=False)
+    except OSError as error:
+        if error.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            return
+        raise
+    unsupported = [name for name in attributes if name != SECURITY_LABEL]
+    if unsupported:
+        raise FirewallError("Unsupported ACL or extended attribute on {}: {}. No firewall change was started.".format(path, ", ".join(sorted(unsupported))))
+
+
+def manifest_digest(entries):
+    return hashlib.sha256(json.dumps(sorted(entries, key=lambda item: item["path"]), sort_keys=True,
+                                     separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def tree_digest(root, sync=False):
+    """Content, numeric ownership, mode and supported labels; no links/devices."""
+    entries = []
+    root_device = root.lstat().st_dev
+    def visit(path):
+        details = path.lstat()
+        regular = stat.S_ISREG(details.st_mode)
+        directory = stat.S_ISDIR(details.st_mode)
+        if not (regular or directory) or (regular and details.st_nlink != 1) or details.st_dev != root_device:
+            raise FirewallError("Unsupported link, mounted tree or special object in firewall configuration: {}".format(path))
+        check_supported_attributes(path)
+        label = security_label(path)
+        entry = {"path": str(path.relative_to(root)) if path != root else ".", "type": "file" if regular else "directory",
+                 "uid": details.st_uid, "gid": details.st_gid, "mode": stat.S_IMODE(details.st_mode),
+                 "label": label.hex() if label is not None else None}
+        if regular:
+            descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+            with os.fdopen(descriptor, "rb") as stream:
+                initial = os.fstat(stream.fileno())
+                if not stat.S_ISREG(initial.st_mode) or (initial.st_ino, initial.st_dev, initial.st_ctime_ns) != (details.st_ino, details.st_dev, details.st_ctime_ns):
+                    raise FirewallError("Firewall file changed while checking its identity.")
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                final = os.fstat(stream.fileno())
+                if (initial.st_size, initial.st_mtime_ns, initial.st_ctime_ns) != (final.st_size, final.st_mtime_ns, final.st_ctime_ns):
+                    raise FirewallError("Firewall file changed while reading it.")
+                entry["sha256"] = digest.hexdigest()
+                if sync:
+                    os.fsync(stream.fileno())
+        else:
+            for child in sorted(path.iterdir(), key=lambda item: item.name):
+                visit(child)
+            final = path.lstat()
+            if (details.st_dev, details.st_ino, details.st_ctime_ns) != (final.st_dev, final.st_ino, final.st_ctime_ns):
+                raise FirewallError("Firewall directory changed while reading it.")
+            if sync:
+                sync_directory(path)
+        entries.append(entry)
+    visit(root)
+    return manifest_digest(entries)
+
+
+def archive_digest(archive, selected):
+    entries = []
+    for member in archive.getmembers():
+        label = member.pax_headers.get(LABEL_HEADER)
+        if label is None or len(label) > 4096 or not re.fullmatch(r"(?:[0-9a-fA-F]{2})*", label):
+            raise FirewallError("Invalid mandatory label metadata in firewall backup.")
+        parts = Path(member.name).parts[2:]
+        entry = {"path": str(Path(*parts)) if parts else ".", "type": "file" if member.isfile() else "directory",
+                 "uid": member.uid, "gid": member.gid, "mode": member.mode, "label": label.lower() if label else None}
+        if member.isfile():
+            digest = hashlib.sha256()
+            with archive.extractfile(member) as stream:
+                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            entry["sha256"] = digest.hexdigest()
+        entries.append(entry)
+    return manifest_digest(entries)
 
 
 def validate_members(archive, selected):
@@ -351,8 +549,11 @@ def backup(args):
     selected = backend()
     if selected == "firewalld":
         persistent_firewalld()
+    if (CONFIG_ROOT / selected).lstat().st_dev != CONFIG_ROOT.lstat().st_dev:
+        raise FirewallError("A mounted firewall configuration cannot be safely replaced for rollback.")
+    original_digest = tree_digest(CONFIG_ROOT / selected)
     directory = transaction_dir(args)
-    directory.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    ensure_private_directory(directory.parent)
     directory.mkdir(mode=0o700, parents=True, exist_ok=False)
     archive_path = directory / "firewall-state.tar.gz"
     with tarfile.open(str(archive_path), "w:gz", format=tarfile.PAX_FORMAT) as archive:
@@ -360,60 +561,306 @@ def backup(args):
     os.chmod(str(archive_path), 0o600)
     with tarfile.open(str(archive_path)) as archive:
         validate_members(archive, selected)
+        if archive_digest(archive, selected) != original_digest or tree_digest(CONFIG_ROOT / selected) != original_digest:
+            raise FirewallError("Firewall configuration changed during backup; no mutation is allowed.")
     metadata = {"backend": selected, "machineId": machine_id(), "transactionId": args.transaction, "securityLabels": "pax-v1",
-                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest()}
-    (directory / "metadata.json").write_text(json.dumps(metadata))
-    os.chmod(str(directory / "metadata.json"), 0o600)
+                "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(), "configurationSha256": original_digest,
+                "filesystemMetadata": "posix-pdpl-v1"}
+    descriptor = os.open(str(archive_path), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    write_control_json(directory / "metadata.json", metadata)
+    sync_directory(directory.parent)
     return {"ok": True, "changed": True, "backupRef": str(archive_path)}
 
 
-def rollback(args):
+def verified_backup(args):
     directory = transaction_dir(args)
-    metadata = json.loads((directory / "metadata.json").read_text())
+    details = directory.lstat()
+    if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) & 0o077:
+        raise FirewallError("Unsafe backup directory.")
+    metadata = read_control_json(directory / "metadata.json")
     selected = metadata["backend"]
     archive_path = directory / "firewall-state.tar.gz"
     if selected not in ("ufw", "firewalld") or metadata["machineId"] != machine_id() or metadata["transactionId"] != args.transaction:
         raise FirewallError("Backup identity does not match this host and transaction.")
-    if hashlib.sha256(archive_path.read_bytes()).hexdigest() != metadata["sha256"]:
+    if metadata.get("securityLabels") not in (None, "pax-v1") or metadata.get("filesystemMetadata") not in (None, "posix-pdpl-v1"):
+        raise FirewallError("Unsupported backup metadata version.")
+    descriptor = os.open(str(archive_path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    with os.fdopen(descriptor, "rb") as stream:
+        details = os.fstat(stream.fileno())
+        if not stat.S_ISREG(details.st_mode) or details.st_nlink != 1 or details.st_uid != os.geteuid():
+            raise FirewallError("Unsafe firewall backup archive.")
+        digest = hashlib.sha256()
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != metadata["sha256"]:
         raise FirewallError("Firewall backup checksum mismatch.")
-    if backend() != selected:
-        raise FirewallError("The active firewall backend changed since backup.")
-    # Extract into staging first. Replacement also removes files created since
-    # backup (plain tar extraction over / would leave those new rules behind).
-    staging = Path(tempfile.mkdtemp(prefix=".hcp-rollback-", dir=str(CONFIG_ROOT)))
-    keep_staging = False
-    try:
-        # mkdir/tar extraction do not preserve PARSEC attributes. In particular,
-        # moving high-integrity /etc/ufw into an unlabelled directory is denied.
-        restore_security_label(staging, security_label(CONFIG_ROOT))
-        (staging / "etc").mkdir()
-        restore_security_label(staging / "etc", security_label(CONFIG_ROOT))
-        with tarfile.open(str(archive_path)) as archive:
-            validate_members(archive, selected)
-            archive.extractall(str(staging), **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
-            restore_archive_metadata(archive, staging)
-            restore_archive_labels(archive, staging, metadata)
-        destination = CONFIG_ROOT / selected
-        if destination.is_symlink():
-            raise FirewallError("Firewall configuration must not be a symlink.")
-        previous = staging / "previous"
-        destination.rename(str(previous))
-        try:
-            (staging / "etc" / selected).rename(str(destination))
-        except OSError:
+    return directory, metadata, archive_path
+
+
+def rollback_checkpoint(directory, state, phase):
+    state["phase"] = phase
+    state["generation"] += 1
+    write_control_json(directory / "rollback-state.json", state)
+
+
+def require_tree(path, expected):
+    if not path.exists() or path.is_symlink() or tree_digest(path) != expected:
+        raise FirewallError("Rollback tree does not match its saved manifest: {}. Independent recovery is required.".format(path))
+
+
+def rollback_state(directory, metadata):
+    state = optional_control_json(directory / "rollback-state.json")
+    if state is None:
+        return None
+    required = {"schemaVersion": 1, "machineId": metadata["machineId"], "transactionId": metadata["transactionId"],
+                "backend": metadata["backend"], "archiveSha256": metadata["sha256"]}
+    if any(state.get(key) != value for key, value in required.items()) or not isinstance(state.get("phase"), str) or state.get("phase") not in ROLLBACK_PHASES:
+        raise FirewallError("Rollback journal identity or phase mismatch.", outcome_unknown=True)
+    if not isinstance(state.get("attemptId"), str) or not re.fullmatch(r"[a-f0-9]{32}", state.get("attemptId", "")) or state.get("stagingName") != ".hcp-rollback-" + state["attemptId"]:
+        raise FirewallError("Unsafe staging identity in rollback journal.", outcome_unknown=True)
+    if type(state.get("generation")) is not int or state["generation"] < 1 or not isinstance(state.get("previousSha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", state.get("previousSha256", "")):
+        raise FirewallError("Invalid rollback journal manifest.", outcome_unknown=True)
+    if state["phase"] != "preparing" and (not isinstance(state.get("preparedSha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", state.get("preparedSha256", ""))):
+        raise FirewallError("Missing prepared rollback manifest.", outcome_unknown=True)
+    if state["phase"] != "preparing" and any(not isinstance(state.get(key), int) or state[key] < 0 for key in ("stagingDevice", "stagingInode")):
+        raise FirewallError("Missing rollback staging filesystem identity.", outcome_unknown=True)
+    if "cleanupStarted" in state and type(state["cleanupStarted"]) is not bool:
+        raise FirewallError("Invalid rollback cleanup checkpoint.", outcome_unknown=True)
+    return state
+
+
+def prepare_rollback_tree(directory, state, metadata, archive_path):
+    staging = CONFIG_ROOT / state["stagingName"]
+    destination = CONFIG_ROOT / metadata["backend"]
+    require_tree(destination, state["previousSha256"])
+    if staging.exists() or staging.is_symlink():
+        details = staging.lstat()
+        if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o700:
+            raise FirewallError("Unsafe rollback staging directory.")
+        # No live rename is permitted before a durable prepared checkpoint.
+        # Only the private, identity-bound unfinished extraction may be rebuilt.
+        if (staging / "previous").exists() or (staging / "previous").is_symlink():
+            raise FirewallError("Unexpected previous tree during rollback preparation.")
+        owner = optional_control_json(staging / "owner.json")
+        if owner != {"attemptId": state["attemptId"], "transactionId": state["transactionId"]}:
+            if owner is not None or list(staging.iterdir()):
+                raise FirewallError("Unrecognized rollback staging contents.")
+        else:
+            if any(item.name not in ("owner.json", "etc") for item in staging.iterdir()):
+                raise FirewallError("Unexpected rollback staging contents.")
+            candidate = staging / "etc"
+            if candidate.is_symlink():
+                raise FirewallError("Unsafe extraction directory.")
+            if candidate.exists():
+                shutil.rmtree(str(candidate))
+    else:
+        staging.mkdir(mode=0o700)
+        sync_directory(CONFIG_ROOT)
+    restore_security_label(staging, security_label(CONFIG_ROOT))
+    write_control_json(staging / "owner.json", {"attemptId": state["attemptId"], "transactionId": state["transactionId"]})
+    (staging / "etc").mkdir()
+    restore_security_label(staging / "etc", security_label(CONFIG_ROOT))
+    with tarfile.open(str(archive_path)) as archive:
+        validate_members(archive, metadata["backend"])
+        archive.extractall(str(staging), **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+        restore_archive_metadata(archive, staging)
+        restore_archive_labels(archive, staging, metadata)
+    prepared = tree_digest(staging / "etc" / metadata["backend"], sync=True)
+    if metadata.get("configurationSha256") and prepared != metadata["configurationSha256"]:
+        raise FirewallError("Restored tree does not match the backup filesystem manifest.")
+    require_tree(destination, state["previousSha256"])
+    sync_directory(staging / "etc")
+    sync_directory(staging)
+    state["preparedSha256"] = prepared
+    state["stagingDevice"], state["stagingInode"] = staging.stat().st_dev, staging.stat().st_ino
+    rollback_checkpoint(directory, state, "prepared")
+
+
+def rollback(args):
+    directory, metadata, archive_path = verified_backup(args)
+    selected = metadata["backend"]
+    state = rollback_state(directory, metadata)
+    replayed = state is not None and state["phase"] == "completed"
+    pending = active_operation()
+    if pending and pending["transactionId"] != args.transaction:
+        raise FirewallError("A different transaction owns the target; finish its recovery first.", outcome_unknown=True)
+    if pending and pending["phase"] in ("apply_intent", "apply_unknown") and not getattr(args, "recovery_verified", False):
+        raise FirewallError("The earlier apply may still be running; independently verify its completion before rollback.", outcome_unknown=True)
+    if state is None:
+        if backend() != selected:
+            raise FirewallError("The active firewall backend changed since backup.")
+        previous_hash = tree_digest(CONFIG_ROOT / selected)
+        attempt_id = uuid.uuid4().hex
+        state = {"schemaVersion": 1, "machineId": metadata["machineId"], "transactionId": args.transaction,
+                 "backend": selected, "archiveSha256": metadata["sha256"], "attemptId": attempt_id,
+                 "stagingName": ".hcp-rollback-" + attempt_id, "previousSha256": previous_hash, "generation": 0}
+        rollback_checkpoint(directory, state, "preparing")
+    record_active(args, "rollback", selected, metadata["sha256"])
+    destination = CONFIG_ROOT / selected
+    staging = CONFIG_ROOT / state["stagingName"]
+    prepared = staging / "etc" / selected
+    previous = staging / "previous"
+    if state["phase"] == "preparing":
+        prepare_rollback_tree(directory, state, metadata, archive_path)
+    if state["phase"] not in ("completed",):
+        details = staging.lstat()
+        if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o700:
+            raise FirewallError("Unsafe rollback staging directory.", outcome_unknown=True)
+        if (details.st_dev, details.st_ino) != (state["stagingDevice"], state["stagingInode"]):
+            raise FirewallError("Rollback staging filesystem identity changed.", outcome_unknown=True)
+        if read_control_json(staging / "owner.json") != {"attemptId": state["attemptId"], "transactionId": args.transaction}:
+            raise FirewallError("Rollback staging owner does not match this attempt.", outcome_unknown=True)
+    if state["phase"] == "prepared":
+        require_tree(destination, state["previousSha256"])
+        require_tree(prepared, state["preparedSha256"])
+        if previous.exists() or previous.is_symlink():
+            raise FirewallError("Unexpected previous tree before replacement.")
+        rollback_checkpoint(directory, state, "move_old_intent")
+    if state["phase"] == "move_old_intent":
+        require_tree(prepared, state["preparedSha256"])
+        if destination.exists() or destination.is_symlink():
+            require_tree(destination, state["previousSha256"])
+            if previous.exists() or previous.is_symlink():
+                raise FirewallError("Ambiguous old and current rollback trees.")
+            destination.rename(str(previous))
+            sync_directory(CONFIG_ROOT)
+            sync_directory(staging)
+        require_tree(previous, state["previousSha256"])
+        rollback_checkpoint(directory, state, "old_saved")
+    if state["phase"] == "old_saved":
+        require_tree(previous, state["previousSha256"])
+        require_tree(prepared, state["preparedSha256"])
+        if destination.exists() or destination.is_symlink():
+            raise FirewallError("Unexpected live tree before installation.")
+        rollback_checkpoint(directory, state, "install_intent")
+    if state["phase"] == "install_intent":
+        require_tree(previous, state["previousSha256"])
+        if prepared.exists() or prepared.is_symlink():
+            require_tree(prepared, state["preparedSha256"])
+            if destination.exists() or destination.is_symlink():
+                raise FirewallError("Ambiguous prepared and live rollback trees.")
             try:
-                previous.rename(str(destination))
-            except OSError as recovery_error:
-                keep_staging = True
-                raise FirewallError("Configuration replacement and recovery failed; previous configuration retained at {}: {}".format(previous, recovery_error)) from recovery_error
+                prepared.rename(str(destination))
+            except OSError as error:
+                raise FirewallError("Configuration installation failed; previous configuration retained at {}: {}".format(previous, error)) from error
+            sync_directory(staging / "etc")
+            sync_directory(CONFIG_ROOT)
+        require_tree(destination, state["preparedSha256"])
+        rollback_checkpoint(directory, state, "installed")
+    if state["phase"] in ("reload_intent", "reload_unknown"):
+        if not getattr(args, "recovery_verified", False):
+            raise FirewallError("Previous reload outcome is unknown; independent process and firewall verification is required.", outcome_unknown=True)
+        # The explicit recovery attestation belongs to this invocation. Every
+        # later interrupted attempt requires a new controller attestation.
+        rollback_checkpoint(directory, state, "installed")
+    if state["phase"] in ("installed", "reload_failed"):
+        require_tree(destination, state["preparedSha256"])
+        require_tree(previous, state["previousSha256"])
+        if backend() != selected:
+            raise FirewallError("The active firewall backend changed before reload.")
+        rollback_checkpoint(directory, state, "reload_intent")
+        try:
+            run("ufw", "reload") if selected == "ufw" else run("firewall-cmd", "--reload")
+            if backend() != selected:
+                raise FirewallError("Firewall is not active after rollback.")
+            require_tree(destination, state["preparedSha256"])
+        except FirewallError as error:
+            rollback_checkpoint(directory, state, "reload_unknown" if error.outcome_unknown else "reload_failed")
             raise
-    finally:
-        if not keep_staging:
-            shutil.rmtree(str(staging))
-    run("ufw", "reload") if selected == "ufw" else run("firewall-cmd", "--reload")
+        rollback_checkpoint(directory, state, "reload_completed")
+    if state["phase"] == "reload_completed":
+        require_tree(destination, state["preparedSha256"])
+        state["result"] = {"ok": True, "changed": True, "backend": selected, "rollbackAttemptId": state["attemptId"]}
+        rollback_checkpoint(directory, state, "completed")
+    if state["phase"] != "completed" or state.get("result") != {"ok": True, "changed": True, "backend": selected, "rollbackAttemptId": state["attemptId"]}:
+        raise FirewallError("Rollback has no verified completion record.", outcome_unknown=True)
+    require_tree(destination, state["preparedSha256"])
     if backend() != selected:
-        raise FirewallError("Firewall is not active after rollback.")
-    return {"ok": True, "changed": True, "backend": selected}
+        raise FirewallError("Firewall state changed after completed rollback.")
+    # Cleanup follows durable completion. A lost response is replayed without
+    # another reload, and a cleanup interruption cannot erase previous first.
+    if staging.exists() or staging.is_symlink():
+        details = staging.lstat()
+        if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o700 or (details.st_dev, details.st_ino) != (state["stagingDevice"], state["stagingInode"]):
+            raise FirewallError("Unsafe completed rollback staging.")
+        if not state.get("cleanupStarted"):
+            if read_control_json(staging / "owner.json") != {"attemptId": state["attemptId"], "transactionId": args.transaction}:
+                raise FirewallError("Unsafe completed rollback staging owner.")
+            state["cleanupStarted"] = True
+            rollback_checkpoint(directory, state, "completed")
+        shutil.rmtree(str(staging))
+        sync_directory(CONFIG_ROOT)
+    release_active(args)
+    result = dict(state["result"])
+    result.update({"changed": not replayed, "replayed": replayed})
+    return result
+
+
+def outcome_is_unknown(args, error):
+    if getattr(error, "outcome_unknown", False):
+        return True
+    # A journal/fsync error after submitting reload is not a known command
+    # failure. Preserve uncertainty even when the local exception is OSError.
+    try:
+        active = active_operation()
+        if not active or active.get("transactionId") != getattr(args, "transaction", None):
+            return False
+        if active["phase"] == "backed_up" and getattr(args, "operation", None) == "backup":
+            # The durable marker can already exist when its directory fsync or
+            # the final response fails. The controller has no backupRef yet;
+            # do not let it cancel this as a known not-started operation and
+            # orphan the target lease. Reconciliation can verify that backup.
+            return True
+        if active["phase"] in ("apply_intent", "apply_unknown"):
+            return True
+        if active["phase"] == "rollback":
+            state = optional_control_json(transaction_dir(args) / "rollback-state.json")
+            return state is None or state.get("phase") in ("reload_intent", "reload_unknown")
+    except (FirewallError, OSError, ValueError, KeyError):
+        return True
+    return False
+
+
+def execute_operation(args):
+    with target_lock():
+        if getattr(args, "check", False):
+            if args.operation not in ("closePort", "blockIp"):
+                raise FirewallError("Only firewall previews support check mode.")
+            return close_or_block(args)
+        transaction_dir(args)
+        pending = active_operation()
+        if pending and pending["transactionId"] != args.transaction:
+            raise FirewallError("A different HCP transaction owns this target; finish its rollback or recovery first.")
+        if args.operation == "rollback":
+            return rollback(args)
+        if pending and pending["phase"] != "backed_up":
+            raise FirewallError("An earlier target operation requires rollback or independent recovery.", outcome_unknown=pending["phase"] in ("apply_intent", "apply_unknown", "rollback"))
+        if args.operation == "backup":
+            if pending:
+                directory, metadata, archive_path = verified_backup(args)
+                require_tree(CONFIG_ROOT / metadata["backend"], metadata.get("configurationSha256"))
+                return {"ok": True, "changed": False, "backupRef": str(archive_path)}
+            result = backup(args)
+            directory, metadata, archive_path = verified_backup(args)
+            record_active(args, "backed_up", metadata["backend"], metadata["sha256"])
+            return result
+        # A real mutation must be associated with its verified backup; previews
+        # remain usable before the controller creates a transaction.
+        verified_backup(args)
+        args._target_managed = True
+        args._mutation_started = False
+        try:
+            result = close_or_block(args)
+        except (FirewallError, OSError, KeyError, ValueError) as error:
+            if args._mutation_started:
+                record_active(args, "apply_unknown" if getattr(error, "outcome_unknown", False) else "apply_failed")
+            raise
+        release_active(args)
+        return result
 
 
 def main():
@@ -427,12 +874,14 @@ def main():
     parser.add_argument("--ssh-client")
     parser.add_argument("--protected-ip", action="append", default=[])
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--recovery-verified", action="store_true",
+                        help="Independent operator verification that earlier remote processes stopped; permits retry of an unknown reload")
     args = parser.parse_args()
     try:
-        result = backup(args) if args.operation == "backup" else rollback(args) if args.operation == "rollback" else close_or_block(args)
+        result = execute_operation(args)
         print(json.dumps(result))
     except (FirewallError, OSError, KeyError, ValueError, tarfile.TarError) as error:
-        print(json.dumps({"ok": False, "error": str(error), "outcomeUnknown": bool(getattr(error, "outcome_unknown", False))}))
+        print(json.dumps({"ok": False, "error": str(error), "outcomeUnknown": outcome_is_unknown(args, error)}))
         raise SystemExit(1)
 
 

@@ -14,7 +14,9 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -34,6 +36,43 @@ def snapshot(directory):
         "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "mode": oct(path.stat().st_mode & 0o7777),
     } for path in sorted(directory.rglob("*")) if path.is_file()}
+
+
+def interrupt_first_rollback_rename(transaction, backend, artifacts):
+    """Kill only the owned helper on a disposable runner, with real config/FS."""
+    if os.geteuid() != 0 or os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted":
+        raise RuntimeError("Rollback interruption requires an owned disposable GitHub runner.")
+    if backend not in ("ufw", "firewalld") or not re.fullmatch(r"txn-ci-firewall(?:d)?-[a-f0-9]{32}", transaction):
+        raise RuntimeError("Unexpected disposable rollback identity.")
+    source = r'''
+import argparse, importlib.util, os, signal, sys
+from pathlib import Path
+spec = importlib.util.spec_from_file_location("owned_native_firewall", sys.argv[1])
+helper = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(helper)
+original_rename = Path.rename
+def interrupt(path, destination):
+    result = original_rename(path, destination)
+    if path == Path("/etc") / sys.argv[3]:
+        os.kill(os.getpid(), signal.SIGKILL)
+    return result
+Path.rename = interrupt
+args = argparse.Namespace(operation="rollback", transaction=sys.argv[2], check=False, recovery_verified=False)
+helper.execute_operation(args)
+'''
+    completed = subprocess.run([sys.executable, "-c", source, str(REPO / "ansible/scripts/hcp-firewall.py"),
+                                transaction, backend], capture_output=True, text=True, timeout=60)
+    write_json(artifacts / "rollback-interruption-process.json", {"returncode": completed.returncode,
+               "stdout": completed.stdout, "stderr": completed.stderr, "backend": backend})
+    if completed.returncode != -signal.SIGKILL or Path("/etc", backend).exists():
+        raise RuntimeError("The actual rollback did not reach the expected killed/missing-directory boundary.")
+    journal = json.loads((Path("/var/lib/hcp-backups") / transaction / "rollback-state.json").read_text())
+    if journal.get("phase") != "move_old_intent" or journal.get("backend") != backend or journal.get("transactionId") != transaction:
+        raise RuntimeError("Missing durable intent for the interrupted native rollback.")
+    staging = Path("/etc") / journal["stagingName"]
+    if not (staging / "previous").is_dir():
+        raise RuntimeError("Interrupted rollback lost its previous configuration.")
+    write_json(artifacts / "rollback-interrupted-journal.json", journal)
 
 
 def assert_disposable_runner(args):
@@ -203,7 +242,7 @@ except (OSError, urllib.error.URLError, TimeoutError) as error:
                          "--limit", "hcp-firewall-ci", "-e", "@" + str(variables)]
             if check:
                 arguments.append("--check")
-            command(arguments, label, timeout=70)
+            return command(arguments, label, timeout=70).stdout
 
         playbook("backup-remediation", "actual-backup-playbook")
         playbook("close-port", "actual-preview-playbook", check=True)
@@ -223,11 +262,18 @@ except (OSError, urllib.error.URLError, TimeoutError) as error:
         if snapshot(Path("/etc/ufw")) != applied:
             raise RuntimeError("A repeated apply changed the firewall configuration.")
         result["checks"].append({"name": "repeated-apply-idempotent", "ok": True})
+        interrupt_first_rollback_rename(state["transaction"], "ufw", artifacts)
+        result["checks"].append({"name": "killed-rollback-retains-previous-and-journal", "ok": True})
+        probe("runtime-deny-survives-interrupted-filesystem-rollback", False)
         playbook("rollback-remediation", "actual-rollback-playbook")
         probe("rollback-restores-container-to-vm-http", True)
         if snapshot(Path("/etc/ufw")) != baseline:
             raise RuntimeError("Rollback did not restore the baseline UFW configuration exactly.")
         result["checks"].append({"name": "rollback-config-restored", "ok": True})
+        repeated = playbook("rollback-remediation", "actual-completed-rollback-replay")
+        if not re.search(r"hcp-firewall-ci\s+:.*changed=0\b", repeated) or snapshot(Path("/etc/ufw")) != baseline:
+            raise RuntimeError("Completed rollback replay changed the restored configuration.")
+        result["checks"].append({"name": "completed-rollback-replay-unchanged", "ok": True})
         command(["ufw", "status", "numbered"], "restored-ufw-rules")
         result["ok"] = True
     except Exception as error:

@@ -1,0 +1,244 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-28",
+  "phase": "Native scanner and recovery acceptance before final asset-binding integration. Final PR gates also exercise publication of the full Astra reports.",
+  "pullRequest": "https://github.com/Danil-super/hardening-control-platform/pull/5",
+  "astra": [
+    {
+      "release": "1.8.1",
+      "status": "passed",
+      "acceleration": "kvm",
+      "hostIdentity": {
+        "id": "astra",
+        "astraVersion": "1.8.1",
+        "architecture": "x86_64",
+        "prettyName": "Astra Linux"
+      },
+      "sourceReportBytes": 75820814,
+      "sourceReportSha256": "2b1ce898d08bbf7c45a09d6a1ab30846e8219f65e751e201f1f29718ea60388c",
+      "definitionCount": 8284,
+      "evaluatedDefinitionCount": 8284,
+      "resultCounts": {
+        "false": 7824,
+        "true": 460
+      },
+      "uniqueCveCount": 415,
+      "partial": false,
+      "partialReasonCount": 0,
+      "partialReasons": [],
+      "control": [
+        {
+          "name": "Independent installed-package version control",
+          "detail": {
+            "versions": {
+              "libssl3:amd64": "3.2.0-2-astra4",
+              "openssl": "3.2.0-2-astra4"
+            },
+            "vulnerablePredicates": {
+              "libssl3:amd64": true,
+              "openssl": true
+            }
+          }
+        },
+        {
+          "name": "Full vendor OVAL and labelled native CVE result",
+          "detail": {
+            "definitionId": "oval:astra:def:4214940672944626263348052579907",
+            "cve": "CVE-2024-5535",
+            "result": "true",
+            "definitionCount": 8284,
+            "partial": false,
+            "partialReasons": [],
+            "resultSha256": "acded1fe9fc61a0ff376bcee4cd44b3d75ef37729a7fb8bc324eac097648e11f"
+          }
+        }
+      ],
+      "baselineCounts": {
+        "baseline": {
+          "pass": 14,
+          "fail": 4
+        },
+        "violation": {
+          "fail": 5,
+          "pass": 13
+        },
+        "restored": {
+          "pass": 14,
+          "fail": 4
+        }
+      },
+      "workflowRun": "https://github.com/Danil-super/hardening-control-platform/actions/runs/40716626983",
+      "testedHead": "a90d38c03cbafde521c30cf032c95e567057cf29"
+    },
+    {
+      "release": "1.8.6",
+      "status": "passed",
+      "acceleration": "kvm",
+      "hostIdentity": {
+        "id": "astra",
+        "astraVersion": "1.8.6",
+        "architecture": "x86_64",
+        "prettyName": "Astra Linux"
+      },
+      "sourceReportBytes": 74727479,
+      "sourceReportSha256": "a9884ade01d3160aa1edd490fd11aad1624dfe54cdfd3565a0fb234f3dd7d7a3",
+      "definitionCount": 8284,
+      "evaluatedDefinitionCount": 8284,
+      "resultCounts": {
+        "false": 8239,
+        "true": 45
+      },
+      "uniqueCveCount": 45,
+      "partial": false,
+      "partialReasonCount": 0,
+      "partialReasons": [],
+      "control": [
+        {
+          "name": "Independent installed-package version control",
+          "detail": {
+            "versions": {
+              "libssl3:amd64": "3.4.0-2-astra9",
+              "openssl": "3.4.0-2-astra9",
+              "openssl-provider-legacy": "3.4.0-2-astra9"
+            },
+            "vulnerablePredicates": {
+              "libssl3:amd64": false,
+              "openssl": false,
+              "openssl-provider-legacy": false
+            }
+          }
+        },
+        {
+          "name": "Full vendor OVAL and labelled native CVE result",
+          "detail": {
+            "definitionId": "oval:astra:def:4214940672944626263348052579907",
+            "cve": "CVE-2024-5535",
+            "result": "false",
+            "definitionCount": 8284,
+            "partial": false,
+            "partialReasons": [],
+            "resultSha256": "99ef373420503e87d6c864b26cc00a03cf1b43f356c10647a1e13eb11081565b"
+          }
+        }
+      ],
+      "baselineCounts": {
+        "baseline": {
+          "pass": 14,
+          "fail": 4
+        },
+        "violation": {
+          "fail": 5,
+          "pass": 13
+        },
+        "restored": {
+          "pass": 14,
+          "fail": 4
+        }
+      },
+      "workflowRun": "https://github.com/Danil-super/hardening-control-platform/actions/runs/40716626983",
+      "testedHead": "a90d38c03cbafde521c30cf032c95e567057cf29"
+    }
+  ],
+  "trivy": {
+    "status": "passed",
+    "engineVersion": "0.74.0",
+    "database": {
+      "sha256": "faa015429c6ebd9c9a672be99cfbd5aecec2eade21d1d6e59d4dc091dc752ff3",
+      "bytes": 1640259584,
+      "metadataSha256": "437efcca45d1da509e343768abc861bec0e6ebd0b2c247d7e6be5f7244ef0a60",
+      "metadata": {
+        "Version": 2,
+        "NextUpdate": "2026-10-29T13:01:10.618103614Z",
+        "UpdatedAt": "2026-10-28T13:01:10.618103814Z",
+        "DownloadedAt": "2026-10-28T15:11:59.299535318Z"
+      }
+    },
+    "databaseUnchanged": true,
+    "fixtureIsSyntheticInventory": true,
+    "scope": "Native Trivy Ubuntu vendor-advisory matching through production HCP SBOM generation, scanPackageInventory and report normalization",
+    "limitations": [
+      "A small labelled Ubuntu 22.04 matrix (backport, architecture, source epoch, unknown supplier); not an estimate of overall false-positive or false-negative rates",
+      "The epoch and unknown-supplier controls are deliberately synthetic metadata; they test interpretation, not the existence of corresponding vendor releases",
+      "The fixed control is expected to omit this CVE only; unrelated vulnerabilities may remain",
+      "Saved native stdout is a separate replay of each production-generated SBOM against the same unchanged database",
+      "This acceptance bypasses HTTP and SSH inventory collection; those are covered by the separate lab checks"
+    ],
+    "cases": [
+      {
+        "name": "vulnerable",
+        "version": "3.0.2-0ubuntu1.7",
+        "arch": "amd64",
+        "expectedCve": true,
+        "nativeTargetDetected": true,
+        "hcpTargetDetected": true,
+        "hcpObservationPresent": true,
+        "normalizedTargetDetected": true,
+        "coverageComplete": true,
+        "matchingFindingStatuses": [
+          "failed"
+        ]
+      },
+      {
+        "name": "vendor-fixed-backport",
+        "version": "3.0.2-0ubuntu1.8",
+        "arch": "amd64",
+        "expectedCve": false,
+        "nativeTargetDetected": false,
+        "hcpTargetDetected": false,
+        "hcpObservationPresent": false,
+        "normalizedTargetDetected": false,
+        "coverageComplete": true,
+        "matchingFindingStatuses": []
+      },
+      {
+        "name": "vulnerable-i386",
+        "version": "3.0.2-0ubuntu1.7",
+        "arch": "i386",
+        "expectedCve": true,
+        "nativeTargetDetected": true,
+        "hcpTargetDetected": true,
+        "hcpObservationPresent": true,
+        "normalizedTargetDetected": true,
+        "coverageComplete": true,
+        "matchingFindingStatuses": [
+          "failed"
+        ]
+      },
+      {
+        "name": "source-epoch",
+        "version": "1:3.0.2-0ubuntu1.7",
+        "arch": "amd64",
+        "expectedCve": false,
+        "nativeTargetDetected": false,
+        "hcpTargetDetected": false,
+        "hcpObservationPresent": false,
+        "normalizedTargetDetected": false,
+        "coverageComplete": true,
+        "matchingFindingStatuses": []
+      },
+      {
+        "name": "unknown-supplier",
+        "version": "3.0.2-0ubuntu1.7",
+        "arch": "amd64",
+        "expectedCve": true,
+        "nativeTargetDetected": true,
+        "hcpTargetDetected": false,
+        "hcpObservationPresent": true,
+        "normalizedTargetDetected": false,
+        "coverageComplete": false,
+        "matchingFindingStatuses": [
+          "manual"
+        ]
+      }
+    ]
+  },
+  "nativeRuns": {
+    "ufw": "https://github.com/Danil-super/hardening-control-platform/actions/runs/40715502061",
+    "firewalld": "https://github.com/Danil-super/hardening-control-platform/actions/runs/40715502080",
+    "dependencyTrackIngestion": "https://github.com/Danil-super/hardening-control-platform/actions/runs/40715502177",
+    "dependencyTrackNvd": "https://github.com/Danil-super/hardening-control-platform/actions/runs/40715502108",
+    "python35": "https://github.com/Danil-super/hardening-control-platform/actions/runs/40715502016",
+    "openscapFullProfile": "https://github.com/Danil-super/hardening-control-platform/actions/runs/40716626802",
+    "webContainerLab": "https://github.com/Danil-super/hardening-control-platform/actions/runs/40716626926"
+  }
+}

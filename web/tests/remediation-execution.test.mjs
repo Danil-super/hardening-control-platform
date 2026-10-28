@@ -4,14 +4,16 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, afterEach, beforeEach } from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
+import { installAssetObservationFixture } from "./_asset-observation-fixture.mjs";
 
 // Real executor, remediation orchestration and SQLite. Only the remote CLI
 // and inventory/report inputs are replaced; no SSH or firewall is contacted.
 const compiled = compileServerModules(["remediation", "state-store"]);
+installAssetObservationFixture(compiled);
 writeFileSync(path.join(compiled.directory, "real-ansible-control.mjs"), readFileSync(path.join(compiled.directory, "ansible-control.mjs")));
 writeFileSync(path.join(compiled.directory, "ansible-control.mjs"), `
 import {executeAnsiblePlaybook} from "./real-ansible-control.mjs";
-export const control = { action: "closePort", mode: "success", directory: "" };
+export const control = { action: "closePort", mode: "success", directory: "", calls: [] };
 export const isSafeLimit = () => true, inventoryHostExists = () => true;
 export const inventoryHostConnection = () => ({address:"192.0.2.20",port:2222,user:"fixture"});
 export const inventoryHostAddress = () => "192.0.2.20";
@@ -19,7 +21,8 @@ export const validateExtraVars = () => ({ok:true});
 export const appendIncident = () => {};
 export const reportIdForRun = () => "fixture-report";
 export async function runAnsiblePlaybook(options) {
-  if (["closePort", "rollbackRemediation"].includes(options.action)) {
+  control.calls.push(options);
+  if (["closePort", "rollbackRemediation", "backupRemediation"].includes(options.action)) {
     return executeAnsiblePlaybook({args:[options.action, options.action === control.action ? control.mode : "success", control.directory], timeout:500});
   }
   return {command:options.action,stdout:"",stderr:"",reportRunId:"fixture-run"};
@@ -47,7 +50,7 @@ beforeEach(() => {
   process.env.PATH = path.join(directory, "bin");
   process.env.HCP_STATE_DIR = path.join(directory, "state");
   process.env.HCP_AUDIT_HMAC_KEY = "remediation-execution-test-key";
-  Object.assign(control, { action:"closePort", mode:"success", directory });
+  Object.assign(control, { action:"closePort", mode:"success", directory, calls:[] });
   writeFileSync(path.join(directory, "target"), "baseline");
   writeFileSync(path.join(directory, "bin", "ansible-playbook"), `#!${process.execPath}
 const fs = require("node:fs"), path = require("node:path"), {spawn} = require("node:child_process");
@@ -77,7 +80,8 @@ if (mode === "timeout") {
   fs.writeFileSync(target, "partial-change");
   fail({stdout:JSON.stringify({ok:false,error:"fixture rule verification failed",outcomeUnknown:false}),rc:1});
 } else {
-  fs.writeFileSync(target, action === "rollbackRemediation" ? "restored" : "applied");
+  if (action === "backupRemediation") fs.writeFileSync(path.join(directory, "backup-lease"), "lease");
+  else fs.writeFileSync(target, action === "rollbackRemediation" ? "restored" : "applied");
 }
 `, { mode:0o700 });
 });
@@ -95,6 +99,37 @@ after(() => {
   rmSync(compiled.directory, {recursive:true,force:true});
 });
 const request = {action:"closePort",profileId:"basic_linux",hostAlias:"fixture-host",extraVars:{target_port:"8080",target_protocol:"tcp"},reason:"controlled executor regression"};
+
+test("apply carries the same target transaction lease as its backup and ordinary rollback has no recovery attestation", async () => {
+  const { transaction } = await remediation.applyRemediation(request);
+  const backup = control.calls.find(item => item.action === "backupRemediation");
+  const apply = control.calls.find(item => item.action === "closePort");
+  assert.equal(backup.extraVars.transaction_id, transaction.id);
+  assert.equal(apply.extraVars.transaction_id, transaction.id);
+  await remediation.rollbackRemediation(transaction.id, request.hostAlias);
+  const rollback = control.calls.find(item => item.action === "rollbackRemediation");
+  assert.equal(rollback.extraVars.rollback_recovery_verified, false);
+});
+
+test("an unknown backup outcome preserves its target lease until a separately attested rollback", async () => {
+  Object.assign(control, { action:"backupRemediation", mode:"unreachable" });
+  await assert.rejects(remediation.applyRemediation(request), error => error.remoteOutcome === "unknown");
+  const transaction = store.listRemediationTransactions()[0];
+  assert.equal(transaction.status, "interrupted");
+  assert.equal(transaction.backupRef, null, "the response was lost before the controller checkpoint");
+  assert.equal(store.hasActiveRemediationForHost(request.hostAlias), true);
+  assert.equal(control.calls.some(item => item.action === "closePort"), false);
+  await assert.rejects(remediation.applyRemediation(request), {code:"transaction_in_progress"});
+  store.reconcileRemediationTransaction(transaction.id, {
+    confirmedHost:request.hostAlias, confirmedOperation:transaction.id,
+    expectedRecoveryVersion:transaction.recoveryVersion, processesStopped:true, outcomeVerified:true,
+    inspectionNote:"Independent console confirmed the archive and all old processes have stopped.",
+    evidenceReference:"incident:backup-lease-recovery", resolution:"prepare_rollback", backupVerified:true,
+  });
+  await remediation.rollbackRemediation(transaction.id, request.hostAlias);
+  assert.equal(control.calls.find(item => item.action === "rollbackRemediation").extraVars.rollback_recovery_verified, true);
+  assert.equal(store.getRemediationTransaction(transaction.id).status, "rolled_back");
+});
 
 for (const action of ["closePort", "rollbackRemediation"]) {
   test(`${action} timeout keeps the host locked while the original remote task can still act`, async () => {

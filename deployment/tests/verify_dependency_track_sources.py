@@ -482,7 +482,7 @@ def main():
                processingToken=token, hcpAnalysisStatus="pending", hcpFindingStatus="manual")
 
         processing_deadline = time.monotonic() + remaining(180)
-        query = urllib.parse.urlencode({"name": host_alias, "version": "acceptance-fixture"})
+        query = urllib.parse.urlencode({"name": host_alias, "version": hcp_report["scanner"]["binding"]["projectVersion"]})
         while time.monotonic() < processing_deadline:
             event = api("/api/v1/event/token/" + token, bearer=bearer)
             if event.get("processing") is False:
@@ -521,6 +521,27 @@ def main():
         record("Real internal analyzer identifies vulnerable version and excludes corrected version for the selected CVE",
                cve=CVE, vulnerableVersion="2.14.1", correctedVersion="2.17.1", analysisToken=analysis_token,
                findingCount=len(matches), fullDatabaseCoverage=False)
+
+        for permission in ["VIEW_PORTFOLIO", "VIEW_VULNERABILITY"]:
+            api(f"/api/v1/permission/{permission}/team/{team_id}", body={}, method="POST", bearer=bearer)
+        result = subprocess.run(["node", "--input-type=module", "-e", NODE_ADAPTER], cwd=REPO / "web",
+            input=json.dumps({"operation": "refresh", "hostAlias": host_alias, "reportId": adapted["reportId"]}),
+            env=adapter_env, capture_output=True, text=True, timeout=remaining(75))
+        if result.returncode:
+            raise RuntimeError("Production HCP result import failed: " + redact(result.stderr[-2500:]))
+        imported = json.loads(result.stdout)
+        if imported.get("status") != "complete":
+            raise AssertionError("Production importer did not confirm the completed native analysis")
+        analysis_report = imported["report"]
+        hcp_matches = [row for row in analysis_report.get("findings", []) if CVE in row.get("title", "")]
+        if (len(hcp_matches) != 1 or hcp_matches[0].get("status") != "failed"
+                or "2.14.1" not in hcp_matches[0].get("title", "") or "2.17.1" in hcp_matches[0].get("title", "")
+                or analysis_report["scanner"].get("partial") is not True
+                or analysis_report["scanner"].get("sourceCoverageVerified") is not False):
+            raise AssertionError("HCP failed to preserve the vulnerable/fixed distinction or overstated targeted mirror coverage")
+        (output / "hcp-analysis-report.json").write_text(json.dumps(analysis_report, ensure_ascii=False, indent=2) + "\n")
+        record("Production HCP refresh imports the genuine CVE on the vulnerable version only", reportId=imported["reportId"],
+               cve=CVE, vulnerableVersion="2.14.1", correctedVersion="2.17.1", partial=True, sourceCoverageVerified=False)
         protocol["status"] = "passed"
     except Exception as error:
         protocol["status"] = "failed"

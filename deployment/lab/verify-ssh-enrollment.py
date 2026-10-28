@@ -75,6 +75,8 @@ def main():
             # password.  The server already redacts the bounded diagnostic.
             details = str(sudo.get("details", ""))[-2000:]
             raise AssertionError("Per-host Ansible preflight failed: " + result.get("message", "") + "\n" + details)
+        assert result.get("assetBinding", {}).get("status") == "verified", "Preflight did not capture real machine-id and negotiated trusted SSH key"
+        return result["assetBinding"]
     if args.check_persistence:
         protocol = json.loads(PROTOCOL.read_text())
         hosts = request("/api/ansible/hosts")["hosts"]
@@ -100,7 +102,7 @@ def main():
     image = run(["docker", "inspect", target, "--format", "{{.Image}}"]).stdout.strip()
     run(["docker", "rm", "-f", SECOND], check=False)
     run(["docker", "run", "-d", "--network", network, "--name", SECOND, "--entrypoint", "/bin/sh", image, "-c",
-         "mkdir -p /run/sshd /etc/ssh/host_keys; ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/host_keys/ssh_host_ed25519_key; chown -R lab:lab /home/lab/.ssh; chmod 700 /home/lab/.ssh; exec /usr/sbin/sshd -D -e"])
+         "mkdir -p /run/sshd /etc/ssh/host_keys; tr -d '-' < /proc/sys/kernel/random/uuid > /etc/machine-id; ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/host_keys/ssh_host_ed25519_key; chown -R lab:lab /home/lab/.ssh; chmod 700 /home/lab/.ssh; exec /usr/sbin/sshd -D -e"])
     for attempt in range(50):
         ready = run(["docker", "exec", SECOND, "cat", "/proc/1/comm"], check=False)
         if ready.returncode == 0 and ready.stdout.strip() == "sshd":
@@ -168,8 +170,9 @@ def main():
     # must use their individual keys, irrespective of the fallback environment.
     run(["docker", "exec", hcp, "mv", "/home/node/.ssh/hcp-control", "/home/node/.ssh/hcp-control.test-saved"])
     try:
-        check_connection(a)
-        check_connection(b)
+        asset_a = check_connection(a)
+        asset_b = check_connection(b)
+        assert asset_a["assetId"] != asset_b["assetId"], "Different real SSH targets were incorrectly joined as one asset"
         # Also verify inventory lookup when API clients omit credentialId.
         check_connection({key: value for key, value in a.items() if key != "credentialId"})
         for source, destination in [(a, b), (b, a)]:

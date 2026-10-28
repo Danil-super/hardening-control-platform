@@ -52,7 +52,7 @@ test("process restart marks each unfinished firewall phase interrupted without u
     assert.equal(value.status, "interrupted");
     assert.equal(value.recoveryRequired, true);
     assert.equal(store.hasActiveRemediationForHost(host), true);
-    assert.throws(() => store.createRemediationTransaction(transaction(`txn-competing-${phase}`)), /UNIQUE constraint/);
+    assert.throws(() => store.createRemediationTransaction(transaction(`txn-competing-${phase}`)), { code: "asset_operation_active" });
     assert.throws(() => store.claimRemediationRollback(id), { code: "rollback_not_available" });
     assert.throws(() => store.cancelRemediationTransaction(id, host), { code: "cancel_not_available" });
     store.reconcileRemediationTransaction(id, { ...evidence(id), resolution: "restored_manually" });
@@ -121,7 +121,7 @@ test("a crash between remote backup creation and DB checkpoint can prepare a sep
   assert.equal(value.status, "recovery_ready");
   assert.equal(value.backupRef, `/var/lib/hcp-backups/${id}/firewall-state.tar.gz`);
   assert.equal(store.hasActiveRemediationForHost(host), true);
-  assert.throws(() => store.createRemediationTransaction(transaction("txn-new-during-recovery")), /UNIQUE constraint/);
+  assert.throws(() => store.createRemediationTransaction(transaction("txn-new-during-recovery")), { code: "asset_operation_active" });
   assert.equal(store.claimRemediationRollback(id).status, "rolling_back");
   assert.throws(() => store.claimRemediationRollback(id), { code: "rollback_not_available" });
   // The rollback executor retains this lock on failure. It can then be retried

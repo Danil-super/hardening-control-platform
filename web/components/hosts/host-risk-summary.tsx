@@ -12,9 +12,11 @@ const bands = [
 
 export function HostRiskSummary({ summary, hostAlias }: { summary?: RiskSummary; hostAlias: string }) {
   const href = `/reports/correlation/${encodeURIComponent(hostAlias)}`;
-  if (!summary?.auditCount) return <p className="text-sm text-slate-400">Аудит ещё не выполнен</p>;
+  if (!summary?.auditCount) return summary?.identityExcludedCount ? <Link href={href} prefetch={false} className="text-sm text-amber-100 underline">Нет проверок текущей идентичности · исторических источников: {summary.identityExcludedCount}</Link>
+    : <p className="text-sm text-slate-400">Аудит ещё не выполнен</p>;
   const details = `Последние свежие проверки: ${summary.freshCount}. Информационных наблюдений: ${summary.info}. Неполных проверок: ${summary.partialCount}. Устаревших: ${summary.staleCount}.`;
   return <div className="min-w-[280px] max-w-80 space-y-1">
+    {summary.identityExcludedCount ? <p className="text-xs text-amber-100">Отдельная история без совпадения идентичности: {summary.identityExcludedCount}</p> : null}
     {summary.freshCount ? <div className="flex flex-wrap items-center gap-1 whitespace-nowrap" aria-label={`Находки хоста ${hostAlias}`}>
       {bands.map(({ key, label, shortLabel, color }) => <Link key={key} href={`${href}?risk=${key}`} prefetch={false}
         aria-label={`${label}: ${summary[key]}`}

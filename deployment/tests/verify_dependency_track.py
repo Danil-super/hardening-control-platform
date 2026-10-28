@@ -39,11 +39,11 @@ import { compileServerModules } from './tests/_typescript-loader.mjs';
 const input = JSON.parse(readFileSync(0, 'utf8'));
 const compiled = compileServerModules(['dependency-track']);
 try {
-  const { syncDependencyTrack } = await import(compiled.url('dependency-track'));
-  const result = await syncDependencyTrack(input);
-  if (!result.configured || !result.reportId) throw new Error('Adapter did not produce an upload report');
-  const report = JSON.parse(readFileSync(path.join(process.env.HCP_REPORTS_DIR, result.reportId + '.json'), 'utf8'));
-  console.log(JSON.stringify({ reportId: result.reportId, report }));
+  const { syncDependencyTrack, refreshDependencyTrack } = await import(compiled.url('dependency-track'));
+  const result = input.operation === 'refresh' ? await refreshDependencyTrack(input) : await syncDependencyTrack(input);
+  if (!result.configured || (!result.reportId && result.status !== 'processing')) throw new Error('Adapter did not produce a report or explicit processing state');
+  const report = result.reportId ? JSON.parse(readFileSync(path.join(process.env.HCP_REPORTS_DIR, result.reportId + '.json'), 'utf8')) : null;
+  console.log(JSON.stringify({ ...result, report }));
 } finally {
   rmSync(compiled.directory, { recursive: true, force: true });
 }
@@ -269,7 +269,7 @@ def main():
         if not isinstance(api_key, str) or len(api_key) < 20:
             raise AssertionError("Team API did not return a one-time key")
         sensitive.append(api_key)
-        record("Dedicated HCP API key has only BOM upload and project creation permissions")
+        record("Initial upload stage uses only BOM upload and project creation permissions")
 
         host_alias = "hcp-ingestion-fixture-" + run_id
         report_id = host_alias + "-vulnerabilities"
@@ -302,7 +302,7 @@ def main():
                processingToken=token, hcpAnalysisStatus="pending", hcpFindingStatus="manual")
 
         processing_deadline = time.monotonic() + remaining(180)
-        query = urllib.parse.urlencode({"name": host_alias, "version": "acceptance-fixture"})
+        query = urllib.parse.urlencode({"name": host_alias, "version": hcp_report["scanner"]["binding"]["projectVersion"]})
         while time.monotonic() < processing_deadline:
             event = api("/api/v1/event/token/" + token, bearer=bearer)
             if event.get("processing") is False:
@@ -317,6 +317,36 @@ def main():
             time.sleep(2)
         else:
             raise TimeoutError("BOM processing and component persistence did not complete within 180 seconds")
+
+        # Reading results requires explicit read permissions in addition to the
+        # upload-only key that was sufficient for ingestion above.
+        for permission in ["VIEW_PORTFOLIO", "VIEW_VULNERABILITY"]:
+            api(f"/api/v1/permission/{permission}/team/{team_id}", body={}, method="POST", bearer=bearer)
+        record("Read-only portfolio and vulnerability permissions added for result import")
+        refresh_deadline = time.monotonic() + remaining(120)
+        while time.monotonic() < refresh_deadline:
+            result = subprocess.run(["node", "--input-type=module", "-e", NODE_ADAPTER], cwd=REPO / "web",
+                input=json.dumps({"operation": "refresh", "hostAlias": host_alias, "reportId": adapted["reportId"]}),
+                env=adapter_env, capture_output=True, text=True, timeout=remaining(60))
+            if result.returncode:
+                raise RuntimeError("Production result import failed: " + redact(result.stderr[-2500:]))
+            imported = json.loads(result.stdout)
+            if imported.get("status") == "complete":
+                break
+            time.sleep(2)
+        else:
+            raise TimeoutError("DTrack did not confirm a completed analysis snapshot")
+        analysis_report = imported["report"]
+        if (analysis_report.get("mode") != "dependency-track-analysis"
+                or analysis_report["scanner"].get("partial") is not True
+                or analysis_report["scanner"].get("sourceCoverageVerified") is not False
+                or analysis_report["scanner"].get("findingCount") != 0
+                or not analysis_report.get("findings")
+                or any(row.get("status") != "manual" for row in analysis_report["findings"])):
+            raise AssertionError("Empty isolated DTrack must remain explicitly incomplete; no negative CVE assurance")
+        (output / "hcp-analysis-report.json").write_text(json.dumps(analysis_report, ensure_ascii=False, indent=2) + "\n")
+        record("Production result importer binds the exact SBOM and preserves unknown source coverage", reportId=imported["reportId"],
+               findingCount=0, hcpAnalysisStatus="complete", partial=True, sourceCoverageVerified=False)
         protocol["status"] = "passed"
     except Exception as error:
         protocol["status"] = "failed"

@@ -36,8 +36,8 @@ class PackageInventoryTest(unittest.TestCase):
         return json.loads(output.getvalue())
 
     @staticmethod
-    def record(status, name="package"):
-        return status + "\t" + name + "\t1.0-1\tamd64\tsource-package\t1.0-1\n"
+    def record(status, name="package", maintainer="Debian Team <team@debian.org>", origin=""):
+        return status + "\t" + name + "\t1.0-1\tamd64\tsource-package\t1.0-1\t" + maintainer + "\t" + origin + "\n"
 
     def test_complete_inventory_keeps_held_and_removal_requested_code(self):
         report = self.collect(self.record("ii ", "installed") + self.record("hi ", "held")
@@ -70,6 +70,19 @@ class PackageInventoryTest(unittest.TestCase):
                 report = self.collect(self.record("ii ", "known") + self.record(status, "unknown"))
                 self.assertTrue(report["partial"])
                 self.assertIn("status", report["packageInventory"]["error"])
+
+    def test_installed_origin_observations_survive_empty_optional_origin(self):
+        report = self.collect(self.record("ii ", "vendor", "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>", "Ubuntu")
+                              + self.record("ii ", "external", "NodeSource <support@nodesource.com>"))
+        self.assertFalse(report["partial"])
+        self.assertEqual(report["packages"][0]["origin"], "Ubuntu")
+        self.assertEqual(report["packages"][1]["origin"], "")
+        self.assertEqual(report["packages"][1]["maintainer"], "NodeSource <support@nodesource.com>")
+
+    def test_missing_maintainer_remains_unknown_instead_of_inventing_vendor(self):
+        report = self.collect(self.record("ii ", maintainer=""))
+        self.assertEqual(report["packages"][0]["maintainer"], "")
+        self.assertEqual(report["packages"][0]["origin"], "")
 
     def test_target_program_keeps_python35_syntax(self):
         ast.parse(SOURCE, feature_version=(3, 5))

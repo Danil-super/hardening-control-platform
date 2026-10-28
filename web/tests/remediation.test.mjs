@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, beforeEach, afterEach } from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
+import { installAssetObservationFixture } from "./_asset-observation-fixture.mjs";
 
 // Exercise real orchestration and SQLite state while replacing only remote I/O.
 const compiled = compileServerModules(["remediation", "state-store", "astra-oval-config"]);
+installAssetObservationFixture(compiled);
 writeFileSync(path.join(compiled.directory, "ansible-control.mjs"), `
 export const control = { runs: [], failAction: null, failOutcome: "completed", failPost: false, missingReport: false, address: "192.0.2.20", report: {partial:false,available:true} };
 export const isSafeLimit = value => /^[A-Za-z0-9_-]+$/.test(value);
@@ -105,10 +107,10 @@ test("a partly failed change retains its backup and can be rolled back", async (
   assert.equal(restored.transaction.status, "rolled_back");
 });
 
-test("audit and backup transport errors before mutation do not require firewall recovery", async () => {
-  for (const action of ["agentlessAudit", "backupRemediation"]) {
+test("read-only audit errors and known backup rejection do not require firewall recovery", async () => {
+  for (const [action, outcome] of [["agentlessAudit", "unknown"], ["backupRemediation", "completed"], ["backupRemediation", "not_started"]]) {
     control.failAction = action;
-    control.failOutcome = "unknown";
+    control.failOutcome = outcome;
     await assert.rejects(remediation.applyRemediation(request), /remote operation failed/);
     const transaction = store.listRemediationTransactions()[0];
     assert.equal(transaction.status, "failed");

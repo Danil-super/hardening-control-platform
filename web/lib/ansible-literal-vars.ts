@@ -5,13 +5,15 @@
  * Keep caller-controlled configuration, paths and passwords literal, including
  * legitimate values which happen to contain {{, {% or {#.
  */
-export function ansibleLiteralExtraVars(values: Record<string, string>) {
-  const literal: Record<string, { __ansible_unsafe: string }> = Object.create(null);
+export function ansibleLiteralExtraVars(values: Record<string, string | boolean>) {
+  const literal: Record<string, { __ansible_unsafe: string } | boolean> = Object.create(null);
   for (const [key, value] of Object.entries(values)) {
-    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof value !== "string") {
-      throw new Error("Переменные Ansible должны иметь допустимые имена и строковые значения.");
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || (typeof value !== "string" && typeof value !== "boolean")) {
+      throw new Error("Переменные Ansible должны иметь допустимые имена и строковые либо логические значения.");
     }
-    literal[key] = { __ansible_unsafe: value };
+    // Internal recovery attestations must retain their boolean type. Strings
+    // still use Ansible's unsafe marker; nested structures remain forbidden.
+    literal[key] = typeof value === "boolean" ? value : { __ansible_unsafe: value };
   }
   return JSON.stringify(literal);
 }

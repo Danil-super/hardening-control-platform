@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { promisify } from "node:util";
-import { actionRequiresTargetSudo, appendIncident, executeAnsiblePlaybook, getRepoRoot, isSafeLimit, onDemandSudoHostForLimit, playbooks } from "@/lib/ansible-control";
+import { actionRequiresTargetSudo, appendIncident, beginCustomAuditAssetExecution, endCustomAuditAssetExecution, executeAnsiblePlaybook, getRepoRoot, isSafeLimit, onDemandSudoHostForLimit, playbooks } from "@/lib/ansible-control";
 import { getInventoryTargetHosts } from "@/lib/inventory";
 import { ansibleLiteralExtraVars } from "@/lib/ansible-literal-vars";
 
@@ -452,12 +452,17 @@ export async function runRegisteredPlaybook({
   }
 
   let result;
+  let assetLease: Awaited<ReturnType<typeof beginCustomAuditAssetExecution>> | null = null;
   try {
-    result = await executeAnsiblePlaybook({ args, timeout: playbook.timeout, becomePassword });
+    assetLease = await beginCustomAuditAssetExecution(limit);
+    args[1] = assetLease.inventoryPath;
+    result = await executeAnsiblePlaybook({ args, timeout: playbook.timeout, becomePassword, sshTrust: assetLease.sshTrust });
     if (/skipping: no hosts matched/i.test(result.stdout) && !/\s+ok=\d+\s+changed=\d+/.test(result.stdout)) throw new Error("Сценарий не выполнил задачи: его hosts не совпадает с выбранной целью.");
   } catch (error) {
     appendIncident({ action: playbook.id, kind: playbook.kind, status: "failed", profileId: "custom", limit, message: error instanceof Error ? error.message : "Сценарий завершился ошибкой." });
     throw error;
+  } finally {
+    if (assetLease) endCustomAuditAssetExecution(assetLease);
   }
 
   appendIncident({

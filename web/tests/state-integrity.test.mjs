@@ -88,7 +88,7 @@ test("rollback atomically claims its host and rejects duplicate requests", () =>
   assert.equal(store.claimRemediationRollback("first").status, "rolling_back");
   assert.equal(store.hasActiveRemediationForHost("host-one"), true);
   assert.throws(() => store.claimRemediationRollback("first"), { code: "rollback_not_available" });
-  assert.throws(() => transaction("competing"), /UNIQUE constraint failed/);
+  assert.throws(() => transaction("competing"), { code: "asset_operation_active" });
   store.updateRemediationTransaction("first", { status: "rollback_failed" });
   assert.equal(store.claimRemediationRollback("first").status, "rolling_back");
 });

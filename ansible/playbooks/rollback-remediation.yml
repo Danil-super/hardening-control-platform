@@ -10,8 +10,9 @@
           - transaction_id is defined
           - remediation_action in ['closePort', 'blockIp']
           - not ansible_check_mode
+          - rollback_recovery_verified is not defined or rollback_recovery_verified is boolean
 
     - name: Restore configuration and verify firewall activation
       ansible.builtin.include_tasks: ../tasks/firewall-operation.yml
       vars:
-        hcp_firewall_argv: "{{ ['rollback', '--transaction', transaction_id] }}"
+        hcp_firewall_argv: "{{ ['rollback', '--transaction', transaction_id] + (['--recovery-verified'] if rollback_recovery_verified | default(false) else []) }}"

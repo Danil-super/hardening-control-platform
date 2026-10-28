@@ -446,6 +446,8 @@ class FirewallTests(unittest.TestCase):
                         metadata_path = root / "backups" / args().transaction / "metadata.json"
                         metadata = json.loads(metadata_path.read_text())
                         metadata.pop("securityLabels", None)
+                        metadata.pop("configurationSha256", None)
+                        metadata.pop("filesystemMetadata", None)
                         metadata_path.write_text(json.dumps(metadata))
                         # The archive itself must also have the old tar layout.
                         archive_path = metadata_path.parent / "firewall-state.tar.gz"

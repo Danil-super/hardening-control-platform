@@ -184,6 +184,8 @@ test("custom variable values remain one JSON value rather than injected Ansible 
   const registry = load("lib/playbook-registry.ts", {
     "node:child_process": { execFile: exec },
     "@/lib/ansible-control": { getRepoRoot: () => "/tmp/fake-hcp-test", isSafeLimit: () => true, appendIncident: () => {}, playbooks: {}, onDemandSudoHostForLimit: () => null,
+      beginCustomAuditAssetExecution: async () => ({ inventoryPath: "/tmp/frozen-fixture.json", release() {} }),
+      endCustomAuditAssetExecution: () => {},
       executeAnsiblePlaybook: async ({args}) => { executedArgs = args; return { stdout: "", stderr: "" }; } },
     "@/lib/inventory": { getInventoryTargetHosts: target => target === "target" ? [{ alias: "target", groups: ["linux_hosts"] }] : [] },
   });

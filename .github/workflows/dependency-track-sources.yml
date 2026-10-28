@@ -47,6 +47,7 @@ jobs:
             .lab/dependency-track-sources/mirrored-cve.json
             .lab/dependency-track-sources/findings.json
             .lab/dependency-track-sources/hcp-report.json
+            .lab/dependency-track-sources/hcp-analysis-report.json
             .lab/dependency-track-sources/services.log
           if-no-files-found: warn
       - name: Clean up this disposable stack after interruption

@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { assertAstraOvalProvenance, validateAstraOvalConfig, type AstraOvalConfig } from "@/lib/astra-oval-config";
 import type { Finding } from "@/types";
 import { currentOperationOwner, operationOwnerState, validateRecoveryAttestation, type RecoveryAttestation } from "@/lib/operation-owner";
+import { assetIdForObservation, parseAssetBinding, validAssetAlias, type AssetObservation, type VerifiedAssetBinding } from "@/lib/asset-binding";
 
 type DatabaseGlobal = typeof globalThis & {
   hcpDatabase?: DatabaseSync;
@@ -191,6 +192,20 @@ function getDatabase() {
     );
     CREATE UNIQUE INDEX IF NOT EXISTS audit_jobs_active_host ON audit_jobs(host_alias)
       WHERE status IN ('queued', 'running');
+    CREATE TABLE IF NOT EXISTS asset_bindings (
+      alias TEXT NOT NULL, generation INTEGER NOT NULL, asset_id TEXT NOT NULL,
+      binding_json TEXT NOT NULL, reason TEXT NOT NULL, created_at TEXT NOT NULL,
+      PRIMARY KEY(alias, generation)
+    );
+    CREATE INDEX IF NOT EXISTS asset_bindings_asset ON asset_bindings(asset_id);
+    CREATE TRIGGER IF NOT EXISTS asset_bindings_no_update BEFORE UPDATE ON asset_bindings
+      BEGIN SELECT RAISE(ABORT, 'Asset binding history is immutable'); END;
+    CREATE TRIGGER IF NOT EXISTS asset_bindings_no_delete BEFORE DELETE ON asset_bindings
+      BEGIN SELECT RAISE(ABORT, 'Asset binding history is immutable'); END;
+    CREATE TABLE IF NOT EXISTS asset_execution_leases (
+      resource_id TEXT PRIMARY KEY, operation_id TEXT NOT NULL, host_alias TEXT NOT NULL,
+      owner TEXT NOT NULL, created_at TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS audit_events (
       id TEXT PRIMARY KEY,
       created_at TEXT NOT NULL,
@@ -340,7 +355,7 @@ function getDatabase() {
       if (!database.prepare("PRAGMA table_info(remediation_plan_items)").all().some((column) => column.name === "severity_snapshot_json")) throw error;
     }
   }
-  for (const column of ["owner_json", "interrupted_from_status", "recovery_version"]) {
+  for (const column of ["owner_json", "interrupted_from_status", "recovery_version", "asset_id"]) {
     if (!database.prepare("PRAGMA table_info(remediation_transactions)").all().some((item) => item.name === column)) {
       try { database.exec(`ALTER TABLE remediation_transactions ADD COLUMN ${column} TEXT`); }
       catch (error) {
@@ -408,6 +423,129 @@ export function withReportEvidenceLock<T>(operation: () => T): T {
     if (result instanceof Promise) throw new Error("Блокировка доказательств требует синхронной операции.");
     return result;
   });
+}
+
+export function currentAssetBinding(alias: string): VerifiedAssetBinding | null {
+  const row = getDatabase().prepare("SELECT binding_json FROM asset_bindings WHERE alias = ? ORDER BY generation DESC LIMIT 1").get(alias);
+  if (!row) return null;
+  const binding = parseAssetBinding(JSON.parse(String(row.binding_json)));
+  if (!binding || binding.status !== "verified") throw new Error("Повреждена сохранённая привязка актива.");
+  return binding;
+}
+
+export function assetBindingHistory(alias: string) {
+  return getDatabase().prepare("SELECT binding_json, reason, created_at FROM asset_bindings WHERE alias = ? ORDER BY generation DESC").all(alias)
+    .map((row) => ({ binding: JSON.parse(String(row.binding_json)) as VerifiedAssetBinding, reason: String(row.reason), createdAt: String(row.created_at) }));
+}
+
+/** Only authenticated identity links aliases; equal addresses are insufficient. */
+export function aliasesForAsset(alias: string): string[] {
+  const binding = currentAssetBinding(alias);
+  if (!binding) return [alias];
+  const aliases = getDatabase().prepare(`SELECT alias FROM asset_bindings b WHERE asset_id = ?
+    AND generation = (SELECT MAX(generation) FROM asset_bindings WHERE alias = b.alias)`).all(binding.assetId).map((row) => String(row.alias));
+  return [...new Set([alias, ...aliases])];
+}
+
+function aliasParameters(aliases: string[]) { return aliases.map(() => "?").join(","); }
+
+function activeAssetRemediation(alias: string, exceptId = "") {
+  const aliases = aliasesForAsset(alias);
+  return getDatabase().prepare(`SELECT id FROM remediation_transactions WHERE (host_alias IN (${aliasParameters(aliases)}) OR asset_id = ?) AND id != ?
+    AND status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') LIMIT 1`).get(...aliases, currentAssetBinding(alias)?.assetId ?? null, exceptId);
+}
+
+function recoverReadOnlyAssetLeases(remediationId = "", exceptCloseoutId?: string) {
+  const database = getDatabase();
+  // This follows the single-controller audit retry policy. An unknown old
+  // container may have left a read-only audit running; mutation/closeout rows
+  // always retain their independent recovery barrier across every alias.
+  for (const row of database.prepare("SELECT * FROM asset_execution_leases").all()) {
+    if (operationOwnerState(row.owner) !== "live"
+        && !activeAssetRemediation(String(row.host_alias), remediationId)
+        && !hasUnresolvedHostCloseout(String(row.host_alias), exceptCloseoutId)) {
+      database.prepare("DELETE FROM asset_execution_leases WHERE resource_id = ? AND operation_id = ? AND owner = ?")
+        .run(row.resource_id, row.operation_id, row.owner);
+    }
+  }
+}
+
+export function assertAssetIdle(alias: string, includeJobs = true, exceptCloseoutId?: string) {
+  recoverReadOnlyAssetLeases("", exceptCloseoutId);
+  assertNoUnresolvedHostCloseout(alias, exceptCloseoutId);
+  const aliases = aliasesForAsset(alias);
+  const placeholders = aliasParameters(aliases);
+  if (activeAssetRemediation(alias)
+      || getDatabase().prepare(`SELECT 1 FROM asset_execution_leases WHERE host_alias IN (${placeholders}) LIMIT 1`).get(...aliases)
+      || includeJobs && getDatabase().prepare(`SELECT 1 FROM audit_jobs WHERE host_alias IN (${placeholders}) AND status IN ('queued', 'running') LIMIT 1`).get(...aliases)) {
+    throw Object.assign(new Error("На этом активе или другом его alias уже выполняется операция. Завершите её перед изменением привязки."), { code: "asset_operation_active" });
+  }
+}
+
+export function recordAssetObservation(input: { alias: string; connectionId: string; observation: AssetObservation }, rebind?: {
+  expectedGeneration: number; expectedAssetId: string; observedAssetId: string; reason: string;
+}): VerifiedAssetBinding {
+  if (!validAssetAlias(input.alias) || !/^[a-f0-9]{64}$/.test(input.connectionId)) throw new Error("Некорректная привязка актива.");
+  const assetId = assetIdForObservation(input.observation);
+  return inTransaction((database) => {
+    const current = currentAssetBinding(input.alias);
+    if (current && current.assetId !== assetId) {
+      if (!rebind) throw Object.assign(new Error("Идентичность хоста изменилась. Операция не запущена. Проверьте машину и SSH fingerprint независимо, затем явно подтвердите новую привязку в настройках хоста."),
+        { code: "asset_identity_changed", currentBinding: current, observedAssetId: assetId });
+      if (rebind.expectedGeneration !== current.generation || rebind.expectedAssetId !== current.assetId || rebind.observedAssetId !== assetId) {
+        throw Object.assign(new Error("Привязка или наблюдаемая идентичность изменилась после проверки. Повторите сверку."), { code: "asset_binding_stale" });
+      }
+      if (rebind.reason.trim().length < 20 || rebind.reason.length > 2000 || /[\x00-\x08\x0b\x0c\x0e-\x1f]/.test(rebind.reason)) throw new Error("Опишите причину и независимую проверку новой машины или SSH key (20–2000 символов).");
+      const targetAlias = database.prepare(`SELECT alias FROM asset_bindings b WHERE asset_id = ? AND generation =
+        (SELECT MAX(generation) FROM asset_bindings WHERE alias = b.alias) LIMIT 1`).get(assetId);
+      if (targetAlias) assertAssetIdle(String(targetAlias.alias));
+    } else if (rebind && (!current || rebind.expectedGeneration !== current.generation || rebind.expectedAssetId !== current.assetId || rebind.observedAssetId !== assetId)) {
+      throw Object.assign(new Error("Привязка изменилась после открытия формы. Повторите проверку."), { code: "asset_binding_stale" });
+    }
+    if (current?.assetId === assetId && current.connectionId === input.connectionId) return { ...current, verifiedAt: input.observation.observedAt };
+    // A new connection changes the generation even for the same machine. Do
+    // not invalidate a running transaction's snapshot or transfer an alias
+    // lease to a new resource key. A first observation may belong to the audit
+    // that is already queued for this alias, before its execution lease exists.
+    assertAssetIdle(input.alias, Boolean(current));
+    const binding: VerifiedAssetBinding = { version: 1, status: "verified", assetId, alias: input.alias, generation: (current?.generation ?? 0) + 1,
+      machineIdSha256: input.observation.machineIdSha256, sshHostKeyFingerprint: input.observation.sshHostKeyFingerprint,
+      verifiedAt: input.observation.observedAt, connectionId: input.connectionId };
+    const reason = current?.assetId !== assetId && current ? rebind!.reason.trim() : current ? "Verified connection changed; asset identity retained" : "First authenticated identity observation";
+    database.prepare("INSERT INTO asset_bindings VALUES (?, ?, ?, ?, ?, ?)")
+      .run(binding.alias, binding.generation, binding.assetId, JSON.stringify(binding), reason, binding.verifiedAt);
+    appendAuditEvent("asset_binding_created", `${binding.alias}:${binding.generation}`, { binding, previousAssetId: current?.assetId ?? null, reason });
+    return binding;
+  });
+}
+
+/** A controller lease complements the target-wide remediation flock. */
+export function acquireAssetExecution(bindings: { alias: string; binding: VerifiedAssetBinding | null }[], remediationId?: string) {
+  return inTransaction((database) => {
+    // Read-only executions may be retried after controller death. Unresolved
+    // remediation rows continue to block every alias until explicit recovery.
+    recoverReadOnlyAssetLeases(remediationId);
+    const operationId = `asset_op_${randomUUID()}`;
+    for (const { alias, binding } of bindings) {
+      const current = currentAssetBinding(alias);
+      if (binding && (!current || current.assetId !== binding.assetId || current.generation !== binding.generation || current.connectionId !== binding.connectionId)) throw Object.assign(new Error("Привязка хоста изменилась до запуска. Повторите проверку."), { code: "asset_binding_stale" });
+      const own = remediationId ? getRemediationTransaction(remediationId) : null;
+      if (remediationId && (!own || own.hostAlias !== alias || !["preparing", "backed_up", "rolling_back"].includes(own.status))) throw new Error("Не подтверждён владелец транзакции для запуска на активе.");
+      assertNoUnresolvedHostCloseout(alias);
+      if (activeAssetRemediation(alias, remediationId)) throw Object.assign(new Error("На этом активе или другом его alias выполняется либо требует сверки remediation."), { code: "asset_operation_active" });
+      const resourceId = current?.assetId ?? `alias:${alias}`;
+      const aliases = aliasesForAsset(alias);
+      const existing = database.prepare(`SELECT operation_id FROM asset_execution_leases WHERE resource_id = ? OR host_alias IN (${aliasParameters(aliases)})`).all(resourceId, ...aliases);
+      if (existing.some((row) => row.operation_id !== operationId)) throw Object.assign(new Error("На этом активе или другом его alias уже выполняется проверка."), { code: "asset_operation_active" });
+      if (existing.length) continue;
+      database.prepare("INSERT INTO asset_execution_leases VALUES (?, ?, ?, ?, ?)").run(resourceId, operationId, alias, currentOperationOwner, new Date().toISOString());
+    }
+    return operationId;
+  });
+}
+
+export function releaseAssetExecution(operationId: string) {
+  getDatabase().prepare("DELETE FROM asset_execution_leases WHERE operation_id = ? AND owner = ?").run(operationId, currentOperationOwner);
 }
 
 function auditIntegrityKey() {
@@ -757,12 +895,21 @@ export function createRemediationTransaction(input: Omit<RemediationTransaction,
   return inTransaction((database) => {
   assertNoUnresolvedHostCloseout(input.hostAlias);
   const now = new Date().toISOString();
+  const assetBinding = input.parameters._hcp_asset_binding ? parseAssetBinding(JSON.parse(input.parameters._hcp_asset_binding)) : null;
+  if (input.parameters._hcp_asset_binding && (!assetBinding || assetBinding.status !== "verified" || assetBinding.alias !== input.hostAlias)) throw new Error("Некорректный снимок идентичности remediation.");
+  if (assetBinding?.status === "verified") {
+    const current = currentAssetBinding(input.hostAlias);
+    if (!current || current.assetId !== assetBinding.assetId || current.generation !== assetBinding.generation || current.connectionId !== assetBinding.connectionId) {
+      throw Object.assign(new Error("Привязка актива изменилась до создания транзакции. Повторите проверку."), { code: "asset_binding_stale" });
+    }
+  }
+  assertAssetIdle(input.hostAlias);
   database.prepare(`
     INSERT INTO remediation_transactions (
       id, created_at, updated_at, host_alias, action, profile_id, status, reason, parameters_json,
-      backup_ref, pre_audit_report_id, post_audit_report_id, error, owner_json, recovery_version
-    ) VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?, NULL, NULL, NULL, NULL, ?, ?)
-  `).run(input.id, now, now, input.hostAlias, input.action, input.profileId, input.reason, JSON.stringify(input.parameters), currentOperationOwner, randomUUID());
+      backup_ref, pre_audit_report_id, post_audit_report_id, error, owner_json, recovery_version, asset_id
+    ) VALUES (?, ?, ?, ?, ?, ?, 'preparing', ?, ?, NULL, NULL, NULL, NULL, ?, ?, ?)
+  `).run(input.id, now, now, input.hostAlias, input.action, input.profileId, input.reason, JSON.stringify(input.parameters), currentOperationOwner, randomUUID(), assetBinding?.status === "verified" ? assetBinding.assetId : null);
   appendAuditEvent("remediation_preparing", input.id, {
     hostAlias: input.hostAlias,
     action: input.action,
@@ -807,8 +954,7 @@ export function updateRemediationTransaction(
 
 export function hasActiveRemediationForHost(hostAlias: string) {
   recoverInterruptedRemediations();
-  return Boolean(getDatabase().prepare(`SELECT 1 FROM remediation_transactions
-    WHERE host_alias = ? AND status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') LIMIT 1`).get(hostAlias));
+  return Boolean(activeAssetRemediation(hostAlias));
 }
 
 /** Detect a dead local owner without releasing the host or replaying remote work. */
@@ -884,12 +1030,14 @@ export function cancelRemediationTransaction(id: string, confirmedHost: string):
 }
 
 function assertNoNewerRemediation(current: Pick<RemediationTransaction, "id" | "hostAlias">) {
+  const aliases = aliasesForAsset(current.hostAlias);
   const newer = getDatabase().prepare(`SELECT id FROM remediation_transactions
-    WHERE host_alias = ? AND rowid > (SELECT rowid FROM remediation_transactions WHERE id = ?)
+    WHERE (host_alias IN (${aliasParameters(aliases)}) OR asset_id = (SELECT asset_id FROM remediation_transactions WHERE id = ?))
+      AND rowid > (SELECT rowid FROM remediation_transactions WHERE id = ?)
       AND (status IN ('interrupted', 'recovery_ready', 'preparing')
         OR backup_ref IS NOT NULL AND status IN ('applied', 'failed', 'rollback_failed', 'rolling_back', 'backed_up')) LIMIT 1`)
-    .get(current.hostAlias, current.id);
-  if (newer) throw Object.assign(new Error("Сначала откатите более поздние изменения этого хоста."), { code: "newer_remediation_exists" });
+    .get(...aliases, current.id, current.id);
+  if (newer) throw Object.assign(new Error("Сначала откатите более поздние изменения этого актива, включая операции через другой alias."), { code: "newer_remediation_exists" });
 }
 
 export function claimRemediationRollback(id: string): RemediationTransaction {
@@ -900,7 +1048,10 @@ export function claimRemediationRollback(id: string): RemediationTransaction {
       throw Object.assign(new Error("Эта операция недоступна для отката."), { code: "rollback_not_available" });
     }
     assertNoUnresolvedHostCloseout(current.hostAlias);
-    if (database.prepare("SELECT 1 FROM remediation_transactions WHERE host_alias = ? AND id != ? AND status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') LIMIT 1").get(current.hostAlias, id)) {
+    const aliases = aliasesForAsset(current.hostAlias);
+    if (activeAssetRemediation(current.hostAlias, id)
+        || database.prepare(`SELECT 1 FROM audit_jobs WHERE host_alias IN (${aliasParameters(aliases)}) AND status IN ('queued', 'running') LIMIT 1`).get(...aliases)
+        || database.prepare(`SELECT owner FROM asset_execution_leases WHERE host_alias IN (${aliasParameters(aliases)})`).all(...aliases).some((row) => operationOwnerState(row.owner) === "live")) {
       throw Object.assign(new Error("На хосте уже выполняется изменение или откат."), { code: "host_operation_active" });
     }
     assertNoNewerRemediation(current);
@@ -969,9 +1120,10 @@ export function latestHostCloseout(alias: string) {
     .map(row => JSON.parse(String(row.setting_value)) as HostCloseoutRecord).find(value => value.identity.alias === alias) ?? null;
 }
 export function hasUnresolvedHostCloseout(alias: string, exceptCredentialId?: string) {
+  const aliases = new Set(aliasesForAsset(alias));
   return getDatabase().prepare("SELECT setting_value FROM runtime_settings WHERE setting_key LIKE 'host_closeout:%'").all()
     .map(row => JSON.parse(String(row.setting_value)) as HostCloseoutRecord)
-    .some(value => value.credentialId !== exceptCredentialId && value.identity.alias === alias && (!["not_changed", "completed"].includes(value.status)
+    .some(value => value.credentialId !== exceptCredentialId && aliases.has(value.identity.alias) && (!["not_changed", "completed"].includes(value.status)
       || value.claim && operationOwnerState(value.owner) === "live"));
 }
 function assertNoUnresolvedHostCloseout(alias: string, exceptCredentialId?: string) {
@@ -982,11 +1134,12 @@ function saveHostCloseout(record: HostCloseoutRecord) {
     .run(closeoutKey(record.credentialId), JSON.stringify(record), record.updatedAt);
 }
 export function claimHostCloseout(input: Pick<HostCloseoutRecord, "credentialId" | "identity" | "fingerprint">, recovery?: RecoveryAttestation) {
-  return inTransaction((database) => {
-    if (database.prepare("SELECT id FROM remediation_transactions WHERE host_alias = ? AND status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') LIMIT 1").get(input.identity.alias)) {
+  return inTransaction(() => {
+    if (activeAssetRemediation(input.identity.alias)) {
       throw Object.assign(new Error("Сначала завершите изменение или восстановление firewall на хосте."), { code: "host_operation_active" });
     }
     assertNoUnresolvedHostCloseout(input.identity.alias, input.credentialId);
+    assertAssetIdle(input.identity.alias, true, input.credentialId);
     const current = getHostCloseout(input.credentialId);
     if (current && (current.identity.alias !== input.identity.alias || current.identity.address !== input.identity.address
         || current.identity.user !== input.identity.user || current.identity.port !== input.identity.port)) {
@@ -1364,8 +1517,10 @@ export function recoverAuditJobs() {
 export function createAuditJob(input: { action: string; hostAlias: string; profileId: string; requestKey: string }) {
   recoverAuditJobs();
   return inTransaction((database) => {
-    const active = database.prepare("SELECT * FROM audit_jobs WHERE host_alias = ? AND status IN ('queued', 'running')").get(input.hostAlias);
+    const aliases = aliasesForAsset(input.hostAlias);
+    const active = database.prepare(`SELECT * FROM audit_jobs WHERE host_alias IN (${aliasParameters(aliases)}) AND status IN ('queued', 'running')`).get(...aliases);
     if (active) return { created: false, matches: active.request_key === input.requestKey, job: toAuditJob(active) };
+    assertAssetIdle(input.hostAlias, false);
     const id = `job_${randomUUID()}`;
     const now = new Date().toISOString();
     database.prepare(`INSERT INTO audit_jobs VALUES (?, ?, ?, ?, ?, ?, 'queued', 'Ожидает запуска', ?, ?, NULL)`)

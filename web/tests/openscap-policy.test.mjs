@@ -17,7 +17,9 @@ function load(file, stubs = {}) {
   return module.exports;
 }
 
-const inventory = load("lib/inventory.ts");
+const inventory = load("lib/inventory.ts", {
+  "@/lib/ssh-access": {}, "@/lib/asset-binding": {},
+});
 const policies = load("lib/openscap-policy.ts", {
   "@/lib/inventory": inventory,
   "@/lib/ansible-reports": {},

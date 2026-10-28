@@ -14,7 +14,7 @@ type PlanStatus = "discovered" | "proposed" | "agreed" | "completed" | "confirme
 type Evidence = { reportId: string; findingId: string; source: string; mode: string; createdAt: string | null; evidence: string; reportSha256: string };
 type PlanItem = { canDeleteDraft?: boolean; id: string; hostAlias: string; findingKey: string; title: string; category: string; risk: "high" | "medium" | "low" | "info"; severityUnknown: boolean; severityAssessment: { level: "critical" | "high" | "medium" | "low"; source: string } | null; severityOrigin: "captured" | "source_evidence" | "unknown_legacy"; description: string; recommendation: string; evidence: Evidence[]; status: PlanStatus; owner: string | null; dueAt: string | null; approvalReference: string | null; implementationNote: string | null; verificationReportId: string | null; riskAcceptedUntil: string | null; riskAcceptanceState?: "active" | "expired" | "unknown" | null; currentObservation?: { recurring: boolean; sources: { reportId: string }[] } | null; createdAt: string; updatedAt: string };
 type CorrelationFinding = CandidateFinding;
-type Coverage = { reportId: string; mode: string; createdAt: string | null; fresh: boolean; partial: boolean; available: boolean; validTime: boolean; auditEvidence: boolean };
+type Coverage = { reportId: string; mode: string; createdAt: string | null; fresh: boolean; partial: boolean; available: boolean; validTime: boolean; auditEvidence: boolean; coverageIssues?: string[] };
 type Host = { alias: string };
 type PlanData = { ok?: boolean; items?: PlanItem[]; correlation?: { findings?: CorrelationFinding[]; coverage?: Coverage[] }; message?: string };
 
@@ -69,7 +69,8 @@ export function RemediationPlanClient({ initialHost = "" }: { initialHost?: stri
 
   const planned = useMemo(() => new Set((data.items ?? []).filter((item) => item.status !== "confirmed"
     && (item.status !== "accepted_risk" || item.riskAcceptanceState === "active")).map((item) => item.findingKey)), [data.items]);
-  const verificationReports = (data.correlation?.coverage ?? []).filter((item) => item.auditEvidence && item.available && item.validTime && !item.partial && item.fresh);
+  const verificationReports = (data.correlation?.coverage ?? []).filter((item) => item.auditEvidence && item.available && item.validTime && !item.partial && item.fresh
+    && !item.coverageIssues?.includes("asset_identity_unverified"));
 
   async function addFinding(findingKey: string) {
     setUpdating(`add:${findingKey}`);

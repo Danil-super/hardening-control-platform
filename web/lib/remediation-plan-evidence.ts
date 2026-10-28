@@ -1,6 +1,7 @@
 import { correlationMaxAgeHours } from "@/lib/audit-correlation";
 import { hashAnsibleReport, listAnsibleReports, readAnsibleReport, reportScopesCompatible, reportTimestamp, targetAliasFromReport, type AnsibleReportDetail } from "@/lib/ansible-reports";
 import type { PlanEvidence, RemediationPlanItem } from "@/lib/state-store";
+import { currentAssetBinding } from "@/lib/state-store";
 import type { Finding } from "@/types";
 
 function record(value: unknown): Record<string, unknown> {
@@ -94,6 +95,7 @@ function trivyAbsenceResolved(item: RemediationPlanItem, report: AnsibleReportDe
 
 export function assertPlanVerification(item: RemediationPlanItem, report: AnsibleReportDetail) {
   if (targetAliasFromReport(report) !== item.hostAlias) throw new Error("Повторный отчёт не относится к этому хосту.");
+  if (currentAssetBinding(item.hostAlias) && report.assetBinding?.status !== "verified") throw new Error("Идентичность машины в повторном отчёте не подтверждена. Исторический импорт или неаутентифицированный сетевой скан не подтверждает устранение на этом активе.");
   const timestamp = reportTimestamp(report);
   if (report.partial || !report.available || !report.reportTimeValid || !report.createdAt
     || timestamp <= Date.parse(item.updatedAt) || timestamp < Date.now() - correlationMaxAgeHours() * 3_600_000) {

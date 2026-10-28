@@ -2,6 +2,10 @@ import { listAnsibleReports, readAnsibleReport, targetAliasFromReport, reportTim
 import type { Finding, FindingSource, RiskLevel } from "@/types";
 import { nmapScopeIncludes, type NmapScanScope } from "@/lib/nmap-scope";
 import { statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { assetEvidenceKey } from "@/lib/asset-binding";
+import { currentAssetBinding } from "@/lib/state-store";
+import { explicitInventoryConnectionId } from "@/lib/inventory";
 
 export type CorrelationEvidence = {
   source: FindingSource;
@@ -71,7 +75,8 @@ function reportTime(report: AnsibleReportSummary) {
 }
 
 function reportKey(report: AnsibleReportSummary) {
-  return reportScopeKey(report);
+  const identity = assetEvidenceKey(report.assetBinding);
+  return identity === "legacy" ? reportScopeKey(report) : `${identity}:${reportScopeKey(report)}`;
 }
 
 function sourceLabel(source: FindingSource) {
@@ -146,10 +151,18 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
   const now = Date.now();
   const ageHours = correlationMaxAgeHours();
   const minimumTime = now - ageHours * 60 * 60 * 1000;
-  const reports = (availableReports ?? listAnsibleReports()).filter((report) => (
+  const allReports = (availableReports ?? listAnsibleReports()).filter((report) => (
     targetAliasFromReport(report) === hostAlias
   ));
-  const signature = JSON.stringify([ageHours, reports.map((report) => {
+  const binding = currentAssetBinding(hostAlias);
+  const configuredConnection = explicitInventoryConnectionId(hostAlias) ?? binding?.connectionId;
+  const connectionChanged = Boolean(binding && configuredConnection !== binding.connectionId);
+  const identityMatches = (report: AnsibleReportSummary) => !report.assetBindingInvalid && (!binding
+    ? !report.assetBinding || report.assetBinding.status !== "unknown" || !configuredConnection || report.assetBinding.connectionId === configuredConnection
+    : report.assetBinding?.status === "verified" ? !connectionChanged && report.assetBinding.assetId === binding.assetId
+      : report.assetBinding?.status === "unknown" && report.assetBinding.aliasGeneration === binding.generation && report.assetBinding.connectionId === configuredConnection);
+  const reports = allReports.filter(identityMatches);
+  const signature = JSON.stringify([ageHours, binding?.assetId, binding?.generation, configuredConnection, allReports.map((report) => {
     const info = statSync(report.path, { throwIfNoEntry: false });
     return [report.id, report.path, reportKey(report), report.reportTimeValid, report.partial, report.available,
       reportTime(report) >= minimumTime, info?.dev, info?.ino, info?.size, info?.mtimeMs, info?.ctimeMs];
@@ -247,11 +260,25 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
     current: isCurrent(report),
     supersededBy: isCurrent(report) || !report.reportTimeValid ? null : (report.mode === "nmap" ? latestNmap?.id : latestOpenScap?.id) ?? null,
     coverageIssues: [
+      ...(report.assetBinding?.status === "unknown" ? ["asset_identity_unverified"] : []),
       ...(!isCurrent(report) ? [report.reportTimeValid ? "scope_superseded" : "invalid_time"] : []),
       ...(report.scopeKnown === false ? ["scope_unknown"] : []),
       ...(lostCoverage.some((loss) => loss.replacedByReportId === report.id) ? ["previous_coverage_not_verified"] : []),
     ],
   }));
+  // Keep excluded historical evidence visible without treating a former
+  // machine (or an unbound legacy report) as the current asset's assessment.
+  const excluded = new Map<string, AnsibleReportSummary>();
+  for (const report of allReports.filter((item) => !identityMatches(item))) {
+    const key = reportKey(report);
+    if (!excluded.has(key) || reportTime(report) > reportTime(excluded.get(key)!)) excluded.set(key, report);
+  }
+  for (const report of excluded.values()) coverage.push({ reportId: report.id, mode: report.mode, profileId: report.profileId, createdAt: report.createdAt,
+    fresh: false, partial: true, available: report.available, validTime: report.reportTimeValid, auditEvidence: false, scopeKey: reportKey(report),
+    scopeKnown: report.scopeKnown !== false, contentId: report.contentId ?? null, scanScope: report.scanScope ?? null, portCoverage: report.portCoverage ?? null,
+    coverageComplete: report.coverageComplete ?? null, current: false, supersededBy: null,
+    coverageIssues: [report.assetBindingInvalid ? "asset_binding_invalid" : !report.assetBinding ? "legacy_identity_unknown"
+      : connectionChanged ? "asset_connection_changed" : "asset_identity_changed"] });
   const grouped = new Map<string, { identity: ReturnType<typeof identityForFinding>; findings: Finding[]; sources: CorrelationEvidence[] }>();
   for (const report of latestByKind.values()) {
     if (!isCurrent(report) || !report.reportTimeValid || reportTime(report) < minimumTime || ["facts", "events", "packages", "dependency-track"].includes(report.mode)) continue;
@@ -260,6 +287,7 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
     for (const finding of detail.findings) {
       if (finding.status === "passed" || finding.status === "fixed") continue;
       const identity = identityForFinding(finding);
+      if (report.assetBinding) identity.key = `asset_finding_${createHash("sha256").update(`${assetEvidenceKey(report.assetBinding)}\0${identity.key}`).digest("hex")}`;
       const group = grouped.get(identity.key) ?? { identity, findings: [], sources: [] };
       group.findings.push(finding);
       group.sources.push({

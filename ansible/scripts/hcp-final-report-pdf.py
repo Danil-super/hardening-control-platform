@@ -10,6 +10,7 @@ import html
 import io
 import json
 import os
+import re
 import sys
 
 MAX_INPUT = 32 * 1024 * 1024
@@ -57,6 +58,46 @@ def nmap_scope_label(value):
     }.get(value, 'Область TCP-проверки неизвестна')
 
 
+def asset_binding_label(value):
+    """Project only the public identity; never stringify a binding wholesale."""
+    if value is None:
+        return 'Исторический источник (legacy): идентичность машины не зафиксирована.'
+    if isinstance(value, dict) and value.get('version') == 1:
+        if value.get('status') == 'verified':
+            asset_id = value.get('assetId')
+            generation = value.get('generation')
+            if (isinstance(asset_id, str) and re.match(r'^asset-[a-f0-9]{64}$', asset_id)
+                    and isinstance(generation, int) and not isinstance(generation, bool)
+                    and 0 < generation <= 9007199254740991):
+                return 'Актив: %s; поколение привязки: %d (подтверждена).' % (asset_id, generation)
+        elif value.get('status') == 'unknown' and value.get('reason') == 'unauthenticated_network_scan':
+            return 'Неизвестный актив (unknown): сетевое сканирование без аутентификации машины.'
+    return 'Идентичность источника недостоверна; принадлежность машине не подтверждена.'
+
+
+def coverage_state(item):
+    state = 'полный, свежий' if item.get('fresh') and not item.get('partial') and item.get('available') else 'частичный, недоступный или устаревший'
+    if item.get('mode') == 'nmap' and state == 'полный, свежий':
+        state = 'завершён в выбранной области, свежий'
+    issues = item.get('coverageIssues') if isinstance(item.get('coverageIssues'), list) else []
+    identity_reasons = {
+        'asset_binding_invalid': 'недостоверная привязка к машине; исключён из текущей оценки',
+        'legacy_identity_unknown': 'исторический источник (legacy), идентичность машины неизвестна; исключён из текущей оценки',
+        'asset_connection_changed': 'параметры подключения изменены; принадлежность текущей машине не подтверждена; исключён из текущей оценки',
+        'asset_identity_changed': 'другая машина или прежняя привязка; исключён из текущей оценки',
+    }
+    exclusions = [label for reason, label in identity_reasons.items() if reason in issues]
+    if exclusions:
+        state = '; '.join(exclusions)
+    elif item.get('current') is False:
+        state = 'историческая область; повторно не проверена'
+    elif 'previous_coverage_not_verified' in issues:
+        state += '; прежний охват не подтверждён'
+    if 'asset_identity_unverified' in issues:
+        state += '; идентичность машины не подтверждена (unknown)'
+    return state
+
+
 def list_value(values, fallback='—'):
     if not isinstance(values, list) or not values:
         return fallback
@@ -90,14 +131,17 @@ def render(snapshot):
     body = ParagraphStyle('HCPBody', parent=styles['BodyText'], fontName='HCPDejaVu', fontSize=9, leading=13, spaceAfter=5)
     small = ParagraphStyle('HCPSmall', parent=body, fontSize=7.5, leading=10, textColor=colors.HexColor('#334155'))
     title = ParagraphStyle('HCPTitle', parent=styles['Title'], fontName='HCPDejaVuBold', fontSize=19, leading=24, alignment=TA_CENTER, textColor=colors.HexColor('#0f172a'), spaceAfter=12)
-    heading = ParagraphStyle('HCPHeading', parent=styles['Heading2'], fontName='HCPDejaVuBold', fontSize=13, leading=17, textColor=colors.HexColor('#0f172a'), spaceBefore=12, spaceAfter=6)
-    subheading = ParagraphStyle('HCPSubheading', parent=styles['Heading3'], fontName='HCPDejaVuBold', fontSize=10, leading=14, textColor=colors.HexColor('#0f172a'), spaceBefore=8, spaceAfter=3)
+    heading = ParagraphStyle('HCPHeading', parent=styles['Heading2'], fontName='HCPDejaVuBold', fontSize=13, leading=17, textColor=colors.HexColor('#0f172a'), spaceBefore=12, spaceAfter=6, keepWithNext=True)
+    subheading = ParagraphStyle('HCPSubheading', parent=styles['Heading3'], fontName='HCPDejaVuBold', fontSize=10, leading=14, textColor=colors.HexColor('#0f172a'), spaceBefore=8, spaceAfter=3, keepWithNext=True)
 
     output = io.BytesIO()
     document = SimpleDocTemplate(output, pagesize=A4, leftMargin=16 * mm, rightMargin=16 * mm, topMargin=17 * mm, bottomMargin=18 * mm,
                                  title='Итоговый отчёт HCP', author=clean(snapshot.get('subject', {}).get('specialist'), 200))
     story = []
     subject = snapshot.get('subject', {}) if isinstance(snapshot.get('subject'), dict) else {}
+    manifest = snapshot.get('sourceManifest', []) if isinstance(snapshot.get('sourceManifest'), list) else []
+    source_assets = {item.get('id'): asset_binding_label(item.get('assetBinding'))
+                     for item in manifest if isinstance(item, dict) and isinstance(item.get('id'), str)}
     story.append(Paragraph('Итоговый отчёт по контролю безопасности', title))
     story.append(Paragraph('HCP · сформирован ' + esc(snapshot.get('createdAt')) + ' · идентификатор ' + esc(snapshot.get('id')), small))
     story.append(Spacer(1, 5))
@@ -116,6 +160,7 @@ def render(snapshot):
     scope = snapshot.get('scope', {}) if isinstance(snapshot.get('scope'), dict) else {}
     story.append(Paragraph('В область включён только указанный целевой хост и отчёты HCP, перечисленные в приложении. Использованные виды проверок: ' + esc(list_value(scope.get('auditModes'), 'нет доступных отчётов')) + '.', body))
     story.append(Paragraph('Выводы основаны на доступных на момент формирования доказательствах. Совпадение CVE, версии или баннера не является само по себе подтверждением применимости. Astra OVAL оценивает только выбранную базу; её происхождение и SHA-256 фиксируются в исходном отчёте, но подпись производителя и полнота всех CVE автоматически не подтверждаются.', body))
+    story.append(Paragraph('Псевдоним хоста может быть назначен другой машине. Публичный ID актива и поколение привязки каждого источника указаны в приложении; unknown означает неподтверждённую машину, legacy — отсутствие исторической привязки. Сохранённые решения и подтверждения плана относятся к активам исходных отчётов. Смена машины не переносит эти решения на новый актив.', body))
     story.append(Paragraph('HCP не хранит в этом отчёте пароли, приватные SSH-ключи, пути к резервным копиям, команды изменения или необработанный вывод удалённых систем.', body))
 
     coverage = snapshot.get('coverage', []) if isinstance(snapshot.get('coverage'), list) else []
@@ -125,17 +170,11 @@ def render(snapshot):
         for item in coverage:
             if not isinstance(item, dict):
                 continue
-            state = 'полный, свежий' if item.get('fresh') and not item.get('partial') and item.get('available') else 'частичный, недоступный или устаревший'
-            if item.get('mode') == 'nmap' and state == 'полный, свежий':
-                state = 'завершён в выбранной области, свежий'
-            if item.get('current') is False:
-                state = 'историческая область; повторно не проверена'
-            elif 'previous_coverage_not_verified' in (item.get('coverageIssues') or []):
-                state += '; прежний охват не подтверждён'
+            state = coverage_state(item)
             mode = clean(item.get('mode'), 70)
             if item.get('mode') == 'nmap':
                 mode += ' · ' + nmap_scope_label(item.get('scanScope'))
-            rows.append([Paragraph(esc(item.get('reportId'), 180), small), Paragraph(esc(mode, 250), small), Paragraph(esc(item.get('createdAt'), 100), small), Paragraph(esc(state, 180), small)])
+            rows.append([Paragraph(esc(item.get('reportId'), 180), small), Paragraph(esc(mode, 250), small), Paragraph(esc(item.get('createdAt'), 100), small), Paragraph(esc(state, 600), small)])
         coverage_table = Table(rows, colWidths=(49 * mm, 29 * mm, 52 * mm, 48 * mm), repeatRows=1)
         coverage_table.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#dbeafe')), ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#cbd5e1')), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 4), ('RIGHTPADDING', (0, 0), (-1, -1), 4), ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4)]))
         story.append(coverage_table)
@@ -194,6 +233,13 @@ def render(snapshot):
             evidence = item.get('evidence', []) if isinstance(item.get('evidence'), list) else []
             content.append(Paragraph('<b>Исходных объектов доказательства:</b> ' + str(len(evidence)) + '. Полный перечень идентификаторов приведён ниже; технические данные сохранены в снимке и исходных отчётах.', small))
             story.append(KeepTogether(content))
+            # Resolve historical plan scope from its frozen source reports,
+            # never from the machine currently assigned to the host alias.
+            plan_assets = list(dict.fromkeys(source_assets.get(source.get('reportId'),
+                'Идентичность не установлена: источник отсутствует в манифесте.')
+                for source in evidence if isinstance(source, dict)))
+            for label in plan_assets or ['Идентичность не установлена: исходные отчёты не указаны.']:
+                story.append(Paragraph('<b>Исходный актив плана:</b> ' + esc(label, 300), small))
             # Keep the list splittable across pages. A rule can have thousands
             # of file/account instances; never silently keep only the first 8.
             for source in evidence:
@@ -238,12 +284,12 @@ def render(snapshot):
     story.append(Paragraph('5. Целостность и приложение доказательств', heading))
     story.append(Paragraph('Цепочка журнала HCP: ' + esc('проверена' if integrity.get('valid') else 'требует проверки') + '; записей: ' + esc(integrity.get('entries')) + '; защита полезной нагрузки: ' + esc('полная' if integrity.get('payloadProtected') else 'частично историческая') + '.', body))
     story.append(Paragraph('Снимок источников: SHA-256 ' + esc(snapshot.get('sourceManifestSha256'), 90) + '. Контрольная сумма этого PDF зафиксирована в записи экспорта HCP с данным идентификатором. Номера и контрольные суммы исходных JSON-отчётов находятся в сохранённом снимке. Цепочка HMAC защищает события HCP; исходные JSON фиксируются через этот манифест, а не подписываются по отдельности.', body))
-    manifest = snapshot.get('sourceManifest', []) if isinstance(snapshot.get('sourceManifest'), list) else []
     if manifest:
         story.append(Paragraph('Исходные отчёты', subheading))
         for item in manifest:
             if isinstance(item, dict):
-                story.append(Paragraph('• ' + esc(item.get('id'), 130) + ' · ' + esc(item.get('mode'), 80) + ' · ' + esc(item.get('createdAt'), 100) + ' · SHA-256 ' + esc(item.get('sha256'), 90), small))
+                story.append(Paragraph('• ' + esc(item.get('id'), 180) + ' · ' + esc(item.get('mode'), 80) + ' · ' + esc(item.get('createdAt'), 100) + ' · SHA-256 ' + esc(item.get('sha256'), 90)
+                    + '<br/>' + esc(asset_binding_label(item.get('assetBinding')), 300), small))
 
     def footer(canvas, document):
         canvas.saveState()

@@ -50,6 +50,7 @@ jobs:
           path: |
             .lab/dependency-track-acceptance/protocol.json
             .lab/dependency-track-acceptance/hcp-report.json
+            .lab/dependency-track-acceptance/hcp-analysis-report.json
             .lab/dependency-track-acceptance/services.log
           if-no-files-found: warn
       - name: Clean up the disposable stack after an interrupted check

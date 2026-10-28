@@ -23,8 +23,10 @@ finish() {
 trap finish EXIT
 
 "${compose[@]}" exec -T hcp mkdir -p "${hcp_source}/web/tests"
+"${compose[@]}" exec -T hcp mkdir -p "${hcp_source}/ansible/scripts"
 "${compose[@]}" exec -T hcp ln -s /app/web/node_modules "${hcp_source}/web/node_modules"
 "${compose[@]}" cp "${hcp_repo_root}/web/lib" "hcp:${hcp_source}/web/"
+"${compose[@]}" cp "${hcp_repo_root}/ansible/scripts/hcp-trivy-source.py" "hcp:${hcp_source}/ansible/scripts/"
 "${compose[@]}" cp "${hcp_repo_root}/web/tests/_typescript-loader.mjs" "hcp:${hcp_source}/web/tests/"
 "${compose[@]}" cp "${hcp_repo_root}/deployment/tests/verify_trivy_matching.mjs" "hcp:${hcp_source}/verify_trivy_matching.mjs"
 "${compose[@]}" exec -T hcp node "${hcp_source}/verify_trivy_matching.mjs" \

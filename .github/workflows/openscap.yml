@@ -1,6 +1,7 @@
 name: OpenSCAP full-profile acceptance
 
 on:
+  pull_request:
   push:
     branches: [main]
     paths:

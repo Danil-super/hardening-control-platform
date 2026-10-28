@@ -5,13 +5,15 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server";
 import { getRepoRoot } from "@/lib/ansible-control";
-import { ansibleSshEnvironment, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
+import { ansibleSshEnvironment, configuredPrivateKeyPath, isSafeSshHostAddress, normalizeSshPort, probeTrustedAssetIdentity } from "@/lib/ssh-access";
 import { assessHostReadiness, assessTargetPython, type HostReadiness } from "@/lib/host-readiness";
 import { connectionPrivateKey, hostCredentialSudoMode, HostCredentialError, isHostCredentialSudoReady } from "@/lib/host-credentials";
 import { readInventoryCloseoutHost } from "@/lib/inventory-closeout";
 import { summarizePreflight } from "@/lib/preflight-result";
 import { credentialTransportAllowed } from "@/lib/ssh-bootstrap";
 import { ansibleLiteralExtraVars } from "@/lib/ansible-literal-vars";
+import { assetConnectionId, type VerifiedAssetBinding } from "@/lib/asset-binding";
+import { recordAssetObservation } from "@/lib/state-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -200,6 +202,14 @@ export async function POST(request: Request) {
 
   try {
     const ssh = await runAnsible([alias, "-m", "raw", "-a", "true"], inventoryPath, "ssh");
+    let assetBinding: VerifiedAssetBinding | null = null;
+    let identityError: string | null = null;
+    if (ssh.ok) {
+      try {
+        const observation = await probeTrustedAssetIdentity({ address, port, user, privateKeyPath: sshKeyPath });
+        assetBinding = recordAssetObservation({ alias, connectionId: assetConnectionId({ address, port, user }), observation });
+      } catch (error) { identityError = error instanceof Error ? error.message : "Идентичность актива не подтверждена."; }
+    }
     // raw needs no target Python: diagnose old or missing runtimes before
     // transferring Ansible modules which may use unsupported syntax.
     const pythonProbe = ssh.ok
@@ -237,9 +247,15 @@ export async function POST(request: Request) {
     }
 
     const os = readiness?.os ?? ([facts.ansible_distribution, facts.ansible_distribution_version].filter(Boolean).join(" ") || null);
+    const summary = summarizePreflight({ ssh, setup, sudo, become, os, sudoMode: onDemandSudo ? "on_demand" : null,
+      pythonMessage: `Python ${targetPython}: модуль Ansible выполнен (${facts.ansible_python?.executable ?? "/usr/bin/python3"}).` });
     return NextResponse.json({
-      ...summarizePreflight({ ssh, setup, sudo, become, os, sudoMode: onDemandSudo ? "on_demand" : null,
-        pythonMessage: `Python ${targetPython}: модуль Ansible выполнен (${facts.ansible_python?.executable ?? "/usr/bin/python3"}).` }),
+      ...summary,
+      ok: summary.ok && Boolean(assetBinding),
+      message: identityError ?? summary.message,
+      checks: { ...summary.checks, identity: { ok: Boolean(assetBinding), state: assetBinding ? "passed" : ssh.ok ? "failed" : "skipped",
+        message: assetBinding ? "machine-id и доверенный SSH host key подтверждены." : identityError ?? "Сначала требуется SSH-подключение." } },
+      assetBinding,
       facts: {
         os,
         python: facts.ansible_python?.executable ?? null,

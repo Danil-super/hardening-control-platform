@@ -4,6 +4,7 @@ import os from "node:os";
 import { isIP } from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
+import { machineIdentityHash, validHostFingerprint, type AssetObservation } from "@/lib/asset-binding";
 
 const execFileAsync = promisify(execFile);
 
@@ -23,9 +24,9 @@ export function getKnownHostsPath() {
     : path.join(os.homedir(), ".ssh", "known_hosts");
 }
 
-export function ansibleSshArgs() {
+export function ansibleSshArgs(knownHostsPath = getKnownHostsPath(), algorithms?: string) {
   // Ansible parses this value with shlex, so a path must remain one argument.
-  return `-o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=${JSON.stringify(getKnownHostsPath())}`;
+  return `-F /dev/null -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o GlobalKnownHostsFile=/dev/null -o UpdateHostKeys=no -o UserKnownHostsFile=${JSON.stringify(knownHostsPath)}${algorithms ? ` -o HostKeyAlgorithms=${algorithms}` : ""}`;
 }
 
 /**
@@ -157,6 +158,60 @@ export async function hasSavedHostKey(address: string, port: number) {
     if ((error as { code?: number }).code === 1) return false;
     throw error;
   }
+}
+
+export type TrustedAssetObservation = AssetObservation & { hostKeyLine: string; hostKeyAlgorithms: string };
+
+async function savedHostKeyCandidates(address: string, port: number): Promise<HostKeyCandidate[]> {
+  const result = await execFileAsync("ssh-keygen", ["-F", hostPattern(address, port), "-f", getKnownHostsPath()], { timeout: 10_000, maxBuffer: 128 * 1024 });
+  const lines = result.stdout.split("\n").map((line) => line.trim()).filter((line) => line && !line.startsWith("#"));
+  if (lines.some((line) => line.startsWith("@revoked ")) || lines.length > 16) throw new Error("Unsupported or revoked host-key trust");
+  const candidates: HostKeyCandidate[] = [];
+  for (const line of lines) {
+    if (line.startsWith("@")) continue;
+    const fields = line.split(/\s+/);
+    const keyLine = `${fields[1]} ${fields[2]}`;
+    if (!isPublicKey(keyLine)) continue;
+    const fingerprint = await fingerprintForKeyLine(keyLine);
+    if (fingerprint) candidates.push({ ...fingerprint, hostKeyLine: `${hostPattern(address, port)} ${keyLine}` });
+  }
+  if (!candidates.length) throw new Error("Missing trusted host key");
+  return candidates;
+}
+
+/** The identity is read through an authenticated channel, never ssh-keyscan. */
+export async function probeTrustedAssetIdentity(input: { address: string; port: number; user: string; privateKeyPath: string }): Promise<TrustedAssetObservation> {
+  if (!isSafeSshHostAddress(input.address) || normalizeSshPort(input.port) === null
+      || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(input.user)) throw new Error("Некорректное SSH-подключение для проверки идентичности.");
+  let candidates: HostKeyCandidate[];
+  try { candidates = await savedHostKeyCandidates(input.address, input.port); }
+  catch { throw Object.assign(new Error("Сначала независимо проверьте и сохраните SSH fingerprint сервера. Идентичность актива не установлена."), { code: "asset_host_key_untrusted" }); }
+  const trustDirectory = mkdtempSync(path.join(os.tmpdir(), "hcp-asset-trust-"));
+  const trustFile = path.join(trustDirectory, "known_hosts");
+  try {
+    writeFileSync(trustFile, candidates.map((candidate) => candidate.hostKeyLine).join("\n") + "\n", { mode: 0o600 });
+    const result = await execFileAsync("ssh", ["-v", "-F", "/dev/null", "-T", "-p", String(input.port), "-l", input.user, "-i", input.privateKeyPath,
+      "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "IdentityAgent=none", "-o", "PreferredAuthentications=publickey",
+      "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${JSON.stringify(trustFile)}`, "-o", "GlobalKnownHostsFile=/dev/null",
+      "-o", "UpdateHostKeys=no", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ConnectTimeout=10",
+      "-o", "ConnectionAttempts=1", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=1", "--", input.address,
+      "LC_ALL=C; export LC_ALL; IFS= read -r hcp_machine_id < /etc/machine-id && printf 'HCP_MACHINE_ID=%s\\n' \"$hcp_machine_id\""], {
+      timeout: 25_000, maxBuffer: 64 * 1024, env: { ...process.env, LC_ALL: "C", SSH_ASKPASS_REQUIRE: "never" },
+    });
+    const ids = [...result.stdout.matchAll(/^HCP_MACHINE_ID=([a-f0-9]{32})\r?$/gm)];
+    // This debug line is generated locally by OpenSSH for the negotiated key.
+    // A remote banner is prefixed differently and cannot become this line.
+    const keys = [...result.stderr.matchAll(/^debug1: Server host key: \S+ (SHA256:[A-Za-z0-9+/=]+)\r?$/gm)];
+    if (ids.length !== 1 || keys.length !== 1 || !validHostFingerprint(keys[0][1])) throw new Error("identity_output_invalid");
+    const candidate = candidates.find((item) => item.fingerprint === keys[0][1]);
+    if (!candidate) throw new Error("Negotiated key not in the captured trust");
+    const keyType = candidate.hostKeyLine.split(/\s+/)[1];
+    return { machineIdSha256: machineIdentityHash(ids[0][1]), sshHostKeyFingerprint: keys[0][1], observedAt: new Date().toISOString(),
+      hostKeyLine: candidate.hostKeyLine, hostKeyAlgorithms: keyType === "ssh-rsa" ? "rsa-sha2-512,rsa-sha2-256" : keyType };
+  } catch {
+    // Never return SSH stdout/stderr: it contains raw machine-id and paths.
+    throw Object.assign(new Error("Не удалось подтвердить machine-id и доверенный SSH host key. Проверьте ключ, доступ и /etc/machine-id через независимую консоль; смена машины или host key требует явной перепривязки."), { code: "asset_identity_unverified" });
+  } finally { rmSync(trustDirectory, { recursive: true, force: true }); }
 }
 
 export async function trustHostKey({

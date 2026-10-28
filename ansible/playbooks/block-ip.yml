@@ -27,4 +27,5 @@
           {{ ['blockIp', '--ip', block_ip,
               '--ssh-client', hcp_ssh_connection.stdout.split()[0],
               '--protected-ip', hcp_ssh_connection.stdout.split()[2]]
+             + (['--transaction', transaction_id] if transaction_id is defined else [])
              + (['--check'] if ansible_check_mode else []) }}

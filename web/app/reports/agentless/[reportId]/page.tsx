@@ -4,6 +4,7 @@ import { FindingsExplorer } from "@/components/findings/findings-explorer";
 import { SecurityEventsView } from "@/components/reports/security-events-view";
 import { OvalFindingsView } from "@/components/reports/oval-findings-view";
 import { LynisFindingsView } from "@/components/reports/lynis-findings-view";
+import { DependencyTrackResult } from "@/components/reports/dependency-track-result";
 import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { describeIncompleteAuditChecks } from "@/lib/audit-coverage";
@@ -35,6 +36,7 @@ function reportModeTitle(mode: string) {
   if (mode === "astra-oval") return "Astra: CVE по выбранной OVAL-базе";
   if (mode === "greenbone") return "Greenbone / OpenVAS: импорт сетевого отчёта";
   if (mode === "dependency-track") return "OWASP Dependency-Track: передача SBOM";
+  if (mode === "dependency-track-analysis") return "OWASP Dependency-Track: результаты анализа";
   return "Аудит Ansible";
 }
 
@@ -158,6 +160,17 @@ export default async function AgentlessReportDetailPage({
             <p className="mt-2 text-sm text-slate-300">{vulnerabilityScan.provider === "Trivy" ? "Trivy на управляющей машине" : "Control node Ansible"}</p>
           </div>
         </div>
+      </section>
+
+      {["dependency-track", "dependency-track-analysis"].includes(report.mode) ? <DependencyTrackResult hostAlias={targetAlias} reportId={report.id}
+        complete={report.mode === "dependency-track-analysis" && scanner.analysisStatus === "complete"}
+        findingCount={typeof scanner.findingCount === "number" ? scanner.findingCount : null} /> : null}
+
+      <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-sm text-slate-300">
+        {report.assetBinding?.status === "verified" ? <p className="break-all">Идентичность при запуске: {report.assetBinding.assetId}; alias {report.assetBinding.alias}; поколение {report.assetBinding.generation}. SSH fingerprint: {report.assetBinding.sshHostKeyFingerprint}.</p>
+          : <p>{report.assetBindingInvalid ? "Привязка идентичности в отчёте некорректна; результат требует проверки."
+            : report.assetBinding?.status === "unknown" ? "Сетевая проверка выполнена без аутентификации. Идентичность машины не подтверждена; результат не присоединяется к проверенному активу."
+              : "Исторический отчёт не содержит проверяемой идентичности актива. Текущая привязка alias не применяется к нему задним числом."}</p>}
       </section>
 
       {report.partial || !report.reportTimeValid ? (

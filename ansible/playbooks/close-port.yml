@@ -26,4 +26,5 @@
           {{ ['closePort', '--port', target_port | string,
               '--protocol', target_protocol | default('tcp'),
               '--ssh-port', (hcp_ssh_connection.stdout.split()[3] if hcp_ssh_connection.stdout.split() | length == 4 else ansible_port | default(22)) | string]
+             + (['--transaction', transaction_id] if transaction_id is defined else [])
              + (['--check'] if ansible_check_mode else []) }}

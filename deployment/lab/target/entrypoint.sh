@@ -10,6 +10,10 @@ chmod 600 /home/lab/.ssh/authorized_keys
 if [ ! -f /etc/ssh/host_keys/ssh_host_ed25519_key ]; then
   ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/host_keys/ssh_host_ed25519_key
 fi
+if [ ! -s /etc/ssh/host_keys/hcp-machine-id ]; then
+  tr -d '-' < /proc/sys/kernel/random/uuid > /etc/ssh/host_keys/hcp-machine-id
+fi
+cp /etc/ssh/host_keys/hcp-machine-id /etc/machine-id
 
 # Port-based finding only: this listener does not implement the Telnet protocol.
 python3 -u -c 'import socket
