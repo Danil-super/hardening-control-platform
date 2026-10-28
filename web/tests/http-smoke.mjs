@@ -3,6 +3,7 @@
 import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { DatabaseSync } from "node:sqlite";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import os from "node:os";
@@ -302,6 +303,21 @@ try {
   const logout = await request("/api/ansible/auth/logout", { method: "POST" });
   assert.match(logout.headers.get("set-cookie"), /Max-Age=0/i);
   assert.doesNotMatch(logout.headers.get("set-cookie"), /;\s*Secure/i, "HTTP deployment must be able to clear its session cookie");
+  // Keep replaying the captured cookie instead of trusting browser expiry.
+  await request("/api/ansible/session", { status: 401 });
+  await request("/api/settings/vulnerability-data", { status: 401 });
+  await request("/hosts", { status: 307 });
+  const oldCookie = cookie;
+  const relogin = await request("/api/ansible/auth/login", { method: "POST", body: { password: "http-smoke-password" }, auth: false });
+  cookie = relogin.headers.get("set-cookie").split(";", 1)[0];
+  assert.notEqual(cookie, oldCookie, "each login must create a distinct session");
+  await request("/api/ansible/session");
+  const sessionDatabase = new DatabaseSync(path.join(temporary, "hcp.sqlite"));
+  sessionDatabase.prepare("UPDATE admin_sessions SET expires_at = ?").run(Date.now() - 1);
+  sessionDatabase.close();
+  await request("/api/ansible/session", { status: 401 });
+  await request("/api/ansible/hosts", { status: 401 });
+  await request("/api/ansible/auth/logout", { method: "POST" });
   cookie = "";
   await request("/api/ansible/hosts", { status: 401 });
   console.log(`PASS ${checks} HTTP checks: auth, CSRF, report rendering, source selection and restart persistence (isolated fixtures)`);

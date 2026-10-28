@@ -52,7 +52,7 @@ export default async function HostCorrelationPage({ params, searchParams }: { pa
           <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">Единая оценка доказательств</p>
           <h1 className="mt-2 break-words text-3xl font-semibold text-white">{report.hostAlias}</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            Последний отчёт каждого инструмента и профиля, не старше {report.maxAgeHours} ч. Повторные запуски из истории не суммируются. Совпадающие технические признаки объединяются; разные CVE, компоненты и условия сохраняются отдельно.
+            Последние результаты не старше {report.maxAgeHours} ч. Для OpenSCAP учитывается текущий профиль и конкретный контент; смена области проверки не подтверждает устранение прежних нарушений. Повторные запуски из истории не суммируются.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -75,13 +75,23 @@ export default async function HostCorrelationPage({ params, searchParams }: { pa
         </section>
       ) : null}
 
+      {report.lostCoverage.length ? (
+        <section className="rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
+          <h2 className="font-semibold">Прежнее покрытие не подтверждено</h2>
+          <p>Новый OpenSCAP-отчёт не заменяет проверки другого профиля, версии контента или пропущенных правил. Старые наблюдения сохранены в исходных отчётах; их отсутствие в текущей сводке не означает устранения.</p>
+          <ul className="mt-2 list-disc space-y-1 pl-5">{report.lostCoverage.map((loss) => (
+            <li key={`${loss.reportId}:${loss.reason}`}><a className="underline" href={`/reports/agentless/${encodeURIComponent(loss.reportId)}`}>{loss.profileId ?? "Неизвестный профиль"}</a>: {loss.reason === "rules_missing" ? `не оценены ранее проверенные правила (${loss.ruleIds.length})` : loss.reason === "scope_unknown" ? "идентичность прежней или текущей области неизвестна" : "профиль или контент изменён"}.</li>
+          ))}</ul>
+        </section>
+      ) : null}
+
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
         <h2 className="font-semibold text-white">Покрытие проверками</h2>
         <p className="mt-2 text-sm text-slate-400">Совпадение CVE или порта не подтверждает уязвимость. Передача SBOM и сбор сведений не являются завершённым аудитом.</p>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           {report.coverage.map((item) => (
             <p key={item.reportId} className="text-sm text-slate-300">
-              {item.mode}: {!item.auditEvidence ? "сведения / передача данных" : !item.available ? "недоступен" : !item.validTime ? "некорректная дата" : !item.fresh ? "устарел" : item.partial ? "частичный результат" : "завершён"}
+              {item.mode}{item.mode === "openscap" ? ` · ${item.profileId ?? "профиль неизвестен"}` : ""}: {!item.validTime ? "некорректная дата" : !item.current ? "прежняя область; не подтверждена текущим аудитом" : !item.auditEvidence ? "сведения / передача данных" : !item.available ? "недоступен" : !item.fresh ? "устарел" : item.partial ? "частичный результат" : "завершён"}
             </p>
           ))}
           {!report.coverage.length ? <p className="text-sm text-slate-400">Проверки ещё не проводились.</p> : null}

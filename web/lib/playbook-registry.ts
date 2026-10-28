@@ -4,6 +4,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { actionRequiresTargetSudo, appendIncident, executeAnsiblePlaybook, getRepoRoot, isSafeLimit, onDemandSudoHostForLimit, playbooks } from "@/lib/ansible-control";
 import { getInventoryTargetHosts } from "@/lib/inventory";
+import { ansibleLiteralExtraVars } from "@/lib/ansible-literal-vars";
 
 const execFileAsync = promisify(execFile);
 
@@ -444,9 +445,8 @@ export async function runRegisteredPlaybook({
       extraVars[variable.name] = value;
     }
   }
-  // Ansible parses key=value strings again: JSON prevents a variable value
-  // containing spaces from introducing ansible_connection or other keys.
-  if (Object.keys(extraVars).length) args.push("-e", JSON.stringify(extraVars));
+  // JSON protects key boundaries; unsafe strings also prevent Jinja execution.
+  if (Object.keys(extraVars).length) args.push("-e", ansibleLiteralExtraVars(extraVars));
   if (limit) {
     args.push("--limit", limit);
   }

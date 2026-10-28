@@ -117,7 +117,8 @@ test("host closeout revokes the HCP-managed sudo rule together with its individu
   assert.match(revocation, /!requiretty/);
   assert.match(revocation, /unsafe_sudo_rule/);
   assert.match(revocation, /keyRemoved/);
-  assert.match(route, /credentialId: host\.credentialId/);
+  assert.match(route, /decommissionHost/);
+  assert.match(route, /recoverHostCloseout/);
 });
 
 test("password onboarding uses one-time sudo without creating a sudoers rule", () => {

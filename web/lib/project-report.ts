@@ -4,6 +4,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, 
 import path from "node:path";
 import { buildHostCorrelation } from "@/lib/audit-correlation";
 import { hashAnsibleReport, listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
+import { resolvePlanSeverity } from "@/lib/remediation-plan-evidence";
 import { getHcpStateDirectory, getArchivedRecordIds, createProjectReportRecord, getProjectReportRecord, listProjectReportRecords, listRemediationPlanItems, listRemediationTransactions, verifyAuditChain, type ArchiveView, type ProjectReportRecord } from "@/lib/state-store";
 
 export type ProjectReportSubject = { clientName: string; projectName: string; period: string; specialist: string };
@@ -142,7 +143,7 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   const hostAlias = input.hostAlias;
   const subject = normalizeSubject(input.subject);
   const createdAt = new Date().toISOString();
-  const planItems = listRemediationPlanItems(hostAlias);
+  const planItems = listRemediationPlanItems(hostAlias).map(resolvePlanSeverity);
   const storedTransactions = listRemediationTransactions(500).filter((item) => item.hostAlias === hostAlias);
   const requiredSources = new Set([...planItems.flatMap((item) => [...item.evidence.map((source) => source.reportId), item.verificationReportId]),
     ...storedTransactions.flatMap((item) => [item.preAuditReportId, item.postAuditReportId])]);
@@ -155,12 +156,12 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   })).sort((left, right) => left.id.localeCompare(right.id));
   const sourceManifestSha256 = sha256(canonical({ version: 1, hostAlias, sourceManifest }));
   const correlation = buildHostCorrelation(hostAlias);
-  const observations = new Map(correlation?.findings.map((finding) => [finding.id, finding]) ?? []);
   const activeKeys = new Set(planItems.map((item) => item.findingKey));
   const findings = planItems.map((item) => ({
     id: item.id, findingKey: item.findingKey, title: item.title, category: item.category, risk: item.risk, status: item.status,
-    severityUnknown: observations.get(item.findingKey)?.severityUnknown ?? false,
-    severityAssessment: observations.get(item.findingKey)?.severityAssessment ?? null,
+    severityUnknown: item.severityUnknown,
+    severityAssessment: item.severityAssessment,
+    severityOrigin: item.severityOrigin,
     description: item.description, recommendation: item.recommendation, owner: item.owner, dueAt: item.dueAt,
     approvalReference: item.approvalReference, implementationNote: item.implementationNote, verificationReportId: item.verificationReportId,
     riskAcceptedUntil: item.riskAcceptedUntil, evidence: item.evidence.map(evidenceSnapshot), createdAt: item.createdAt, updatedAt: item.updatedAt,
@@ -180,7 +181,7 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   const snapshotFileName = fileName.replace(/\.pdf$/, ".json");
   const snapshot: Record<string, unknown> = {
     version: 1, id, createdAt, hostAlias, subject, scope: { auditModes: Array.from(new Set(reports.map((report) => report.mode))).sort() },
-    coverage, findings, unplannedFindings, transactions, integrity: verifyAuditChain(), sourceManifest, sourceManifestSha256,
+    coverage, lostCoverage: correlation?.lostCoverage ?? [], findings, unplannedFindings, transactions, integrity: verifyAuditChain(), sourceManifest, sourceManifestSha256,
   };
   const pdf = await runPdfRenderer(snapshot);
   const pdfSha256 = sha256(pdf);

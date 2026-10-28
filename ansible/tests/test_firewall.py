@@ -165,7 +165,7 @@ class FirewallTests(unittest.TestCase):
     def test_firewalld_zone_display_order_and_activity_are_not_configuration_changes(self):
         runtime = 'trusted (default, active)\n  target: ACCEPT\n  interfaces: eth0\n  rich rules:\n    rule priority="-1" port port="8080" protocol="tcp" drop\n\npublic (active)\n  target: default\n  interfaces: eth1\n'
         permanent = 'public\n  target: default\n  interfaces: eth1\n\ntrusted (default)\n  target: ACCEPT\n  interfaces: eth0\n  rich rules:\n    rule priority="-1" port port="8080" protocol="tcp" drop\n'
-        responses = [subprocess.CompletedProcess([], 0, text, "") for text in (runtime, permanent, "", "", "", "", "", "", "")]
+        responses = [subprocess.CompletedProcess([], 0, text, "") for text in (runtime, permanent, "", "", "", "", "", "", "", "", "")]
         with patch.object(fw, "run", side_effect=responses):
             fw.persistent_firewalld()
         self.assertEqual(fw.firewalld_configuration_blocks(runtime), fw.firewalld_configuration_blocks(permanent))
@@ -191,13 +191,58 @@ class FirewallTests(unittest.TestCase):
         for policies, accepted in ((permanent, True), (permanent.replace("CONTINUE", "ACCEPT"), False)):
             with self.subTest(accepted=accepted):
                 responses = [subprocess.CompletedProcess([], 0, text, "") for text in
-                             (zones, zones, "--list-all-policies", runtime, policies, "", "", "", "", "", "")]
+                             (zones, zones, "--list-all-policies", runtime, policies, "", "", "", "", "", "", "", "")]
                 with patch.object(fw, "run", side_effect=responses):
                     if accepted:
                         fw.persistent_firewalld()
                     else:
                         with self.assertRaisesRegex(fw.FirewallError, "policies differ"):
                             fw.persistent_firewalld()
+
+    def test_firewalld_backup_checks_ipsets_even_when_zone_names_are_unchanged(self):
+        info = 'blocklist\n  type: hash:ip\n  options: family=inet hashsize=1024\n  entries: 192.0.2.10 192.0.2.20\n'
+        for permanent, expected in ((info, True), (info.replace(' 192.0.2.20', ''), False),
+                                    (info.replace('family=inet', 'family=inet6'), False),
+                                    (info.replace('hash:ip', 'hash:net'), False)):
+            calls = []
+            def command(*argv):
+                calls.append(argv)
+                if '--list-all-zones' in argv:
+                    output = 'drop\n  target: DROP\n  sources: ipset:blocklist\n'
+                elif '--get-ipsets' in argv:
+                    output = 'blocklist'
+                elif '--info-ipset=blocklist' in argv:
+                    output = permanent if '--permanent' in argv else info
+                else:
+                    output = ''
+                return subprocess.CompletedProcess(argv, 0, output, '')
+            with self.subTest(permanent=permanent), patch.object(fw, 'run', side_effect=command):
+                if expected:
+                    fw.persistent_firewalld()
+                else:
+                    with self.assertRaisesRegex(fw.FirewallError, 'IP set definitions or entries differ'):
+                        fw.persistent_firewalld()
+            self.assertIn(('firewall-cmd', '--info-ipset=blocklist'), calls)
+
+    def test_firewalld_ipset_checks_fail_closed_for_unknown_or_untracked_state(self):
+        info = 'blocklist\n  type: hash:ip\n  options: family=inet\n  entries: 192.0.2.10\n'
+        completed = lambda value: subprocess.CompletedProcess([], 0, value, '')
+        scenarios = [
+            [completed('blocklist'), completed('')],
+            [completed('blocklist'), completed('blocklist'), completed(info.replace('family=inet', 'timeout=60'))],
+            [completed('blocklist'), completed('blocklist'), completed(info.replace('  entries: 192.0.2.10\n', ''))],
+            [completed('blocklist'), completed('blocklist'), completed(info + '  unknown-field: value\n')],
+            [fw.FirewallError('IP set API unavailable')],
+        ]
+        for responses in scenarios:
+            with self.subTest(responses=responses), patch.object(fw, 'run', side_effect=responses):
+                with self.assertRaises(fw.FirewallError):
+                    fw.persistent_firewalld_ipsets()
+
+    def test_firewalld_ipset_order_is_not_a_configuration_change(self):
+        first = 'blocklist\n  type: hash:ip\n  options: family=inet hashsize=1024\n  entries: 192.0.2.10 192.0.2.20\n'
+        second = first.replace('family=inet hashsize=1024', 'hashsize=1024 family=inet').replace('192.0.2.10 192.0.2.20', '192.0.2.20 192.0.2.10')
+        self.assertEqual(fw.firewalld_ipset_info(first), fw.firewalld_ipset_info(second))
 
     def test_transaction_traversal_and_archive_links_are_rejected(self):
         for transaction in ("../etc", "........", "txn-../../etc", "txn-ok/../bad"):

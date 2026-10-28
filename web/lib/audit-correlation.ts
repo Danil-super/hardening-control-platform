@@ -1,4 +1,4 @@
-import { listAnsibleReports, readAnsibleReport, targetAliasFromReport, reportTimestamp, type AnsibleReportSummary } from "@/lib/ansible-reports";
+import { listAnsibleReports, readAnsibleReport, targetAliasFromReport, reportTimestamp, reportScopeKey, type AnsibleReportSummary } from "@/lib/ansible-reports";
 import type { Finding, FindingSource, RiskLevel } from "@/types";
 import { statSync } from "node:fs";
 
@@ -38,6 +38,18 @@ export type CorrelationCoverage = {
   available: boolean;
   validTime: boolean;
   auditEvidence: boolean;
+  scopeKey: string;
+  scopeKnown: boolean;
+  contentId: string | null;
+  current: boolean;
+  supersededBy: string | null;
+  coverageIssues: string[];
+};
+
+export type LostCoverage = {
+  reportId: string; replacedByReportId: string; profileId: string | null; contentId: string | null;
+  scopeKey: string; reason: "scope_changed" | "scope_unknown" | "rules_missing"; ruleIds: string[];
+  findingIds: string[];
 };
 
 function safeHostAlias(value: string) {
@@ -54,7 +66,7 @@ function reportTime(report: AnsibleReportSummary) {
 }
 
 function reportKey(report: AnsibleReportSummary) {
-  return `${report.mode}:${report.profileId ?? "default"}`;
+  return reportScopeKey(report);
 }
 
 function sourceLabel(source: FindingSource) {
@@ -118,6 +130,7 @@ function statusFor(findings: Finding[]) {
 type HostCorrelation = {
   hostAlias: string; maxAgeHours: number; findings: CorrelatedFinding[]; coverage: CorrelationCoverage[];
   staleReports: CorrelationCoverage[]; freshReports: CorrelationCoverage[]; partialReports: CorrelationCoverage[];
+  lostCoverage: LostCoverage[];
 };
 const correlationCache = new Map<string, { signature: string; result: HostCorrelation }>();
 
@@ -131,6 +144,13 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
   const reports = (availableReports ?? listAnsibleReports()).filter((report) => (
     targetAliasFromReport(report) === hostAlias
   ));
+  const signature = JSON.stringify([ageHours, reports.map((report) => {
+    const info = statSync(report.path, { throwIfNoEntry: false });
+    return [report.id, report.path, reportKey(report), report.reportTimeValid, report.partial, report.available,
+      reportTime(report) >= minimumTime, info?.dev, info?.ino, info?.size, info?.mtimeMs, info?.ctimeMs];
+  })]);
+  const cached = correlationCache.get(hostAlias);
+  if (cached?.signature === signature) return cached.result;
   const latestByKind = new Map<string, AnsibleReportSummary>();
   for (const report of reports) {
     const key = reportKey(report);
@@ -138,27 +158,74 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
     if (!previous || reportTime(report) > reportTime(previous)) latestByKind.set(key, report);
   }
 
+  // One OpenSCAP policy is assigned to a host at a time. Keep earlier scopes
+  // visible as lost coverage, never merge their old failures into a new policy
+  // or interpret its passes as verification of a different content/profile.
+  const latestOpenScap = reports.filter((report) => report.mode === "openscap" && report.reportTimeValid)
+    .sort((a, b) => reportTime(b) - reportTime(a))[0]
+    ?? reports.find((report) => report.mode === "openscap");
+  const isCurrent = (report: AnsibleReportSummary) => report.mode !== "openscap" || report.id === latestOpenScap?.id;
+  const lostCoverage: LostCoverage[] = [];
+  const details = new Map<string, ReturnType<typeof readAnsibleReport>>();
+  const detailFor = (report: AnsibleReportSummary) => {
+    if (!details.has(report.id)) details.set(report.id, readAnsibleReport(report.id));
+    return details.get(report.id);
+  };
+  const evaluatedRules = (report: AnsibleReportSummary) => new Map((detailFor(report)?.findings ?? [])
+    .filter((finding) => ["passed", "failed", "fixed"].includes(finding.status))
+    .flatMap((finding) => {
+      const rule = finding.evidence?.match(/\brule=([^;\s]+)/)?.[1];
+      // The adapter gives each nonempty XCCDF instance a stable finding ID.
+      // One evaluated file must not stand in for every instance of its rule.
+      const instance = finding.evidence?.match(/(?:^|;\s*)instance=([^;]*)/)?.[1]?.trim();
+      return rule ? [[`${rule}\0${instance ? finding.id : ""}`, { rule, findingId: finding.id }] as const] : [];
+    }));
+  if (latestOpenScap) {
+    for (const previous of latestByKind.values()) {
+      if (previous.mode !== "openscap" || previous.id === latestOpenScap.id || !previous.reportTimeValid) continue;
+      lostCoverage.push({ reportId: previous.id, replacedByReportId: latestOpenScap.id, profileId: previous.profileId,
+        contentId: previous.contentId ?? null, scopeKey: reportKey(previous), ruleIds: [], findingIds: [],
+        reason: previous.scopeKnown && latestOpenScap.scopeKnown ? "scope_changed" : "scope_unknown" });
+    }
+    if (latestOpenScap.scopeKnown) {
+      const currentRules = evaluatedRules(latestOpenScap);
+      for (const previous of reports) {
+        if (previous.id === latestOpenScap.id || reportKey(previous) !== reportKey(latestOpenScap)
+            || !previous.reportTimeValid || reportTime(previous) < minimumTime) continue;
+        const missing = [...evaluatedRules(previous)].filter(([key]) => !currentRules.has(key)).map(([, value]) => value);
+        if (missing.length) lostCoverage.push({ reportId: previous.id, replacedByReportId: latestOpenScap.id,
+          profileId: previous.profileId, contentId: previous.contentId ?? null, scopeKey: reportKey(previous),
+          reason: "rules_missing", ruleIds: [...new Set(missing.map((value) => value.rule))],
+          findingIds: missing.map((value) => value.findingId) });
+      }
+    }
+  }
+
   const coverage = Array.from(latestByKind.values()).map((report) => ({
     reportId: report.id,
     mode: report.mode,
     profileId: report.profileId,
     createdAt: report.createdAt,
-    fresh: report.reportTimeValid && reportTime(report) >= minimumTime,
-    partial: report.partial,
+    fresh: isCurrent(report) && report.reportTimeValid && reportTime(report) >= minimumTime,
+    partial: report.partial || !isCurrent(report) || lostCoverage.some((loss) => loss.replacedByReportId === report.id && loss.reason === "rules_missing"),
     available: report.available,
     validTime: report.reportTimeValid,
-    auditEvidence: !["facts", "events", "packages", "dependency-track"].includes(report.mode),
+    auditEvidence: isCurrent(report) && !["facts", "events", "packages", "dependency-track"].includes(report.mode),
+    scopeKey: reportKey(report),
+    scopeKnown: report.scopeKnown !== false,
+    contentId: report.contentId ?? null,
+    current: isCurrent(report),
+    supersededBy: isCurrent(report) || !report.reportTimeValid ? null : latestOpenScap?.id ?? null,
+    coverageIssues: [
+      ...(!isCurrent(report) ? [report.reportTimeValid ? "scope_superseded" : "invalid_time"] : []),
+      ...(report.scopeKnown === false ? ["scope_unknown"] : []),
+      ...(lostCoverage.some((loss) => loss.replacedByReportId === report.id) ? ["previous_coverage_not_verified"] : []),
+    ],
   }));
   const grouped = new Map<string, { identity: ReturnType<typeof identityForFinding>; findings: Finding[]; sources: CorrelationEvidence[] }>();
-  const signature = JSON.stringify([ageHours, coverage, ...Array.from(latestByKind.values(), (report) => {
-    const info = statSync(report.path, { throwIfNoEntry: false });
-    return [report.id, report.path, info?.dev, info?.ino, info?.size, info?.mtimeMs, info?.ctimeMs];
-  })]);
-  const cached = correlationCache.get(hostAlias);
-  if (cached?.signature === signature) return cached.result;
   for (const report of latestByKind.values()) {
-    if (!report.reportTimeValid || reportTime(report) < minimumTime || ["facts", "events", "packages", "dependency-track"].includes(report.mode)) continue;
-    const detail = readAnsibleReport(report.id);
+    if (!isCurrent(report) || !report.reportTimeValid || reportTime(report) < minimumTime || ["facts", "events", "packages", "dependency-track"].includes(report.mode)) continue;
+    const detail = detailFor(report);
     if (!detail) continue;
     for (const finding of detail.findings) {
       if (finding.status === "passed" || finding.status === "fixed") continue;
@@ -174,7 +241,7 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
         title: finding.title,
         status: finding.status,
         evidence: finding.evidence ?? "Нет дополнительного технического доказательства.",
-        partial: report.partial,
+        partial: coverage.find((item) => item.reportId === report.id)?.partial ?? report.partial,
       });
       grouped.set(identity.key, group);
     }
@@ -218,9 +285,10 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
     maxAgeHours: ageHours,
     findings,
     coverage,
-    staleReports: coverage.filter((item) => !item.fresh),
+    lostCoverage,
+    staleReports: coverage.filter((item) => item.current && !item.fresh),
     freshReports: coverage.filter((item) => item.fresh && item.auditEvidence),
-    partialReports: coverage.filter((item) => item.auditEvidence && (item.partial || !item.fresh)),
+    partialReports: coverage.filter((item) => (item.auditEvidence || !item.current) && (item.partial || !item.fresh)),
   };
   const size = findings.reduce((total, finding) => total + finding.title.length + finding.description.length + finding.recommendation.length
     + finding.sources.reduce((sourceTotal, source) => sourceTotal + source.evidence.length, 0), 0);

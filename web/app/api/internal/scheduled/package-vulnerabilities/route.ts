@@ -24,22 +24,27 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: false, message: "Новые отчёты инвентаря пакетов не найдены." }, { status: 409 });
   }
 
-  const results: Array<{ hostAlias: string; vulnerabilityReportId?: string; dependencyTrack?: string; partial?: boolean; error?: string }> = [];
+  const results: Array<{ hostAlias: string; vulnerabilityReportId?: string; dependencyTrack?: string;
+    dependencyTrackStatus?: "accepted" | "skipped" | "failed"; partial?: boolean; error?: string }> = [];
   for (const packageReport of packageReports) {
     const hostAlias = targetAliasFromReport(packageReport);
     try {
       const scan = await scanPackageInventory({ reportId: packageReport.id, hostAlias });
-      const sbomFile = (scan.report as { vulnerabilityScan?: { sbomFile?: unknown } }).vulnerabilityScan?.sbomFile;
-      let dependencyTrack: string | undefined;
-      if (typeof sbomFile === "string" && scan.reportId) {
-        try {
-          dependencyTrack = (await syncDependencyTrack({ hostAlias, vulnerabilityReportId: scan.reportId })).message;
-        } catch (error) {
-          dependencyTrack = `Не передан: ${error instanceof Error ? error.message : "неизвестная ошибка"}`;
-        }
+      let dependencyTrack: string;
+      let dependencyTrackStatus: "accepted" | "skipped" | "failed";
+      try {
+        // The adapter distinguishes an optional, unconfigured integration from
+        // a configured delivery that failed (including a missing saved SBOM).
+        const delivery = await syncDependencyTrack({ hostAlias, vulnerabilityReportId: scan.reportId });
+        dependencyTrack = delivery.message;
+        dependencyTrackStatus = delivery.configured ? "accepted" : "skipped";
+      } catch (error) {
+        dependencyTrack = `Не передан: ${error instanceof Error ? error.message : "неизвестная ошибка"}`;
+        dependencyTrackStatus = "failed";
       }
-      const partial = Boolean((scan.report as { vulnerabilityScan?: { partial?: boolean } }).vulnerabilityScan?.partial);
-      results.push({ hostAlias, vulnerabilityReportId: scan.reportId, dependencyTrack, partial });
+      const partial = Boolean((scan.report as { vulnerabilityScan?: { partial?: boolean } }).vulnerabilityScan?.partial)
+        || dependencyTrackStatus === "failed";
+      results.push({ hostAlias, vulnerabilityReportId: scan.reportId, dependencyTrack, dependencyTrackStatus, partial });
     } catch (error) {
       results.push({ hostAlias, error: error instanceof Error ? error.message : "неизвестная ошибка" });
     }
@@ -54,5 +59,5 @@ export async function POST(request: Request) {
     limit: null,
     message: `Плановая проверка пакетов: ${results.length - failed.length}/${results.length} хостов обработано.`,
   });
-  return NextResponse.json({ ok: failed.length === 0, reportRunId: body.reportRunId, results }, { status: failed.length ? 207 : 200 });
+  return NextResponse.json({ ok: failed.length === 0, partial: failed.length > 0, reportRunId: body.reportRunId, results }, { status: failed.length ? 207 : 200 });
 }

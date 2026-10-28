@@ -25,7 +25,7 @@ def arguments(**values):
         "inventory_host": "lab-host", "host": "192.0.2.10", "expected_host": [],
         "port": 22, "run_id": "test-run", "input": "", "exit_code": 0,
         "profile": "test-profile", "datastream": "/content/ssg.xml", "policy_group": "lab",
-        "datastream_mtime": "123", "datastream_checksum": "sha256:test", **values,
+        "datastream_mtime": "123", "datastream_checksum": "sha256:" + "a" * 64, "content_id": "", **values,
     })
 
 
@@ -253,6 +253,21 @@ class ScannerAdaptersTest(unittest.TestCase):
         report = self.parse_file('<TestResult><rule-result idref="rule"><result>error</result></rule-result></TestResult>', scanner.openscap_arf)
         self.assertTrue(report["scanner"]["partial"])
 
+    def test_openscap_preserves_actual_profile_and_content_identity(self):
+        xml = '<TestResult><profile idref="test-profile"/><rule-result idref="rule"><result>pass</result></rule-result></TestResult>'
+        report = self.parse_file(xml, scanner.openscap_arf, content_id="bundle-sha256:" + "b" * 64)
+        self.assertEqual(report["profileId"], "test-profile")
+        self.assertEqual(report["scanner"]["contentIdentity"], "bundle-sha256:" + "b" * 64)
+        self.assertEqual(report["scanner"]["datastreamChecksum"], "sha256:" + "a" * 64)
+        self.assertFalse(report["scanner"]["partial"])
+        mismatched = self.parse_file(xml, scanner.openscap_arf, profile="another-profile")
+        self.assertEqual(mismatched["profileId"], "test-profile")
+        self.assertEqual(mismatched["scanner"]["requestedProfile"], "another-profile")
+        self.assertTrue(mismatched["scanner"]["partial"])
+        short_name = self.parse_file(xml.replace('idref="test-profile"', 'idref="xccdf_example_profile_standard"'), scanner.openscap_arf, profile="standard")
+        self.assertEqual(short_name["profileId"], "xccdf_example_profile_standard")
+        self.assertFalse(short_name["scanner"]["partial"])
+
     def test_openscap_missing_configuration_explains_setup_without_claiming_a_scan(self):
         reason = "Не задан профиль OpenSCAP для группы хоста."
         report = scanner.openscap_unavailable(arguments(reason=reason, profile=None, datastream=None))
@@ -288,10 +303,32 @@ class ScannerAdaptersTest(unittest.TestCase):
             self.parse_file('<report format_id="5057e5cc-b825-11e4-9d0e-28d24461215b">' + inner + '</report>', scanner.greenbone_report)
 
     def test_greenbone_standard_xml_wrapper_keeps_original_host(self):
-        content = '<report><report_format><name>XML</name></report_format><report><scan_run_status>Done</scan_run_status><results>' + greenbone_result() + '</results></report></report>'
+        content = '<report><report_format><name>XML</name></report_format><report><scan_run_status>Done</scan_run_status><scan_end>2025-01-01T01:00:00Z</scan_end><results>' + greenbone_result() + '</results></report></report>'
         report = self.parse_file(content, scanner.greenbone_report)
         self.assertEqual(report["scanner"]["matchedResults"], 1)
         self.assertFalse(report["scanner"]["partial"])
+
+    def test_greenbone_observation_is_scan_end_not_import_time(self):
+        xml = '<report><scan_run_status>Done</scan_run_status><scan_start>2020-01-01T00:00:00Z</scan_start><scan_end>2020-01-01T04:00:00+03:00</scan_end><results>' + greenbone_result() + '</results></report>'
+        with patch.object(scanner, "now", return_value="2026-10-28T12:00:00+00:00"):
+            report = self.parse_file(xml, scanner.greenbone_report)
+        self.assertEqual(report["createdAt"], "2020-01-01T01:00:00+00:00")
+        self.assertEqual(report["observedAt"], report["createdAt"])
+        self.assertEqual(report["importedAt"], "2026-10-28T12:00:00+00:00")
+        self.assertFalse(report["scanner"]["partial"])
+
+    def test_greenbone_invalid_missing_or_future_times_are_unknown_and_partial(self):
+        for start, end in [("", ""), ("", "not-a-date"), ("", "2025-02-30T00:00:00Z"),
+                           ("", "2025-01-01T00:00:00"), ("", "2099-01-01T00:00:00Z"),
+                           ("2025-02-01T00:00:00Z", "2025-01-01T00:00:00Z"),
+                           ("invalid", "2025-01-01T00:00:00Z")]:
+            with self.subTest(start=start, end=end):
+                report = self.parse_file('<report><scan_run_status>Done</scan_run_status><scan_start>' + start + '</scan_start><scan_end>' + end + '</scan_end><results>' + greenbone_result() + '</results></report>', scanner.greenbone_report)
+                self.assertIsNone(report["observedAt"])
+                self.assertIsNone(report["createdAt"])
+                self.assertTrue(report["scanner"]["partial"])
+                self.assertFalse(report["scanner"]["observationTimeValid"])
+                self.assertTrue(report["scanner"]["partialReasons"])
 
     def test_greenbone_preserves_over_1000_results(self):
         content = '<report><scan_run_status>Done</scan_run_status><results>' + ''.join(greenbone_result(identifier=str(i)) for i in range(1001)) + '</results></report>'

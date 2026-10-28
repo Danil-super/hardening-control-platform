@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { authCookieName, createEdgeSessionToken, hasTrustedOrigin, isMutatingRequest, isProtectedPath } from "@/lib/auth-edge";
+import { hasTrustedOrigin, isMutatingRequest, isProtectedPath } from "@/lib/auth-edge";
+import { authCookieName, isAuthConfigured, isValidSessionToken } from "@/lib/auth";
 
 export async function proxy(request: NextRequest) {
   const { pathname, search } = request.nextUrl;
@@ -11,9 +12,9 @@ export async function proxy(request: NextRequest) {
     return NextResponse.next();
   }
 
-  const expectedToken = await createEdgeSessionToken();
+  const configured = isAuthConfigured();
   const currentToken = request.cookies.get(authCookieName)?.value;
-  if (expectedToken && currentToken === expectedToken) {
+  if (isValidSessionToken(currentToken)) {
     if (
       isProtectedApi &&
       isMutatingRequest(request.method) &&
@@ -35,12 +36,12 @@ export async function proxy(request: NextRequest) {
     return NextResponse.json(
       {
         ok: false,
-        error: expectedToken ? "auth_required" : "auth_not_configured",
-        message: expectedToken
+        error: configured ? "auth_required" : "auth_not_configured",
+        message: configured
           ? "Требуется вход администратора."
           : "Пароль администратора не настроен. Задайте HCP_ADMIN_PASSWORD в настройках развёртывания и перезапустите платформу.",
       },
-      { status: expectedToken ? 401 : 503 },
+      { status: configured ? 401 : 503 },
     );
   }
 

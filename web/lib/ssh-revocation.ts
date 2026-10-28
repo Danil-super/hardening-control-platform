@@ -7,7 +7,7 @@ const messages: Record<string, string> = {
   host_not_trusted: "Для безопасного отзыва доступа в HCP должен сохраняться проверенный ключ SSH-сервера.",
   host_key_changed: "Ключ SSH-сервера изменился. Сначала проверьте подлинность хоста; доступ и локальный ключ не удалены.",
   key_auth_failed: "Хост отклонил отдельный ключ HCP. Доступ и локальный ключ не удалены.",
-  ssh_timeout: "Хост не ответил вовремя. Доступ и локальный ключ не удалены.",
+  ssh_timeout: "Истекло время ожидания: результат удалённой команды не подтверждён. Локальный ключ сохранён.",
   ssh_dependency_missing: "Компонент SSH HCP отсутствует. Пересоберите контейнер из актуального Dockerfile.",
   sudo_required: "Для отзыва ключа нужен SSH-пользователь root или беспарольный sudo. Доступ и локальный ключ не удалены.",
   unsafe_authorized_keys: "Файл authorized_keys имеет небезопасный тип или изменился во время операции. Доступ и локальный ключ не удалены.",
@@ -23,11 +23,21 @@ export async function revokeHostSshAccess(identity: HostIdentity, input: { keyPa
     const child = spawn("/usr/bin/python3", [script], { stdio: ["pipe", "pipe", "pipe"] });
     let output = "";
     let timedOut = false;
+    let started = false;
+    child.once("spawn", () => { started = true; });
     const timer = setTimeout(() => { timedOut = true; child.kill("SIGKILL"); }, 75_000);
     child.stdout.on("data", (chunk) => { output += chunk.toString(); if (output.length > 65536) child.kill("SIGKILL"); });
     child.stderr.on("data", () => { /* remote diagnostics are deliberately not exposed */ });
     child.stdin.on("error", () => {});
-    child.on("error", () => { clearTimeout(timer); reject(credentialError(messages.ssh_dependency_missing, "ssh_dependency_missing")); });
+    child.on("error", () => {
+      clearTimeout(timer);
+      const code = started ? "revocation_failed" : "ssh_dependency_missing";
+      const error = credentialError(messages[code], code) as HostCredentialError & { remoteRevoked?: boolean };
+      // Failure to create the helper proves no remote work ran. An error after
+      // it started (including a failed kill) cannot establish that negative.
+      if (!started) error.remoteRevoked = false;
+      reject(error);
+    });
     child.on("close", () => {
       clearTimeout(timer);
       if (timedOut) { reject(credentialError(messages.ssh_timeout, "ssh_timeout")); return; }
@@ -36,7 +46,9 @@ export async function revokeHostSshAccess(identity: HostIdentity, input: { keyPa
         if (!result.ok || result.status !== "removed") {
           const code = typeof result.error === "string" && result.error in messages ? result.error : "revocation_failed";
           const error = credentialError(messages[code], code) as HostCredentialError & { remoteRevoked?: boolean };
-          error.remoteRevoked = result.keyRemoved === true;
+          // Omitted or malformed evidence means unknown; never turn it into a
+          // claimed negative which could make an interrupted revoke retryable.
+          if (typeof result.keyRemoved === "boolean") error.remoteRevoked = result.keyRemoved;
           reject(error);
         } else resolve();
       } catch { reject(credentialError(messages.revocation_failed, "revocation_failed")); }

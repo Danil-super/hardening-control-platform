@@ -112,6 +112,24 @@
             - {name: astra-cpe-dictionary.xml, mode: "0600"}
           when: openscap_builtin_astra | bool
 
+        - name: Identify the exact bundled sources independently of generated datastream timestamps
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - |
+                import hashlib, os, sys
+                names = ['astra-baseline.xml', 'check.py', 'astra-platform-oval.xml', 'astra-cpe-dictionary.xml']
+                digest = hashlib.sha256()
+                for name in sorted(names):
+                    with open(os.path.join(sys.argv[1], name), 'rb') as source:
+                        digest.update(name.encode('utf-8') + b'\0' + hashlib.sha256(source.read()).digest())
+                print('bundle-sha256:' + digest.hexdigest())
+              - "{{ openscap_remote_dir.path }}"
+          register: openscap_bundle_identity
+          changed_when: false
+          when: openscap_builtin_astra | bool
+
         - name: Bundle the actual XCCDF and SCE script into one evaluated datastream
           ansible.builtin.command:
             argv:
@@ -268,6 +286,8 @@
               - "{{ openscap_evaluated_content.stat.mtime | default('') | string }}"
               - --datastream-checksum
               - "{{ 'sha256:' ~ openscap_evaluated_content.stat.checksum if openscap_evaluated_content.stat.checksum is defined else '' }}"
+              - --content-id
+              - "{{ openscap_bundle_identity.stdout | default('') if openscap_builtin_astra | bool else '' }}"
               - --output
               - "{{ scanner_report_dir }}/{{ inventory_hostname }}-openscap-{{ report_suffix }}.json"
           delegate_to: localhost
