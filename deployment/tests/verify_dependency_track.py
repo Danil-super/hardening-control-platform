@@ -269,7 +269,7 @@ def main():
         if not isinstance(api_key, str) or len(api_key) < 20:
             raise AssertionError("Team API did not return a one-time key")
         sensitive.append(api_key)
-        record("Dedicated HCP API key has only BOM upload and project creation permissions")
+        record("Initial upload stage uses only BOM upload and project creation permissions")
 
         host_alias = "hcp-ingestion-fixture-" + run_id
         report_id = host_alias + "-vulnerabilities"
@@ -322,6 +322,7 @@ def main():
         # upload-only key that was sufficient for ingestion above.
         for permission in ["VIEW_PORTFOLIO", "VIEW_VULNERABILITY"]:
             api(f"/api/v1/permission/{permission}/team/{team_id}", body={}, method="POST", bearer=bearer)
+        record("Read-only portfolio and vulnerability permissions added for result import")
         refresh_deadline = time.monotonic() + remaining(120)
         while time.monotonic() < refresh_deadline:
             result = subprocess.run(["node", "--input-type=module", "-e", NODE_ADAPTER], cwd=REPO / "web",

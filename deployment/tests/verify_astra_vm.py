@@ -6,10 +6,12 @@ stay outside artifacts. This is an acceptance of two base amd64 images, not a
 claim about all releases, mandatory controls, or overall CVE recall.
 """
 import argparse
+from collections import Counter
 import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import signal
 import socket
@@ -99,12 +101,18 @@ def verify_vendor_control(path, source):
 
 def verify_oval_report(report, source, release, expected):
     scanner = report["scanner"]
+    assert scanner["available"] is True
     assert scanner["evaluationPerformed"] is True, scanner.get("partialReasons")
+    assert scanner["exitCode"] in (0, 2), scanner.get("partialReasons")
     assert scanner["hostIdentity"]["id"] == "astra"
     assert scanner["hostIdentity"]["astraVersion"].startswith(release)
     assert scanner["database"]["sha256"] == source["sha256"]
     assert scanner["database"]["checksumVerified"] is True
     assert scanner["definitionCount"] == source["definitionCount"]
+    assert scanner["evaluatedDefinitionCount"] == source["definitionCount"]
+    assert len(scanner["definitionResults"]) == source["definitionCount"]
+    assert len({entry["id"] for entry in scanner["definitionResults"]}) == source["definitionCount"]
+    assert re.fullmatch(r"[a-f0-9]{64}", scanner["resultSha256"])
     selected = [entry for entry in scanner["definitionResults"] if entry["id"] == source["definitionId"]]
     assert len(selected) == 1 and selected[0]["result"] == expected, selected
     assert source["cve"] in selected[0]["cveIds"]
@@ -117,6 +125,56 @@ def verify_oval_report(report, source, release, expected):
             "result": selected[0]["result"], "definitionCount": scanner["definitionCount"],
             "partial": scanner["partial"], "partialReasons": scanner["partialReasons"],
             "resultSha256": scanner["resultSha256"]}
+
+
+def installed_control_versions(output, package_names):
+    """Only installed, non-error dpkg records establish a version predicate.
+
+    In particular, residual-config records can retain a version after removal;
+    a held installed package remains installed. Keep architecture qualifiers.
+    """
+    versions = {}
+    for line in output.splitlines():
+        fields = line.split("\t")
+        assert len(fields) == 3, "Malformed dpkg control record"
+        name, version, status = fields
+        assert name.split(":", 1)[0] in package_names and name not in versions
+        assert len(status) == 3, "Unknown dpkg control status"
+        if status[1:] != "i ":
+            continue
+        assert version, "Installed control package has no version"
+        versions[name] = version
+    assert versions, "No labelled package was installed in the actual image"
+    return versions
+
+
+def verify_baseline_report(report, results, evidence, content_sha256):
+    scanner = report["scanner"]
+    assert scanner["scannerExitCode"] in (0, 2)
+    assert scanner["profile"] == PROFILE
+    assert scanner["datastream"] == "/__hcp_builtin__/astra-baseline.xml"
+    assert scanner["datastreamChecksum"] == "sha256:" + content_sha256
+    assert scanner["ruleResultCounts"] == dict(Counter(results.values()))
+    assert not {"error", "notchecked", "notselected"} & set(results.values()), results
+    expected = {identifier: status for identifier, status in results.items()
+                if status not in {"notapplicable", "notselected", "informational"}}
+    findings = {entry["id"]: entry for entry in report["findings"]}
+    assert len(findings) == len(report["findings"]) == len(expected)
+    assert set(findings) == {"openscap_" + identifier for identifier in expected}
+    for identifier, status in expected.items():
+        entry = findings["openscap_" + identifier]
+        assert entry["status"] == ("passed" if status == "pass" else "failed" if status == "fail" else "manual")
+        if identifier != "xccdf_org.hcp_rule_aslr":
+            assert any(fragment.strip() and fragment.strip() in entry["evidence"] for fragment in evidence[identifier])
+
+
+def record_failure(artifacts, protocol, error):
+    protocol["status"] = "cancelled" if isinstance(error, (InterruptedError, KeyboardInterrupt)) else "failed"
+    protocol["failedAfterCheck"] = protocol["checks"][-1]["name"] if protocol["checks"] else None
+    # Commands contain only public source URLs, disposable paths and package
+    # names; keys and user-data are passed through files, never argv/stdout.
+    protocol["error"] = {"type": type(error).__name__, "message": str(error)[-4000:]}
+    write_json(artifacts / "protocol.json", protocol)
 
 
 def main():
@@ -137,6 +195,24 @@ def main():
     protocol = {"status": "running", "release": args.release, "image": image, "oval": oval,
                 "realAstraHostVerified": False, "syntheticIdentity": False,
                 "limitations": ["Two base amd64 images only; no claim about max/mandatory controls or other releases", "One vendor CVE control does not estimate all-scanner recall/precision", "Official full OVAL evaluated; unknown definitions retain partial status"], "checks": []}
+
+    def terminated(_signum, _frame):
+        raise InterruptedError("CI cancellation")
+    signal.signal(signal.SIGTERM, terminated)
+    try:
+        exercise_guest(args, work, artifacts, reports, sources, protocol)
+    except BaseException as error:
+        try:
+            record_failure(artifacts, protocol, error)
+        except OSError:
+            # Preserve the original failure if the artifact filesystem itself
+            # is unavailable. A missing/unfinished protocol never means PASS.
+            pass
+        raise
+
+
+def exercise_guest(args, work, artifacts, reports, sources, protocol):
+    image, oval = sources["images"][args.release], sources["oval"]
 
     def checkpoint(name, detail):
         protocol["checks"].append({"name": name, "detail": detail})
@@ -182,9 +258,6 @@ def main():
                  "-netdev", "user,id=net0,hostfwd=tcp:127.0.0.1:" + str(port) + "-:22", "-device", "virtio-net-pci,netdev=net0"]
     if acceleration == "kvm":
         qemu_args.extend(["-cpu", "host"])
-    def terminated(_signum, _frame):
-        raise InterruptedError("CI cancellation")
-    signal.signal(signal.SIGTERM, terminated)
     with (artifacts / "qemu.log").open("w") as log:
         process = subprocess.Popen(qemu_args, stdout=log, stderr=subprocess.STDOUT)
         try:
@@ -204,13 +277,12 @@ def main():
             assert "KERNEL=" + os.uname().release not in identity
             protocol["realAstraHostVerified"] = True
             checkpoint("Genuine guest identity and independent Astra kernel", identity)
-            package_query = "dpkg-query -W -f='${binary:Package}\\t${Version}\\n' " + " ".join(map(shlex.quote, oval["packages"])) + " 2>/dev/null || true"
+            package_query = "dpkg-query -W -f='${binary:Package}\\t${Version}\\t${db:Status-Abbrev}\\n' " + " ".join(map(shlex.quote, oval["packages"])) + " 2>/dev/null || true"
             original_packages = remote(package_query).stdout
-            remote("if ! command -v oscap >/dev/null; then sudo apt-mark hold libssl3 openssl; sudo apt-get update -o Acquire::Retries=2; if apt-cache show openscap-scanner >/dev/null 2>&1; then sudo apt-get install -y --no-install-recommends openscap-scanner; else sudo apt-get install -y --no-install-recommends libopenscap8; fi; fi", output=artifacts / "guest-oscap-install.log", timeout=600)
-            assert remote(package_query).stdout == original_packages, "Provisioning changed the CVE controls"
+            versions = installed_control_versions(original_packages, oval["packages"])
+            remote("if ! command -v oscap >/dev/null; then set -e; sudo apt-mark hold " + " ".join(map(shlex.quote, versions)) + "; sudo apt-get update -o Acquire::Retries=2; if apt-cache show openscap-scanner >/dev/null 2>&1; then sudo apt-get install -y --no-install-recommends openscap-scanner; else sudo apt-get install -y --no-install-recommends libopenscap8; fi; fi", output=artifacts / "guest-oscap-install.log", timeout=600)
+            assert installed_control_versions(remote(package_query).stdout, oval["packages"]) == versions, "Provisioning changed the installed CVE controls"
             remote("oscap --version", output=artifacts / "guest-oscap-version.txt")
-            versions = dict(line.split("\t", 1) for line in original_packages.splitlines() if "\t" in line)
-            assert versions, "No labelled package was installed in the actual image"
             matches = {name: remote("dpkg --compare-versions " + shlex.quote(version) + " lt " + shlex.quote(oval["fixedVersion"]), accepted=(0, 1)).returncode == 0 for name, version in versions.items()}
             assert any(matches.values()) == (image["expectedControl"] == "true"), {"versions": versions, "matches": matches}
             checkpoint("Independent installed-package version control", {"versions": versions, "vulnerablePredicates": matches})
@@ -221,7 +293,12 @@ def main():
                 variables = {"hcp_reports_dir": str(reports), "report_run_id": phase, **(extra or {})}
                 file = work / ("vars-" + phase + ".json")
                 write_json(file, variables)
-                run(["ansible-playbook", "-i", str(work / "inventory.json"), str(ROOT / "ansible/playbooks" / (name + ".yml")), "-e", "@" + str(file)], output=artifacts / (phase + ".log"), timeout=timeout)
+                # OpenSSH takes the first value of each option. Override the
+                # controller's ssh_args as well as inventory common_args so a
+                # pre-existing UserKnownHostsFile cannot precede this exact pin.
+                run(["ansible-playbook", "-i", str(work / "inventory.json"), str(ROOT / "ansible/playbooks" / (name + ".yml")), "-e", "@" + str(file)],
+                    output=artifacts / (phase + ".log"), timeout=timeout,
+                    env={**os.environ, "ANSIBLE_SSH_ARGS": shlex.join(ssh_options)})
 
             playbook("collect-facts", "facts")
             playbook("package-inventory", "packages")
@@ -238,12 +315,14 @@ def main():
                         remote("sudo chmod " + shlex.quote(original_mode) + " /etc/passwd")
                     playbook("openscap-audit", phase, {"hcp_openscap_datastream": "/__hcp_builtin__/astra-baseline.xml", "hcp_openscap_profile": PROFILE, "hcp_openscap_policy_group": "ci-real-astra", "hcp_openscap_keep_arf": True})
                     raw = reports / ("." + HOST + "-openscap-" + phase + ".xml")
-                    results, _evidence = raw_results(raw)
+                    results, evidence = raw_results(raw)
                     raw.rename(artifacts / (phase + ".arf.xml"))
                     normalized = json.loads((reports / (HOST + "-openscap-" + phase + ".json")).read_text())
+                    content = Path(str(raw) + ".datastream.xml")
+                    verify_baseline_report(normalized, results, evidence, hashlib.sha256(content.read_bytes()).hexdigest())
+                    content.rename(artifacts / (phase + ".datastream.xml"))
                     selected = [entry for entry in normalized["findings"] if entry["id"] == "openscap_" + RULE]
                     assert len(selected) == 1 and selected[0]["status"] == ("failed" if phase == "violation" else "passed")
-                    assert not {"error", "notchecked", "notselected"} & set(results.values()), results
                     states.append(results[RULE])
             finally:
                 remote("sudo chmod " + shlex.quote(original_mode) + " /etc/passwd")

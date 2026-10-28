@@ -20,12 +20,17 @@ expectations; a changed remote file deliberately fails the workflow.
    playbook. A bounded `/etc/passwd` mode change inside the disposable guest must
    produce native `pass → fail → pass`, matching the HCP report. Original mode is
    restored in `finally` and the owned VM is stopped even after failure.
+   Every reported rule status and SCE observation is compared with the native
+   ARF; the report's content checksum must match the retained compiled datastream.
 4. The complete pinned vendor OVAL file is evaluated, including 8,284 definitions.
    The labelled CVE-2024-5535 definition's actual three package predicates are
    checked independently against the XML and `dpkg --compare-versions`. The
    older image must return `true`; the fixed image must return `false` for that
    definition. Installing OpenSCAP must not change those installed package
    versions. Other vulnerabilities in either image may remain.
+   Version controls use installed dpkg records, excluding residual configuration
+   from removed packages. A surviving labelled result cannot hide a failed
+   native process or a result set missing other source definitions.
 5. The actual web report normalizer must retain the finding, CVE identity,
    incomplete-evaluation status and absence of a misleading aggregate CVE score.
 
