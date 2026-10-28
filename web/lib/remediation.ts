@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { firewallAccessProblem } from "@/lib/ansible-error";
+import { ansibleOutcomeIsUnknown, firewallAccessProblem } from "@/lib/ansible-error";
 import { networkInterfaces } from "node:os";
 import { readAnsibleReport } from "@/lib/ansible-reports";
 import {
@@ -225,6 +225,7 @@ export async function applyRemediation({
     throw error;
   }
 
+  let mutationInFlight = false;
   try {
     const preAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias, becomePassword });
     const preAuditReportId = reportIdForRun({
@@ -252,7 +253,9 @@ export async function applyRemediation({
     updateRemediationTransaction(transactionId, { status: "backed_up", backupRef });
 
     assertConnectionUnchanged(hostAlias, connection);
+    mutationInFlight = true;
     const applied = await runAnsiblePlaybook({ action, profileId, limit: hostAlias, extraVars, becomePassword });
+    mutationInFlight = false;
     appendIncident({
       action,
       kind: "response",
@@ -306,8 +309,10 @@ export async function applyRemediation({
       backupRef,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Транзакция remediation завершилась с ошибкой.";
-    updateRemediationTransaction(transactionId, { status: "failed", error: message });
+    const unknown = mutationInFlight && ansibleOutcomeIsUnknown(error);
+    const failure = error instanceof Error ? error.message : "Транзакция remediation завершилась с ошибкой.";
+    const message = unknown ? `Результат удалённого изменения неизвестен; новые изменения и откат заблокированы до независимой сверки остановки процессов и состояния хоста. ${failure}` : failure;
+    updateRemediationTransaction(transactionId, { status: unknown ? "interrupted" : "failed", error: message });
     appendIncident({
       action,
       kind: "response",
@@ -317,7 +322,7 @@ export async function applyRemediation({
       message,
       runId: transactionId,
     });
-    throw Object.assign(error instanceof Error ? error : new Error(message), { transactionId });
+    throw Object.assign(error instanceof Error ? error : new Error(message), { transactionId, message });
   }
 }
 
@@ -337,6 +342,7 @@ export async function rollbackRemediation(transactionId: string, confirmedHost: 
   }
   assertConnectionUnchanged(transaction.hostAlias, transaction.parameters._hcp_connection);
   claimRemediationRollback(transaction.id);
+  let mutationInFlight = true;
   try {
     const result = await runAnsiblePlaybook({
       action: "rollbackRemediation",
@@ -345,6 +351,7 @@ export async function rollbackRemediation(transactionId: string, confirmedHost: 
       extraVars: { transaction_id: transaction.id, remediation_action: transaction.action },
       becomePassword,
     });
+    mutationInFlight = false;
     // Do not call a failed reload successful: the runner propagates its exit code.
     updateRemediationTransaction(transaction.id, { status: "rolled_back", error: null });
     appendIncident({
@@ -359,10 +366,12 @@ export async function rollbackRemediation(transactionId: string, confirmedHost: 
     });
     return { result, transaction: getRemediationTransaction(transaction.id) };
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Откат завершился ошибкой.";
-    updateRemediationTransaction(transaction.id, { status: transaction.status === "recovery_ready" ? "recovery_ready" : "rollback_failed", error: message });
+    const unknown = mutationInFlight && ansibleOutcomeIsUnknown(error);
+    const failure = error instanceof Error ? error.message : "Откат завершился ошибкой.";
+    const message = unknown ? `Результат удалённого отката неизвестен; повтор и новые изменения заблокированы до независимой сверки остановки процессов и состояния хоста. ${failure}` : failure;
+    updateRemediationTransaction(transaction.id, { status: unknown ? "interrupted" : transaction.status === "recovery_ready" ? "recovery_ready" : "rollback_failed", error: message });
     appendIncident({ action: transaction.action, kind: "response", status: "failed", profileId: transaction.profileId, limit: transaction.hostAlias, message, runId: transaction.id });
-    throw error;
+    throw Object.assign(error instanceof Error ? error : new Error(message), { message });
   }
 }
 

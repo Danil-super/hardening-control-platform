@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { deleteAnsibleReport, listAnsibleReports, listAnsibleReportDependents, readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
 import { listProjectReportSourceReferences } from "@/lib/project-report";
-import { appendAuditEvent, getProjectReportRecord, getRemediationPlanItem, listStoredReportReferences } from "@/lib/state-store";
+import { appendAuditEvent, getProjectReportRecord, getRemediationPlanItem, listStoredReportReferences, withReportEvidenceLock } from "@/lib/state-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -103,33 +103,35 @@ export async function DELETE(
       return NextResponse.json({ ok: false, error: "delete_confirmation_required", message: "Подтвердите удаление именно выбранного отчёта." }, { status: 400 });
     }
 
-    const report = readAnsibleReport(reportId);
-    if (!report) {
-      return NextResponse.json({ ok: false, error: "report_not_found", message: "Отчёт не найден." }, { status: 404 });
-    }
-    const usage = deletionStatus(reportId, targetAliasFromReport(report));
-    if (!usage.canDelete) {
-      return NextResponse.json({
-        ok: false,
-        error: "report_is_referenced",
-        ...usage,
-      }, { status: 409 });
-    }
+    return withReportEvidenceLock(() => {
+      const report = readAnsibleReport(reportId);
+      if (!report) {
+        return NextResponse.json({ ok: false, error: "report_not_found", message: "Отчёт не найден." }, { status: 404 });
+      }
+      const usage = deletionStatus(reportId, targetAliasFromReport(report));
+      if (!usage.canDelete) {
+        return NextResponse.json({
+          ok: false,
+          error: "report_is_referenced",
+          ...usage,
+        }, { status: 409 });
+      }
 
-    const deleted = deleteAnsibleReport(reportId);
-    if (!deleted) {
-      return NextResponse.json({ ok: false, error: "report_not_found", message: "Отчёт не найден." }, { status: 404 });
-    }
-    appendAuditEvent("ansible_report_deleted", reportId, {
-      hostAlias: deleted.hostAlias,
-      mode: deleted.mode,
-      sbomRemoved: deleted.sbomRemoved,
-    });
-    return NextResponse.json({
-      ok: true,
-      message: deleted.sbomRemoved
-        ? "Отчёт и связанный с ним неиспользуемый SBOM удалены. Журнал действий сохранён."
-        : "Отчёт удалён. Журнал действий сохранён.",
+      const deleted = deleteAnsibleReport(reportId);
+      if (!deleted) {
+        return NextResponse.json({ ok: false, error: "report_not_found", message: "Отчёт не найден." }, { status: 404 });
+      }
+      appendAuditEvent("ansible_report_deleted", reportId, {
+        hostAlias: deleted.hostAlias,
+        mode: deleted.mode,
+        sbomRemoved: deleted.sbomRemoved,
+      });
+      return NextResponse.json({
+        ok: true,
+        message: deleted.sbomRemoved
+          ? "Отчёт и связанный с ним неиспользуемый SBOM удалены. Журнал действий сохранён."
+          : "Отчёт удалён. Журнал действий сохранён.",
+      });
     });
   } catch (error) {
     return NextResponse.json({ ok: false, error: "report_delete_failed", message: error instanceof Error ? error.message : "Не удалось удалить отчёт." }, { status: 400 });

@@ -49,6 +49,14 @@ def finding_risk_label(item):
     return risk_label(item.get('risk'))
 
 
+def nmap_scope_label(value):
+    return {
+        'top_100': 'top_100: 100 наиболее распространённых TCP-портов; UDP не проверялся',
+        'top_1000': 'top_1000: 1000 наиболее распространённых TCP-портов; UDP не проверялся',
+        'full_tcp': 'full_tcp: все TCP-порты 1–65535; UDP не проверялся',
+    }.get(value, 'Область TCP-проверки неизвестна')
+
+
 def list_value(values, fallback='—'):
     if not isinstance(values, list) or not values:
         return fallback
@@ -118,11 +126,16 @@ def render(snapshot):
             if not isinstance(item, dict):
                 continue
             state = 'полный, свежий' if item.get('fresh') and not item.get('partial') and item.get('available') else 'частичный, недоступный или устаревший'
+            if item.get('mode') == 'nmap' and state == 'полный, свежий':
+                state = 'завершён в выбранной области, свежий'
             if item.get('current') is False:
                 state = 'историческая область; повторно не проверена'
             elif 'previous_coverage_not_verified' in (item.get('coverageIssues') or []):
                 state += '; прежний охват не подтверждён'
-            rows.append([Paragraph(esc(item.get('reportId'), 120), small), Paragraph(esc(item.get('mode'), 70), small), Paragraph(esc(item.get('createdAt'), 100), small), Paragraph(esc(state, 100), small)])
+            mode = clean(item.get('mode'), 70)
+            if item.get('mode') == 'nmap':
+                mode += ' · ' + nmap_scope_label(item.get('scanScope'))
+            rows.append([Paragraph(esc(item.get('reportId'), 180), small), Paragraph(esc(mode, 250), small), Paragraph(esc(item.get('createdAt'), 100), small), Paragraph(esc(state, 180), small)])
         coverage_table = Table(rows, colWidths=(49 * mm, 29 * mm, 52 * mm, 48 * mm), repeatRows=1)
         coverage_table.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#dbeafe')), ('GRID', (0, 0), (-1, -1), 0.25, colors.HexColor('#cbd5e1')), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 4), ('RIGHTPADDING', (0, 0), (-1, -1), 4), ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4)]))
         story.append(coverage_table)
@@ -131,18 +144,19 @@ def render(snapshot):
 
     lost_coverage = snapshot.get('lostCoverage', []) if isinstance(snapshot.get('lostCoverage'), list) else []
     if lost_coverage:
-        story.append(Paragraph('<b>Прежний охват не подтверждён.</b> Более новый профиль или набор правил не доказывает устранение нарушений, которые он не проверяет. Текущие находки относятся только к фактически выполненной области.', body))
+        story.append(Paragraph('<b>Прежний охват не подтверждён.</b> Более новый профиль, набор правил или диапазон портов не доказывает устранение наблюдений, которые он не проверяет. Текущие находки относятся только к фактически выполненной области.', body))
         for item in lost_coverage:
             if not isinstance(item, dict):
                 continue
-            reason = {'scope_changed': 'изменена область проверки', 'scope_unknown': 'идентичность области не установлена', 'rules_missing': 'исходные правила отсутствуют в повторной проверке'}.get(item.get('reason'), 'прежний охват не подтверждён')
+            reason = {'scope_changed': 'изменена область проверки', 'scope_unknown': 'идентичность области не установлена', 'rules_missing': 'исходные правила отсутствуют в повторной проверке', 'ports_not_checked': 'прежний диапазон портов не покрыт новым сканированием', 'ports_unverified': 'повторное сканирование портов не завершено', 'port_set_unknown': 'состав top-портов разных запусков не сопоставлен; версия nmap-services не зафиксирована'}.get(item.get('reason'), 'прежний охват не подтверждён')
+            scope = nmap_scope_label(item.get('scanScope')) if item.get('mode') == 'nmap' else 'профиль ' + clean(item.get('profileId'), 180)
             story.append(Paragraph('• ' + esc(item.get('reportId'), 120) + ' → ' + esc(item.get('replacedByReportId'), 120)
-                + '; профиль ' + esc(item.get('profileId'), 180) + '; ' + esc(reason) + '.', small))
+                + '; ' + esc(scope) + '; ' + esc(reason) + '.', small))
 
     findings = snapshot.get('findings', []) if isinstance(snapshot.get('findings'), list) else []
     unplanned = snapshot.get('unplannedFindings', []) if isinstance(snapshot.get('unplannedFindings'), list) else []
     story.append(Paragraph('3. Находки и решения', heading))
-    story.append(Paragraph('В плане: %d. Свежих наблюдений вне плана: %d. Неоценённая критичность не означает низкий риск. Оценки Chromium взяты из явно указанного поля в описаниях OVAL; они не являются CVSS или отдельной оценкой Astra.' % (len(findings), len(unplanned)), body))
+    story.append(Paragraph('Сохранённых решений в плане: %d. Свежих наблюдений вне действующего плана: %d. Историческое подтверждение сохраняет результат прежней проверки; повторное наблюдение требует нового решения. Неоценённая критичность не означает низкий риск. Оценки Chromium взяты из явно указанного поля в описаниях OVAL; они не являются CVSS или отдельной оценкой Astra.' % (len(findings), len(unplanned)), body))
     counts = {}
     for item in unplanned:
         if isinstance(item, dict):
@@ -163,18 +177,33 @@ def render(snapshot):
                 content.append(Paragraph('<b>Выполнение:</b> ' + esc(item.get('implementationNote'), 1400), body))
             if item.get('verificationReportId'):
                 content.append(Paragraph('<b>Повторная проверка:</b> ' + esc(item.get('verificationReportId'), 180) + '.', body))
+            if item.get('status') == 'accepted_risk':
+                acceptance = {'active': 'действует на дату снимка', 'expired': 'СРОК ПРИНЯТИЯ РИСКА ИСТЁК; требуется новое решение', 'unknown': 'срок действия не подтверждён'}.get(item.get('riskAcceptanceState'), 'проверьте срок действия')
+                content.append(Paragraph('<b>Принятие риска до:</b> ' + esc(item.get('riskAcceptedUntil'), 100) + '; ' + esc(acceptance) + '.', body))
+            current = item.get('currentObservation')
+            if isinstance(current, dict):
+                if current.get('recurring'):
+                    current_label = 'После подтверждения обнаружено повторное наблюдение. Историческое подтверждение не закрывает новый результат.'
+                elif item.get('status') == 'confirmed':
+                    current_label = 'В текущей сводке есть наблюдение этого контроля; историческое подтверждение относится к своей исходной проверке.'
+                else:
+                    current_label = 'В текущей сводке наблюдение сохраняется.'
+                content.append(Paragraph('<b>На дату снимка:</b> ' + esc(current_label) + ' Критичность: ' + esc(finding_risk_label(current)) + '.', body))
+                current_sources = list(dict.fromkeys(clean(source.get('reportId'), 180) for source in current.get('sources', []) if isinstance(source, dict)))
+                content.append(Paragraph('<b>Текущие отчёты:</b> ' + esc('; '.join(current_sources), 3000) + '.', small))
             evidence = item.get('evidence', []) if isinstance(item.get('evidence'), list) else []
-            sources = []
-            for source in evidence[:8]:
-                if isinstance(source, dict):
-                    sources.append(clean(source.get('reportId'), 120) + ' / ' + clean(source.get('findingId'), 120))
-            content.append(Paragraph('<b>Технические источники:</b> ' + esc('; '.join(sources) if sources else 'не зафиксированы', 1200), small))
+            content.append(Paragraph('<b>Исходных объектов доказательства:</b> ' + str(len(evidence)) + '. Полный перечень идентификаторов приведён ниже; технические данные сохранены в снимке и исходных отчётах.', small))
             story.append(KeepTogether(content))
+            # Keep the list splittable across pages. A rule can have thousands
+            # of file/account instances; never silently keep only the first 8.
+            for source in evidence:
+                if isinstance(source, dict):
+                    story.append(Paragraph('• ' + esc(source.get('reportId'), 180) + ' / ' + esc(source.get('findingId'), 180), small))
     else:
         story.append(Paragraph('Пункты плана устранения не зафиксированы. Это не означает отсутствия уязвимостей: проверьте раздел покрытия и исходные отчёты.', body))
 
     if unplanned:
-        story.append(Paragraph('Непереведённые в план свежие наблюдения', subheading))
+        story.append(Paragraph('Свежие наблюдения вне действующего плана', subheading))
         recommendations = list(dict.fromkeys(clean(item.get('recommendation'), 800) for item in unplanned if isinstance(item, dict)))
         for recommendation in recommendations:
             story.append(Paragraph('Рекомендация: ' + esc(recommendation, 800), body))
@@ -187,7 +216,10 @@ def render(snapshot):
                     continue
                 assessment = item.get('severityAssessment') or {}
                 origin = {'chromium_description': 'Chromium, описание OVAL', 'oval_metadata': 'Метаданные OVAL'}.get(assessment.get('source'), 'Исходный отчёт' if not item.get('severityUnknown') else 'Не предоставлен')
-                rows.append([Paragraph(str(index), small), Paragraph(esc(item.get('title'), 500), small), Paragraph(esc(finding_risk_label(item)), small), Paragraph(esc(origin), small)])
+                observation = esc(item.get('title'), 500)
+                if item.get('recurring'):
+                    observation += '<br/><b>Повторное наблюдение после подтверждения</b>'
+                rows.append([Paragraph(str(index), small), Paragraph(observation, small), Paragraph(esc(finding_risk_label(item)), small), Paragraph(esc(origin), small)])
             observations_table = Table(rows, colWidths=(12 * mm, 96 * mm, 30 * mm, 40 * mm), repeatRows=1)
             observations_table.setStyle(TableStyle([('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#dbeafe')), ('LINEBELOW', (0, 0), (-1, -1), 0.25, colors.HexColor('#cbd5e1')), ('VALIGN', (0, 0), (-1, -1), 'TOP'), ('LEFTPADDING', (0, 0), (-1, -1), 4), ('RIGHTPADDING', (0, 0), (-1, -1), 4), ('TOPPADDING', (0, 0), (-1, -1), 4), ('BOTTOMPADDING', (0, 0), (-1, -1), 4)]))
             story.append(observations_table)

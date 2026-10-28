@@ -1,6 +1,7 @@
 import { buildHostCorrelation } from "@/lib/audit-correlation";
 import { hashAnsibleReport, readAnsibleReport } from "@/lib/ansible-reports";
 import { assertPlanVerification, resolvePlanSeverity } from "@/lib/remediation-plan-evidence";
+import { planObservationState } from "@/lib/remediation-plan-observations";
 import {
   createRemediationPlanItem,
   getRemediationPlanItem,
@@ -20,7 +21,10 @@ function safeFindingKey(value: unknown) {
 
 export function remediationPlanForHost(hostAlias: string) {
   if (!safeAlias(hostAlias)) throw new Error("Укажите корректный alias хоста.");
-  return { items: listRemediationPlanItems(hostAlias).map(resolvePlanSeverity), correlation: buildHostCorrelation(hostAlias) };
+  const correlation = buildHostCorrelation(hostAlias);
+  const current = new Map(correlation?.findings.map((finding) => [finding.id, finding]));
+  return { items: listRemediationPlanItems(hostAlias).map((item) => ({ ...resolvePlanSeverity(item),
+    ...planObservationState(item, current.get(item.findingKey)) })), correlation };
 }
 
 export function addCorrelatedFindingToPlan(hostAlias: string, findingKey: string) {
@@ -28,10 +32,15 @@ export function addCorrelatedFindingToPlan(hostAlias: string, findingKey: string
   const correlation = buildHostCorrelation(hostAlias);
   const finding = correlation?.findings.find((item) => item.id === findingKey);
   if (!finding || !finding.sources.length) throw new Error("Свежая находка не найдена. Повторите аудит и откройте обновлённую сводку хоста.");
+  const checksums = new Map<string, string>();
   const evidence = finding.sources.map((source) => {
-    const report = readAnsibleReport(source.reportId);
-    const checksum = hashAnsibleReport(source.reportId);
-    if (!report || !checksum) throw new Error("Один из исходных отчётов больше недоступен. Повторите аудит перед созданием плана.");
+    let checksum = checksums.get(source.reportId);
+    if (!checksum) {
+      const report = readAnsibleReport(source.reportId);
+      checksum = hashAnsibleReport(source.reportId) ?? undefined;
+      if (!report || !checksum) throw new Error("Один из исходных отчётов больше недоступен. Повторите аудит перед созданием плана.");
+      checksums.set(source.reportId, checksum);
+    }
     return {
       reportId: source.reportId,
       findingId: source.findingId,
@@ -73,5 +82,7 @@ export function advanceRemediationPlanItem(input: {
 
 export function planItemDetail(id: string) {
   const item = getRemediationPlanItem(id);
-  return item ? { item: resolvePlanSeverity(item), history: listRemediationPlanHistory(id) } : null;
+  if (!item) return null;
+  const current = buildHostCorrelation(item.hostAlias)?.findings.find((finding) => finding.id === item.findingKey);
+  return { item: { ...resolvePlanSeverity(item), ...planObservationState(item, current) }, history: listRemediationPlanHistory(id) };
 }

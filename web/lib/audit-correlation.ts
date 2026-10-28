@@ -1,5 +1,6 @@
 import { listAnsibleReports, readAnsibleReport, targetAliasFromReport, reportTimestamp, reportScopeKey, type AnsibleReportSummary } from "@/lib/ansible-reports";
 import type { Finding, FindingSource, RiskLevel } from "@/types";
+import { nmapScopeIncludes, type NmapScanScope } from "@/lib/nmap-scope";
 import { statSync } from "node:fs";
 
 export type CorrelationEvidence = {
@@ -41,6 +42,9 @@ export type CorrelationCoverage = {
   scopeKey: string;
   scopeKnown: boolean;
   contentId: string | null;
+  scanScope: NmapScanScope | null;
+  portCoverage: string | null;
+  coverageComplete: boolean | null;
   current: boolean;
   supersededBy: string | null;
   coverageIssues: string[];
@@ -48,8 +52,9 @@ export type CorrelationCoverage = {
 
 export type LostCoverage = {
   reportId: string; replacedByReportId: string; profileId: string | null; contentId: string | null;
-  scopeKey: string; reason: "scope_changed" | "scope_unknown" | "rules_missing"; ruleIds: string[];
+  scopeKey: string; reason: "scope_changed" | "scope_unknown" | "rules_missing" | "ports_not_checked" | "ports_unverified" | "port_set_unknown"; ruleIds: string[];
   findingIds: string[];
+  mode?: string; scanScope?: NmapScanScope | null;
 };
 
 function safeHostAlias(value: string) {
@@ -164,7 +169,11 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
   const latestOpenScap = reports.filter((report) => report.mode === "openscap" && report.reportTimeValid)
     .sort((a, b) => reportTime(b) - reportTime(a))[0]
     ?? reports.find((report) => report.mode === "openscap");
-  const isCurrent = (report: AnsibleReportSummary) => report.mode !== "openscap" || report.id === latestOpenScap?.id;
+  const latestNmap = reports.filter((report) => report.mode === "nmap" && report.reportTimeValid)
+    .sort((a, b) => reportTime(b) - reportTime(a))[0]
+    ?? reports.find((report) => report.mode === "nmap");
+  const isCurrent = (report: AnsibleReportSummary) => report.mode === "openscap" ? report.id === latestOpenScap?.id
+    : report.mode !== "nmap" || report.id === latestNmap?.id;
   const lostCoverage: LostCoverage[] = [];
   const details = new Map<string, ReturnType<typeof readAnsibleReport>>();
   const detailFor = (report: AnsibleReportSummary) => {
@@ -201,21 +210,42 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
     }
   }
 
-  const coverage = Array.from(latestByKind.values()).map((report) => ({
+  if (latestNmap) {
+    for (const previous of latestByKind.values()) {
+      if (previous.mode !== "nmap" || previous.id === latestNmap.id || !previous.reportTimeValid) continue;
+      if (latestNmap.available && !latestNmap.partial && nmapScopeIncludes(latestNmap.scanScope, previous.scanScope)) continue;
+      lostCoverage.push({ reportId: previous.id, replacedByReportId: latestNmap.id, profileId: previous.profileId,
+        mode: "nmap", scanScope: previous.scanScope ?? null, contentId: null, scopeKey: reportKey(previous), ruleIds: [],
+        findingIds: (detailFor(previous)?.findings ?? []).filter((finding) => !["passed", "fixed"].includes(finding.status)).map((finding) => finding.id),
+        reason: !previous.scopeKnown || !latestNmap.scopeKnown ? "scope_unknown"
+          : !latestNmap.available || latestNmap.partial ? "ports_unverified"
+            : previous.scanScope === "top_100" && latestNmap.scanScope === "top_1000" ? "port_set_unknown" : "ports_not_checked" });
+    }
+  }
+
+  const coverage = Array.from(latestByKind.values())
+    // A complete full-TCP run covers earlier top-port scans. Do not display a
+    // false historical gap for those scopes; all original reports stay saved.
+    .filter((report) => report.mode !== "nmap" || isCurrent(report) || lostCoverage.some((loss) => loss.reportId === report.id))
+    .map((report) => ({
     reportId: report.id,
     mode: report.mode,
     profileId: report.profileId,
     createdAt: report.createdAt,
     fresh: isCurrent(report) && report.reportTimeValid && reportTime(report) >= minimumTime,
-    partial: report.partial || !isCurrent(report) || lostCoverage.some((loss) => loss.replacedByReportId === report.id && loss.reason === "rules_missing"),
+    partial: report.partial || !isCurrent(report) || lostCoverage.some((loss) => loss.replacedByReportId === report.id
+      && (loss.reason === "rules_missing" || report.mode === "nmap")),
     available: report.available,
     validTime: report.reportTimeValid,
     auditEvidence: isCurrent(report) && !["facts", "events", "packages", "dependency-track"].includes(report.mode),
     scopeKey: reportKey(report),
     scopeKnown: report.scopeKnown !== false,
     contentId: report.contentId ?? null,
+    scanScope: report.scanScope ?? null,
+    portCoverage: report.portCoverage ?? null,
+    coverageComplete: report.coverageComplete ?? null,
     current: isCurrent(report),
-    supersededBy: isCurrent(report) || !report.reportTimeValid ? null : latestOpenScap?.id ?? null,
+    supersededBy: isCurrent(report) || !report.reportTimeValid ? null : (report.mode === "nmap" ? latestNmap?.id : latestOpenScap?.id) ?? null,
     coverageIssues: [
       ...(!isCurrent(report) ? [report.reportTimeValid ? "scope_superseded" : "invalid_time"] : []),
       ...(report.scopeKnown === false ? ["scope_unknown"] : []),

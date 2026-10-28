@@ -27,7 +27,8 @@ function finding(id, source, evidence, overrides = {}) {
 function save(name, overrides = {}) {
   writeFileSync(path.join(directory, `${name}.json`), JSON.stringify({
     inventoryHost: "host-one", hostname: "different-display-hostname", mode: "nmap", profileId: "nmap",
-    createdAt: new Date(Date.now() - 60000).toISOString(), scanner: { available: true, partial: false },
+    createdAt: new Date(Date.now() - 60000).toISOString(), scanner: { available: true, partial: false,
+      scanScope: "top_100", portCoverage: "top_100_tcp", coverageComplete: false },
     findings: [], summary: { score: null, high: 0 }, ...overrides,
   }));
 }
@@ -227,4 +228,38 @@ test("Astra OVAL verification requires the actual same database digest", () => {
   assert.equal(reports.reportScopesCompatible(old, current), false);
   assert.equal(reports.reportScopesCompatible(old, old), true);
   assert.equal(reports.reportScopesCompatible({ ...old, contentId: null }, old), false);
+});
+
+test("known Nmap scopes distinguish a completed selected range from lost earlier coverage", () => {
+  const scope = (scanScope, partial = false) => ({ available: true, partial, scanScope,
+    portCoverage: scanScope === "full_tcp" ? "all_tcp_1_65535" : `${scanScope}_tcp`, coverageComplete: scanScope === "full_tcp" });
+  for (const [before, after, lost] of [["top_100", "top_100", false], ["top_100", "top_1000", true],
+    ["top_1000", "full_tcp", false], ["full_tcp", "top_1000", true], ["top_1000", "top_100", true]]) {
+    const host = `${before}-${after}`;
+    save(`${host}-before`, { inventoryHost: host, createdAt: ago(120000), scanner: scope(before) });
+    save(`${host}-after`, { inventoryHost: host, scanner: scope(after) });
+    const result = buildHostCorrelation(host);
+    assert.equal(result.lostCoverage.length > 0, lost, `${before} -> ${after}`);
+    if (before === "top_100" && after === "top_1000") assert.equal(result.lostCoverage[0].reason, "port_set_unknown");
+    assert.equal(result.coverage.find((item) => item.current).partial, lost);
+    assert.equal(reports.readAnsibleReport(`${host}-after`).partial, false);
+    assert.equal(reports.reportScopesCompatible(reports.readAnsibleReport(`${host}-before`), reports.readAnsibleReport(`${host}-after`)), before === after);
+  }
+  save("incomplete-nmap-before", { inventoryHost: "incomplete-nmap", createdAt: ago(120000), scanner: scope("top_100") });
+  save("incomplete-nmap-after", { inventoryHost: "incomplete-nmap", scanner: scope("full_tcp", true) });
+  assert.equal(buildHostCorrelation("incomplete-nmap").lostCoverage[0].reason, "ports_unverified");
+});
+
+test("legacy or contradictory Nmap scope cannot imply full coverage, and package inventory partial metadata propagates", () => {
+  for (const scanner of [{ available: true }, { scanScope: "custom" },
+    { scanScope: "top_100", portCoverage: "all_tcp_1_65535", coverageComplete: true }]) {
+    save("unknown-nmap", { scanner });
+    const report = reports.readAnsibleReport("unknown-nmap");
+    assert.equal(report.scopeKnown, false);
+    assert.equal(report.partial, true);
+    assert.equal(reports.reportScopesCompatible(report, report), false);
+  }
+  save("partial-inventory", { mode: "packages", profileId: "packages", partial: false,
+    packageInventory: { partial: true, partialReasons: ["one package manager failed"] } });
+  assert.equal(reports.readAnsibleReport("partial-inventory").partial, true);
 });

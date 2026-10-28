@@ -1,6 +1,5 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync } from "node:fs";
-import { hostname } from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { assertAstraOvalProvenance, validateAstraOvalConfig, type AstraOvalConfig } from "@/lib/astra-oval-config";
@@ -401,6 +400,16 @@ function inTransaction<T>(operation: (database: DatabaseSync) => T): T {
   }
 }
 
+/** Coordinate final report publication with raw-report deletion, including
+ * other controller processes using this SQLite database. Never await in here. */
+export function withReportEvidenceLock<T>(operation: () => T): T {
+  return inTransaction(() => {
+    const result = operation();
+    if (result instanceof Promise) throw new Error("Блокировка доказательств требует синхронной операции.");
+    return result;
+  });
+}
+
 function auditIntegrityKey() {
   return process.env.HCP_AUDIT_HMAC_KEY || process.env.HCP_AUTH_SECRET || process.env.HCP_ADMIN_PASSWORD || "hcp-development-only-key";
 }
@@ -778,9 +787,10 @@ export function updateRemediationTransaction(
   getDatabase().prepare(`
     UPDATE remediation_transactions
     SET updated_at = ?, status = ?, backup_ref = ?, pre_audit_report_id = ?, post_audit_report_id = ?, error = ?,
-      owner_json = CASE WHEN ? IN ('preparing', 'backed_up', 'rolling_back') THEN owner_json ELSE NULL END, recovery_version = ?
+      owner_json = CASE WHEN ? IN ('preparing', 'backed_up', 'rolling_back') THEN owner_json ELSE NULL END, recovery_version = ?,
+      interrupted_from_status = CASE WHEN ? = 'interrupted' AND status != 'interrupted' THEN status ELSE interrupted_from_status END
     WHERE id = ?
-  `).run(next.updatedAt, next.status, next.backupRef, next.preAuditReportId, next.postAuditReportId, next.error, next.status, next.recoveryVersion, id);
+  `).run(next.updatedAt, next.status, next.backupRef, next.preAuditReportId, next.postAuditReportId, next.error, next.status, next.recoveryVersion, next.status, id);
   appendAuditEvent(`remediation_${next.status}`, id, {
     hostAlias: next.hostAlias,
     action: next.action,
@@ -789,8 +799,9 @@ export function updateRemediationTransaction(
     preAuditReportId: next.preAuditReportId,
     postAuditReportId: next.postAuditReportId,
     error: next.error,
+    ...(next.status === "interrupted" ? { previousStatus: current.status } : {}),
   });
-  return next;
+  return getRemediationTransaction(id);
   });
 }
 
@@ -927,12 +938,14 @@ export function getRemediationTransaction(id: string) {
   return row ? rowToTransaction(row) : null;
 }
 
-export function listRemediationTransactions(limit = 50) {
+export function listRemediationTransactions(limit: number | null = 50, hostAlias?: string) {
+  if (limit !== null && (!Number.isSafeInteger(limit) || limit < 1)) throw new Error("Некорректный предел истории изменений.");
+  if (hostAlias !== undefined) planIdentifier(hostAlias, "хост", 96);
   recoverInterruptedRemediations();
   return getDatabase()
-    .prepare(`SELECT * FROM remediation_transactions
+    .prepare(`SELECT * FROM remediation_transactions ${hostAlias === undefined ? "" : "WHERE host_alias = ?"}
       ORDER BY CASE WHEN status IN ('preparing', 'backed_up', 'rolling_back', 'interrupted', 'recovery_ready') THEN 0 ELSE 1 END, created_at DESC LIMIT ?`)
-    .all(limit)
+    .all(...(hostAlias === undefined ? [limit ?? -1] : [hostAlias, limit ?? -1]))
     .map(rowToTransaction);
 }
 
@@ -1091,12 +1104,17 @@ function planStatus(value: unknown): RemediationPlanStatus {
 }
 
 function parsePlanEvidence(value: unknown): PlanEvidence[] {
-  if (!Array.isArray(value) || !value.length || value.length > 24) throw new Error("Для пункта плана нужны технические доказательства из отчёта.");
+  if (!Array.isArray(value) || !value.length) throw new Error("Для пункта плана нужны технические доказательства из отчёта.");
+  // One XCCDF rule can evaluate thousands of separate files or accounts. Keep
+  // every instance; reject an oversized bundle explicitly instead of truncating.
+  const tooLarge = () => Object.assign(new Error("Доказательства пункта превышают предел 30 000 объектов или 8 МБ. Пункт не создан; ни один объект не отброшен."), { code: "plan_evidence_too_large" });
+  if (value.length > 30_000) throw tooLarge();
+  let bytes = 2;
   return value.map((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) throw new Error("Доказательство плана имеет неверный формат.");
     const data = item as Record<string, unknown>;
     const createdAt = data.createdAt === null ? null : typeof data.createdAt === "string" && Number.isFinite(Date.parse(data.createdAt)) ? data.createdAt : null;
-    return {
+    const evidence = {
       reportId: planIdentifier(data.reportId, "ID исходного отчёта"),
       findingId: planIdentifier(data.findingId, "ID находки"),
       source: planText(data.source, "источник", 1, 80),
@@ -1105,6 +1123,9 @@ function parsePlanEvidence(value: unknown): PlanEvidence[] {
       evidence: planText(data.evidence || "Нет дополнительного технического доказательства.", "доказательство", 1, 4000),
       reportSha256: typeof data.reportSha256 === "string" && /^[a-f0-9]{64}$/.test(data.reportSha256) ? data.reportSha256 : (() => { throw new Error("Не зафиксирована контрольная сумма исходного отчёта."); })(),
     };
+    bytes += Buffer.byteLength(JSON.stringify(evidence), "utf8") + 1;
+    if (bytes > 8 * 1024 * 1024) throw tooLarge();
+    return evidence;
   });
 }
 
@@ -1316,19 +1337,29 @@ export type AuditJob = {
   status: 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'interrupted';
   phase: string; createdAt: string; updatedAt: string; result: AuditJobResult | null;
 };
-// All bundles in this Node process use the same OS process identity. A new
-// container/process cannot silently inherit an unfinished audit or restart it.
-const auditJobOwner = `${hostname()}:${process.pid}:${performance.timeOrigin}`;
+// Reuse the process identity that distinguishes PID reuse and a live local
+// worker. Merely reading jobs from another bundle/worker must not release its
+// host lock. Recovery still assumes the documented single-controller deploy:
+// an unknown/legacy owner is an interrupted previous container, not a cluster
+// lease. Parallel controllers sharing the state directory are unsupported.
+const auditJobOwner = currentOperationOwner;
 function toAuditJob(row: Record<string, unknown>): AuditJob {
   return { id: String(row.id), action: String(row.action), hostAlias: String(row.host_alias),
     profileId: String(row.profile_id), status: row.status as AuditJob['status'], phase: String(row.phase),
     createdAt: String(row.created_at), updatedAt: String(row.updated_at),
     result: row.result_json ? JSON.parse(String(row.result_json)) : null };
 }
-export function recoverAuditJobs(owner = auditJobOwner) {
-  getDatabase().prepare(`UPDATE audit_jobs SET status = 'interrupted', updated_at = ?, result_json = ?
-    WHERE status IN ('queued', 'running') AND owner != ?`).run(new Date().toISOString(),
-    JSON.stringify({ ok: false, message: 'Проверка прервана перезапуском HCP. Проверьте отчёты перед повторным запуском.' }), owner);
+export function recoverAuditJobs() {
+  inTransaction((database) => {
+    const active = database.prepare("SELECT id, owner FROM audit_jobs WHERE status IN ('queued', 'running') AND owner != ?").all(auditJobOwner);
+    const interrupt = database.prepare(`UPDATE audit_jobs SET status = 'interrupted', updated_at = ?, result_json = ?
+      WHERE id = ? AND owner = ? AND status IN ('queued', 'running')`);
+    for (const row of active) {
+      if (operationOwnerState(row.owner) === "live") continue;
+      interrupt.run(new Date().toISOString(),
+        JSON.stringify({ ok: false, message: 'Проверка прервана перезапуском HCP. Проверьте отчёты перед повторным запуском.' }), String(row.id), String(row.owner));
+    }
+  });
 }
 export function createAuditJob(input: { action: string; hostAlias: string; profileId: string; requestKey: string }) {
   recoverAuditJobs();

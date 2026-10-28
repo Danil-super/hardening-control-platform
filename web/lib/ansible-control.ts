@@ -15,7 +15,7 @@ import {
   type ArchiveView,
 } from "@/lib/state-store";
 
-import { ansibleFailureMessage } from "@/lib/ansible-error";
+import { ansibleFailureMessage, classifyAnsibleExecutionError } from "@/lib/ansible-error";
 import { ansibleLiteralExtraVars } from "@/lib/ansible-literal-vars";
 
 const execFileAsync = promisify(execFile);
@@ -257,47 +257,54 @@ export async function runAnsiblePlaybook({
   /** A caller-provided password for one manual sudo operation; never stored. */
   becomePassword?: string;
 }) {
-  const repoRoot = getRepoRoot();
-  const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
-  if (!existsSync(inventoryPath)) {
-    throw Object.assign(new Error("Создайте ansible/inventory.ini из ansible/inventory.example.ini."), {
-      code: "inventory_missing",
-    });
-  }
+  let executionDispatched = false;
+  try {
+    const repoRoot = getRepoRoot();
+    const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
+    if (!existsSync(inventoryPath)) {
+      throw Object.assign(new Error("Создайте ansible/inventory.ini из ansible/inventory.example.ini."), {
+        code: "inventory_missing",
+      });
+    }
 
-  const selected = playbooks[action];
-  const targets = (limit ?? "linux_hosts").split(",").flatMap((target) => getInventoryTargetHosts(target));
-  if (!targets.some((host) => host.groups.includes("linux_hosts"))) {
-    throw Object.assign(new Error("В выбранной цели нет хостов группы linux_hosts; проверка не запущена."), { code: "inventory_target_missing" });
-  }
-  if (!validOneTimeSudoPassword(becomePassword)) {
-    throw Object.assign(new Error("Пароль sudo должен быть одной строкой длиной до 1024 символов."), { code: "bad_sudo_password" });
-  }
-  const onDemandHost = actionRequiresTargetSudo(action) ? onDemandSudoHostForLimit(limit) : null;
-  if (onDemandHost && !becomePassword) {
-    throw Object.assign(new Error(`Для хоста ${onDemandHost} введите пароль sudo для этой операции. HCP не сохраняет его.`), { code: "sudo_password_required" });
-  }
-  const playbookPath = path.join(repoRoot, "ansible", "playbooks", selected.file);
-  const args = ["-i", inventoryPath, playbookPath, "-e", ansibleLiteralExtraVars({ audit_profile: profileId })];
-  if (process.env.HCP_REPORTS_DIR) {
-    args.push("-e", ansibleLiteralExtraVars({ hcp_reports_dir: getReportsDir(repoRoot) }));
-  }
-  const reportRunId = selected.kind === "audit" && !("internal" in selected && selected.internal) && action !== "ping" ? newReportRunId() : null;
-  if (reportRunId) {
-    args.push("-e", ansibleLiteralExtraVars({ report_run_id: reportRunId }));
-  }
-  if (Object.keys(extraVars).length) {
-    args.push("-e", ansibleLiteralExtraVars(extraVars));
-  }
-  if (limit) {
-    args.push("--limit", limit);
-  }
-  if (checkMode) {
-    args.push("--check", "--diff");
-  }
+    const selected = playbooks[action];
+    const targets = (limit ?? "linux_hosts").split(",").flatMap((target) => getInventoryTargetHosts(target));
+    if (!targets.some((host) => host.groups.includes("linux_hosts"))) {
+      throw Object.assign(new Error("В выбранной цели нет хостов группы linux_hosts; проверка не запущена."), { code: "inventory_target_missing" });
+    }
+    if (!validOneTimeSudoPassword(becomePassword)) {
+      throw Object.assign(new Error("Пароль sudo должен быть одной строкой длиной до 1024 символов."), { code: "bad_sudo_password" });
+    }
+    const onDemandHost = actionRequiresTargetSudo(action) ? onDemandSudoHostForLimit(limit) : null;
+    if (onDemandHost && !becomePassword) {
+      throw Object.assign(new Error(`Для хоста ${onDemandHost} введите пароль sudo для этой операции. HCP не сохраняет его.`), { code: "sudo_password_required" });
+    }
+    const playbookPath = path.join(repoRoot, "ansible", "playbooks", selected.file);
+    const args = ["-i", inventoryPath, playbookPath, "-e", ansibleLiteralExtraVars({ audit_profile: profileId })];
+    if (process.env.HCP_REPORTS_DIR) {
+      args.push("-e", ansibleLiteralExtraVars({ hcp_reports_dir: getReportsDir(repoRoot) }));
+    }
+    const reportRunId = selected.kind === "audit" && !("internal" in selected && selected.internal) && action !== "ping" ? newReportRunId() : null;
+    if (reportRunId) {
+      args.push("-e", ansibleLiteralExtraVars({ report_run_id: reportRunId }));
+    }
+    if (Object.keys(extraVars).length) {
+      args.push("-e", ansibleLiteralExtraVars(extraVars));
+    }
+    if (limit) {
+      args.push("--limit", limit);
+    }
+    if (checkMode) {
+      args.push("--check", "--diff");
+    }
 
-  const result = await executeAnsiblePlaybook({ args, timeout: selected.timeout, becomePassword });
-  return { ...result, reportRunId };
+    executionDispatched = true;
+    const result = await executeAnsiblePlaybook({ args, timeout: selected.timeout, becomePassword });
+    return { ...result, reportRunId };
+  } catch (error) {
+    if (!executionDispatched && error instanceof Error) Object.assign(error, { remoteOutcome: "not_started" });
+    throw error;
+  }
 }
 
 /** Run one Ansible child with the same private credential lifecycle for built-in and custom playbooks. */
@@ -306,13 +313,14 @@ export async function executeAnsiblePlaybook({ args, timeout, becomePassword }: 
   timeout: number;
   becomePassword?: string;
 }) {
-  if (!validOneTimeSudoPassword(becomePassword)) {
-    throw new Error("Пароль sudo должен быть одной строкой длиной до 1024 символов.");
-  }
   const repoRoot = getRepoRoot();
   const command = `ansible-playbook ${args.join(" ")}`;
   let secretDirectory = "";
+  let spawned = false;
   try {
+    if (!validOneTimeSudoPassword(becomePassword)) {
+      throw new Error("Пароль sudo должен быть одной строкой длиной до 1024 символов.");
+    }
     let executionArgs = args;
     if (becomePassword) {
       secretDirectory = mkdtempSync(path.join(os.tmpdir(), "hcp-become-"));
@@ -324,7 +332,7 @@ export async function executeAnsiblePlaybook({ args, timeout, becomePassword }: 
       writeFileSync(secretFile, ansibleLiteralExtraVars({ ansible_become_password: becomePassword }), { mode: 0o600 });
       executionArgs = [...args.slice(0, 2), "--extra-vars", `@${secretFile}`, ...args.slice(2)];
     }
-    const result = await execFileAsync("ansible-playbook", executionArgs, {
+    const execution = execFileAsync("ansible-playbook", executionArgs, {
       cwd: repoRoot,
       timeout,
       maxBuffer: 1024 * 1024 * 8,
@@ -333,8 +341,12 @@ export async function executeAnsiblePlaybook({ args, timeout, becomePassword }: 
       // an otherwise valid elevated audit fail before sudo is reached.
       env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ...ansibleSshEnvironment({ useTty: Boolean(becomePassword) }), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
     });
+    execution.child.once("spawn", () => { spawned = true; });
+    const result = await execution;
     return { ...result, stdout: redactSecret(result.stdout, becomePassword), stderr: redactSecret(result.stderr, becomePassword), command, repoRoot };
   } catch (error) {
+    // Record this before redaction or human-readable message normalization.
+    if (error instanceof Error) Object.assign(error, { remoteOutcome: classifyAnsibleExecutionError(error, spawned) });
     const output = error as { stdout?: string; stderr?: string; message?: string };
     if (becomePassword) {
       output.stdout = redactSecret(output.stdout, becomePassword);
