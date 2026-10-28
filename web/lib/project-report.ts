@@ -5,12 +5,14 @@ import path from "node:path";
 import { buildHostCorrelation } from "@/lib/audit-correlation";
 import { hashAnsibleReport, listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
 import { resolvePlanSeverity } from "@/lib/remediation-plan-evidence";
-import { getHcpStateDirectory, getArchivedRecordIds, createProjectReportRecord, getProjectReportRecord, listProjectReportRecords, listRemediationPlanItems, listRemediationTransactions, verifyAuditChain, type ArchiveView, type ProjectReportRecord } from "@/lib/state-store";
+import { hasActivePlanDecision, planObservationState } from "@/lib/remediation-plan-observations";
+import { getHcpStateDirectory, getArchivedRecordIds, createProjectReportRecord, getProjectReportRecord, listProjectReportRecords, listRemediationPlanItems, listRemediationTransactions, verifyAuditChain, withReportEvidenceLock, type ArchiveView, type ProjectReportRecord } from "@/lib/state-store";
 
 export type ProjectReportSubject = { clientName: string; projectName: string; period: string; specialist: string };
 export type ProjectReportSourceReference = { id: string; hostAlias: string; snapshotReadable: boolean };
 
-type SourceManifestEntry = { id: string; mode: string; profileId: string | null; createdAt: string | null; partial: boolean; available: boolean; reportTimeValid: boolean; sha256: string | null };
+type SourceManifestEntry = { id: string; mode: string; profileId: string | null; createdAt: string | null; partial: boolean; available: boolean; reportTimeValid: boolean; sha256: string | null;
+  scanScope: string | null; portCoverage: string | null; coverageComplete: boolean | null };
 
 function safeAlias(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_.:-]{1,96}$/.test(value);
@@ -101,7 +103,7 @@ function runPdfRenderer(snapshot: Record<string, unknown>): Promise<Buffer> {
 
 function evidenceSnapshot(value: { reportId: string; findingId: string; source: string; mode: string; createdAt: string | null; evidence: string; reportSha256: string }) {
   return { reportId: value.reportId, findingId: value.findingId, source: value.source, mode: value.mode, createdAt: value.createdAt,
-    evidence: value.evidence.slice(0, 1000), reportSha256: value.reportSha256 };
+    evidence: value.evidence, reportSha256: value.reportSha256 };
 }
 
 export function listProjectReports(hostAlias?: string, view: ArchiveView = "active") {
@@ -144,7 +146,9 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   const subject = normalizeSubject(input.subject);
   const createdAt = new Date().toISOString();
   const planItems = listRemediationPlanItems(hostAlias).map(resolvePlanSeverity);
-  const storedTransactions = listRemediationTransactions(500).filter((item) => item.hostAlias === hostAlias);
+  // Filter in SQLite before any limit. Final exports include all history for
+  // this host; the overall snapshot/PDF size guards fail explicitly if too big.
+  const storedTransactions = listRemediationTransactions(null, hostAlias);
   const requiredSources = new Set([...planItems.flatMap((item) => [...item.evidence.map((source) => source.reportId), item.verificationReportId]),
     ...storedTransactions.flatMap((item) => [item.preAuditReportId, item.postAuditReportId])]);
   const archived = getArchivedRecordIds("report");
@@ -153,10 +157,13 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   const sourceManifest: SourceManifestEntry[] = reports.map((report) => ({
     id: report.id, mode: report.mode, profileId: report.profileId, createdAt: report.createdAt, partial: report.partial,
     available: report.available, reportTimeValid: report.reportTimeValid, sha256: hashAnsibleReport(report.id),
+    scanScope: report.scanScope ?? null, portCoverage: report.portCoverage ?? null, coverageComplete: report.coverageComplete ?? null,
   })).sort((left, right) => left.id.localeCompare(right.id));
   const sourceManifestSha256 = sha256(canonical({ version: 1, hostAlias, sourceManifest }));
   const correlation = buildHostCorrelation(hostAlias);
-  const activeKeys = new Set(planItems.map((item) => item.findingKey));
+  const now = Date.parse(createdAt);
+  const current = new Map(correlation?.findings.map((finding) => [finding.id, finding]));
+  const activeKeys = new Set(planItems.filter((item) => hasActivePlanDecision(item, now)).map((item) => item.findingKey));
   const findings = planItems.map((item) => ({
     id: item.id, findingKey: item.findingKey, title: item.title, category: item.category, risk: item.risk, status: item.status,
     severityUnknown: item.severityUnknown,
@@ -165,10 +172,13 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
     description: item.description, recommendation: item.recommendation, owner: item.owner, dueAt: item.dueAt,
     approvalReference: item.approvalReference, implementationNote: item.implementationNote, verificationReportId: item.verificationReportId,
     riskAcceptedUntil: item.riskAcceptedUntil, evidence: item.evidence.map(evidenceSnapshot), createdAt: item.createdAt, updatedAt: item.updatedAt,
+    ...planObservationState(item, current.get(item.findingKey), now),
   }));
+  const recurringKeys = new Set(findings.filter((item) => item.currentObservation?.recurring).map((item) => item.findingKey));
   const unplannedFindings = (correlation?.findings ?? []).filter((item) => !activeKeys.has(item.id)).map((item) => ({
     id: item.id, title: item.title, category: item.category, risk: item.risk, description: item.description.slice(0, 1200),
     status: item.status, severityUnknown: item.severityUnknown, severityAssessment: item.severityAssessment ?? null,
+    recurring: recurringKeys.has(item.id),
     recommendation: item.recommendation.slice(0, 1200), sources: item.sources.map((source) => ({ reportId: source.reportId, findingId: source.findingId, mode: source.mode, source: source.source })),
   }));
   const coverage = correlation?.coverage ?? [];
@@ -190,11 +200,20 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   const pdfPath = safeProjectPath(fileName);
   const snapshotPath = safeProjectPath(snapshotFileName);
   try {
-    writeSecure(pdfPath, pdf);
-    writeSecure(snapshotPath, snapshotText + "\n");
-    const record = createProjectReportRecord({ id, createdAt, hostAlias, fileName, pdfSha256, snapshotSha256, sourceManifestSha256, subject });
-    if (!record) throw new Error("Не удалось зафиксировать экспорт в журнале HCP.");
-    return record;
+    return withReportEvidenceLock(() => {
+      // Rendering is asynchronous. An operator may delete or replace a source
+      // while Python is working; never publish a manifest of vanished evidence.
+      for (const source of sourceManifest) {
+        if (!source.sha256 || hashAnsibleReport(source.id) !== source.sha256) {
+          throw new Error("Исходный отчёт изменился или был удалён во время формирования PDF. Обновите данные и повторите экспорт.");
+        }
+      }
+      writeSecure(pdfPath, pdf);
+      writeSecure(snapshotPath, snapshotText + "\n");
+      const record = createProjectReportRecord({ id, createdAt, hostAlias, fileName, pdfSha256, snapshotSha256, sourceManifestSha256, subject });
+      if (!record) throw new Error("Не удалось зафиксировать экспорт в журнале HCP.");
+      return record;
+    });
   } catch (error) {
     for (const pathname of [pdfPath, snapshotPath]) if (existsSync(pathname)) rmSync(pathname, { force: true });
     throw error;

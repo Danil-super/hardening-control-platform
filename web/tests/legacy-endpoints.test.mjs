@@ -67,7 +67,9 @@ test("report deletion requires confirmation and cannot erase referenced evidence
       listAnsibleReportDependents: () => [{ id: "host-1-dependent", mode: "dependency-track" }],
       deleteAnsibleReport: () => { removed = true; return { id: "host-1-nmap-run-1", hostAlias: "host-1", mode: "nmap", sbomRemoved: false }; },
     },
-    "@/lib/state-store": { appendAuditEvent: () => {}, listStoredReportReferences: () => [] },
+    // This suite isolates route guards; the real SQLite lock and renderer race
+    // are exercised together in project-report-lifecycle.test.mjs.
+    "@/lib/state-store": { withReportEvidenceLock: (operation) => operation(), appendAuditEvent: () => {}, listStoredReportReferences: () => [] },
     "@/lib/project-report": { listProjectReportSourceReferences: () => [] },
   });
   const params = { params: Promise.resolve({ reportId: "host-1-nmap-run-1" }) };
@@ -93,7 +95,7 @@ test("a standalone confirmed report is removed and the deletion is recorded", as
       listAnsibleReportDependents: () => [],
       deleteAnsibleReport: () => { removed = true; return { id: "host-1-nmap-run-1", hostAlias: "host-1", mode: "nmap", sbomRemoved: true }; },
     },
-    "@/lib/state-store": { appendAuditEvent: (...args) => events.push(args), listStoredReportReferences: () => [] },
+    "@/lib/state-store": { withReportEvidenceLock: (operation) => operation(), appendAuditEvent: (...args) => events.push(args), listStoredReportReferences: () => [] },
     "@/lib/project-report": { listProjectReportSourceReferences: () => [] },
   });
   const response = await route.DELETE(new Request("http://localhost/api/ansible/reports/host-1-nmap-run-1", {
@@ -141,7 +143,7 @@ test("unreferenced preview is deletable and a later PDF reference still blocks D
       targetAliasFromReport: () => "host-1", listAnsibleReportDependents: () => [],
       deleteAnsibleReport: () => { removed = true; },
     },
-    "@/lib/state-store": { listStoredReportReferences: () => [], getProjectReportRecord: () => null },
+    "@/lib/state-store": { withReportEvidenceLock: (operation) => operation(), listStoredReportReferences: () => [], getProjectReportRecord: () => null },
     "@/lib/project-report": { listProjectReportSourceReferences: () => saved ? [{ id: "missing-export", snapshotReadable: false }] : [] },
   });
   const params = { params: Promise.resolve({ reportId: "host-1-facts-run" }) };

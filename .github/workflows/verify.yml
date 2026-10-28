@@ -57,6 +57,8 @@ jobs:
         run: python3 deployment/lab/verify-ssh-enrollment.py
       - name: Exercise real SSH, Ansible, Nmap, Lynis and Trivy
         run: python3 deployment/lab/verify.py --online
+      - name: Verify native Trivy detection and Ubuntu vendor backport matching
+        run: bash deployment/lab/verify-trivy-matching.sh
       - name: Check temporary Lynis cleanup
         run: |
           docker compose -f deployment/lab/docker-compose.yml exec -T lab-target python3 -c 'import glob; assert not glob.glob("/tmp/hcp-lynis-*")'
@@ -75,6 +77,7 @@ jobs:
             .lab/verification.json
             .lab/ssh-enrollment.json
             .lab/reports/*.json
+            .lab/trivy-matching-acceptance/
           if-no-files-found: warn
       - name: Show service logs on failure
         if: failure()

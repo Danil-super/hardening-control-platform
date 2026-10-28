@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -19,7 +20,9 @@ SECURITY_LABEL = "security.PDPL"
 LABEL_HEADER = "HCP.security.PDPL"
 
 class FirewallError(RuntimeError):
-    pass
+    def __init__(self, message, outcome_unknown=False):
+        super().__init__(message)
+        self.outcome_unknown = outcome_unknown
 
 
 def run(*args, acceptable=(0,)):
@@ -28,10 +31,14 @@ def run(*args, acceptable=(0,)):
                                 env={**os.environ, "LC_ALL": "C"})
         result.stdout = result.stdout.decode("utf-8", "replace") if isinstance(result.stdout, bytes) else result.stdout
         result.stderr = result.stderr.decode("utf-8", "replace") if isinstance(result.stderr, bytes) else result.stderr
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired as error:
+        # Killing a local client does not cancel an in-flight daemon request
+        # or prove that a descendant stopped changing the firewall.
+        raise FirewallError(str(error), outcome_unknown=True) from error
+    except OSError as error:
         raise FirewallError(str(error)) from error
     if result.returncode not in acceptable:
-        raise FirewallError('{}: {}'.format(' '.join(args), result.stderr.strip() or result.stdout.strip()))
+        raise FirewallError('{}: {}'.format(' '.join(args), result.stderr.strip() or result.stdout.strip()), outcome_unknown=result.returncode < 0)
     return result
 
 
@@ -249,10 +256,38 @@ def machine_id():
 
 
 def validate_members(archive, selected):
+    names = set()
+    root_directory = False
     for member in archive.getmembers():
         parts = Path(member.name).parts
         if member.name.startswith("/") or ".." in parts or parts[:2] != ("etc", selected) or not (member.isfile() or member.isdir()):
             raise FirewallError("Unsupported or unsafe member in firewall backup archive.")
+        if parts in names or any(not isinstance(value, int) or value < 0 for value in (member.uid, member.gid, member.mode)) or member.mode > 0o7777:
+            raise FirewallError("Invalid or duplicate filesystem metadata in firewall backup archive.")
+        names.add(parts)
+        if parts == ("etc", selected) and member.isdir():
+            root_directory = True
+    if not root_directory:
+        raise FirewallError("Firewall backup is missing its configuration directory.")
+
+
+def restore_archive_metadata(archive, staging):
+    # Python's data filter intentionally drops numeric owners and directory
+    # modes and removes group/other write bits. Preserve its path/link safety,
+    # then restore the validated local snapshot's POSIX metadata explicitly.
+    # Apply directory modes after their children, and chmod after chown (which
+    # can clear special permission bits). No live path has been replaced yet.
+    for member in sorted(archive.getmembers(), key=lambda item: len(Path(item.name).parts), reverse=True):
+        target = staging / member.name
+        current = target.lstat()
+        if not (stat.S_ISREG(current.st_mode) if member.isfile() else stat.S_ISDIR(current.st_mode)):
+            raise FirewallError("Unexpected filesystem object in restored firewall backup.")
+        if (current.st_uid, current.st_gid) != (member.uid, member.gid):
+            os.chown(str(target), member.uid, member.gid, follow_symlinks=False)
+        os.chmod(str(target), member.mode, follow_symlinks=False)
+        observed = target.lstat()
+        if (observed.st_uid, observed.st_gid, stat.S_IMODE(observed.st_mode)) != (member.uid, member.gid, member.mode):
+            raise FirewallError("Filesystem ownership or permissions were not restored: {}".format(member.name))
 
 
 def security_label(path):
@@ -349,6 +384,7 @@ def rollback(args):
         with tarfile.open(str(archive_path)) as archive:
             validate_members(archive, selected)
             archive.extractall(str(staging), **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
+            restore_archive_metadata(archive, staging)
             restore_archive_labels(archive, staging, metadata)
         destination = CONFIG_ROOT / selected
         if destination.is_symlink():
@@ -389,7 +425,7 @@ def main():
         result = backup(args) if args.operation == "backup" else rollback(args) if args.operation == "rollback" else close_or_block(args)
         print(json.dumps(result))
     except (FirewallError, OSError, KeyError, ValueError, tarfile.TarError) as error:
-        print(json.dumps({"ok": False, "error": str(error)}))
+        print(json.dumps({"ok": False, "error": str(error), "outcomeUnknown": bool(getattr(error, "outcome_unknown", False))}))
         raise SystemExit(1)
 
 

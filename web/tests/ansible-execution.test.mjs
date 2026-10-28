@@ -30,5 +30,5 @@ test('shared execution keeps one-time sudo private, redacts output and removes i
   else {const result=await control.executeAnsiblePlaybook(request);output=JSON.parse(result.stdout);assert.ok(!result.command.includes(secret));assert.ok(!result.command.includes(output.file));}
   assert.equal(output.fileMode,0o600);assert.equal(output.directoryMode,0o700);assert.equal(output.secret,'[скрыто]');assert.equal(existsSync(output.file),false);assert.equal(existsSync(path.dirname(output.file)),false);
  }
- await assert.rejects(control.executeAnsiblePlaybook({...request,becomePassword:'bad\npassword'}),/одной строкой/);
+ await assert.rejects(control.executeAnsiblePlaybook({...request,becomePassword:'bad\npassword'}),error=>{assert.match(error.message,/одной строкой/);assert.equal(error.remoteOutcome,'not_started');return true;});
 });

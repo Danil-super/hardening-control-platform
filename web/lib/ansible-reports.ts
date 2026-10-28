@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Finding } from "@/types";
 import { getArchivedRecordIds, type ArchiveView } from "@/lib/state-store";
 import { normalizeLynisFindings } from "@/lib/lynis-findings";
+import { normalizeNmapScope, nmapPortCoverage, type NmapScanScope } from "@/lib/nmap-scope";
 
 export type AnsibleReportSummary = {
   id: string;
@@ -23,6 +24,9 @@ export type AnsibleReportSummary = {
   contentId?: string | null;
   scopeKey?: string;
   scopeKnown?: boolean;
+  scanScope?: NmapScanScope | null;
+  portCoverage?: string | null;
+  coverageComplete?: boolean | null;
   mode: string;
   score: number | null;
   high: number;
@@ -85,10 +89,13 @@ type ReportJson = {
     scanStartedAt?: unknown;
     scanEndedAt?: unknown;
     observationTimeValid?: unknown;
+    scanScope?: unknown;
+    portCoverage?: unknown;
+    coverageComplete?: unknown;
     database?: { sha256?: unknown };
   };
   vulnerabilityScan?: { partial?: boolean };
-  packageInventory?: { error?: string };
+  packageInventory?: { error?: string; partial?: boolean; partialReasons?: string[] };
   partial?: boolean;
   findings?: Finding[];
   events?: Array<{
@@ -163,7 +170,8 @@ export function reportTimestamp(report: Pick<AnsibleReportSummary, "createdAt" |
 
 /** Content changes or different XCCDF profiles cannot verify each other. Unknown
  * legacy scopes remain individually identifiable but are never compatible. */
-export function reportScopeKey(report: Pick<AnsibleReportSummary, "mode" | "profileId" | "id" | "contentId">) {
+export function reportScopeKey(report: Pick<AnsibleReportSummary, "mode" | "profileId" | "id" | "contentId" | "scanScope">) {
+  if (report.mode === "nmap") return report.scanScope ? `nmap:${report.scanScope}` : `nmap:unknown:${report.id}`;
   if (report.mode !== "openscap") return `${report.mode}:${report.profileId ?? "default"}`;
   return report.profileId && report.profileId !== "openscap" && report.contentId
     ? `openscap:${encodeURIComponent(report.profileId)}:${report.contentId}`
@@ -171,7 +179,7 @@ export function reportScopeKey(report: Pick<AnsibleReportSummary, "mode" | "prof
 }
 
 export function reportScopesCompatible(left: AnsibleReportSummary, right: AnsibleReportSummary) {
-  return left.mode === right.mode && (left.mode !== "openscap" || left.scopeKnown === true && right.scopeKnown === true)
+  return left.mode === right.mode && (!["openscap", "nmap"].includes(left.mode) || left.scopeKnown === true && right.scopeKnown === true)
     && (left.mode !== "astra-oval" || Boolean(left.contentId) && left.contentId === right.contentId)
     && reportScopeKey(left) === reportScopeKey(right);
 }
@@ -310,7 +318,10 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
     ? `sha256:${parsed.scanner.database.sha256}` : parsed.scanner?.contentIdentity ?? parsed.scanner?.datastreamChecksum;
   const contentId = ["openscap", "astra-oval"].includes(mode) && typeof digest === "string" && /^(?:sha256|bundle-sha256):[a-fA-F0-9]{64}$/.test(digest)
     ? digest.toLowerCase() : null;
-  const scopeKnown = mode !== "openscap" || Boolean(profileId && profileId !== "openscap" && contentId);
+  let scanScope = mode === "nmap" ? normalizeNmapScope(parsed.scanner?.scanScope) : null;
+  if (scanScope && (parsed.scanner?.portCoverage !== undefined && parsed.scanner.portCoverage !== nmapPortCoverage(scanScope)
+      || parsed.scanner?.coverageComplete !== undefined && parsed.scanner.coverageComplete !== (scanScope === "full_tcp"))) scanScope = null;
+  const scopeKnown = mode === "openscap" ? Boolean(profileId && profileId !== "openscap" && contentId) : mode !== "nmap" || Boolean(scanScope);
   const findings = reportFindings(parsed);
   const events = Array.isArray(parsed.events) ? parsed.events : [];
   const observation: Pick<AnsibleReportSummary, "observedAt" | "importedAt"> = mode === "greenbone" ? greenboneObservation(parsed) : {};
@@ -319,7 +330,7 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
     ? parsed.inventoryHost : null;
   const available = parsed.scanner?.available !== false;
   const partial = !available || parsed.partial === true || parsed.scanner?.partial === true || Boolean(parsed.scanner?.error)
-    || parsed.vulnerabilityScan?.partial === true || Boolean(parsed.packageInventory?.error)
+    || parsed.vulnerabilityScan?.partial === true || Boolean(parsed.packageInventory?.error) || parsed.packageInventory?.partial === true
     || (parsed.findings !== undefined && (!Array.isArray(parsed.findings) || findings.length !== parsed.findings.length))
     || mode === "dependency-track" || !scopeKnown || mode === "greenbone" && !observation.observedAt;
   const needsReview = !scopeKnown || mode === "greenbone" && !observation.observedAt || findings.some((finding) => finding.status === "manual");
@@ -341,7 +352,10 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
     profileId,
     contentId,
     scopeKnown,
-    scopeKey: reportScopeKey({ id: reportIdFromFileName(fileName), mode, profileId, contentId }),
+    scanScope,
+    portCoverage: nmapPortCoverage(scanScope),
+    coverageComplete: mode === "nmap" && scanScope ? scanScope === "full_tcp" : null,
+    scopeKey: reportScopeKey({ id: reportIdFromFileName(fileName), mode, profileId, contentId, scanScope }),
     mode,
     score: partial || !reportTimeValid ? null : scoreFromReport(parsed, mode),
     high: findings.filter((finding) => finding.status === "failed" && finding.risk === "high").length,

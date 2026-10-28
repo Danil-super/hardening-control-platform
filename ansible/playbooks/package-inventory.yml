@@ -58,11 +58,16 @@
                 return packages, error
             for line in output.splitlines():
                 parts = line.split("\t")
-                # Do not report packages that were removed but still have a
-                # residual dpkg record (for example, "rc").  Those packages
-                # are not executable code on the managed host and would
-                # otherwise create false CVE findings.
-                if not parts or len(parts[0]) < 2 or parts[0][1] != "i":
+                status = parts[0]
+                if (len(status) != 3 or status[0] not in "uihrp"
+                        or status[1] not in "ncHUFWti"
+                        or status[2] not in " R"):
+                    return packages, "Unrecognized dpkg package status"
+                # Residual config files are not installed package code. Other
+                # states (including an interrupted unpack/configure or pending
+                # triggers) can already have executable files on disk. Keep
+                # their versions and state, and mark the inventory partial.
+                if status[1] in "nc" and status[2] == " ":
                     continue
                 if len(parts) != 6 or not all(parts[1:]):
                     return packages, "Incomplete dpkg package/source metadata"
@@ -73,6 +78,7 @@
                     "manager": "dpkg",
                     "sourceName": parts[4],
                     "sourceVersion": parts[5],
+                    "dpkgStatus": status,
                 })
             return packages, ""
 
@@ -112,6 +118,13 @@
             packages, error = [], "No supported package manager (dpkg/rpm) found"
         if not packages and not error:
             error = "Package inventory is empty"
+        partial_reasons = [error] if error else []
+        unsettled_packages = [package for package in packages
+                              if package["manager"] == "dpkg"
+                              and (package["dpkgStatus"][1] != "i" or package["dpkgStatus"][2] != " ")]
+        if unsettled_packages:
+            partial_reasons.append("dpkg reports {} packages in an incomplete or error state; their files may already be present. Complete package recovery and collect the inventory again.".format(len(unsettled_packages)))
+        partial = bool(partial_reasons)
 
         created_at = datetime.now(timezone.utc).isoformat()
         print(json.dumps({
@@ -125,12 +138,15 @@
             "os": os_release.get("PRETTY_NAME") or os_release.get("NAME") or "Unknown Linux",
             "profileId": "packages",
             "mode": "packages",
+            "partial": partial,
             "packageInventory": {
                 "osRelease": os_release,
                 "astraVersion": astra_version,
                 "packageCount": len(packages),
                 "manager": packages[0]["manager"] if packages else None,
                 "error": error,
+                "partial": partial,
+                "partialReasons": partial_reasons,
             },
             "summary": {
                 "score": None,

@@ -48,6 +48,17 @@ def greenbone_result(host="192.0.2.10", identifier="one", severity="7.5", qod="8
       <qod><value>{qod}</value></qod><description>Test evidence</description></result>'''
 
 
+def greenbone_error(host="192.0.2.10", description="Authentication failed"):
+    return f'''<error><host>{host}</host><port>22/tcp</port>
+      <nvt oid="1.3.6.1.4.1.25623.1.0.1"><name>Local checks</name></nvt>
+      <description>{description}</description><severity>-3.0</severity></error>'''
+
+
+def greenbone_with_errors(errors, count="1", results=None):
+    count_xml = "" if count is None else f"<count>{count}</count>"
+    return '<report><scan_run_status>Done</scan_run_status><scan_end>2025-01-01T01:00:00Z</scan_end><results>' + (greenbone_result() if results is None else results) + '</results><errors>' + count_xml + errors + '</errors></report>'
+
+
 class ScannerAdaptersTest(unittest.TestCase):
     def parse_file(self, content, parser, **options):
         with tempfile.TemporaryDirectory() as directory:
@@ -350,6 +361,52 @@ class ScannerAdaptersTest(unittest.TestCase):
         report = self.parse_file('<report><scan_run_status>Done</scan_run_status><results>' + greenbone_result(qod="30") + '</results></report>', scanner.greenbone_report)
         self.assertEqual(report["findings"][0]["status"], "manual")
         self.assertEqual(report["summary"]["high"], 0)
+
+    def test_greenbone_done_with_target_errors_preserves_error_and_is_partial(self):
+        report = self.parse_file(greenbone_with_errors(greenbone_error()), scanner.greenbone_report)
+        self.assertTrue(report["scanner"]["partial"])
+        self.assertEqual(report["scanner"]["matchedErrors"], 1)
+        self.assertTrue(report["scanner"]["partialReasons"])
+        errors = [f for f in report["findings"] if f["id"].startswith("greenbone_error_")]
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]["status"], "manual")
+        self.assertEqual(errors[0]["description"], "Authentication failed")
+        self.assertEqual(report["summary"]["high"], 1)
+
+    def test_greenbone_error_can_identify_target_without_successful_results(self):
+        report = self.parse_file(greenbone_with_errors(greenbone_error(), results=""), scanner.greenbone_report)
+        self.assertTrue(report["scanner"]["partial"])
+        self.assertEqual(report["scanner"]["matchedResults"], 0)
+        self.assertEqual(report["scanner"]["matchedErrors"], 1)
+        self.assert_no_pass(report)
+
+    def test_greenbone_foreign_errors_do_not_disclose_details_or_make_target_partial(self):
+        content = greenbone_with_errors(greenbone_error(host="192.0.2.20", description="private-other-host-error"))
+        report = self.parse_file(content, scanner.greenbone_report)
+        self.assertFalse(report["scanner"]["partial"])
+        self.assertEqual(report["scanner"]["excludedOtherHostErrors"], 1)
+        self.assertNotIn("192.0.2.20", json.dumps(report))
+        self.assertNotIn("private-other-host-error", json.dumps(report))
+
+    def test_greenbone_unscoped_errors_are_partial_without_exposing_unbound_details(self):
+        report = self.parse_file(greenbone_with_errors(greenbone_error(host="", description="private-unbound-error")), scanner.greenbone_report)
+        self.assertTrue(report["scanner"]["partial"])
+        self.assertEqual(report["scanner"]["unscopedErrors"], 1)
+        self.assertNotIn("private-unbound-error", json.dumps(report))
+
+    def test_greenbone_count_only_truncated_and_inconsistent_errors_remain_partial(self):
+        foreign = greenbone_error(host="192.0.2.20", description="private-other-host-error")
+        for count, errors in (("1", ""), ("2", foreign), ("0", foreign), (None, ""), ("-1", ""), ("invalid", "")):
+            with self.subTest(count=count, errors=bool(errors)):
+                report = self.parse_file(greenbone_with_errors(errors, count), scanner.greenbone_report)
+                self.assertTrue(report["scanner"]["partial"])
+                self.assertTrue(report["scanner"]["partialReasons"])
+                self.assertNotIn("private-other-host-error", json.dumps(report))
+
+    def test_greenbone_explicit_zero_errors_can_be_complete(self):
+        report = self.parse_file(greenbone_with_errors("", "0"), scanner.greenbone_report)
+        self.assertFalse(report["scanner"]["partial"])
+        self.assertEqual(report["scanner"]["errorCount"], 0)
 
     def test_greenbone_cli_rejects_malformed_xml_without_output(self):
         with tempfile.TemporaryDirectory() as directory:

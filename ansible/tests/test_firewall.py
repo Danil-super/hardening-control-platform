@@ -3,7 +3,9 @@ import argparse
 import importlib.util
 import errno
 import json
+import os
 from pathlib import Path
+import stat
 import subprocess
 import tarfile
 import tempfile
@@ -247,11 +249,98 @@ class FirewallTests(unittest.TestCase):
     def test_transaction_traversal_and_archive_links_are_rejected(self):
         for transaction in ("../etc", "........", "txn-../../etc", "txn-ok/../bad"):
             with self.assertRaises(fw.FirewallError): fw.transaction_dir(args(transaction=transaction))
-        for name, kind in (("etc/ufw/../../passwd", tarfile.REGTYPE), ("etc/ufw/link", tarfile.SYMTYPE), ("etc/passwd", tarfile.REGTYPE)):
+        for name, kind in (("etc/ufw/../../passwd", tarfile.REGTYPE), ("/etc/ufw/rules", tarfile.REGTYPE),
+                           ("etc/ufw/link", tarfile.SYMTYPE), ("etc/ufw/hardlink", tarfile.LNKTYPE), ("etc/passwd", tarfile.REGTYPE)):
             member = tarfile.TarInfo(name)
             member.type = kind
             with patch.object(tarfile.TarFile, "getmembers", return_value=[member]):
                 with self.assertRaises(fw.FirewallError): fw.validate_members(tarfile.TarFile.__new__(tarfile.TarFile), "ufw")
+
+    def test_native_timeout_reports_unknown_outcome_but_completed_failure_does_not(self):
+        with patch.object(fw.subprocess, "run", side_effect=subprocess.TimeoutExpired(["fixture-firewall"], 45)):
+            with self.assertRaises(fw.FirewallError) as raised:
+                fw.run("fixture-firewall")
+            self.assertTrue(raised.exception.outcome_unknown)
+        with patch.object(fw.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, b"", b"fixture validation failure")):
+            with self.assertRaises(fw.FirewallError) as raised:
+                fw.run("fixture-firewall")
+            self.assertFalse(raised.exception.outcome_unknown)
+        with patch.object(fw.subprocess, "run", return_value=subprocess.CompletedProcess([], -15, b"", b"")):
+            with self.assertRaises(fw.FirewallError) as raised:
+                fw.run("fixture-firewall")
+            self.assertTrue(raised.exception.outcome_unknown)
+
+    def test_rollback_restores_numeric_owners_file_and_directory_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            configuration = root / "etc"
+            firewall = configuration / "ufw"
+            nested = firewall / "protected"
+            nested.mkdir(parents=True)
+            (configuration / "machine-id").write_text("test-machine-id")
+            rules = nested / "user.rules"
+            rules.write_text("original rules")
+            firewall.chmod(0o700)
+            nested.chmod(0o750)
+            rules.chmod(0o660)
+            if os.geteuid() == 0:
+                # Avoid relying on local account names or group memberships.
+                for item in (firewall, nested, rules):
+                    os.chown(str(item), 65534, 65534)
+            nested.chmod(0o2750)
+            def snapshot():
+                return [(item.stat().st_uid, item.stat().st_gid, stat.S_IMODE(item.stat().st_mode)) for item in (firewall, nested, rules)]
+            expected = snapshot()
+            with patch.object(fw, "CONFIG_ROOT", configuration), patch.object(fw, "BACKUP_ROOT", root / "backups"), patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run") as command:
+                fw.backup(args())
+                rules.write_text("current rules")
+                firewall.chmod(0o755)
+                nested.chmod(0o755)
+                rules.chmod(0o600)
+                if os.geteuid() == 0:
+                    for item in (firewall, nested, rules):
+                        os.chown(str(item), 0, 0)
+                self.assertTrue(fw.rollback(args())["ok"])
+                self.assertEqual(snapshot(), expected)
+                self.assertEqual(rules.read_text(), "original rules")
+                command.assert_called_once_with("ufw", "reload")
+
+    def test_metadata_restore_failure_keeps_live_configuration_and_runtime_untouched(self):
+        for silent in (False, True):
+            with self.subTest(silent=silent), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                configuration = root / "etc"
+                (configuration / "ufw").mkdir(parents=True)
+                (configuration / "machine-id").write_text("test-machine-id")
+                rules = configuration / "ufw/user.rules"
+                rules.write_text("original rules")
+                rules.chmod(0o660)
+                with patch.object(fw, "CONFIG_ROOT", configuration), patch.object(fw, "BACKUP_ROOT", root / "backups"), patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run") as command:
+                    fw.backup(args())
+                    rules.write_text("current rules")
+                    chmod = os.chmod
+                    def fail_restore(target, mode, **kwargs):
+                        if ".hcp-rollback-" in str(target) and str(target).endswith("user.rules") and kwargs.get("follow_symlinks") is False:
+                            if silent:
+                                chmod(target, 0o600, **kwargs)
+                                return
+                            raise PermissionError("fixture metadata denied")
+                        return chmod(target, mode, **kwargs)
+                    with patch.object(fw.os, "chmod", side_effect=fail_restore):
+                        with self.assertRaises((PermissionError, fw.FirewallError)):
+                            fw.rollback(args())
+                    self.assertEqual(rules.read_text(), "current rules")
+                    command.assert_not_called()
+
+    def test_invalid_or_duplicate_archive_metadata_is_rejected_before_extraction(self):
+        root = tarfile.TarInfo("etc/ufw")
+        root.type = tarfile.DIRTYPE
+        invalid = tarfile.TarInfo("etc/ufw/user.rules")
+        invalid.uid = -1  # chown(-1) would silently retain a different owner.
+        for members in ([root, root], [root, invalid], []):
+            with self.subTest(members=members), patch.object(tarfile.TarFile, "getmembers", return_value=members):
+                with self.assertRaises(fw.FirewallError):
+                    fw.validate_members(tarfile.TarFile.__new__(tarfile.TarFile), "ufw")
 
     def test_real_archive_round_trip_removes_new_files_and_detects_corruption(self):
         with tempfile.TemporaryDirectory() as directory:

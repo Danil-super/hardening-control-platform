@@ -823,9 +823,33 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
     if not expected_hosts:
         raise ValueError("Для импорта требуется адрес выбранного хоста из inventory.")
     matching_results = [element for element in results if host_identity(child_text(element, "host")) in expected_hosts]
+    # GMP reports execution failures separately from vulnerability results.
+    # Done only means that no further results will arrive, not that every VT
+    # succeeded. Never expose another host's error details in this host report.
+    errors_root = next((child for child in report_root if local_name(child) == "errors"), None)
+    errors = [child for child in errors_root if local_name(child) == "error"] if errors_root is not None else []
+    matching_errors = [element for element in errors if host_identity(child_text(element, "host")) in expected_hosts]
+    unscoped_errors = [element for element in errors if not child_text(element, "host").strip()]
+    excluded_errors = len(errors) - len(matching_errors) - len(unscoped_errors)
+    error_count = None
+    error_reasons = []
+    if errors_root is not None:
+        try:
+            error_count = int(child_text(errors_root, "count"))
+            if error_count < 0:
+                raise ValueError("negative count")
+        except ValueError:
+            error_count = None
+            error_reasons.append("В XML отсутствует корректное число ошибок Greenbone; полнота сведений об ошибках не подтверждена.")
+        if error_count is not None and error_count != len(errors):
+            error_reasons.append("Число ошибок Greenbone не соответствует экспортированным записям; область недостающих или лишних ошибок не подтверждена.")
+    if matching_errors:
+        error_reasons.append("Greenbone сообщил ошибки выполнения проверок для выбранного хоста.")
+    if unscoped_errors:
+        error_reasons.append("В отчёте Greenbone есть ошибки без привязки к хосту; влияние на выбранный хост не установлено.")
     matched_host_record = any(local_name(element) == "host" and host_identity(child_text(element, "ip")) in expected_hosts
                               for element in report_root)
-    if not matching_results and not matched_host_record:
+    if not matching_results and not matching_errors and not matched_host_record:
         raise ValueError("В отчёте Greenbone нет результатов или записи для адреса выбранного хоста. Проверьте цель сканирования и inventory.")
 
     findings: list[dict[str, Any]] = []
@@ -881,6 +905,23 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
             evidence=f"result={identifier}; oid={oid or 'unknown'}; host={host}; port={port or 'unknown'}; threat={threat or 'unknown'}; severity={severity_text or 'unknown'}; qod={qod_value}; cve={','.join(cves) or 'none'}",
         ))
 
+    for element in matching_errors:
+        host = child_text(element, "host")
+        port = child_text(element, "port")
+        nvt = next((child for child in element if local_name(child) == "nvt"), None)
+        oid = nvt.get("oid", "") if nvt is not None else ""
+        name = child_text(nvt, "name") if nvt is not None else ""
+        description = child_text(element, "description")
+        key = "\n".join((host_identity(host), port, oid, name, description))
+        findings.append(finding(
+            identifier="greenbone_error_" + hashlib.sha256(key.encode()).hexdigest()[:24],
+            title="Ошибка проверки Greenbone" + (": " + name if name else ""),
+            risk="info", status="manual", source="greenbone",
+            description=description or "Greenbone не выполнил одну из проверок выбранного хоста.",
+            recommendation="Устраните причину ошибки в Greenbone и повторите затронутые проверки. Этот результат не подтверждает отсутствие уязвимостей.",
+            evidence=f"host={host}; port={port or 'unknown'}; oid={oid or 'unknown'}; severity={child_text(element, 'severity') or 'unknown'}",
+        ))
+
     scan_status = child_text(report_root, "scan_run_status")
     count_root = next((child for child in report_root if local_name(child) == "result_count"), None)
     try:
@@ -893,8 +934,8 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
     start_time, end_time = scan_time(scan_started_at), scan_time(scan_ended_at)
     time_valid = (end_time is not None and end_time <= datetime.fromisoformat(imported_at)
                   and (not scan_started_at or start_time is not None and start_time <= end_time))
-    partial = not findings or scan_status.lower() != "done" or invalid_severity or not time_valid or (full_count is not None and full_count > len(results))
-    partial_reasons = []
+    partial = not findings or scan_status.lower() != "done" or invalid_severity or not time_valid or bool(error_reasons) or (full_count is not None and full_count > len(results))
+    partial_reasons = list(error_reasons)
     if not time_valid:
         partial_reasons.append("Время окончания сканирования отсутствует, некорректно, находится в будущем или предшествует началу. Время импорта не подтверждает свежесть проверки.")
     if not findings:
@@ -908,12 +949,14 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
             recommendation="Убедитесь, что задача завершена и экспортирован именно report XML.",
         ))
     if partial:
-        findings.append(incomplete_finding("greenbone", f"scanStatus={scan_status or 'unknown'}; exportedResults={len(results)}; fullResults={full_count}; invalidSeverity={invalid_severity}; observationTimeValid={time_valid}"))
+        findings.append(incomplete_finding("greenbone", f"scanStatus={scan_status or 'unknown'}; exportedResults={len(results)}; fullResults={full_count}; invalidSeverity={invalid_severity}; observationTimeValid={time_valid}; matchedErrors={len(matching_errors)}; unscopedErrors={len(unscoped_errors)}; exportedErrors={len(errors)}; fullErrors={error_count}"))
 
     report = base_report(args, "greenbone", "greenbone", findings, imported=True, importedFrom="Greenbone XML",
                        partial=partial, target=args.host, scanStatus=scan_status or None,
                        scanStartedAt=scan_started_at or None, scanEndedAt=scan_ended_at or None,
                        observationTimeValid=bool(time_valid), partialReasons=partial_reasons,
+                       errorCount=error_count, exportedErrors=len(errors), matchedErrors=len(matching_errors),
+                       unscopedErrors=len(unscoped_errors), excludedOtherHostErrors=excluded_errors,
                        matchedResults=len(matching_results), excludedOtherHostResults=len(results) - len(matching_results))
     report["importedAt"] = imported_at
     report["observedAt"] = end_time.isoformat() if time_valid else None

@@ -7,17 +7,30 @@ function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
-function originalEvidence(item: RemediationPlanItem, evidence: PlanEvidence) {
-  const report = readAnsibleReport(evidence.reportId);
-  if (!report || targetAliasFromReport(report) !== item.hostAlias || hashAnsibleReport(evidence.reportId) !== evidence.reportSha256) return null;
-  const finding = report.findings.find((candidate) => candidate.id === evidence.findingId && candidate.source === evidence.source);
-  return finding ? { report, finding } : null;
+function originalEvidenceReader(item: RemediationPlanItem) {
+  const sources = new Map<string, { report: AnsibleReportDetail; checksum: string | null; findings: Map<string, Finding> } | null>();
+  return (evidence: PlanEvidence) => {
+    if (!sources.has(evidence.reportId)) {
+      const report = readAnsibleReport(evidence.reportId);
+      const findings = new Map<string, Finding>();
+      for (const finding of report?.findings ?? []) {
+        const key = `${finding.source}\0${finding.id}`;
+        if (!findings.has(key)) findings.set(key, finding);
+      }
+      sources.set(evidence.reportId, report && targetAliasFromReport(report) === item.hostAlias
+        ? { report, checksum: hashAnsibleReport(evidence.reportId), findings } : null);
+    }
+    const source = sources.get(evidence.reportId);
+    if (!source || source.checksum !== evidence.reportSha256) return null;
+    const finding = source.findings.get(`${evidence.source}\0${evidence.findingId}`);
+    return finding ? { report: source.report, finding } : null;
+  };
 }
 
 /** Legacy records may only recover their rating from the exact original bytes. */
 export function resolvePlanSeverity(item: RemediationPlanItem): RemediationPlanItem {
   if (item.severityOrigin !== "unknown_legacy") return item;
-  const sources = item.evidence.map((evidence) => originalEvidence(item, evidence));
+  const sources = item.evidence.map(originalEvidenceReader(item));
   if (!sources.length || sources.some((source) => !source)) return item;
   const findings = sources.flatMap((source) => source ? [source.finding] : []);
   const order = { critical: 4, high: 3, medium: 2, low: 1 };
@@ -33,10 +46,20 @@ function cvePackage(finding: Finding) {
   return cve && packageName ? `${cve}\0${packageName}` : null;
 }
 
-function correspondingFindings(report: AnsibleReportDetail, original: Finding) {
-  const component = original.source === "trivy" ? cvePackage(original) : null;
-  return report.findings.filter((finding) => finding.source === original.source
-    && (finding.id === original.id || component !== null && cvePackage(finding) === component));
+function correspondingFindingReader(report: AnsibleReportDetail) {
+  const byId = new Map<string, Finding[]>();
+  const byComponent = new Map<string, Finding[]>();
+  for (const finding of report.findings) {
+    const key = `${finding.source}\0${finding.id}`;
+    byId.set(key, [...(byId.get(key) ?? []), finding]);
+    const component = finding.source === "trivy" ? cvePackage(finding) : null;
+    if (component) byComponent.set(component, [...(byComponent.get(component) ?? []), finding]);
+  }
+  return (original: Finding) => {
+    const exact = byId.get(`${original.source}\0${original.id}`) ?? [];
+    const component = original.source === "trivy" ? cvePackage(original) : null;
+    return component ? [...new Set([...exact, ...(byComponent.get(component) ?? [])])] : exact;
+  };
 }
 
 function ovalDefinitionResolved(report: AnsibleReportDetail, original: Finding) {
@@ -84,14 +107,15 @@ export function assertPlanVerification(item: RemediationPlanItem, report: Ansibl
     throw new Error("Есть более новый отчёт той же области. Для подтверждения используйте последнее наблюдение.");
   }
 
-  const candidates = item.evidence.map((evidence) => originalEvidence(item, evidence))
+  const candidates = item.evidence.map(originalEvidenceReader(item))
     .filter((source) => source !== null && reportScopesCompatible(source.report, report));
   if (!candidates.length) {
     throw new Error("Не подтверждено совпадение исходного контроля, профиля и содержимого проверки. Нужен повторный отчёт той же области и неизменённое исходное доказательство.");
   }
+  const correspondingFor = correspondingFindingReader(report);
   for (const source of candidates) {
     if (!source) continue;
-    const corresponding = correspondingFindings(report, source.finding);
+    const corresponding = correspondingFor(source.finding);
     if (corresponding.some((finding) => finding.status === "failed" || finding.status === "manual")) {
       throw new Error("Повторный отчёт всё ещё обнаруживает исходную проблему или требует ручной проверки. Подтверждение устранения отклонено.");
     }

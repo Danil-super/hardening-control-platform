@@ -237,6 +237,58 @@ test("host mismatch and empty/invalid inventory fail before invoking the scanner
   await assert.rejects(h.scan(), /список пуст/);
 });
 
+test("partial source inventory never becomes a complete CVE result", async (t) => {
+  const cases = [
+    (report) => { report.partial = true; },
+    (report) => { report.scanner = { partial: true }; },
+    (report) => { report.scanner = { error: "Incomplete collection" }; },
+    (report) => { report.packageInventory.partial = true; },
+    (report) => { report.packageInventory.partialReasons = ["Interrupted package configuration"]; },
+  ];
+  for (const markPartial of cases) {
+    const h = harness(t);
+    markPartial(h.report);
+    h.save();
+    const result = await h.scan();
+    assert.equal(result.partial, true);
+    assert.equal(result.report.vulnerabilityScan.coverage.complete, false);
+    assert.match(result.report.vulnerabilityScan.coverage.reasons.join(" "), /Исходная инвентаризация/);
+    assert.ok(!result.report.findings.some((finding) => finding.status === "passed"));
+  }
+});
+
+test("unconfigured dpkg packages are checked with their state and remain partial", async (t) => {
+  const h = harness(t, "many");
+  h.report.packages[0].dpkgStatus = "iU ";
+  h.report.packageInventory.partial = true;
+  h.report.packageInventory.partialReasons = ["dpkg package is unpacked"];
+  h.save();
+  const result = await h.scan();
+  assert.equal(result.partial, true);
+  assert.equal(result.report.vulnerabilityScan.coverage.scannedPackages, 1);
+  assert.equal(result.report.findings.filter((finding) => finding.status === "failed").length, 1005);
+  assert.match(result.report.vulnerabilityScan.coverage.reasons.join(" "), /dpkg package is unpacked/);
+  const sbom = JSON.parse(readFileSync(path.join(h.dir, "sbom", result.report.vulnerabilityScan.sbomFile), "utf8"));
+  assert.equal(sbom.components[0].properties.find((p) => p.name === "hcp:dpkg-status").value, "iU ");
+
+  // Even if an older producer omits its aggregate partial flag, package state
+  // itself cannot be converted into a complete negative assessment.
+  delete h.report.packageInventory.partial;
+  delete h.report.packageInventory.partialReasons;
+  h.save();
+  assert.equal((await h.scan()).partial, true);
+});
+
+test("malformed completeness metadata is rejected before a scanner invocation", async (t) => {
+  for (const partialMetadata of [{ partial: "false" }, { partialReasons: "lost packages" }, { partialReasons: [false] }]) {
+    const h = harness(t);
+    Object.assign(h.report.packageInventory, partialMetadata);
+    h.save();
+    await assert.rejects(h.scan(), /сведения о полноте/);
+    assert.equal(existsSync(path.join(h.dir, "args.json")), false);
+  }
+});
+
 test("dpkg inventory includes held installed packages and source metadata, excludes residual records", () => {
   const playbook = readFileSync(path.join(webDir, "../ansible/playbooks/package-inventory.yml"), "utf8");
   const body = playbook.split("python3 - <<'PY'\n")[1].split("\n        PY")[0].split("\n").map((line) => line.slice(8)).join("\n");
@@ -247,5 +299,6 @@ test("dpkg inventory includes held installed packages and source metadata, exclu
   assert.equal(result.packages.length, 2);
   assert.equal(result.packages[0].sourceName, "openssl");
   assert.equal(result.packages[1].name, "bash");
+  assert.equal(result.packages[1].dpkgStatus, "hi ");
   assert.match(result.command.at(-1), /\$\{source:Version\}/);
 });

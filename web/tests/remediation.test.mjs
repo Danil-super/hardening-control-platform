@@ -8,7 +8,7 @@ import { compileServerModules } from "./_typescript-loader.mjs";
 // Exercise real orchestration and SQLite state while replacing only remote I/O.
 const compiled = compileServerModules(["remediation", "state-store", "astra-oval-config"]);
 writeFileSync(path.join(compiled.directory, "ansible-control.mjs"), `
-export const control = { runs: [], failAction: null, failPost: false, missingReport: false, address: "192.0.2.20", report: {partial:false,available:true} };
+export const control = { runs: [], failAction: null, failOutcome: "completed", failPost: false, missingReport: false, address: "192.0.2.20", report: {partial:false,available:true} };
 export const isSafeLimit = value => /^[A-Za-z0-9_-]+$/.test(value);
 export const inventoryHostExists = value => value === "host-one";
 export const inventoryHostConnection = () => ({address: control.address, port: 2222, user: "audit"});
@@ -18,7 +18,7 @@ export const appendIncident = () => {};
 export const reportIdForRun = () => "report";
 export async function runAnsiblePlaybook(options) {
   control.runs.push(options.action);
-  if (control.failAction === options.action || (control.failPost && options.action === "agentlessAudit" && control.runs.length > 1)) throw new Error("remote operation failed");
+  if (control.failAction === options.action || (control.failPost && options.action === "agentlessAudit" && control.runs.length > 1)) throw Object.assign(new Error("remote operation failed"), {remoteOutcome:control.failOutcome});
   return {stdout:"verified",stderr:"",command:options.action,reportRunId:"run"};
 }
 `);
@@ -36,7 +36,7 @@ beforeEach(() => {
   directory = mkdtempSync(path.join(tmpdir(), "hcp-remediation-test-"));
   process.env.HCP_STATE_DIR = directory;
   process.env.HCP_AUDIT_HMAC_KEY = "remediation-test-key";
-  Object.assign(control, {runs:[],failAction:null,failPost:false,missingReport:false,address:"192.0.2.20",report:{partial:false,available:true}});
+  Object.assign(control, {runs:[],failAction:null,failOutcome:"completed",failPost:false,missingReport:false,address:"192.0.2.20",report:{partial:false,available:true}});
 });
 afterEach(() => rmSync(directory, {recursive:true,force:true}));
 after(() => {
@@ -103,6 +103,48 @@ test("a partly failed change retains its backup and can be rolled back", async (
   control.failAction = null;
   const restored = await remediation.rollbackRemediation(transaction.id, "host-one");
   assert.equal(restored.transaction.status, "rolled_back");
+});
+
+test("audit and backup transport errors before mutation do not require firewall recovery", async () => {
+  for (const action of ["agentlessAudit", "backupRemediation"]) {
+    control.failAction = action;
+    control.failOutcome = "unknown";
+    await assert.rejects(remediation.applyRemediation(request), /remote operation failed/);
+    const transaction = store.listRemediationTransactions()[0];
+    assert.equal(transaction.status, "failed");
+    assert.equal(transaction.recoveryRequired, false);
+    assert.equal(store.hasActiveRemediationForHost("host-one"), false);
+    assert.equal(transaction.backupRef, null);
+  }
+  control.failAction = null;
+  assert.equal((await remediation.applyRemediation(request)).transaction.status, "applied");
+});
+
+test("unknown rollback outcome consumes the previous recovery and blocks a direct retry", async () => {
+  const applied = await remediation.applyRemediation(request);
+  store.updateRemediationTransaction(applied.transaction.id, { status: "interrupted" });
+  const evidence = {
+    confirmedHost: "host-one", confirmedOperation: applied.transaction.id,
+    expectedRecoveryVersion: store.getRemediationTransaction(applied.transaction.id).recoveryVersion,
+    processesStopped: true, outcomeVerified: true, inspectionNote: "Independent console inspection of the fixture completed.",
+    evidenceReference: "fixture-incident-123", resolution: "prepare_rollback", backupVerified: true,
+  };
+  const prepared = store.reconcileRemediationTransaction(applied.transaction.id, evidence);
+  const previousAttestation = { ...evidence, expectedRecoveryVersion: prepared.recoveryVersion };
+  control.failAction = "rollbackRemediation";
+  control.failOutcome = "unknown";
+  await assert.rejects(remediation.rollbackRemediation(prepared.id, "host-one"), /Результат удалённого отката неизвестен/);
+  const interrupted = store.getRemediationTransaction(prepared.id);
+  assert.equal(interrupted.status, "interrupted");
+  assert.equal(interrupted.recoveryRequired, true);
+  assert.notEqual(interrupted.recoveryVersion, prepared.recoveryVersion);
+  assert.equal(store.hasActiveRemediationForHost("host-one"), true);
+  await assert.rejects(remediation.rollbackRemediation(prepared.id, "host-one"), { code: "rollback_not_available" });
+  await assert.rejects(remediation.applyRemediation(request), { code: "transaction_in_progress" });
+  assert.throws(() => store.reconcileRemediationTransaction(prepared.id, previousAttestation), { code: "recovery_version_stale" });
+  store.reconcileRemediationTransaction(prepared.id, { ...evidence, expectedRecoveryVersion: interrupted.recoveryVersion });
+  control.failAction = null;
+  assert.equal((await remediation.rollbackRemediation(prepared.id, "host-one")).transaction.status, "rolled_back");
 });
 
 test("post-audit failure preserves the applied state and exposes its error", async () => {
