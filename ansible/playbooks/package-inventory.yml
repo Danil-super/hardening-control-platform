@@ -34,7 +34,8 @@
                 completed = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
                 completed.stdout = completed.stdout.decode("utf-8", "replace") if isinstance(completed.stdout, bytes) else completed.stdout
                 completed.stderr = completed.stderr.decode("utf-8", "replace") if isinstance(completed.stderr, bytes) else completed.stderr
-                return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
+                # Keep trailing empty tab-separated fields (Origin is optional).
+                return completed.returncode, completed.stdout.rstrip("\n"), completed.stderr.strip()
             except Exception as exc:
                 return None, "", str(exc)
 
@@ -52,7 +53,7 @@
             return data
 
         def debian_packages():
-            code, output, error = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\n"])
+            code, output, error = run(["dpkg-query", "-W", "-f=${db:Status-Abbrev}\t${binary:Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\t${Maintainer}\t${Origin}\n"])
             packages = []
             if code != 0:
                 return packages, error
@@ -69,7 +70,7 @@
                 # their versions and state, and mark the inventory partial.
                 if status[1] in "nc" and status[2] == " ":
                     continue
-                if len(parts) != 6 or not all(parts[1:]):
+                if len(parts) != 8 or not all(parts[1:6]):
                     return packages, "Incomplete dpkg package/source metadata"
                 packages.append({
                     "name": parts[1],
@@ -79,6 +80,10 @@
                     "sourceName": parts[4],
                     "sourceVersion": parts[5],
                     "dpkgStatus": status,
+                    # Installed metadata is an observation, not a proof that
+                    # an archive came from a signed distribution repository.
+                    "maintainer": parts[6],
+                    "origin": parts[7],
                 })
             return packages, ""
 

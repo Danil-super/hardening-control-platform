@@ -76,9 +76,8 @@ function reportModeLabel(mode: string) {
   if (mode === "greenbone") {
     return "Greenbone";
   }
-  if (mode === "dependency-track") {
-    return "Dependency-Track";
-  }
+  if (mode === "dependency-track") return "Dependency-Track · передача";
+  if (mode === "dependency-track-analysis") return "Dependency-Track · результат";
   return "аудит";
 }
 

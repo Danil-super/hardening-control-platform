@@ -35,7 +35,8 @@ const protocol = {
   scope: "Native Trivy Ubuntu vendor-advisory matching through production HCP SBOM generation, scanPackageInventory and report normalization",
   syntheticInventory: true, installedVulnerablePackages: false, scannedLiveHost: false,
   limitations: [
-    "One Ubuntu 22.04 amd64 backport pair; not an estimate of overall false-positive or false-negative rates",
+    "A small labelled Ubuntu 22.04 matrix (backport, architecture, source epoch, unknown supplier); not an estimate of overall false-positive or false-negative rates",
+    "The epoch and unknown-supplier controls are deliberately synthetic metadata; they test interpretation, not the existence of corresponding vendor releases",
     "The fixed control is expected to omit this CVE only; unrelated vulnerabilities may remain",
     "Saved native stdout is a separate replay of each production-generated SBOM against the same unchanged database",
     "This acceptance bypasses HTTP and SSH inventory collection; those are covered by the separate lab checks",
@@ -90,6 +91,7 @@ try {
   protocol.sourceSha256 = Object.fromEntries(await Promise.all(
     ["vulnerability-scan.ts", "ansible-reports.ts", "state-store.ts"].map(async (name) => [name, await sha256(path.join(webDir, "lib", name))]),
   ));
+  protocol.sourceSha256["hcp-trivy-source.py"] = await sha256(path.join(webDir, "..", "ansible", "scripts", "hcp-trivy-source.py"));
 
   if (values.refresh) {
     setVulnerabilityDatabaseMode("online");
@@ -110,6 +112,9 @@ try {
   for (const control of [
     { name: "vulnerable", version: "3.0.2-0ubuntu1.7", expectedCve: true },
     { name: "vendor-fixed-backport", version: fixedVersion, expectedCve: false },
+    { name: "vulnerable-i386", version: "3.0.2-0ubuntu1.7", arch: "i386", expectedCve: true },
+    { name: "source-epoch", version: "1:3.0.2-0ubuntu1.7", epoch: 1, expectedCve: false },
+    { name: "unknown-supplier", version: "3.0.2-0ubuntu1.7", maintainer: "Acceptance fixture <package@unknown.invalid>", expectedCve: true, applicabilityUnverified: true },
   ]) {
     const hostAlias = "acceptance-ubuntu2204-" + control.name;
     const reportId = hostAlias + "-packages-fixture";
@@ -121,7 +126,7 @@ try {
         osRelease: { ID: "ubuntu", NAME: "Ubuntu", VERSION_ID: "22.04", VERSION_CODENAME: "jammy" },
         manager: "dpkg", packageCount: 1, error: "", partial: false, partialReasons: [],
       },
-      packages: [{ name: "libssl3:amd64", version: control.version, arch: "amd64", manager: "dpkg", sourceName: "openssl", sourceVersion: control.version, dpkgStatus: "ii " }],
+      packages: [{ name: `libssl3:${control.arch || "amd64"}`, version: control.version, arch: control.arch || "amd64", manager: "dpkg", sourceName: "openssl", sourceVersion: control.version, dpkgStatus: "ii ", maintainer: control.maintainer || "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>", origin: "" }],
       findings: [],
     };
     writeFileSync(path.join(runtime, "reports", reportId + ".json"), JSON.stringify(inventory), { flag: "wx", mode: 0o600 });
@@ -139,7 +144,7 @@ try {
 
     // Replay with the real binary, without wrapping/substituting its output.
     // The original scan above also invoked the same binary via production code.
-    const args = ["sbom", "--config", path.join(runtime, "trivy-scan-config.yaml"), "--format", "json", "--quiet", "--scanners", "vuln", "--pkg-types", "os", "--list-all-pkgs", "--disable-telemetry", "--ignorefile", "/dev/null", "--skip-db-update", "--skip-java-db-update", "--offline-scan", sbomPath];
+    const args = ["sbom", "--config", path.join(runtime, "sbom", `${result.report.runId}.trivy-config.yaml`), "--format", "json", "--quiet", "--scanners", "vuln", "--pkg-types", "os", "--list-all-pkgs", "--disable-telemetry", "--ignorefile", "/dev/null", "--skip-db-update", "--skip-java-db-update", "--offline-scan", sbomPath];
     let native;
     try {
       native = await run(binary, args, { env: environment, timeout: 300_000, maxBuffer: 16 * 1024 * 1024 });
@@ -157,20 +162,29 @@ try {
     const nativePackages = nativeOsResults.flatMap((entry) => entry.Packages ?? []);
     assert.equal(nativePackages.length, 1, "A missing native package result cannot prove the negative control");
     assert.equal(nativePackages[0].Identifier?.BOMRef ?? nativePackages[0].Identifier?.PURL, sbom.components[0]["bom-ref"]);
-    assert.equal(result.partial, false, JSON.stringify(result.report.vulnerabilityScan));
-    assert.equal(normalized.partial, false, "Normalization must preserve complete coverage");
+    assert.equal(result.partial, Boolean(control.applicabilityUnverified), JSON.stringify(result.report.vulnerabilityScan));
+    assert.equal(normalized.partial, Boolean(control.applicabilityUnverified), "Normalization must preserve coverage uncertainty");
     assert.equal(normalized.reportTimeValid, true);
     assert.equal(normalized.inventoryHost, hostAlias);
     assert.equal(normalized.score, null, "A CVE report must not invent a security percentage");
     assert.equal(result.report.vulnerabilityScan.databaseFreshness.status, "fresh");
+    const sourceEvidence = result.report.vulnerabilityScan.sourceEvidence;
+    assert.equal(sourceEvidence.status, "unchanged");
+    assert.equal(sourceEvidence.before.database.sha256, protocol.database.sha256);
+    assert.equal(sourceEvidence.before.metadata.sha256, protocol.database.metadataSha256);
+    assert.equal(sourceEvidence.before.sbom.sha256, await sha256(sbomPath));
+    assert.deepEqual(sourceEvidence.before, sourceEvidence.after);
+    assert.ok(sourceEvidence.engineVersion.split("\n").some((line) => line.trim() === `Version: ${actualVersion}`));
     assert.deepEqual([result.report.vulnerabilityScan.coverage.inventoryPackages, result.report.vulnerabilityScan.coverage.scannedPackages], [1, 1]);
-    assert.equal(result.report.vulnerabilityScan.coverage.complete, true);
+    assert.equal(result.report.vulnerabilityScan.coverage.complete, !control.applicabilityUnverified);
+    if (control.epoch) assert.equal(nativePackages[0].Epoch, control.epoch, "Native SBOM decoding must preserve source/binary epoch");
     const nativeMatches = nativeOsResults.flatMap((entry) => entry.Vulnerabilities ?? []).filter((entry) => entry.VulnerabilityID === cve);
     const rawMatches = matchingFindings(result.report);
     const normalizedMatches = matchingFindings(normalized);
     const actual = {
       ...control, nativeMatches, hcpMatches: rawMatches, normalizedMatches,
       nativeTargetDetected: nativeMatches.length > 0, hcpTargetDetected: rawMatches.some((finding) => finding.status === "failed"),
+      hcpObservationPresent: rawMatches.length > 0,
       normalizedTargetDetected: normalizedMatches.some((finding) => finding.status === "failed"),
       allHcpFindings: normalized.findings.length, coverage: result.report.vulnerabilityScan.coverage,
       nativeStdoutSha256: createHash("sha256").update(native.stdout).digest("hex"), sbomSha256: await sha256(sbomPath),
@@ -178,19 +192,21 @@ try {
     protocol.cases.push(actual);
     save("protocol.json", protocol);
     assert.equal(actual.nativeTargetDetected, control.expectedCve, "Native advisory matching disagrees with the Ubuntu control");
-    assert.equal(actual.hcpTargetDetected, control.expectedCve, "HCP adapter disagrees with the Ubuntu control");
-    assert.equal(actual.normalizedTargetDetected, control.expectedCve, "HCP report normalization disagrees with the Ubuntu control");
+    assert.equal(actual.hcpObservationPresent, control.expectedCve, "HCP must preserve the native observation");
+    assert.equal(actual.hcpTargetDetected, control.expectedCve && !control.applicabilityUnverified, "HCP applicability disagrees with the labelled control");
+    assert.equal(actual.normalizedTargetDetected, control.expectedCve && !control.applicabilityUnverified, "HCP report normalization changed applicability");
     if (control.expectedCve) {
       assert.equal(nativeMatches.length, 1);
       assert.equal(nativeMatches[0].DataSource?.ID, "ubuntu");
       assert.equal(nativeMatches[0].FixedVersion, fixedVersion);
       assert.equal(nativeMatches[0].InstalledVersion, control.version);
       assert.equal(nativeMatches[0].Status, "fixed", "Vendor fixed status describes a patch available for the vulnerable installed version");
+      assert.equal(rawMatches[0].status, control.applicabilityUnverified ? "manual" : "failed");
     } else {
       assert.equal(rawMatches.length, 0);
       assert.equal(normalizedMatches.length, 0);
     }
-    console.log(`PASS ${control.name}: ${cve} ${control.expectedCve ? "detected" : "absent after vendor backport"}; native + HCP + normalized`);
+    console.log(`PASS ${control.name}: ${cve} ${control.applicabilityUnverified ? "preserved with unverified supplier applicability" : control.expectedCve ? "detected" : "absent for the labelled version"}; native + HCP + normalized`);
   }
 
   protocol.databaseUnchanged = protocol.database.sha256 === await sha256(databasePath)

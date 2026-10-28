@@ -88,20 +88,57 @@ class TargetPythonTests(unittest.TestCase):
             (configuration / "ufw").chmod(0o700)
             rule.chmod(0o660)
             original_owner = (rule.stat().st_uid, rule.stat().st_gid)
-            args = argparse.Namespace(transaction="txn-compatibility-12345678")
+            args = argparse.Namespace(transaction="txn-compatibility-12345678", operation="backup", check=False, recovery_verified=False)
             with patch.object(module, "CONFIG_ROOT", configuration), patch.object(module, "BACKUP_ROOT", root / "backups"), \
                     patch.object(module, "backend", return_value="ufw"), patch.object(module, "run"):
-                module.backup(args)
+                module.execute_operation(args)
                 rule.write_text("changed\n")
                 (configuration / "ufw").chmod(0o755)
                 rule.chmod(0o600)
                 (configuration / "ufw/extra.rules").write_text("new\n")
-                self.assertTrue(module.rollback(args)["ok"])
+                args.operation = "rollback"
+                self.assertTrue(module.execute_operation(args)["ok"])
                 self.assertEqual(rule.read_text(), "original\n")
                 self.assertEqual((configuration / "ufw").stat().st_mode & 0o7777, 0o700)
                 self.assertEqual(rule.stat().st_mode & 0o7777, 0o660)
                 self.assertEqual((rule.stat().st_uid, rule.stat().st_gid), original_owner)
                 self.assertFalse((configuration / "ufw/extra.rules").exists())
+                replay = module.execute_operation(args)
+                self.assertTrue(replay["replayed"])
+                self.assertFalse(replay["changed"])
+
+    def test_firewall_resumes_journal_with_missing_live_directory(self):
+        module = load_script("hcp-firewall.py")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            configuration = root / "etc"
+            (configuration / "ufw").mkdir(parents=True)
+            (configuration / "machine-id").write_text("owned-recovery-compatibility")
+            rule = configuration / "ufw/user.rules"
+            rule.write_text("original\n")
+            args = argparse.Namespace(transaction="txn-recovery-compatibility-12345678", operation="backup", check=False, recovery_verified=False)
+            original_rename = Path.rename
+            def stop_after_first_rename(path, destination):
+                result = original_rename(path, destination)
+                if path == configuration / "ufw":
+                    raise SystemExit("interrupted after first rename")
+                return result
+            def active_backend():
+                if not (configuration / "ufw").is_dir():
+                    raise AssertionError("Backend probe must wait until the missing directory is recovered")
+                return "ufw"
+            with patch.object(module, "CONFIG_ROOT", configuration), patch.object(module, "BACKUP_ROOT", root / "backups"), \
+                    patch.object(module, "backend", side_effect=active_backend), patch.object(module, "run") as native:
+                module.execute_operation(args)
+                rule.write_text("current\n")
+                args.operation = "rollback"
+                with patch.object(Path, "rename", side_effect=stop_after_first_rename, autospec=True):
+                    with self.assertRaises(SystemExit):
+                        module.execute_operation(args)
+                self.assertFalse((configuration / "ufw").exists())
+                self.assertTrue(module.execute_operation(args)["ok"])
+                self.assertEqual(rule.read_text(), "original\n")
+                native.assert_called_once_with("ufw", "reload")
 
     def test_all_embedded_target_programs_execute_with_unavailable_tools(self):
         for name in ("agentless-audit.yml", "package-inventory.yml", "collect-security-events.yml"):

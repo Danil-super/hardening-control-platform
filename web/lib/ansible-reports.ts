@@ -55,7 +55,7 @@ export type AnsibleReportDetail = AnsibleReportSummary & {
 export type AnsibleReportDependent = {
   id: string;
   mode: string;
-  reason: "package_inventory" | "cve_report";
+  reason: "package_inventory" | "cve_report" | "dependency_track_delivery";
 };
 
 export type DeletedAnsibleReport = {
@@ -146,6 +146,7 @@ export function targetAliasFromReportFileName(fileName: string, profileId: strin
     "astra-oval": "astra-oval",
     greenbone: "greenbone",
     "dependency-track": "dependency-track",
+    "dependency-track-analysis": "dependency-track-analysis",
   };
   const kind = reportKinds[mode];
   if (kind) {
@@ -332,7 +333,7 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
   const partial = !available || parsed.partial === true || parsed.scanner?.partial === true || Boolean(parsed.scanner?.error)
     || parsed.vulnerabilityScan?.partial === true || Boolean(parsed.packageInventory?.error) || parsed.packageInventory?.partial === true
     || (parsed.findings !== undefined && (!Array.isArray(parsed.findings) || findings.length !== parsed.findings.length))
-    || mode === "dependency-track" || !scopeKnown || mode === "greenbone" && !observation.observedAt;
+    || ["dependency-track", "dependency-track-analysis"].includes(mode) || !scopeKnown || mode === "greenbone" && !observation.observedAt;
   const needsReview = !scopeKnown || mode === "greenbone" && !observation.observedAt || findings.some((finding) => finding.status === "manual");
   const reportTimeValid = reportTimestamp({ createdAt, modifiedAt: stats.mtime.toISOString(), ...observation }) > 0;
 
@@ -467,6 +468,8 @@ export function listAnsibleReportDependents(reportId: string): AnsibleReportDepe
     const scanner = record(raw.scanner);
     if (scanner.sourceCveReport === reportId) {
       dependents.push({ id: report.id, mode: report.mode, reason: "cve_report" });
+    } else if (scanner.deliveryReportId === reportId) {
+      dependents.push({ id: report.id, mode: report.mode, reason: "dependency_track_delivery" });
     }
   }
   return dependents;

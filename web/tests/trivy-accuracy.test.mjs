@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -12,7 +13,7 @@ import ts from "typescript";
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const source = readFileSync(path.join(webDir, "lib/vulnerability-scan.ts"), "utf8");
-const compiled = ts.transpileModule(source + "\nexport const testing = { trivyFinding, packagePurl, writePackageSbom, scanCoverage };", { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+const compiled = ts.transpileModule(source + "\nexport const testing = { trivyFinding, packagePurl, writePackageSbom, scanCoverage, packageProvenance, findingProvenance };", { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
 
 function harness(t, response = "normal", mode = "offline", repositories = "") {
   const dir = mkdtempSync(path.join(tmpdir(), "hcp-trivy-test-"));
@@ -22,21 +23,21 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
   mkdirSync(reports);
   mkdirSync(path.join(cache, "db"), { recursive: true });
   writeFileSync(path.join(cache, "db/trivy.db"), "fixture, not a real Trivy database");
-  writeFileSync(path.join(cache, "db/metadata.json"), JSON.stringify({ UpdatedAt: new Date().toISOString() }));
+  writeFileSync(path.join(cache, "db/metadata.json"), JSON.stringify({ Version: 2, UpdatedAt: new Date().toISOString() }));
   // This executable is a contract fixture. These tests do not claim a live Trivy scan.
   const binary = path.join(dir, "trivy-fixture");
-  writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst response = ${JSON.stringify(response)};\nfs.writeFileSync(${JSON.stringify(path.join(dir, "args.json"))}, JSON.stringify({args, env: process.env}));\nif(args.includes('--download-db-only')) fs.appendFileSync(${JSON.stringify(path.join(dir, "downloads.jsonl"))}, JSON.stringify(args) + '\\n');\nif(args.includes('--download-db-only') && response.startsWith('fallback-') && args[args.indexOf('--db-repository') + 1] !== 'ghcr.io/aquasecurity/trivy-db') { console.error(response === 'fallback-network' ? 'context deadline exceeded' : 'manifest unknown: 404'); process.exit(1); }\nif(args.includes('--download-db-only') && response === 'download-dns') { console.error('lookup ghcr.io: no such host'); process.exit(1); }\nif(args.includes('--download-db-only')) {\n  fs.writeFileSync(${JSON.stringify(path.join(cache, "db/trivy.db"))}, 'downloaded fixture');\n  fs.writeFileSync(${JSON.stringify(path.join(cache, "db/metadata.json"))}, JSON.stringify({UpdatedAt: new Date().toISOString()}));\n  process.exit(0);\n}\nconst sbom = JSON.parse(fs.readFileSync(args.at(-1), 'utf8'));\nlet output = {SchemaVersion: 2, Metadata: {OS: {Family: sbom.metadata.component.name, Name: sbom.metadata.component.version}}, Results: [{Class: 'os-pkgs', Type: sbom.metadata.component.name, Packages: sbom.components.map(p => ({Name: p.name, Version: p.version, Identifier: {BOMRef: p['bom-ref'], PURL: p.purl}})), Vulnerabilities: []}]};\nif(response === 'empty') output = {};\nif(response === 'missing-package') output.Results[0].Packages = [];\nif(response === 'wrong-os') output.Metadata.OS.Family = 'alpine';\nif(response === 'eosl') output.Metadata.OS.EOSL = true;\nif(response === 'many') output.Results[0].Vulnerabilities = Array.from({length: 1005}, (_,i) => ({VulnerabilityID:'CVE-2026-' + i, PkgName:'libssl3', InstalledVersion:'3.0.2-0ubuntu1', FixedVersion:'3.0.2-0ubuntu2', Status:'fixed', Severity:'HIGH'}));\nconsole.log(JSON.stringify(output));\n`);
+  writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst response = ${JSON.stringify(response)};\nfs.writeFileSync(${JSON.stringify(path.join(dir, "args.json"))}, JSON.stringify({args, env: process.env}));\nif(args.includes('--download-db-only')) fs.appendFileSync(${JSON.stringify(path.join(dir, "downloads.jsonl"))}, JSON.stringify(args) + '\\n');\nif(args.includes('--download-db-only') && response.startsWith('fallback-') && args[args.indexOf('--db-repository') + 1] !== 'ghcr.io/aquasecurity/trivy-db') { console.error(response === 'fallback-network' ? 'context deadline exceeded' : 'manifest unknown: 404'); process.exit(1); }\nif(args.includes('--download-db-only') && response === 'download-dns') { console.error('lookup ghcr.io: no such host'); process.exit(1); }\nif(args.includes('--download-db-only')) {\n  const activeCache = args[args.indexOf('--cache-dir') + 1];\n  fs.mkdirSync(activeCache + '/db', {recursive: true});\n  fs.writeFileSync(activeCache + '/db/trivy.db', 'downloaded fixture');\n  fs.writeFileSync(activeCache + '/db/metadata.json', JSON.stringify({Version: 2, UpdatedAt: new Date().toISOString()}));\n  process.exit(0);\n}\nif(args.includes('--version')) { console.log('Version: 0.74.0-contract-fixture'); process.exit(0); }\nconst sbom = JSON.parse(fs.readFileSync(args.at(-1), 'utf8'));\nlet output = {SchemaVersion: 2, Metadata: {OS: {Family: sbom.metadata.component.name, Name: sbom.metadata.component.version}}, Results: [{Class: 'os-pkgs', Type: sbom.metadata.component.name, Packages: sbom.components.map(p => ({Name: p.name, Version: p.version, Identifier: {BOMRef: p['bom-ref'], PURL: p.purl}})), Vulnerabilities: []}]};\nif(response === 'mutate-db') fs.appendFileSync(process.env.TRIVY_CACHE_DIR + '/db/trivy.db', 'changed');\nif(response === 'mutate-sbom') fs.appendFileSync(args.at(-1), ' ');\nif(response === 'vulnerable') output.Results[0].Vulnerabilities = [{VulnerabilityID:'CVE-2023-0286', PkgName:'libssl3', InstalledVersion:sbom.components[0].version, PkgIdentifier:{BOMRef:sbom.components[0]['bom-ref']}, FixedVersion:'3.0.2-0ubuntu1.8', Status:'fixed', Severity:'HIGH', DataSource:{ID:'ubuntu'}}];\nif(response === 'empty') output = {};\nif(response === 'missing-package') output.Results[0].Packages = [];\nif(response === 'wrong-os') output.Metadata.OS.Family = 'alpine';\nif(response === 'eosl') output.Metadata.OS.EOSL = true;\nif(response === 'many') output.Results[0].Vulnerabilities = Array.from({length: 1005}, (_,i) => ({VulnerabilityID:'CVE-2026-' + i, PkgName:'libssl3', InstalledVersion:'3.0.2-0ubuntu1', FixedVersion:'3.0.2-0ubuntu2', Status:'fixed', Severity:'HIGH'}));\nconsole.log(JSON.stringify(output));\n`);
   chmodSync(binary, 0o700);
   const env = { ...process.env, HCP_TRIVY_BIN: binary, HCP_TRIVY_CACHE_DIR: cache, HCP_TRIVY_MAX_DB_AGE_HOURS: "168", HCP_TRIVY_DB_REPOSITORY: repositories, TRIVY_SERVER: "https://must-not-be-used.invalid", TRIVY_SEVERITY: "LOW", TRIVY_IGNORE_UNFIXED: "true" };
   const exports = {};
   const mocks = {
-    "@/lib/ansible-control": { getStateDir: () => dir },
+    "@/lib/ansible-control": { getStateDir: () => dir, getRepoRoot: () => path.resolve(webDir, "..") },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
     "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), appendAuditEvent: () => {} },
     "@/lib/astra-oval-policy": { describeAstraOvalNextStep: () => ({ ready: true, message: "OVAL-источник группы linux_hosts уже назначен. Запустите CVE Astra — OVAL / OpenSCAP.", href: "/hosts" }) },
   };
   vm.runInNewContext(compiled, { exports, require: (name) => mocks[name] ?? require(name), process: { env }, URLSearchParams, console: { warn: () => {}, log: () => {}, error: () => {} } });
-  const report = { mode: "packages", profileId: "packages", inventoryHost: "lab-host", hostname: "different-hostname", createdAt: new Date().toISOString(), packageInventory: { packageCount: 1, manager: "dpkg", osRelease: { ID: "ubuntu", VERSION_ID: "22.04" }, error: "" }, packages: [{ name: "libssl3:amd64", version: "3.0.2-0ubuntu1", arch: "amd64", manager: "dpkg", sourceName: "openssl", sourceVersion: "3.0.2-0ubuntu1" }] };
+  const report = { mode: "packages", profileId: "packages", inventoryHost: "lab-host", hostname: "different-hostname", createdAt: new Date().toISOString(), packageInventory: { packageCount: 1, manager: "dpkg", osRelease: { ID: "ubuntu", VERSION_ID: "22.04" }, error: "" }, packages: [{ name: "libssl3:amd64", version: "3.0.2-0ubuntu1", arch: "amd64", manager: "dpkg", sourceName: "openssl", sourceVersion: "3.0.2-0ubuntu1", maintainer: "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>", origin: "Ubuntu" }] };
   const save = () => writeFileSync(path.join(reports, "lab-host-packages-run1.json"), JSON.stringify(report));
   save();
   return { ...exports, dir, reports, cache, report, save, scan: () => exports.scanPackageInventory({ hostAlias: "lab-host", reportId: "lab-host-packages-run1" }), refresh: () => exports.refreshTrivyDatabase() };
@@ -112,6 +113,108 @@ test("complete contract result records coverage without inventing a security sco
   assert.equal(env.TRIVY_SERVER, undefined);
   assert.equal(env.TRIVY_SEVERITY, undefined);
   assert.equal(env.TRIVY_IGNORE_UNFIXED, undefined);
+  const evidence = result.report.vulnerabilityScan.sourceEvidence;
+  assert.equal(evidence.status, "unchanged");
+  assert.match(evidence.engineVersion, /0\.74\.0-contract-fixture/);
+  assert.equal(evidence.before.database.sha256, createHash("sha256").update(readFileSync(path.join(h.cache, "db/trivy.db"))).digest("hex"));
+  assert.deepEqual(evidence.before, evidence.after);
+  assert.equal(result.report.vulnerabilityScan.packageProvenance.cryptographicallyVerified, false);
+});
+
+test("SBOM keeps observed maintainer/origin without inventing repository attestation", (t) => {
+  const h = harness(t);
+  const out = h.testing.writePackageSbom({ report: h.report, sourcePackageReportId: "lab-host-packages-run1", scanRunId: "provenance-fixture" });
+  const component = JSON.parse(readFileSync(out.sbomPath, "utf8")).components[0];
+  const props = Object.fromEntries(component.properties.map((p) => [p.name, p.value]));
+  assert.equal(component.supplier.name, h.report.packages[0].maintainer);
+  assert.equal(props["hcp:origin"], "Ubuntu");
+  assert.equal(props["hcp:package-provenance"], "distribution-maintainer");
+  assert.match(props["hcp:provenance-method"], /unverified/);
+});
+
+test("third-party and unknown package matches remain visible with unverified applicability", async (t) => {
+  for (const metadata of [
+    { maintainer: "NodeSource <support@nodesource.com>", origin: "" },
+    { maintainer: "Unknown Builder <builder@example.org>", origin: "" },
+    { maintainer: "Ubuntu Developers <dev@ubuntu.com.attacker.invalid>", origin: "Ubuntu" },
+    { maintainer: "Ubuntu Developers <dev@ubuntu.com>", origin: "Unrelated repository" },
+  ]) {
+    const h = harness(t, "vulnerable");
+    Object.assign(h.report.packages[0], metadata);
+    h.save();
+    const result = await h.scan();
+    const matching = result.report.findings.find((finding) => finding.id.startsWith("trivy_CVE-2023-0286_"));
+    assert.ok(matching, "Potential CVE observations must be retained");
+    assert.equal(matching.status, "manual");
+    assert.match(matching.evidence, /applicability=unverified/);
+    assert.equal(result.partial, true);
+    assert.equal(result.report.vulnerabilityScan.vendorAssessment.verified, false);
+    assert.equal(result.report.vulnerabilityScan.coverage.complete, false);
+  }
+});
+
+test("legacy inventory remains readable but does not assert complete vendor coverage", async (t) => {
+  const h = harness(t);
+  delete h.report.packages[0].maintainer;
+  delete h.report.packages[0].origin;
+  h.save();
+  const result = await h.scan();
+  assert.equal(result.partial, true);
+  assert.equal(result.report.vulnerabilityScan.checkedPackages, 1);
+  assert.match(result.report.vulnerabilityScan.coverage.reasons.join(" "), /старых инвентарей/);
+  assert.ok(!result.report.findings.some((finding) => finding.id === "trivy_no_known_vulnerabilities"));
+  assert.equal(result.report.assetBinding, undefined);
+});
+
+test("derived CVE report retains only the asset binding captured with its source inventory", async (t) => {
+  const h = harness(t);
+  const binding = { version: 1, assetId: "asset-observed-at-collection", alias: "lab-host", generation: 3,
+    machineIdSha256: "a".repeat(64), sshHostKeyFingerprint: "SHA256:collection-time", verifiedAt: "2026-10-28T08:00:00Z" };
+  h.report.assetBinding = binding;
+  h.save();
+  const result = await h.scan();
+  assert.equal(JSON.stringify(result.report.assetBinding), JSON.stringify(binding));
+});
+
+test("architecture and source epoch remain distinct through the complete scan", async (t) => {
+  const h = harness(t);
+  const original = h.report.packages[0];
+  original.version = original.sourceVersion = "2:3.0.2-0ubuntu1";
+  h.report.packages.push({ ...original, name: "libssl3:i386", arch: "i386" });
+  h.report.packageInventory.packageCount = 2;
+  h.save();
+  const result = await h.scan();
+  assert.equal(result.partial, false);
+  assert.equal(result.report.vulnerabilityScan.coverage.scannedPackages, 2);
+  const sbom = JSON.parse(readFileSync(path.join(h.dir, "sbom", result.report.vulnerabilityScan.sbomFile), "utf8"));
+  assert.equal(new Set(sbom.components.map((component) => component["bom-ref"])).size, 2);
+  for (const component of sbom.components) assert.match(component.purl, /epoch=2/);
+});
+
+for (const response of ["mutate-db", "mutate-sbom"]) {
+  test(`${response} cannot publish an empty successful CVE verdict`, async (t) => {
+    const h = harness(t, response);
+    const result = await h.scan();
+    assert.equal(result.partial, true);
+    assert.equal(result.report.vulnerabilityScan.sourceEvidence.status, "changed");
+    assert.match(result.report.findings[0].evidence, /source_failure=source_changed/);
+    assert.equal(result.report.vulnerabilityScan.coverage.complete, false);
+    assert.ok(!result.report.findings.some((finding) => finding.status === "passed"));
+  });
+}
+
+test("concurrent scans use separate config files and both retain unchanged evidence", async (t) => {
+  const h = harness(t);
+  const results = await Promise.all([h.scan(), h.scan()]);
+  for (const result of results) {
+    assert.equal(result.partial, false);
+    assert.equal(result.report.vulnerabilityScan.sourceEvidence.status, "unchanged");
+  }
+  const configs = results.map((result) => {
+    const args = result.report.vulnerabilityScan.sourceEvidence.parameters;
+    return args[args.indexOf("--config") + 1];
+  });
+  assert.notEqual(configs[0], configs[1]);
 });
 
 test("online source downloads the Trivy database before a CVE audit", async (t) => {
@@ -293,7 +396,7 @@ test("dpkg inventory includes held installed packages and source metadata, exclu
   const playbook = readFileSync(path.join(webDir, "../ansible/playbooks/package-inventory.yml"), "utf8");
   const body = playbook.split("python3 - <<'PY'\n")[1].split("\n        PY")[0].split("\n").map((line) => line.slice(8)).join("\n");
   const definitions = body.split("os_release = read_os_release()\n")[0];
-  const script = `import json\nnamespace = {}\nexec(${JSON.stringify(definitions)}, namespace)\ncommands = []\ndef fake_run(command):\n    commands.append(command)\n    return 0, 'ii \\tlibssl3:amd64\\t3.0.2-1\\tamd64\\topenssl\\t3.0.2-1\\nhi \\tbash\\t5.2-1\\tamd64\\tbash\\t5.2-1\\nrc \\tremoved\\t1.0\\tamd64\\tremoved\\t1.0', ''\nnamespace['run'] = fake_run\npackages, error = namespace['debian_packages']()\nprint(json.dumps({'packages': packages, 'error': error, 'command': commands[0]}))`;
+  const script = `import json\nnamespace = {}\nexec(${JSON.stringify(definitions)}, namespace)\ncommands = []\ndef fake_run(command):\n    commands.append(command)\n    return 0, 'ii \\tlibssl3:amd64\\t3.0.2-1\\tamd64\\topenssl\\t3.0.2-1\\tUbuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>\\t\\nhi \\tbash\\t5.2-1\\tamd64\\tbash\\t5.2-1\\tDebian Bash Team <pkg-bash@lists.debian.org>\\t\\nrc \\tremoved\\t1.0\\tamd64\\tremoved\\t1.0', ''\nnamespace['run'] = fake_run\npackages, error = namespace['debian_packages']()\nprint(json.dumps({'packages': packages, 'error': error, 'command': commands[0]}))`;
   const result = JSON.parse(execFileSync("python3", ["-c", script], { encoding: "utf8" }));
   assert.equal(result.error, "");
   assert.equal(result.packages.length, 2);

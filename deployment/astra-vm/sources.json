@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-28",
+  "imageDocumentation": "https://registry.astralinux.ru/descriptions/cloud/cloudinit/",
+  "images": {
+    "1.8.1": {
+      "url": "https://registry.astralinux.ru/artifactory/mg-generic/alse/cloudinit/alse-1.8.1-base-cloudinit-mg16.3.0-amd64.qcow2",
+      "metadataUrl": "https://registry.astralinux.ru/artifactory/api/storage/mg-generic/alse/cloudinit/alse-1.8.1-base-cloudinit-mg16.3.0-amd64.qcow2",
+      "bytes": 679293440,
+      "sha256": "f344fe541a9c1545c46a478c9eb648ce3f92f8ac7b8965873e91657d1d775d8a",
+      "expectedControl": "true"
+    },
+    "1.8.6": {
+      "url": "https://registry.astralinux.ru/artifactory/mg-generic/alse/cloudinit/alse-1.8.6-base-cloudinit-mg16.5.0-amd64.qcow2",
+      "metadataUrl": "https://registry.astralinux.ru/artifactory/api/storage/mg-generic/alse/cloudinit/alse-1.8.6-base-cloudinit-mg16.5.0-amd64.qcow2",
+      "bytes": 713342976,
+      "sha256": "6c5cd50ba19a664054aec350b79abede714f07d462a9458c19cfd6fc86f99e77",
+      "expectedControl": "false"
+    }
+  },
+  "oval": {
+    "url": "https://dl.astralinux.ru/artifactory/al-oval/1.8_x86-64/oval-definitions-alse-1.8.xml",
+    "metadataUrl": "https://dl.astralinux.ru/artifactory/api/storage/al-oval/1.8_x86-64/oval-definitions-alse-1.8.xml",
+    "bytes": 47960775,
+    "sha256": "3ba7e4c8126be503fc95bb916f2d9b45306869bd0f58f200abc5b1e1effbbe3d",
+    "definitionCount": 8284,
+    "definitionId": "oval:astra:def:4214940672944626263348052579907",
+    "cve": "CVE-2024-5535",
+    "fixedVersion": "0:3.4.0-2-astra6",
+    "packages": ["libssl3", "openssl", "openssl-provider-legacy"]
+  }
+}

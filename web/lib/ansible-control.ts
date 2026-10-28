@@ -252,7 +252,7 @@ export async function runAnsiblePlaybook({
   action: PlaybookAction;
   profileId: string;
   limit?: string;
-  extraVars?: Record<string, string>;
+  extraVars?: Record<string, string | boolean>;
   checkMode?: boolean;
   /** A caller-provided password for one manual sudo operation; never stored. */
   becomePassword?: string;

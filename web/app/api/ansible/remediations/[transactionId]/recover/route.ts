@@ -14,7 +14,7 @@ export async function POST(request: Request, { params }: { params: Promise<{ tra
     const transaction = reconcileRemediationTransaction(transactionId, body);
     return NextResponse.json({ ok: true, transaction, message: transaction.status === "recovery_ready"
       ? "Сверка записана. Хост остаётся заблокированным для новых изменений; выполните откат проверенной копии."
-      : "Результат ручного восстановления записан в журнал. Запустите повторный аудит хоста." });
+      : "Результат сверки записан в журнал контроллера. Незавершённая блокировка HCP на целевом хосте снимается успешным завершением helper rollback после независимой проверки. Запустите повторный аудит хоста." });
   } catch (error) {
     const code = error && typeof error === "object" && "code" in error ? String(error.code) : "recovery_failed";
     return NextResponse.json({ ok: false, error: code, message: error instanceof Error ? error.message : "Не удалось зарегистрировать восстановление." },

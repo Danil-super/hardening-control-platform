@@ -1,6 +1,7 @@
 name: Real UFW apply and rollback acceptance
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:

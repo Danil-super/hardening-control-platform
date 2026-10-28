@@ -21,7 +21,7 @@ import time
 import urllib.request
 import uuid
 
-from verify_firewall import assert_disposable_runner, snapshot, write_json
+from verify_firewall import assert_disposable_runner, interrupt_first_rollback_rename, snapshot, write_json
 
 REPO = Path(__file__).resolve().parents[2]
 PORT = 8088
@@ -354,12 +354,20 @@ except (OSError, urllib.error.URLError, TimeoutError) as error:
         command(["firewall-cmd", "--reload"], "verify-permanent-deny-reload")
         probe("deny-survives-firewalld-reload", False)
         ssh_probe("fresh-ssh-survives-firewalld-reload")
+        interrupt_first_rollback_rename(state["transaction"], "firewalld", artifacts)
+        check("killed-rollback-retains-previous-and-journal")
+        probe("runtime-deny-survives-interrupted-filesystem-rollback", False)
+        ssh_probe("fresh-ssh-survives-interrupted-rollback")
         playbook("rollback-remediation", "actual-rollback-over-ssh")
         probe("rollback-restores-namespace-http", True)
         ssh_probe("fresh-ssh-survives-rollback")
         if snapshot(configuration) != baseline or runtime_state("restored-runtime") != baseline_runtime:
             raise RuntimeError("Rollback did not restore the exact permanent and runtime baseline.")
         check("rollback-config-and-runtime-restored")
+        repeated = playbook("rollback-remediation", "actual-completed-rollback-replay")
+        if not re.search(r"hcp-firewalld-ci\s+:.*changed=0\b", repeated) or snapshot(configuration) != baseline or runtime_state("replayed-runtime") != baseline_runtime:
+            raise RuntimeError("Completed rollback replay changed restored configuration or runtime.")
+        check("completed-rollback-replay-unchanged")
         result["ok"] = True
     except Exception as error:
         result["error"] = str(error)

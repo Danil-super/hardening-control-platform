@@ -13,7 +13,7 @@ const compiled = compileServerModules(["dependency-track"]);
 writeFileSync(path.join(compiled.directory, "ansible-control.mjs"), 'export const getStateDir = () => process.env.HCP_TEST_DT_DIR;');
 writeFileSync(path.join(compiled.directory, "ansible-reports.mjs"), 'export const getReportsDir = () => process.env.HCP_TEST_DT_DIR + "/reports";');
 const { syncDependencyTrack } = await import(compiled.url("dependency-track"));
-const priorEnvironment = Object.fromEntries(["HCP_TEST_DT_DIR", "HCP_DEPENDENCY_TRACK_URL", "HCP_DEPENDENCY_TRACK_API_KEY"].map((key) => [key, process.env[key]]));
+const priorEnvironment = Object.fromEntries(["HCP_TEST_DT_DIR", "HCP_STATE_DIR", "HCP_DEPENDENCY_TRACK_URL", "HCP_DEPENDENCY_TRACK_API_KEY"].map((key) => [key, process.env[key]]));
 const token = "3f6d559b-4023-4d72-a17e-5aa083e621b3";
 let directory;
 let server;
@@ -25,6 +25,7 @@ beforeEach(async () => {
   mkdirSync(path.join(directory, "reports"));
   mkdirSync(path.join(directory, "sbom"));
   process.env.HCP_TEST_DT_DIR = directory;
+  process.env.HCP_STATE_DIR = directory;
   process.env.HCP_DEPENDENCY_TRACK_API_KEY = "test-api-key";
   writeFileSync(path.join(directory, "reports", "cve-test.json"), JSON.stringify({
     inventoryHost: "host-one", mode: "vulnerabilities", os: "Linux test",
@@ -69,6 +70,7 @@ test("Dependency-Track upload uses the correct contract and preserves a pending 
   assert.equal(received[0].headers["x-api-key"], "test-api-key");
   const body = JSON.parse(received[0].body);
   assert.equal(body.projectName, "host-one");
+  assert.match(body.projectVersion, /^hcp-sbom:[a-f0-9]{64}$/);
   assert.equal(body.autoCreate, true);
   assert.equal(JSON.parse(Buffer.from(body.bom, "base64").toString()).bomFormat, "CycloneDX");
   const report = JSON.parse(readFileSync(path.join(directory, "reports", `${result.reportId}.json`), "utf8"));
@@ -119,7 +121,7 @@ test("Dependency-Track rejects empty component inventories before transmission",
 test("Dependency-Track does not mistake an HTTP 200 frontend or empty JSON for accepted analysis", async () => {
   for (const body of ["<html>frontend</html>", "{}", '{"token":"invalid"}']) {
     reply.body = body;
-    await assert.rejects(synchronize(), /не вернул токен/);
+    await assert.rejects(synchronize(), /не вернул токен|некорректный JSON/);
   }
   assert.deepEqual(readdirSync(path.join(directory, "reports")), ["cve-test.json"]);
 });

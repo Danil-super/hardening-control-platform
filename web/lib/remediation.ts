@@ -226,6 +226,7 @@ export async function applyRemediation({
   }
 
   let mutationInFlight = false;
+  let backupInFlight = false;
   try {
     const preAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias, becomePassword });
     const preAuditReportId = reportIdForRun({
@@ -242,6 +243,9 @@ export async function applyRemediation({
     updateRemediationTransaction(transactionId, { preAuditReportId });
 
     assertConnectionUnchanged(hostAlias, connection);
+    // Backup now establishes a target-side lease. A lost response can leave
+    // that lease active even though the firewall itself has not changed.
+    backupInFlight = true;
     await runAnsiblePlaybook({
       action: "backupRemediation",
       profileId,
@@ -249,12 +253,14 @@ export async function applyRemediation({
       extraVars: { ...extraVars, transaction_id: transactionId, remediation_action: action },
       becomePassword,
     });
+    backupInFlight = false;
     const backupRef = backupReference(transactionId);
     updateRemediationTransaction(transactionId, { status: "backed_up", backupRef });
 
     assertConnectionUnchanged(hostAlias, connection);
     mutationInFlight = true;
-    const applied = await runAnsiblePlaybook({ action, profileId, limit: hostAlias, extraVars, becomePassword });
+    const applied = await runAnsiblePlaybook({ action, profileId, limit: hostAlias,
+      extraVars: { ...extraVars, transaction_id: transactionId }, becomePassword });
     mutationInFlight = false;
     appendIncident({
       action,
@@ -309,9 +315,9 @@ export async function applyRemediation({
       backupRef,
     };
   } catch (error) {
-    const unknown = mutationInFlight && ansibleOutcomeIsUnknown(error);
+    const unknown = (mutationInFlight || backupInFlight) && ansibleOutcomeIsUnknown(error);
     const failure = error instanceof Error ? error.message : "Транзакция remediation завершилась с ошибкой.";
-    const message = unknown ? `Результат удалённого изменения неизвестен; новые изменения и откат заблокированы до независимой сверки остановки процессов и состояния хоста. ${failure}` : failure;
+    const message = unknown ? `Результат удалённого ${backupInFlight ? "резервирования" : "изменения"} неизвестен; новые изменения и откат заблокированы до независимой сверки остановки процессов и состояния хоста. ${failure}` : failure;
     updateRemediationTransaction(transactionId, { status: unknown ? "interrupted" : "failed", error: message });
     appendIncident({
       action,
@@ -348,7 +354,8 @@ export async function rollbackRemediation(transactionId: string, confirmedHost: 
       action: "rollbackRemediation",
       profileId: transaction.profileId,
       limit: transaction.hostAlias,
-      extraVars: { transaction_id: transaction.id, remediation_action: transaction.action },
+      extraVars: { transaction_id: transaction.id, remediation_action: transaction.action,
+        rollback_recovery_verified: transaction.status === "recovery_ready" },
       becomePassword,
     });
     mutationInFlight = false;

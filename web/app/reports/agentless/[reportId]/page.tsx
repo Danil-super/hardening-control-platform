@@ -4,6 +4,7 @@ import { FindingsExplorer } from "@/components/findings/findings-explorer";
 import { SecurityEventsView } from "@/components/reports/security-events-view";
 import { OvalFindingsView } from "@/components/reports/oval-findings-view";
 import { LynisFindingsView } from "@/components/reports/lynis-findings-view";
+import { DependencyTrackResult } from "@/components/reports/dependency-track-result";
 import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { describeIncompleteAuditChecks } from "@/lib/audit-coverage";
@@ -35,6 +36,7 @@ function reportModeTitle(mode: string) {
   if (mode === "astra-oval") return "Astra: CVE по выбранной OVAL-базе";
   if (mode === "greenbone") return "Greenbone / OpenVAS: импорт сетевого отчёта";
   if (mode === "dependency-track") return "OWASP Dependency-Track: передача SBOM";
+  if (mode === "dependency-track-analysis") return "OWASP Dependency-Track: результаты анализа";
   return "Аудит Ansible";
 }
 
@@ -159,6 +161,10 @@ export default async function AgentlessReportDetailPage({
           </div>
         </div>
       </section>
+
+      {["dependency-track", "dependency-track-analysis"].includes(report.mode) ? <DependencyTrackResult hostAlias={targetAlias} reportId={report.id}
+        complete={report.mode === "dependency-track-analysis" && scanner.analysisStatus === "complete"}
+        findingCount={typeof scanner.findingCount === "number" ? scanner.findingCount : null} /> : null}
 
       {report.partial || !report.reportTimeValid ? (
         <section role="status" className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-6 text-amber-100">

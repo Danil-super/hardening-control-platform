@@ -1,0 +1,69 @@
+name: Real Astra VM scanner acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/astra-vm.yml
+      - deployment/astra-vm/**
+      - deployment/tests/verify_astra_vm*
+      - deployment/tests/test_astra_vm.py
+      - ansible/playbooks/**
+      - ansible/scripts/hcp-oval-audit.py
+      - ansible/scripts/hcp-controller-scan.py
+      - ansible/scap/astra/**
+      - web/lib/ansible-reports.ts
+  pull_request:
+    paths:
+      - .github/workflows/astra-vm.yml
+      - deployment/astra-vm/**
+      - deployment/tests/verify_astra_vm*
+      - deployment/tests/test_astra_vm.py
+      - ansible/playbooks/**
+      - ansible/scripts/hcp-oval-audit.py
+      - ansible/scripts/hcp-controller-scan.py
+      - ansible/scap/astra/**
+      - web/lib/ansible-reports.ts
+
+permissions:
+  contents: read
+
+jobs:
+  astra-vm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["1.8.1", "1.8.6"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install the production report normalizer dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts
+      - name: Install VM and controller tools on the disposable runner
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ansible-core openscap-scanner
+          if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+      - name: Boot genuine Astra and verify collection, baseline and vendor CVE controls
+        run: |
+          python3 deployment/tests/verify_astra_vm.py \
+            --release '${{ matrix.release }}' \
+            --work-dir "$RUNNER_TEMP/hcp-astra-${{ matrix.release }}"
+      - name: Save public scanner evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra-vm-${{ matrix.release }}
+          path: ${{ runner.temp }}/hcp-astra-${{ matrix.release }}/artifacts/
+          retention-days: 14
+          if-no-files-found: warn

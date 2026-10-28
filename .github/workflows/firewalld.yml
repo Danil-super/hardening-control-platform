@@ -1,6 +1,7 @@
 name: Real firewalld SSH apply and rollback acceptance
 
 on:
+  pull_request:
   push:
     branches: [main]
     paths:

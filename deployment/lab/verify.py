@@ -196,22 +196,49 @@ def main():
                     raise AssertionError("CVE report invents a security percentage")
                 return payload, item
 
+            def verify_cve_evidence(payload, item):
+                raw = item["raw"]
+                scan = raw["vulnerabilityScan"]
+                coverage = scan["coverage"]
+                provenance = scan["packageProvenance"]
+                evidence = scan["sourceEvidence"]
+                count = len(packages["raw"]["packages"])
+                if not raw.get("scanner", {}).get("available") or coverage["scannedPackages"] != count or coverage["inventoryPackages"] != count:
+                    raise AssertionError("Native Trivy did not account for every collected package")
+                if scan["databaseFreshness"]["status"] != "fresh" or evidence["status"] != "unchanged" or evidence["before"] != evidence["after"]:
+                    raise AssertionError("Native Trivy source freshness or byte identity is unproven")
+                if any(not isinstance(pkg.get("maintainer"), str) or not isinstance(pkg.get("origin"), str) for pkg in packages["raw"]["packages"]):
+                    raise AssertionError("Collector lost installed package provenance observations")
+                uncertain = provenance["unknown"] + provenance["third-party"]
+                if provenance["cryptographicallyVerified"] or provenance["distribution-maintainer"] + uncertain != count:
+                    raise AssertionError("Package provenance was dropped or presented as a signature attestation")
+                # Personal maintainer addresses can belong to real Debian
+                # packages; the conservative heuristic must expose uncertainty.
+                # No other incomplete condition is accepted by this fixture.
+                if bool(payload.get("partial")) != bool(uncertain) or item["partial"] != bool(uncertain) or coverage["complete"] != (not uncertain):
+                    raise AssertionError("Native Trivy completeness does not match observed provenance")
+                if len(coverage["reasons"]) != (1 if uncertain else 0):
+                    raise AssertionError("Native Trivy has an additional unexplained incomplete condition")
+                if uncertain and any(finding["id"] == "trivy_no_known_vulnerabilities" for finding in item["findings"]):
+                    raise AssertionError("Unknown package origin became an empty successful CVE verdict")
+                for finding in item["findings"]:
+                    if "applicability=unverified" in (finding.get("evidence") or "") and finding["status"] != "manual":
+                        raise AssertionError("Unverified third-party applicability became a definite finding")
+
             if args.online:
                 online, online_report = cve_scan()
-                if online.get("partial") or online_report["partial"]:
-                    raise AssertionError(f"Live Trivy online scan is incomplete: {online.get('message')}")
-                freshness = online_report["raw"]["vulnerabilityScan"]["databaseFreshness"]
-                if freshness["status"] != "fresh":
-                    raise AssertionError(f"Live Trivy scan did not record a fresh database: {freshness}")
+                verify_cve_evidence(online, online_report)
                 request("/api/settings/vulnerability-data", {"mode": "offline"}, method="PATCH")
                 offline, offline_report = cve_scan()
-                if offline.get("partial") or offline_report["partial"]:
-                    raise AssertionError(f"Cached Trivy offline scan is incomplete: {offline.get('message')}")
+                verify_cve_evidence(offline, offline_report)
                 def findings(item):
                     return sorted((f["id"], f["status"], f["risk"]) for f in item["findings"] if f.get("source") == "trivy")
                 if findings(online_report) != findings(offline_report):
                     raise AssertionError("Online/offline findings differ for the same inventory and cached DB")
-                record("Real Trivy DB: online and cached offline results match", {"onlineReport": online_report["id"], "offlineReport": offline_report["id"]})
+                for source in ("database", "metadata", "engine"):
+                    if online_report["raw"]["vulnerabilityScan"]["sourceEvidence"]["before"][source]["sha256"] != offline_report["raw"]["vulnerabilityScan"]["sourceEvidence"]["before"][source]["sha256"]:
+                        raise AssertionError("Online/offline native scans consumed different source bytes")
+                record("Real Trivy DB: online and cached offline results match", {"onlineReport": online_report["id"], "offlineReport": offline_report["id"], "packageProvenance": online_report["raw"]["vulnerabilityScan"]["packageProvenance"], "partial": online_report["partial"]})
             else:
                 unavailable = request("/api/ansible/vulnerabilities/check", {"hostAlias": args.host, "reportId": packages["id"]}, expected=400)
                 if "нет загруженной базы Trivy" not in unavailable.get("message", ""):

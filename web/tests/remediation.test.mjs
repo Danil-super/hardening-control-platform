@@ -105,10 +105,10 @@ test("a partly failed change retains its backup and can be rolled back", async (
   assert.equal(restored.transaction.status, "rolled_back");
 });
 
-test("audit and backup transport errors before mutation do not require firewall recovery", async () => {
-  for (const action of ["agentlessAudit", "backupRemediation"]) {
+test("read-only audit errors and known backup rejection do not require firewall recovery", async () => {
+  for (const [action, outcome] of [["agentlessAudit", "unknown"], ["backupRemediation", "completed"], ["backupRemediation", "not_started"]]) {
     control.failAction = action;
-    control.failOutcome = "unknown";
+    control.failOutcome = outcome;
     await assert.rejects(remediation.applyRemediation(request), /remote operation failed/);
     const transaction = store.listRemediationTransactions()[0];
     assert.equal(transaction.status, "failed");
