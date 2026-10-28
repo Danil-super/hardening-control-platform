@@ -13,17 +13,19 @@ jobs:
     # A dedicated hosted VM supplies a real kernel firewall. The Docker client
     # only observes the VM's bridge address; it is not the firewall target.
     runs-on: ubuntu-24.04
-    timeout-minutes: 12
+    timeout-minutes: 18
     steps:
       - uses: actions/checkout@v4
 
       - name: Install real UFW and Ansible
-        timeout-minutes: 4
+        timeout-minutes: 8
         run: |
           set -euo pipefail
           test "$RUNNER_ENVIRONMENT" = "github-hosted"
-          sudo apt-get update -o Acquire::Retries=2
-          sudo apt-get install -y --no-install-recommends ufw ansible
+          sudo apt-get update -o Acquire::Retries=2 -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 \
+            ufw ansible-core
 
       - name: Fetch the isolated HTTP probe client
         timeout-minutes: 2
