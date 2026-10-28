@@ -5,6 +5,7 @@ import { getReportsDir } from "@/lib/ansible-reports";
 import { getStateDir } from "@/lib/ansible-control";
 import { withReportEvidenceLock } from "@/lib/state-store";
 import type { Finding } from "@/types";
+import { parseAssetBinding } from "@/lib/asset-binding";
 
 type Json = Record<string, unknown>;
 type Component = { group: string; name: string; version: string; purl: string; cpe: string };
@@ -13,6 +14,7 @@ type Binding = {
   sbomFile: string; sbomSha256: string; componentManifestSha256: string; componentCount: number;
   endpointId: string; projectName: string; projectVersion: string; processingToken: string;
   uploadedAt: string; serverUploadTime: number | null;
+  assetId?: string;
 };
 type Settings = { configured: true; baseUrl: string; apiKey: string };
 const MAX_BYTES = 32 * 1024 * 1024;
@@ -172,7 +174,8 @@ function validateBinding(value: unknown): Binding {
   if (row.version !== 1 || !safeReportId(row.hostAlias) || !safeReportId(row.sourceCveReport) || !safeReportId(row.sbomFile)
       || ![row.sourceReportSha256, row.sbomSha256, row.componentManifestSha256, row.endpointId].every((item) => typeof item === "string" && SHA.test(item))
       || !Number.isSafeInteger(row.componentCount) || Number(row.componentCount) < 1 || Number(row.componentCount) > MAX_ITEMS
-      || row.projectName !== row.hostAlias || row.projectVersion !== `hcp-sbom:${row.sbomSha256}`
+      || row.assetId != null && (typeof row.assetId !== "string" || !/^asset-[a-f0-9]{64}$/.test(row.assetId))
+      || row.projectName !== (row.assetId ? `${row.hostAlias}@${row.assetId}` : row.hostAlias) || row.projectVersion !== `hcp-sbom:${row.sbomSha256}`
       || typeof row.processingToken !== "string" || !UUID.test(row.processingToken)
       || typeof row.uploadedAt !== "string" || !Number.isFinite(Date.parse(row.uploadedAt))
       || row.serverUploadTime !== null && (!Number.isFinite(row.serverUploadTime) || Number(row.serverUploadTime) <= 0)) {
@@ -205,8 +208,11 @@ export async function syncDependencyTrack({ hostAlias, vulnerabilityReportId }: 
   }
   const uploadedAt = new Date().toISOString();
   const projectVersion = `hcp-sbom:${input.sbomSha256}`;
+  const assetBinding = parseAssetBinding(input.report.assetBinding);
+  const assetId = assetBinding?.status === "verified" ? assetBinding.assetId : undefined;
+  const projectName = assetId ? `${hostAlias}@${assetId}` : hostAlias;
   const response = await request(settings, "/api/v1/bom", AbortSignal.timeout(45_000), { method: "PUT", body: JSON.stringify({
-    projectName: hostAlias, projectVersion, autoCreate: true, bom: input.bytes.toString("base64"),
+    projectName, projectVersion, autoCreate: true, bom: input.bytes.toString("base64"),
   }) });
   const token = record(response.data).token;
   if (typeof token !== "string" || !UUID.test(token)) throw new Error("Dependency-Track не вернул токен обработки SBOM. Проверьте URL API-сервера и ответ сервиса.");
@@ -217,9 +223,10 @@ export async function syncDependencyTrack({ hostAlias, vulnerabilityReportId }: 
   const serverUploadTime = Number.isFinite(serverDate) ? serverDate - Math.max(0, Date.now() - Date.parse(uploadedAt)) - 1000 : null;
   const binding: Binding = { version: 1, hostAlias, sourceCveReport: vulnerabilityReportId, sourceReportSha256: input.sourceSha256,
     sbomFile: input.sbomFile, sbomSha256: input.sbomSha256, componentManifestSha256: input.manifest.sha256, componentCount: input.manifest.count,
-    endpointId, projectName: hostAlias, projectVersion, processingToken: token, uploadedAt, serverUploadTime };
+    endpointId, projectName, projectVersion, processingToken: token, uploadedAt, serverUploadTime, ...(assetId ? { assetId } : {}) };
   const findings = [manual("dependency_track_sbom_uploaded", "CycloneDX SBOM передан в Dependency-Track", "SBOM принят в очередь. Откройте проверку результата: приём не подтверждает завершение CVE-анализа.")];
   const output = { schemaVersion: 1, action: "dependencyTrackSync", runId: `run-${key.slice(0, 24)}`, inventoryHost: hostAlias, hostname: hostAlias,
+    ...(input.report.assetBinding !== undefined ? { assetBinding: input.report.assetBinding } : {}),
     createdAt: uploadedAt, os: input.report.os ?? null, profileId: "dependency-track", mode: "dependency-track",
     scanner: { source: "dependency_track", sbomFile: input.sbomFile, sourceCveReport: vulnerabilityReportId, processingToken: token, binding, analysisStatus: "pending", partial: true },
     summary: summary(findings), findings, events: [] };
@@ -312,6 +319,7 @@ export async function refreshDependencyTrack({ hostAlias, reportId }: { hostAlia
   const resultFingerprint = digest(JSON.stringify({ binding, projectUuid, imported, analyzed, rows }));
   const analysisReportId = `${hostAlias}-dependency-track-analysis-run-${resultFingerprint.slice(0, 24)}`;
   const output = { schemaVersion: 1, action: "dependencyTrackRefresh", runId: `run-${resultFingerprint.slice(0, 24)}`, inventoryHost: hostAlias, hostname: hostAlias,
+    ...(input.report.assetBinding !== undefined ? { assetBinding: input.report.assetBinding } : {}),
     os: input.report.os ?? null, profileId: "dependency-track", mode: "dependency-track-analysis", createdAt: new Date(analyzed).toISOString(), importedAt: new Date().toISOString(),
     scanner: { source: "dependency_track", analysisStatus: "complete", processingComplete: true, available: true, partial: true, partialReasons: [SOURCE_LIMITATION],
       deliveryReportId, sourceCveReport: binding.sourceCveReport, sbomFile: binding.sbomFile, binding, projectUuid, resultFingerprint,

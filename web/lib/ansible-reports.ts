@@ -5,6 +5,7 @@ import type { Finding } from "@/types";
 import { getArchivedRecordIds, type ArchiveView } from "@/lib/state-store";
 import { normalizeLynisFindings } from "@/lib/lynis-findings";
 import { normalizeNmapScope, nmapPortCoverage, type NmapScanScope } from "@/lib/nmap-scope";
+import { parseAssetBinding, sameAssetEvidence, type AssetBinding } from "@/lib/asset-binding";
 
 export type AnsibleReportSummary = {
   id: string;
@@ -16,6 +17,8 @@ export type AnsibleReportSummary = {
   modifiedAt: string;
   host: string;
   inventoryHost: string | null;
+  assetBinding?: AssetBinding | null;
+  assetBindingInvalid?: boolean;
   partial: boolean;
   needsReview: boolean;
   available: boolean;
@@ -66,6 +69,7 @@ export type DeletedAnsibleReport = {
 };
 
 type ReportJson = {
+  assetBinding?: unknown;
   inventoryHost?: string;
   createdAt?: string;
   observedAt?: string | null;
@@ -180,6 +184,7 @@ export function reportScopeKey(report: Pick<AnsibleReportSummary, "mode" | "prof
 }
 
 export function reportScopesCompatible(left: AnsibleReportSummary, right: AnsibleReportSummary) {
+  if (left.assetBindingInvalid || right.assetBindingInvalid || !sameAssetEvidence(left.assetBinding, right.assetBinding)) return false;
   return left.mode === right.mode && (!["openscap", "nmap"].includes(left.mode) || left.scopeKnown === true && right.scopeKnown === true)
     && (left.mode !== "astra-oval" || Boolean(left.contentId) && left.contentId === right.contentId)
     && reportScopeKey(left) === reportScopeKey(right);
@@ -329,12 +334,15 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
   const createdAt = mode === "greenbone" ? observation.observedAt ?? null : typeof parsed.createdAt === "string" ? parsed.createdAt : null;
   const inventoryHost = typeof parsed.inventoryHost === "string" && /^[a-zA-Z0-9_.:-]{1,96}$/.test(parsed.inventoryHost)
     ? parsed.inventoryHost : null;
+  const candidateBinding = parseAssetBinding(parsed.assetBinding);
+  const assetBinding = candidateBinding?.alias === inventoryHost ? candidateBinding : null;
+  const assetBindingInvalid = parsed.assetBinding != null && !assetBinding;
   const available = parsed.scanner?.available !== false;
-  const partial = !available || parsed.partial === true || parsed.scanner?.partial === true || Boolean(parsed.scanner?.error)
+  const partial = assetBindingInvalid || !available || parsed.partial === true || parsed.scanner?.partial === true || Boolean(parsed.scanner?.error)
     || parsed.vulnerabilityScan?.partial === true || Boolean(parsed.packageInventory?.error) || parsed.packageInventory?.partial === true
     || (parsed.findings !== undefined && (!Array.isArray(parsed.findings) || findings.length !== parsed.findings.length))
     || ["dependency-track", "dependency-track-analysis"].includes(mode) || !scopeKnown || mode === "greenbone" && !observation.observedAt;
-  const needsReview = !scopeKnown || mode === "greenbone" && !observation.observedAt || findings.some((finding) => finding.status === "manual");
+  const needsReview = assetBindingInvalid || !scopeKnown || mode === "greenbone" && !observation.observedAt || findings.some((finding) => finding.status === "manual");
   const reportTimeValid = reportTimestamp({ createdAt, modifiedAt: stats.mtime.toISOString(), ...observation }) > 0;
 
   return {
@@ -346,6 +354,7 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
     modifiedAt: stats.mtime.toISOString(),
     host: parsed.hostname ?? targetAliasFromReportFileName(fileName, profileId, mode),
     inventoryHost,
+    assetBinding, assetBindingInvalid,
     available,
     partial,
     needsReview,
@@ -517,10 +526,21 @@ export function deleteAnsibleReport(reportId: string): DeletedAnsibleReport | nu
     })
     : false;
 
+  // The per-run scanner config has the same generated stem as its SBOM.
+  // Derive this path inside the managed directory; never delete a path supplied
+  // through sourceEvidence or another imported report field.
+  const configPath = sbomPath && sbomFile?.endsWith(".cdx.json") && !sbomUsedElsewhere
+    ? sbomPath.replace(/\.cdx\.json$/, ".trivy-config.yaml") : null;
+  const configInfo = configPath ? lstatSync(configPath, { throwIfNoEntry: false }) : null;
+  if (configInfo && (!configInfo.isFile() || configInfo.isSymbolicLink())) {
+    throw new Error("Файл конфигурации этого сканирования имеет недопустимый тип.");
+  }
+
   rmSync(reportPath, { force: false });
   if (sbomPath && sbomInfo && !sbomUsedElsewhere) {
     rmSync(sbomPath, { force: false });
   }
+  if (configPath && configInfo) rmSync(configPath, { force: false });
 
   return {
     id: report.id,

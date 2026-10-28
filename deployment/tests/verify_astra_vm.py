@@ -7,6 +7,7 @@ claim about all releases, mandatory controls, or overall CVE recall.
 """
 import argparse
 from collections import Counter
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -277,6 +278,14 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
             assert "KERNEL=" + os.uname().release not in identity
             protocol["realAstraHostVerified"] = True
             checkpoint("Genuine guest identity and independent Astra kernel", identity)
+            # Capture before any scanner runs. All subsequent SSH/Ansible calls
+            # use this same independently pinned guest key and frozen endpoint.
+            machine = re.search(r"^MACHINE_ID=([a-f0-9]{32})$", identity, re.MULTILINE)
+            assert machine
+            fingerprint = run(["ssh-keygen", "-E", "sha256", "-lf", str(work / "server.pub")]).stdout.split()[1]
+            write_json(work / "asset-observation.json", {"alias": HOST, "machineId": machine.group(1),
+                       "sshHostKeyFingerprint": fingerprint, "observedAt": datetime.now(timezone.utc).isoformat(),
+                       "connection": {"address": "127.0.0.1", "port": port, "user": "hcp-ci"}})
             package_query = "dpkg-query -W -f='${binary:Package}\\t${Version}\\t${db:Status-Abbrev}\\n' " + " ".join(map(shlex.quote, oval["packages"])) + " 2>/dev/null || true"
             original_packages = remote(package_query).stdout
             versions = installed_control_versions(original_packages, oval["packages"])
@@ -334,8 +343,8 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
             report = json.loads((reports / (report_id + ".json")).read_text())
             detail = verify_oval_report(report, oval, args.release, image["expectedControl"])
             checkpoint("Full vendor OVAL and labelled native CVE result", detail)
-            run(["node", str(ROOT / "deployment/tests/verify_astra_vm_normalization.mjs"), report_id, oval["definitionId"], oval["cve"], image["expectedControl"], str(artifacts / "web-normalized-oval.json")], output=artifacts / "web-normalization.log", env={**os.environ, "HCP_REPORTS_DIR": str(reports), "HCP_STATE_DIR": str(work / "state")})
-            checkpoint("Production web normalization preserves native CVE evidence", True)
+            run(["node", str(ROOT / "deployment/tests/verify_astra_vm_normalization.mjs"), report_id, oval["definitionId"], oval["cve"], image["expectedControl"], str(artifacts / "web-normalized-oval.json"), str(reports / (report_id + ".json")), str(work / "asset-observation.json")], output=artifacts / "web-normalization.log", env={**os.environ, "HCP_REPORTS_DIR": str(artifacts / "published-reports"), "HCP_STATE_DIR": str(work / "state")})
+            checkpoint("Production asset publication and web normalization preserve full native CVE evidence", {"nativeReportBytes": (reports / (report_id + ".json")).stat().st_size})
             protocol["status"] = "passed"
             write_json(artifacts / "protocol.json", protocol)
         finally:

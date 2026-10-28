@@ -166,6 +166,13 @@ export default async function AgentlessReportDetailPage({
         complete={report.mode === "dependency-track-analysis" && scanner.analysisStatus === "complete"}
         findingCount={typeof scanner.findingCount === "number" ? scanner.findingCount : null} /> : null}
 
+      <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-sm text-slate-300">
+        {report.assetBinding?.status === "verified" ? <p className="break-all">Идентичность при запуске: {report.assetBinding.assetId}; alias {report.assetBinding.alias}; поколение {report.assetBinding.generation}. SSH fingerprint: {report.assetBinding.sshHostKeyFingerprint}.</p>
+          : <p>{report.assetBindingInvalid ? "Привязка идентичности в отчёте некорректна; результат требует проверки."
+            : report.assetBinding?.status === "unknown" ? "Сетевая проверка выполнена без аутентификации. Идентичность машины не подтверждена; результат не присоединяется к проверенному активу."
+              : "Исторический отчёт не содержит проверяемой идентичности актива. Текущая привязка alias не применяется к нему задним числом."}</p>}
+      </section>
+
       {report.partial || !report.reportTimeValid ? (
         <section role="status" className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-6 text-amber-100">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">

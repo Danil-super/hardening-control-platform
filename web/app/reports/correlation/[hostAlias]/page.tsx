@@ -92,7 +92,12 @@ export default async function HostCorrelationPage({ params, searchParams }: { pa
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
           {report.coverage.map((item) => (
             <p key={item.reportId} className="text-sm text-slate-300">
-              {item.mode}{item.mode === "openscap" ? ` · ${item.profileId ?? "профиль неизвестен"}` : item.mode === "nmap" ? ` · ${nmapScopeLabel(item.scanScope)}` : ""}: {!item.validTime ? "некорректная дата" : !item.current ? "прежняя область; не подтверждена текущим аудитом" : !item.auditEvidence ? "сведения / передача данных" : !item.available ? "недоступен" : !item.fresh ? "устарел" : item.partial ? "частичный результат" : "завершён в указанной области"}
+              {item.mode}{item.mode === "openscap" ? ` · ${item.profileId ?? "профиль неизвестен"}` : item.mode === "nmap" ? ` · ${nmapScopeLabel(item.scanScope)}` : ""}: {item.coverageIssues.includes("asset_connection_changed") ? "подключение в inventory изменено или не разрешено; прежняя идентичность требует повторной SSH-проверки"
+                : item.coverageIssues.includes("asset_identity_changed") ? "другая идентичность или подключение; исключён из текущей оценки"
+                : item.coverageIssues.includes("legacy_identity_unknown") ? "идентичность не зафиксирована; исторический источник не присоединён к текущему активу"
+                  : item.coverageIssues.includes("asset_binding_invalid") ? "неверная привязка актива; требуется проверка"
+                    : !item.validTime ? "некорректная дата" : !item.current ? "прежняя область; не подтверждена текущим аудитом" : !item.auditEvidence ? "сведения / передача данных" : !item.available ? "недоступен" : !item.fresh ? "устарел" : item.partial ? "частичный результат" : "завершён в указанной области"}
+              {item.coverageIssues.includes("asset_identity_unverified") ? " · сетевая идентичность не подтверждена SSH" : ""}
             </p>
           ))}
           {!report.coverage.length ? <p className="text-sm text-slate-400">Проверки ещё не проводились.</p> : null}

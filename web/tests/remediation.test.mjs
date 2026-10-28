@@ -4,9 +4,11 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, beforeEach, afterEach } from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
+import { installAssetObservationFixture } from "./_asset-observation-fixture.mjs";
 
 // Exercise real orchestration and SQLite state while replacing only remote I/O.
 const compiled = compileServerModules(["remediation", "state-store", "astra-oval-config"]);
+installAssetObservationFixture(compiled);
 writeFileSync(path.join(compiled.directory, "ansible-control.mjs"), `
 export const control = { runs: [], failAction: null, failOutcome: "completed", failPost: false, missingReport: false, address: "192.0.2.20", report: {partial:false,available:true} };
 export const isSafeLimit = value => /^[A-Za-z0-9_-]+$/.test(value);

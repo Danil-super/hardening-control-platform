@@ -5,6 +5,7 @@ import path from "node:path";
 import { buildHostCorrelation } from "@/lib/audit-correlation";
 import { hashAnsibleReport, listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
 import { resolvePlanSeverity } from "@/lib/remediation-plan-evidence";
+import type { AssetBinding } from "@/lib/asset-binding";
 import { hasActivePlanDecision, planObservationState } from "@/lib/remediation-plan-observations";
 import { getHcpStateDirectory, getArchivedRecordIds, createProjectReportRecord, getProjectReportRecord, listProjectReportRecords, listRemediationPlanItems, listRemediationTransactions, verifyAuditChain, withReportEvidenceLock, type ArchiveView, type ProjectReportRecord } from "@/lib/state-store";
 
@@ -12,6 +13,7 @@ export type ProjectReportSubject = { clientName: string; projectName: string; pe
 export type ProjectReportSourceReference = { id: string; hostAlias: string; snapshotReadable: boolean };
 
 type SourceManifestEntry = { id: string; mode: string; profileId: string | null; createdAt: string | null; partial: boolean; available: boolean; reportTimeValid: boolean; sha256: string | null;
+  assetBinding?: AssetBinding | null;
   scanScope: string | null; portCoverage: string | null; coverageComplete: boolean | null };
 
 function safeAlias(value: unknown): value is string {
@@ -157,6 +159,7 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   const sourceManifest: SourceManifestEntry[] = reports.map((report) => ({
     id: report.id, mode: report.mode, profileId: report.profileId, createdAt: report.createdAt, partial: report.partial,
     available: report.available, reportTimeValid: report.reportTimeValid, sha256: hashAnsibleReport(report.id),
+    assetBinding: report.assetBinding ?? null,
     scanScope: report.scanScope ?? null, portCoverage: report.portCoverage ?? null, coverageComplete: report.coverageComplete ?? null,
   })).sort((left, right) => left.id.localeCompare(right.id));
   const sourceManifestSha256 = sha256(canonical({ version: 1, hostAlias, sourceManifest }));

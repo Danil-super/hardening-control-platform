@@ -1,13 +1,16 @@
-import { execFile, execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { getReportsDir } from "@/lib/ansible-reports";
-import { ansibleSshEnvironment, configuredPrivateKeyPath } from "@/lib/ssh-access";
-import { getInventoryHost, getInventoryTargetHosts } from "@/lib/inventory";
+import { ansibleSshArgs, ansibleSshEnvironment, configuredPrivateKeyPath } from "@/lib/ssh-access";
+import { connectionFromInventoryVariables, getInventoryHost, getInventoryTargetHosts, resolvedInventoryVariables } from "@/lib/inventory";
 import { hostCredentialSudoMode } from "@/lib/host-credentials";
+import type { AssetBinding, VerifiedAssetBinding } from "@/lib/asset-binding";
+import { publishCapturedAssetReports } from "@/lib/asset-report-publication";
+import { prepareAssetExecution } from "@/lib/asset-execution";
 import {
   appendIncident as appendStoredIncident,
   readIncidents as readStoredIncidents,
@@ -75,6 +78,11 @@ export function reportIdForRun({
   if (!limit || limit.includes(",") || !reportRunId || !inventoryHostExists(limit)) {
     return null;
   }
+  return capturedReportIdForRun({ action, profileId, alias: limit, reportRunId });
+}
+
+/** Pure naming for targets already validated from a frozen inventory. */
+function capturedReportIdForRun({ action, profileId, alias, reportRunId }: { action: PlaybookAction; profileId: string; alias: string; reportRunId: string }) {
 
   const typeByAction: Partial<Record<PlaybookAction, string>> = {
     collectFacts: "facts",
@@ -88,7 +96,7 @@ export function reportIdForRun({
     astraOvalAudit: "astra-oval",
   };
   const type = typeByAction[action];
-  return type ? `${limit}-${type}-${reportRunId}` : null;
+  return type ? `${alias}-${type}-${reportRunId}` : null;
 }
 
 export type { IncidentRecord } from "@/lib/state-store";
@@ -192,26 +200,18 @@ export function inventoryHostExists(alias: string) {
 
 export function inventoryHostConnection(alias: string) {
   if (!getInventoryHost(alias)) throw new Error("Укажите точный alias существующего хоста, не совпадающий с именем группы.");
-  const inventoryPath = path.join(getRepoRoot(), "ansible", "inventory.ini");
-  const output = execFileSync("ansible-inventory", ["-i", inventoryPath, "--host", alias], {
-    cwd: getRepoRoot(), encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024,
-    env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
-  });
-  const variables = JSON.parse(output) as Record<string, unknown>;
-  const address = variables.ansible_host ?? variables.ansible_ssh_host ?? alias;
-  const port = Number(variables.ansible_port ?? variables.ansible_ssh_port ?? 22);
-  if (typeof address !== "string" || !address || address.includes("{{") || !Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error("Не удалось однозначно определить адрес и порт SSH из inventory.");
-  }
-  const credentialId = typeof variables.hcp_ssh_credential_id === "string" && /^[a-f0-9]{64}$/.test(variables.hcp_ssh_credential_id)
-    ? variables.hcp_ssh_credential_id
-    : undefined;
-  return { address, port, user: typeof variables.ansible_user === "string" ? variables.ansible_user : undefined, credentialId };
+  return connectionFromInventoryVariables(alias, resolvedInventoryVariables(alias));
 }
 
 export function inventoryHostAddress(alias: string) {
   return inventoryHostExists(alias) ? inventoryHostConnection(alias).address : null;
 }
+
+export async function beginCustomAuditAssetExecution(limit: string) {
+  return prepareAssetExecution(limit, { authenticate: true });
+}
+
+export function endCustomAuditAssetExecution(execution: Awaited<ReturnType<typeof prepareAssetExecution>>) { execution.release(); }
 
 /**
  * Return the host that needs a one-time sudo password for this playbook run.
@@ -248,6 +248,8 @@ export async function runAnsiblePlaybook({
   extraVars = {},
   checkMode = false,
   becomePassword,
+  remediationId,
+  expectedAssetBinding,
 }: {
   action: PlaybookAction;
   profileId: string;
@@ -256,8 +258,13 @@ export async function runAnsiblePlaybook({
   checkMode?: boolean;
   /** A caller-provided password for one manual sudo operation; never stored. */
   becomePassword?: string;
+  remediationId?: string;
+  expectedAssetBinding?: VerifiedAssetBinding;
 }) {
   let executionDispatched = false;
+  let assetExecution: Awaited<ReturnType<typeof prepareAssetExecution>> | null = null;
+  let reportStage = "";
+  const expectedReports = new Map<string, AssetBinding>();
   try {
     const repoRoot = getRepoRoot();
     const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
@@ -298,20 +305,39 @@ export async function runAnsiblePlaybook({
       args.push("--check", "--diff");
     }
 
+    assetExecution = await prepareAssetExecution(limit, { authenticate: actionRequiresTargetSudo(action), remediationId, expectedAssetBinding });
+    args[1] = assetExecution.inventoryPath;
+    if (reportRunId) {
+      reportStage = mkdtempSync(path.join(os.tmpdir(), "hcp-audit-reports-"));
+      chmodSync(reportStage, 0o700);
+      args.push("-e", ansibleLiteralExtraVars({ hcp_reports_dir: reportStage }));
+      for (const [alias, binding] of assetExecution.bindings) {
+        const reportId = capturedReportIdForRun({ action, profileId, alias, reportRunId });
+        if (reportId) expectedReports.set(`${reportId}.json`, binding);
+      }
+    }
+
     executionDispatched = true;
-    const result = await executeAnsiblePlaybook({ args, timeout: selected.timeout, becomePassword });
+    const result = await executeAnsiblePlaybook({ args, timeout: selected.timeout, becomePassword, sshTrust: assetExecution.sshTrust });
     return { ...result, reportRunId };
   } catch (error) {
     if (!executionDispatched && error instanceof Error) Object.assign(error, { remoteOutcome: "not_started" });
     throw error;
+  } finally {
+    try { if (reportStage) publishCapturedAssetReports(reportStage, expectedReports); }
+    finally {
+      if (reportStage) rmSync(reportStage, { recursive: true, force: true });
+      assetExecution?.release();
+    }
   }
 }
 
 /** Run one Ansible child with the same private credential lifecycle for built-in and custom playbooks. */
-export async function executeAnsiblePlaybook({ args, timeout, becomePassword }: {
+export async function executeAnsiblePlaybook({ args, timeout, becomePassword, sshTrust }: {
   args: string[];
   timeout: number;
   becomePassword?: string;
+  sshTrust?: { knownHostsPath: string; algorithms: string };
 }) {
   const repoRoot = getRepoRoot();
   const command = `ansible-playbook ${args.join(" ")}`;
@@ -321,7 +347,8 @@ export async function executeAnsiblePlaybook({ args, timeout, becomePassword }: 
     if (!validOneTimeSudoPassword(becomePassword)) {
       throw new Error("Пароль sudo должен быть одной строкой длиной до 1024 символов.");
     }
-    let executionArgs = args;
+    let executionArgs = [...args, "-e", ansibleLiteralExtraVars({ ansible_ssh_args: ansibleSshArgs(sshTrust?.knownHostsPath, sshTrust?.algorithms), ansible_ssh_common_args: "",
+      ansible_ssh_extra_args: becomePassword ? "-tt" : "", ansible_host_key_checking: true, ansible_ssh_host_key_checking: true })];
     if (becomePassword) {
       secretDirectory = mkdtempSync(path.join(os.tmpdir(), "hcp-become-"));
       chmodSync(secretDirectory, 0o700);
@@ -330,7 +357,7 @@ export async function executeAnsiblePlaybook({ args, timeout, becomePassword }: 
       // inventory and report/incident data.  It is removed immediately after
       // this one Ansible child exits.
       writeFileSync(secretFile, ansibleLiteralExtraVars({ ansible_become_password: becomePassword }), { mode: 0o600 });
-      executionArgs = [...args.slice(0, 2), "--extra-vars", `@${secretFile}`, ...args.slice(2)];
+      executionArgs = [...executionArgs.slice(0, 2), "--extra-vars", `@${secretFile}`, ...executionArgs.slice(2)];
     }
     const execution = execFileAsync("ansible-playbook", executionArgs, {
       cwd: repoRoot,

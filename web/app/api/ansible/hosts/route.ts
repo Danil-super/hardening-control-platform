@@ -6,7 +6,7 @@ import { getReportsDir, listAnsibleReports, targetAliasFromReport } from "@/lib/
 import { buildHostRiskSummary, isSecurityAudit, type HostRiskSummary } from "@/lib/host-risk-summary";
 import { isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 import { HostCredentialError, credentialKeyPath, publicCredentialSummary, validateHostCredential } from "@/lib/host-credentials";
-import { hasActiveRemediationForHost } from "@/lib/state-store";
+import { assertAssetIdle, hasActiveRemediationForHost } from "@/lib/state-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -411,6 +411,8 @@ export async function PUT(request: Request) {
   if (hasActiveRemediationForHost(alias)) {
     return NextResponse.json({ ok: false, message: "Дождитесь завершения изменения или отката на этом хосте." }, { status: 409 });
   }
+  try { assertAssetIdle(alias); }
+  catch (error) { return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "На активе выполняется операция." }, { status: 409 }); }
   const existing = hosts.find((host) => host.alias === alias);
   if (!existing) {
     return NextResponse.json({ ok: false, message: "Хост не найден в inventory." }, { status: 404 });
@@ -451,6 +453,8 @@ export async function DELETE(request: Request) {
   if (hasActiveRemediationForHost(alias)) {
     return NextResponse.json({ ok: false, message: "Дождитесь завершения изменения или отката на этом хосте." }, { status: 409 });
   }
+  try { assertAssetIdle(alias); }
+  catch (error) { return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "На активе выполняется операция." }, { status: 409 }); }
 
   const repoRoot = getRepoRoot();
   const inventoryPath = ensureInventory(repoRoot);

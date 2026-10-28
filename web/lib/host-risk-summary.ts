@@ -1,10 +1,13 @@
 import { statSync } from "node:fs";
 import { buildHostCorrelation, correlationMaxAgeHours, type CorrelatedFinding } from "@/lib/audit-correlation";
 import { targetAliasFromReport, reportTimestamp, type AnsibleReportSummary } from "@/lib/ansible-reports";
+import { currentAssetBinding } from "@/lib/state-store";
+import { explicitInventoryConnectionId } from "@/lib/inventory";
 
 export type HostRiskSummary = {
   critical: number; high: number; medium: number; low: number; unknown: number; info: number;
   total: number; auditCount: number; freshCount: number; partialCount: number; staleCount: number;
+  identityExcludedCount?: number;
   scope: "latest-per-tool-and-profile";
   maxAgeHours: number;
 };
@@ -18,7 +21,8 @@ export const isSecurityAudit = (mode: string) => !["facts", "events", "packages"
 export function buildHostRiskSummary(hostAlias: string, reports: AnsibleReportSummary[]): HostRiskSummary {
   const sources = reports.filter((report) => targetAliasFromReport(report) === hostAlias && isSecurityAudit(report.mode));
   const minimumTime = Date.now() - correlationMaxAgeHours() * 3600_000;
-  const signature = JSON.stringify([correlationMaxAgeHours(), ...sources.map((report) => {
+  const binding = currentAssetBinding(hostAlias);
+  const signature = JSON.stringify([correlationMaxAgeHours(), binding?.assetId, binding?.generation, explicitInventoryConnectionId(hostAlias), ...sources.map((report) => {
     const info = statSync(report.path);
     return [report.id, report.path, report.reportTimeValid, reportTimestamp(report) >= minimumTime, info.dev, info.ino, info.size, info.mtimeMs, info.ctimeMs];
   })]);
@@ -31,6 +35,7 @@ export function buildHostRiskSummary(hostAlias: string, reports: AnsibleReportSu
     auditCount: coverage.length, freshCount: coverage.filter((item) => item.fresh && item.available).length,
     partialCount: coverage.filter((item) => item.partial || !item.available).length,
     staleCount: coverage.filter((item) => !item.fresh).length,
+    identityExcludedCount: correlation?.coverage.filter((item) => item.coverageIssues.some((issue) => ["asset_identity_changed", "asset_connection_changed", "asset_binding_invalid", "legacy_identity_unknown"].includes(issue))).length ?? 0,
     maxAgeHours: correlation?.maxAgeHours ?? 168, scope: "latest-per-tool-and-profile",
   };
   for (const finding of correlation?.findings ?? []) {

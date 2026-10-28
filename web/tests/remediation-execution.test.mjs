@@ -4,10 +4,12 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, afterEach, beforeEach } from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
+import { installAssetObservationFixture } from "./_asset-observation-fixture.mjs";
 
 // Real executor, remediation orchestration and SQLite. Only the remote CLI
 // and inventory/report inputs are replaced; no SSH or firewall is contacted.
 const compiled = compileServerModules(["remediation", "state-store"]);
+installAssetObservationFixture(compiled);
 writeFileSync(path.join(compiled.directory, "real-ansible-control.mjs"), readFileSync(path.join(compiled.directory, "ansible-control.mjs")));
 writeFileSync(path.join(compiled.directory, "ansible-control.mjs"), `
 import {executeAnsiblePlaybook} from "./real-ansible-control.mjs";

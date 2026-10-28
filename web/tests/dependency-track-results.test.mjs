@@ -13,6 +13,7 @@ const { syncDependencyTrack, refreshDependencyTrack } = await import(compiled.ur
 const reports = await import(compiled.url("ansible-reports"));
 const { buildHostCorrelation } = await import(compiled.url("audit-correlation"));
 const projectReports = await import(compiled.url("project-report"));
+const { assetIdForObservation } = await import(compiled.url("asset-binding"));
 const envNames = ["HCP_STATE_DIR", "HCP_REPORTS_DIR", "HCP_DEPENDENCY_TRACK_URL", "HCP_DEPENDENCY_TRACK_API_KEY"];
 const prior = Object.fromEntries(envNames.map(key => [key, process.env[key]]));
 const token = "11111111-1111-4111-8111-111111111111";
@@ -102,6 +103,24 @@ test("upload and stable result refresh are idempotent and do not rewrite immutab
   const two = await refresh(one.reportId);
   assert.equal(two.reportId, one.reportId); assert.equal(two.reused, true);
   assert.deepEqual(readFileSync(file(one.reportId)), saved);
+});
+
+test("delivery and analysis retain the source asset snapshot and isolate the DTrack project by asset", async () => {
+  const observation = { machineIdSha256: "1".repeat(64), sshHostKeyFingerprint: "SHA256:" + "A".repeat(43), observedAt: new Date().toISOString() };
+  const assetBinding = { version: 1, status: "verified", alias: "host-one", generation: 3,
+    assetId: assetIdForObservation(observation), machineIdSha256: observation.machineIdSha256,
+    sshHostKeyFingerprint: observation.sshHostKeyFingerprint, verifiedAt: observation.observedAt, connectionId: "2".repeat(64) };
+  writeFileSync(file("source"), JSON.stringify({ ...raw("source"), assetBinding }));
+  project.name = "host-one@" + assetBinding.assetId;
+  const delivered = await upload();
+  const payload = JSON.parse(calls.find(call => call.method === "PUT").body);
+  assert.equal(payload.projectName, project.name);
+  assert.deepEqual(raw(delivered.reportId).assetBinding, assetBinding);
+  assert.equal(raw(delivered.reportId).scanner.binding.assetId, assetBinding.assetId);
+  const completed = await refresh(delivered.reportId);
+  assert.equal(completed.status, "complete");
+  assert.deepEqual(raw(completed.reportId).assetBinding, assetBinding);
+  assert.deepEqual(reports.readAnsibleReport(completed.reportId).assetBinding, assetBinding);
 });
 
 test("an empty result remains incomplete and never manufactures a pass or a security score", async () => {

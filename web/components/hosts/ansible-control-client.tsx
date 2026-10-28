@@ -28,6 +28,7 @@ import { DecommissionHostDialog } from "@/components/hosts/decommission-host-dia
 import { RemediationRecovery } from "@/components/hosts/remediation-recovery";
 import { connectAndSaveHost, defaultHostAlias } from "@/lib/host-onboarding";
 import type { PreflightCheck } from "@/lib/preflight-result";
+import { AssetIdentityPanel } from "@/components/hosts/asset-identity-panel";
 
 import { useAuditJobs, AuditJobHistory } from "@/components/hosts/audit-jobs-provider";
 import { HostRiskSummary } from "@/components/hosts/host-risk-summary";
@@ -136,6 +137,7 @@ type PreflightPayload = {
     python: PreflightCheck;
     sudo: PreflightCheck;
     os?: PreflightCheck;
+    identity?: PreflightCheck;
   };
   facts?: {
     os: string | null;
@@ -982,13 +984,15 @@ export function AnsibleControlClient() {
             <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)}>Отменить редактирование</Button>
           </div>
         </details> : null}
+        {editingHost ? <AssetIdentityPanel key={editingHost} alias={editingHost} /> : null}
         {preflight && preflightFor === connectionSignature ? (
           <>
-          <div className="mt-3 grid gap-2 text-sm md:grid-cols-4">
+          <div className="mt-3 grid gap-2 text-sm md:grid-cols-5">
             <CheckBadge label="SSH" check={preflight.checks?.ssh} fallback={preflight.message} />
             <CheckBadge label="Python" check={preflight.checks?.python} />
             <CheckBadge label="Права администратора" check={preflight.checks?.sudo} />
             <CheckBadge label="ОС" check={preflight.checks?.os} />
+            <CheckBadge label="Идентичность актива" check={preflight.checks?.identity} />
           </div>
           {preflight.readiness ? (
             <section className="mt-3 rounded-md border border-slate-700 bg-slate-950/70 p-3" aria-label="Готовность к аудиту">

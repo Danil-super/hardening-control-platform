@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after, afterEach, beforeEach } from "node:test";
@@ -80,4 +80,32 @@ test("saved server lookup is read-only and respects hashed hosts and nondefault 
   assert.equal(await ssh.hasSavedHostKey("192.0.2.10", 22), false);
   assert.equal(await ssh.hasSavedHostKey("192.0.2.11", 2222), false);
   assert.equal(readFileSync(known, "utf8"), before);
+});
+
+test("asset probe binds a negotiated saved key and reads machine-id without exposing raw output", async () => {
+  writeFileSync(process.env.HCP_KNOWN_HOSTS_PATH, `192.0.2.10 ${publicKey}\n`);
+  const fingerprint = execFileSync("ssh-keygen", ["-lf", `${process.env.HCP_SSH_PRIVATE_KEY_PATH}.pub`, "-E", "sha256"], { encoding: "utf8" }).split(/\s+/)[1];
+  const capture = path.join(directory, "ssh-invocation.json");
+  writeFileSync(path.join(directory, "bin/ssh"), `#!${process.execPath}
+const fs = require('node:fs');
+const args = process.argv.slice(2), rawTrust = args.find(value => value.startsWith('UserKnownHostsFile=')).slice('UserKnownHostsFile='.length), trust = rawTrust.startsWith('"') ? JSON.parse(rawTrust) : rawTrust;
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify({args,trust,bytes:fs.readFileSync(trust,'utf8')}));
+// Change mutable global trust during the network await. The connection still
+// uses the captured private file, and returns only its negotiated public key.
+fs.writeFileSync(${JSON.stringify(process.env.HCP_KNOWN_HOSTS_PATH)}, ${JSON.stringify("# changed during probe\n")});
+console.error(${JSON.stringify(`debug1: Server host key: ssh-ed25519 ${fingerprint}`)});
+console.log('HCP_MACHINE_ID=1234567890abcdef1234567890abcdef');
+`, { mode: 0o700 });
+  const result = await ssh.probeTrustedAssetIdentity({ address: "192.0.2.10", port: 22, user: "audit", privateKeyPath: process.env.HCP_SSH_PRIVATE_KEY_PATH });
+  assert.equal(result.sshHostKeyFingerprint, fingerprint);
+  assert.match(result.hostKeyLine, /^192\.0\.2\.10 ssh-ed25519 /);
+  assert.equal(result.hostKeyAlgorithms, "ssh-ed25519");
+  assert.match(result.machineIdSha256, /^[a-f0-9]{64}$/);
+  assert.equal(JSON.stringify(result).includes("1234567890abcdef1234567890abcdef"), false);
+  const invoked = JSON.parse(readFileSync(capture));
+  assert.notEqual(invoked.trust, process.env.HCP_KNOWN_HOSTS_PATH);
+  assert.ok(invoked.args.includes("StrictHostKeyChecking=yes"));
+  assert.ok(invoked.args.includes("GlobalKnownHostsFile=/dev/null"));
+  assert.match(invoked.bytes, /ssh-ed25519/);
+  assert.equal(existsSync(invoked.trust), false, "temporary trust is removed after use");
 });

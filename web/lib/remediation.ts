@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { ansibleOutcomeIsUnknown, firewallAccessProblem } from "@/lib/ansible-error";
 import { networkInterfaces } from "node:os";
+import { captureAssetBinding } from "@/lib/asset-registry";
+import { parseAssetBinding } from "@/lib/asset-binding";
 import { readAnsibleReport } from "@/lib/ansible-reports";
 import {
   appendIncident,
@@ -207,6 +209,7 @@ export async function applyRemediation({
   becomePassword?: string;
 }) {
   const connection = validateRemediationTarget(action, hostAlias, extraVars);
+  const assetBinding = await captureAssetBinding(hostAlias, inventoryHostConnection(hostAlias));
   const transactionId = `txn-${new Date().toISOString().replace(/[-:.]/g, "")}-${randomUUID().slice(0, 8)}`;
   try {
     createRemediationTransaction({
@@ -215,11 +218,11 @@ export async function applyRemediation({
       action,
       profileId,
       reason,
-      parameters: { ...extraVars, _hcp_connection: connection },
+      parameters: { ...extraVars, _hcp_connection: connection, _hcp_asset_binding: JSON.stringify(assetBinding) },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Не удалось создать транзакцию remediation.";
-    if (/remediation_transactions_active_host|UNIQUE constraint/i.test(message)) {
+    if ((error as { code?: string }).code === "asset_operation_active" || /remediation_transactions_active_host|UNIQUE constraint/i.test(message)) {
       throw Object.assign(new Error("Для этого хоста уже выполняется другое изменение. Дождитесь завершения текущей транзакции."), { code: "transaction_in_progress" });
     }
     throw error;
@@ -228,7 +231,7 @@ export async function applyRemediation({
   let mutationInFlight = false;
   let backupInFlight = false;
   try {
-    const preAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias, becomePassword });
+    const preAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias, becomePassword, remediationId: transactionId, expectedAssetBinding: assetBinding });
     const preAuditReportId = reportIdForRun({
       action: "agentlessAudit",
       profileId,
@@ -252,6 +255,7 @@ export async function applyRemediation({
       limit: hostAlias,
       extraVars: { ...extraVars, transaction_id: transactionId, remediation_action: action },
       becomePassword,
+      remediationId: transactionId, expectedAssetBinding: assetBinding,
     });
     backupInFlight = false;
     const backupRef = backupReference(transactionId);
@@ -260,7 +264,7 @@ export async function applyRemediation({
     assertConnectionUnchanged(hostAlias, connection);
     mutationInFlight = true;
     const applied = await runAnsiblePlaybook({ action, profileId, limit: hostAlias,
-      extraVars: { ...extraVars, transaction_id: transactionId }, becomePassword });
+      extraVars: { ...extraVars, transaction_id: transactionId }, becomePassword, remediationId: transactionId, expectedAssetBinding: assetBinding });
     mutationInFlight = false;
     appendIncident({
       action,
@@ -276,7 +280,7 @@ export async function applyRemediation({
     let postAuditError: string | null = null;
     let postAuditWarnings: string[] = [];
     try {
-      const postAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias, becomePassword });
+      const postAudit = await runAnsiblePlaybook({ action: "agentlessAudit", profileId, limit: hostAlias, becomePassword, remediationId: transactionId, expectedAssetBinding: assetBinding });
       postAuditReportId = reportIdForRun({
         action: "agentlessAudit",
         profileId,
@@ -347,6 +351,9 @@ export async function rollbackRemediation(transactionId: string, confirmedHost: 
     throw Object.assign(new Error("У старой транзакции нет снимка SSH-подключения. Проверьте резервную копию и выполните восстановление вручную."), { code: "legacy_backup_identity_missing" });
   }
   assertConnectionUnchanged(transaction.hostAlias, transaction.parameters._hcp_connection);
+  const assetBinding = transaction.parameters._hcp_asset_binding ? parseAssetBinding(JSON.parse(transaction.parameters._hcp_asset_binding)) : null;
+  if (!assetBinding || assetBinding.status !== "verified") throw Object.assign(new Error("У старой транзакции нет проверенной идентичности машины. Сверьте резервную копию и выполните восстановление вручную."), { code: "legacy_backup_identity_missing" });
+  await captureAssetBinding(transaction.hostAlias, inventoryHostConnection(transaction.hostAlias), assetBinding);
   claimRemediationRollback(transaction.id);
   let mutationInFlight = true;
   try {
@@ -357,6 +364,7 @@ export async function rollbackRemediation(transactionId: string, confirmedHost: 
       extraVars: { transaction_id: transaction.id, remediation_action: transaction.action,
         rollback_recovery_verified: transaction.status === "recovery_ready" },
       becomePassword,
+      remediationId: transaction.id, expectedAssetBinding: assetBinding,
     });
     mutationInFlight = false;
     // Do not call a failed reload successful: the runner propagates its exit code.

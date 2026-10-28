@@ -25,6 +25,10 @@ writeFileSync(preflightFixture, "ok");
 const reports = path.join(temporary, "reports");
 const sshKey = path.join(temporary, "fixture-key");
 execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", sshKey], { stdio: "ignore" });
+const knownHosts = path.join(temporary, "known_hosts");
+const serverFingerprint = execFileSync("ssh-keygen", ["-lf", `${sshKey}.pub`, "-E", "sha256"], { encoding: "utf8" }).split(/\s+/)[1];
+writeFileSync(knownHosts, ["192.0.2.10", "192.0.2.55"].map((address) => `${address} ${readFileSync(`${sshKey}.pub`, "utf8").trim()}\n`).join(""));
+writeFileSync(path.join(fixtureBin, "ssh"), `#!${process.execPath}\nconsole.error(${JSON.stringify(`debug1: Server host key: ssh-ed25519 ${serverFingerprint}`)});\nconsole.log(require('node:fs').readFileSync(process.env.HCP_PREFLIGHT_FIXTURE,'utf8').trim()==='asset-machine-changed' ? 'HCP_MACHINE_ID=2234567890abcdef1234567890abcdef' : 'HCP_MACHINE_ID=1234567890abcdef1234567890abcdef');\n`, { mode: 0o700 });
 mkdirSync(reports);
 const probe = createServer();
 await new Promise((resolve) => probe.listen(0, "127.0.0.1", resolve));
@@ -65,7 +69,7 @@ async function start() {
       HCP_ADMIN_PASSWORD: "http-smoke-password", HCP_AUTH_SECRET: "http-smoke-session-key",
       HCP_AUDIT_HMAC_KEY: "http-smoke-ledger-key", HCP_SCHEDULE_API_KEY: "http-smoke-schedule-key",
       HCP_TRIVY_MODE: "offline", HCP_TRIVY_CACHE_DIR: path.join(temporary, "trivy-cache"),
-      HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_PRODUCTION_MODE: "true" },
+      HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_KNOWN_HOSTS_PATH: knownHosts, HCP_PRODUCTION_MODE: "true" },
   });
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (value) => { output = (output + value).slice(-12000); });
   for (let attempt = 0; attempt < 160; attempt++) {
@@ -262,6 +266,22 @@ try {
     method: "POST", body: { ...guardedIdentity, become: true, credentialId: "f".repeat(64) }, status: 409,
   })).json();
   assert.equal(foreignSavedCredential.error, "inventory_connection_mismatch");
+  const identityBefore = await (await request("/api/ansible/hosts/identity", { method: "POST", body: { alias: guardedIdentity.alias, action: "check" } })).json();
+  assert.equal(identityBefore.current.status, "verified");
+  writeFileSync(preflightFixture, "asset-machine-changed");
+  const identityChanged = await (await request("/api/ansible/hosts/identity", { method: "POST", body: { alias: guardedIdentity.alias, action: "check" }, status: 409 })).json();
+  assert.equal(identityChanged.status, "changed");
+  assert.equal(identityChanged.current.assetId, identityBefore.current.assetId);
+  const rebindBody = { alias: guardedIdentity.alias, action: "rebind", confirmedAlias: guardedIdentity.alias, independentlyVerified: true,
+    expectedGeneration: identityBefore.current.generation, expectedAssetId: identityBefore.current.assetId,
+    observedAssetId: identityChanged.observed.assetId, reason: "Controlled fixture: replacement independently checked through console." };
+  await request("/api/ansible/hosts/identity", { method: "POST", body: { ...rebindBody, expectedGeneration: 999 }, status: 409 });
+  const rebound = await (await request("/api/ansible/hosts/identity", { method: "POST", body: rebindBody })).json();
+  assert.equal(rebound.current.generation, identityBefore.current.generation + 1);
+  const identityHistory = await (await request(`/api/ansible/hosts/identity?alias=${guardedIdentity.alias}`)).json();
+  assert.equal(identityHistory.history.length, 2);
+  assert.equal(identityHistory.history[1].binding.assetId, identityBefore.current.assetId);
+
   const guidePage = await (await request("/guide", { auth: false })).text();
   assert.match(guidePage, /ubuntu-astra-setup\.md#host-onboarding/);
   assert.doesNotMatch(guidePage, /ssh-copy-id user@192\.168\.1\.10/);
