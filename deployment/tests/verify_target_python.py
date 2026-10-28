@@ -85,14 +85,22 @@ class TargetPythonTests(unittest.TestCase):
             (configuration / "machine-id").write_text("owned-compatibility-test")
             rule = configuration / "ufw/user.rules"
             rule.write_text("original\n")
+            (configuration / "ufw").chmod(0o700)
+            rule.chmod(0o660)
+            original_owner = (rule.stat().st_uid, rule.stat().st_gid)
             args = argparse.Namespace(transaction="txn-compatibility-12345678")
             with patch.object(module, "CONFIG_ROOT", configuration), patch.object(module, "BACKUP_ROOT", root / "backups"), \
                     patch.object(module, "backend", return_value="ufw"), patch.object(module, "run"):
                 module.backup(args)
                 rule.write_text("changed\n")
+                (configuration / "ufw").chmod(0o755)
+                rule.chmod(0o600)
                 (configuration / "ufw/extra.rules").write_text("new\n")
                 self.assertTrue(module.rollback(args)["ok"])
                 self.assertEqual(rule.read_text(), "original\n")
+                self.assertEqual((configuration / "ufw").stat().st_mode & 0o7777, 0o700)
+                self.assertEqual(rule.stat().st_mode & 0o7777, 0o660)
+                self.assertEqual((rule.stat().st_uid, rule.stat().st_gid), original_owner)
                 self.assertFalse((configuration / "ufw/extra.rules").exists())
 
     def test_all_embedded_target_programs_execute_with_unavailable_tools(self):

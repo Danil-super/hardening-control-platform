@@ -279,15 +279,22 @@ def restore_archive_metadata(archive, staging):
     # can clear special permission bits). No live path has been replaced yet.
     for member in sorted(archive.getmembers(), key=lambda item: len(Path(item.name).parts), reverse=True):
         target = staging / member.name
-        current = target.lstat()
-        if not (stat.S_ISREG(current.st_mode) if member.isfile() else stat.S_ISDIR(current.st_mode)):
-            raise FirewallError("Unexpected filesystem object in restored firewall backup.")
-        if (current.st_uid, current.st_gid) != (member.uid, member.gid):
-            os.chown(str(target), member.uid, member.gid, follow_symlinks=False)
-        os.chmod(str(target), member.mode, follow_symlinks=False)
-        observed = target.lstat()
-        if (observed.st_uid, observed.st_gid, stat.S_IMODE(observed.st_mode)) != (member.uid, member.gid, member.mode):
-            raise FirewallError("Filesystem ownership or permissions were not restored: {}".format(member.name))
+        # Linux Python 3.5 may expose follow_symlinks but reject it for chmod.
+        # Open without following the final component and operate on that same
+        # verified object. NONBLOCK also prevents a substituted FIFO hanging us.
+        descriptor = os.open(str(target), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        try:
+            current = os.fstat(descriptor)
+            if not (stat.S_ISREG(current.st_mode) if member.isfile() else stat.S_ISDIR(current.st_mode)):
+                raise FirewallError("Unexpected filesystem object in restored firewall backup.")
+            if (current.st_uid, current.st_gid) != (member.uid, member.gid):
+                os.fchown(descriptor, member.uid, member.gid)
+            os.fchmod(descriptor, member.mode)
+            observed = os.fstat(descriptor)
+            if (observed.st_uid, observed.st_gid, stat.S_IMODE(observed.st_mode)) != (member.uid, member.gid, member.mode):
+                raise FirewallError("Filesystem ownership or permissions were not restored: {}".format(member.name))
+        finally:
+            os.close(descriptor)
 
 
 def security_label(path):

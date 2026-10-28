@@ -318,19 +318,63 @@ class FirewallTests(unittest.TestCase):
                 with patch.object(fw, "CONFIG_ROOT", configuration), patch.object(fw, "BACKUP_ROOT", root / "backups"), patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run") as command:
                     fw.backup(args())
                     rules.write_text("current rules")
-                    chmod = os.chmod
-                    def fail_restore(target, mode, **kwargs):
-                        if ".hcp-rollback-" in str(target) and str(target).endswith("user.rules") and kwargs.get("follow_symlinks") is False:
+                    chmod = os.fchmod
+                    def fail_restore(descriptor, mode):
+                        if stat.S_ISREG(os.fstat(descriptor).st_mode):
                             if silent:
-                                chmod(target, 0o600, **kwargs)
+                                chmod(descriptor, 0o600)
                                 return
                             raise PermissionError("fixture metadata denied")
-                        return chmod(target, mode, **kwargs)
-                    with patch.object(fw.os, "chmod", side_effect=fail_restore):
+                        return chmod(descriptor, mode)
+                    with patch.object(fw.os, "fchmod", side_effect=fail_restore):
                         with self.assertRaises((PermissionError, fw.FirewallError)):
                             fw.rollback(args())
                     self.assertEqual(rules.read_text(), "current rules")
                     command.assert_not_called()
+
+    def test_metadata_restore_does_not_need_path_nofollow_chmod_or_chown(self):
+        with tempfile.TemporaryDirectory() as directory:
+            staging = Path(directory)
+            firewall = staging / "etc/ufw"
+            firewall.mkdir(parents=True)
+            rules = firewall / "user.rules"
+            rules.write_text("original rules")
+            firewall.chmod(0o755)
+            rules.chmod(0o600)
+            members = []
+            for target, mode in ((firewall, 0o700), (rules, 0o660)):
+                member = tarfile.TarInfo(str(target.relative_to(staging)))
+                member.type = tarfile.DIRTYPE if target.is_dir() else tarfile.REGTYPE
+                member.uid, member.gid, member.mode = os.getuid(), os.getgid(), mode
+                members.append(member)
+            with patch.object(tarfile.TarFile, "getmembers", return_value=members), \
+                 patch.object(fw.os, "chmod", side_effect=NotImplementedError("chmod: follow_symlinks unavailable on this platform")), \
+                 patch.object(fw.os, "chown", side_effect=NotImplementedError("path ownership API must not be used")):
+                fw.restore_archive_metadata(tarfile.TarFile.__new__(tarfile.TarFile), staging)
+            self.assertEqual(stat.S_IMODE(firewall.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(rules.stat().st_mode), 0o660)
+
+    def test_metadata_restore_rejects_substituted_links_and_special_files(self):
+        for substituted in ("symlink", "fifo"):
+            with self.subTest(substituted=substituted), tempfile.TemporaryDirectory() as directory:
+                staging = Path(directory)
+                firewall = staging / "etc/ufw"
+                firewall.mkdir(parents=True)
+                outside = staging / "outside.rules"
+                outside.write_text("must stay untouched")
+                outside.chmod(0o600)
+                rules = firewall / "user.rules"
+                if substituted == "symlink":
+                    rules.symlink_to(outside)
+                else:
+                    os.mkfifo(str(rules))
+                member = tarfile.TarInfo("etc/ufw/user.rules")
+                member.uid, member.gid, member.mode = os.getuid(), os.getgid(), 0o660
+                with patch.object(tarfile.TarFile, "getmembers", return_value=[member]):
+                    with self.assertRaises((OSError, fw.FirewallError)):
+                        fw.restore_archive_metadata(tarfile.TarFile.__new__(tarfile.TarFile), staging)
+                self.assertEqual(outside.read_text(), "must stay untouched")
+                self.assertEqual(stat.S_IMODE(outside.stat().st_mode), 0o600)
 
     def test_invalid_or_duplicate_archive_metadata_is_rejected_before_extraction(self):
         root = tarfile.TarInfo("etc/ufw")
