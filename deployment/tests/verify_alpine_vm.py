@@ -25,6 +25,49 @@ IMAGE = {
     "bytes": 166658048,
 }
 
+# This runs in the disposable guest after cloud-init config. In particular,
+# report only a classification of the shadow entry, never its password/hash.
+# Serial diagnostics remain available when SSH itself cannot authenticate.
+BOOT_DIAGNOSTICS = r'''
+import json, os, pathlib, pwd, subprocess
+result = {}
+try:
+    account = pwd.getpwnam("hcp-ci")
+    result["account"] = {"uid": account.pw_uid, "shell": account.pw_shell,
+                         "shellExecutable": os.access(account.pw_shell, os.X_OK)}
+    shadow = next(line.split(":")[1] for line in pathlib.Path("/etc/shadow").read_text().splitlines()
+                  if line.split(":", 1)[0] == "hcp-ci")
+    result["account"]["shadowState"] = ("locked" if shadow.startswith("!") else
+        "unusable-password" if shadow.startswith("*") else "empty" if not shadow else "password-hash")
+    keys = pathlib.Path(account.pw_dir) / ".ssh/authorized_keys"
+    result["account"]["authorizedKeyCount"] = sum(1 for line in keys.read_text().splitlines()
+                                                   if line.strip() and not line.lstrip().startswith("#"))
+    result["account"]["authorizedKeysMode"] = oct(keys.stat().st_mode & 0o777)
+except Exception as error:
+    result["accountError"] = type(error).__name__
+for name, command in (
+    ("sshdConfig", ["/usr/sbin/sshd", "-T"]),
+    ("sshdService", ["rc-service", "sshd", "status"]),
+    ("hostKeyFingerprint", ["ssh-keygen", "-l", "-f", "/etc/ssh/ssh_host_ed25519_key.pub"]),
+    ("network", ["ip", "-brief", "address", "show"]),
+):
+    try:
+        response = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                  text=True, timeout=10)
+        lines = response.stdout.splitlines()
+        if name == "sshdConfig":
+            allowed = {"usepam", "passwordauthentication", "kbdinteractiveauthentication",
+                       "pubkeyauthentication", "authenticationmethods", "authorizedkeysfile",
+                       "permitrootlogin", "allowusers", "allowgroups", "denyusers", "denygroups",
+                       "listenaddress", "port"}
+            lines = [line for line in lines if line.split(" ", 1)[0] in allowed]
+        result[name] = {"exitCode": response.returncode, "output": "\n".join(lines)[-4000:]}
+    except Exception as error:
+        result[name] = {"error": type(error).__name__}
+with open("/dev/ttyS0", "w") as serial:
+    serial.write("\nHCP-CI BOOT DIAGNOSTICS " + json.dumps(result, sort_keys=True) + "\n")
+'''
+
 
 def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n")
@@ -88,6 +131,7 @@ def main():
             "ssh_keys": {"ed25519_private": (work / "server").read_text(), "ed25519_public": (work / "server.pub").read_text()},
             "package_update": True, "packages": ["python3", "sudo", "iproute2", "openssh-sftp-server"],
             "growpart": {"mode": "auto", "devices": ["/"]}, "resize_rootfs": True,
+            "runcmd": [["python3", "-c", BOOT_DIAGNOSTICS]],
         }
         (work / "user-data").write_text("#cloud-config\n" + json.dumps(config))
         (work / "user-data").chmod(0o600)
@@ -119,11 +163,15 @@ def main():
         deadline = time.monotonic() + (420 if acceleration == "kvm" else 900)
         while time.monotonic() < deadline:
             assert process.poll() is None, "Guest stopped before SSH; inspect console"
-            if remote("true", accepted=(0, 255), timeout=12).returncode == 0:
+            attempt = remote("true", accepted=(0, 255), timeout=12)
+            # Retain the latest exact SSH refusal (auth, pinned key, network)
+            # without logging userdata, private keys, or verbose key traces.
+            (artifacts / "ssh-readiness.txt").write_text(attempt.stdout[-4000:])
+            if attempt.returncode == 0:
                 break
             time.sleep(3)
         else:
-            raise RuntimeError("Guest SSH readiness timeout")
+            raise RuntimeError("Guest SSH readiness timeout; inspect ssh-readiness.txt and guest-console.log")
         remote("sudo cloud-init status --wait", output=artifacts / "cloud-init-status.txt", timeout=300)
         # This is the unchanged production readiness program running inside
         # the guest, not a fabricated /etc/os-release fixture.
