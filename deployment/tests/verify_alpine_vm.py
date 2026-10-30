@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import signal
 import socket
@@ -199,6 +200,29 @@ print(json.dumps({"uid": account.pw_uid, "shell": account.pw_shell,
         login["sshdAuthentication"] = {name: sshd[name] for name in ("pubkeyauthentication", "passwordauthentication")}
         write_json(artifacts / "ssh-access.json", login)
         checkpoint("Native public-key SSH access, unlocked account and unusable password", login)
+        identity_probe = '''
+import json, os, re, stat
+evidence, values = [], []
+for path in ("/etc/machine-id", "/var/lib/dbus/machine-id"):
+    row = {"path": path, "pathExists": os.path.lexists(path), "readable": False, "formatValid": False}
+    try:
+        if not stat.S_ISREG(os.stat(path).st_mode):
+            raise ValueError("not_regular")
+        with open(path, "r", encoding="ascii") as handle:
+            value = handle.read(129).strip()
+        row["readable"] = True
+        row["formatValid"] = bool(re.fullmatch(r"[a-f0-9]{32}", value)) and value != "0" * 32
+        if row["formatValid"]:
+            values.append(value)
+    except (OSError, ValueError, UnicodeError) as error:
+        row["error"] = type(error).__name__
+    evidence.append(row)
+print(json.dumps({"files": evidence, "conflictingValidIds": len(set(values)) > 1,
+                  "readOnly": True, "onboardingEvaluated": False}))
+'''
+        identity = json.loads(remote("sudo python3 -c " + shlex.quote(identity_probe)).stdout)
+        write_json(artifacts / "machine-identity.json", identity)
+        checkpoint("Existing machine-id availability only; HCP onboarding is outside this VM gate", identity)
         # This is the unchanged production readiness program running inside
         # the guest, not a fabricated /etc/os-release fixture.
         readiness = json.loads(remote("sudo python3 -c " + shlex.quote((ROOT / "ansible/scripts/hcp-host-readiness.py").read_text())).stdout)
@@ -237,13 +261,21 @@ print(json.dumps({"uid": account.pw_uid, "shell": account.pw_shell,
                 playbook("agentless-audit", phase, {"audit_profile": "basic_linux"})
                 report = json.loads((reports / (HOST + "-basic_linux-" + phase + ".json")).read_text())
                 assert report["agentless"]["serviceManager"] == "openrc"
-                cron = next(row for row in report["agentless"]["serviceObservations"] if row["service"] == "cron")
-                assert cron["state"] == ("inactive" if phase == "violation" else "active"), cron
+                expected_cron = "inactive" if phase == "violation" else "active"
+                # serviceObservations contains each native queried alias. On
+                # Alpine 'cron' is absent while the controlled service is
+                # 'crond'; also verify the adapter's aggregate logical verdict.
+                cron = next(row for row in report["agentless"]["serviceObservations"] if row["service"] == "crond")
+                assert cron["state"] == expected_cron, cron
+                review = next(row for row in report["findings"] if row["id"] == "critical_services_review")
+                logical_cron = re.search(r"(?:^|;\s*)cron=([a-z]+)(?:;|$)", review["evidence"])
+                assert logical_cron and logical_cron.group(1) == expected_cron, review
                 finding = next(row for row in report["findings"] if row["id"] == "world_writable_dirs")
                 assert finding["status"] == ("failed" if phase == "violation" else "passed"), finding
                 if report["scanner"]["partial"]:
                     assert report["summary"]["score"] is None
-                states.append({"phase": phase, "cron": cron["state"], "filesystem": finding["status"], "partial": report["scanner"]["partial"]})
+                states.append({"phase": phase, "nativeCronService": "crond", "cron": cron["state"],
+                               "logicalCron": logical_cron.group(1), "filesystem": finding["status"], "partial": report["scanner"]["partial"]})
         finally:
             remote("sudo chmod 1777 /var/tmp/hcp-permission-control; sudo rc-service crond start")
         checkpoint("Real OpenRC and filesystem pass/fail/restored controls", states)

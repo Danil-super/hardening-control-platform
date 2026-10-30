@@ -9,6 +9,11 @@ import vm from "node:vm";
 import test from "node:test";
 import { execFileSync } from "node:child_process";
 import ts from "typescript";
+import { compileServerModules } from "./_typescript-loader.mjs";
+
+const compiledOutputGuard = compileServerModules(["trivy-output"]);
+const outputGuard = await import(compiledOutputGuard.url("trivy-output"));
+test.after(() => rmSync(compiledOutputGuard.directory, { recursive: true, force: true }));
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -36,6 +41,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
   const exports = {};
   const mocks = {
     "@/lib/linux-platform": platform,
+    "@/lib/trivy-output": outputGuard,
     "@/lib/ansible-control": { getStateDir: () => dir, getRepoRoot: () => path.resolve(webDir, "..") },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
     "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), appendAuditEvent: () => {} },
