@@ -2,6 +2,10 @@
 
 import ast
 import importlib.util
+import os
+import shutil
+import sqlite3
+import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -191,6 +195,139 @@ class PackageInventoryTest(unittest.TestCase):
 
     def test_target_program_keeps_python35_syntax(self):
         ast.parse(COLLECTOR.read_text(), feature_version=(3, 5))
+
+
+class SQLiteRpmConsistencyTest(unittest.TestCase):
+    def setUp(self):
+        # URI-reserved characters also exercise safe mode=ro path handling.
+        self.temporary = tempfile.TemporaryDirectory(prefix="hcp-rpm # ? ")
+        self.addCleanup(self.temporary.cleanup)
+        self.path = str(Path(self.temporary.name) / "rpmdb.sqlite")
+        self.writer = sqlite3.connect(self.path)
+        self.addCleanup(self.writer.close)
+        self.writer.execute("PRAGMA journal_mode=WAL")
+        self.writer.execute("CREATE TABLE Packages (name TEXT, version TEXT)")
+        self.writer.execute("INSERT INTO Packages VALUES ('example', '1.0-1')")
+        self.writer.commit()
+        self.writer.execute("PRAGMA wal_checkpoint(FULL)").fetchall()
+        patcher = patch.dict(collector.DATABASES, {"rpm": (self.path,)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def collect(self, action=None):
+        def query():
+            if action:
+                action()
+            return [{"manager": "rpm", "name": "example", "version": "1.0-1", "arch": "x86_64"}], ""
+        with patch.object(collector, "read_os_release", return_value={"ID": "rocky", "VERSION_ID": "9.8"}), \
+                patch.object(collector.shutil, "which", return_value="/usr/bin/rpm"), \
+                patch.object(collector, "rpm_packages", side_effect=query), \
+                patch.object(collector, "read_text", side_effect=FileNotFoundError()):
+            return collector.collect()
+
+    def test_read_only_wal_metadata_changes_are_not_package_commits(self):
+        snapshots = []
+        def read_and_touch_metadata():
+            connection = sqlite3.connect("file:" + collector.quote(self.path, safe="/") + "?mode=ro", uri=True)
+            try:
+                self.assertEqual(connection.execute("SELECT * FROM Packages").fetchall(), [("example", "1.0-1")])
+                with self.assertRaises(sqlite3.OperationalError):
+                    connection.execute("DELETE FROM Packages")
+            finally:
+                connection.close()
+            snapshots.append(collector.database_snapshot("rpm"))
+            # RPM/SQLite readers can change WAL permissions/ctime while no
+            # package changes. Reproduce that real filesystem metadata event.
+            wal = self.path + "-wal"
+            os.chmod(wal, os.stat(wal).st_mode & 0o777)
+            os.utime(wal, ns=(os.stat(wal).st_atime_ns, os.stat(wal).st_mtime_ns + 1000000000))
+            snapshots.append(collector.database_snapshot("rpm"))
+        report = self.collect(read_and_touch_metadata)
+        self.assertNotEqual(snapshots[0], snapshots[1])
+        self.assertFalse(report["partial"], report["packageInventory"])
+
+    def test_real_commit_is_partial_even_with_identical_parsed_output(self):
+        def commit():
+            self.writer.execute("UPDATE Packages SET version='2.0-1'")
+            self.writer.commit()
+        report = self.collect(commit)
+        self.assertTrue(report["partial"])
+        self.assertIn("changed", report["packageInventory"]["error"])
+        self.assertEqual(report["packageInventory"]["packageCount"], 1)
+
+    def test_write_and_revert_cannot_be_mistaken_for_stability(self):
+        def change_and_revert():
+            self.writer.execute("UPDATE Packages SET version='2.0-1'")
+            self.writer.commit()
+            self.writer.execute("UPDATE Packages SET version='1.0-1'")
+            self.writer.commit()
+            self.assertEqual(self.writer.execute("SELECT * FROM Packages").fetchall(), [("example", "1.0-1")])
+        report = self.collect(change_and_revert)
+        self.assertTrue(report["partial"])
+        self.assertIn("changed", report["packageInventory"]["error"])
+
+    def test_uncommitted_rollback_does_not_invent_an_installed_change(self):
+        def rollback():
+            self.writer.execute("UPDATE Packages SET version='2.0-1'")
+            self.writer.rollback()
+        report = self.collect(rollback)
+        self.assertFalse(report["partial"], report["packageInventory"])
+
+    def test_database_replacement_is_partial_even_if_rows_are_identical(self):
+        replacement = self.path + ".replacement"
+        shutil.copyfile(self.path, replacement)
+        report = self.collect(lambda: os.replace(replacement, self.path))
+        self.assertTrue(report["partial"])
+        self.assertIn("changed", report["packageInventory"]["error"])
+
+    def test_database_alias_uses_one_observer_and_cannot_switch_targets(self):
+        alias = Path(self.temporary.name) / "alias" / "rpmdb.sqlite"
+        alias.parent.mkdir()
+        alias.symlink_to(self.path)
+        with patch.dict(collector.DATABASES, {"rpm": (self.path, str(alias))}):
+            with collector.DatabaseConsistency("rpm") as guard:
+                self.assertEqual(len(guard.connections), 1)
+                self.assertTrue(guard.unchanged())
+                alias.unlink()
+                self.assertFalse(guard.unchanged())
+        self.assertEqual(guard.connections, [])
+
+    def test_other_rpm_database_backends_keep_physical_change_guard(self):
+        path = Path(self.temporary.name) / "Packages"
+        path.write_bytes(b"opaque BDB fixture")
+        with patch.dict(collector.DATABASES, {"rpm": (str(path),)}):
+            report = self.collect(lambda: path.write_bytes(b"changed BDB fixture"))
+        self.assertTrue(report["partial"])
+        self.assertIn("changed", report["packageInventory"]["error"])
+
+    def test_sqlite_dependency_failure_is_reported_as_partial_json(self):
+        with patch.dict("sys.modules", {"sqlite3": None}):
+            report = self.collect()
+        self.assertTrue(report["partial"])
+        self.assertIn("SQLite support", report["packageInventory"]["error"])
+
+    def test_corrupt_sqlite_database_is_not_complete(self):
+        self.writer.close()
+        Path(self.path).write_bytes(b"not a SQLite database")
+        report = self.collect()
+        self.assertTrue(report["partial"])
+        self.assertIn("SQLite", report["packageInventory"]["error"])
+
+    def test_missing_data_version_fails_closed_and_closes_observer(self):
+        class UnsupportedConnection:
+            closed = False
+            def execute(self, query):
+                return self
+            def fetchone(self):
+                return None
+            def close(self):
+                self.closed = True
+        connection = UnsupportedConnection()
+        with patch.object(sqlite3, "connect", return_value=connection):
+            report = self.collect()
+        self.assertTrue(report["partial"])
+        self.assertIn("cannot observe", report["packageInventory"]["error"])
+        self.assertTrue(connection.closed)
 
 
 if __name__ == "__main__":

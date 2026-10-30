@@ -13,7 +13,7 @@ import shutil
 import socket
 import subprocess
 from datetime import datetime, timezone
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 MAX_METADATA = 64 * 1024 * 1024
 MAX_PACKAGES = 250000
@@ -96,9 +96,9 @@ def select_manager(os_release):
     raise ValueError("No supported native package database (dpkg/rpm/apk) found")
 
 
-def database_snapshot(manager):
+def database_snapshot(manager, exclude=()):
     result = []
-    entries = database_paths(manager)
+    entries = [entry for entry in database_paths(manager) if entry not in exclude]
     for entry in list(entries):
         # SQLite may update WAL before the primary RPM DB changes.
         entries.extend(item for item in (entry + "-wal", entry + "-journal") if os.path.isfile(item))
@@ -106,6 +106,88 @@ def database_snapshot(manager):
         stat = os.stat(entry)
         result.append((entry, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns))
     return result
+
+
+class DatabaseConsistency:
+    """Observe SQLite commits without mistaking reader bookkeeping for writes.
+
+    RPM's SQLite reader can change WAL ctime and shared-memory metadata without
+    changing a package. PRAGMA data_version, on the same persistent read-only
+    connection, observes commits by other connections including write/revert.
+    Do not BEGIN a read transaction here: that would hide commits from this
+    observer. Path/inode checks also reject database replacement or migration.
+    Other native backends retain their physical database snapshot guard.
+    """
+    def __init__(self, manager):
+        self.manager = manager
+        self.sqlite_paths = set()
+        self.connections = []
+        self.sqlite_error = ()
+
+    @staticmethod
+    def identities(paths):
+        result = []
+        for path in sorted(paths):
+            stat = os.stat(path)
+            result.append((path, os.path.realpath(path), stat.st_dev, stat.st_ino))
+        return result
+
+    @staticmethod
+    def data_version(connection):
+        row = connection.execute("PRAGMA data_version").fetchone()
+        if row is None or len(row) != 1 or not isinstance(row[0], int):
+            raise ValueError("SQLite cannot observe package database commits")
+        return row[0]
+
+    def __enter__(self):
+        try:
+            if self.manager == "rpm":
+                self.paths = set(database_paths(self.manager))
+                self.sqlite_paths = {path for path in self.paths if path.endswith("rpmdb.sqlite")}
+            if self.sqlite_paths:
+                try:
+                    import sqlite3
+                except ImportError:
+                    raise ValueError("Python SQLite support is required to verify RPM database consistency")
+                self.sqlite_error = sqlite3.Error
+                self.before_identities = self.identities(self.sqlite_paths)
+                # Standard /var/lib and /usr/lib aliases may name one database.
+                for path in sorted({item[1] for item in self.before_identities}):
+                    connection = sqlite3.connect("file:" + quote(path, safe="/") + "?mode=ro",
+                                                 uri=True, timeout=5, isolation_level=None)
+                    self.connections.append((connection, None))
+                    self.connections[-1] = (connection, self.data_version(connection))
+                if self.before_identities != self.identities(self.sqlite_paths):
+                    raise ValueError("The native package database changed while opening its consistency observer")
+            self.before = database_snapshot(self.manager, self.sqlite_paths) if self.sqlite_paths else database_snapshot(self.manager)
+            if not self.before and not self.sqlite_paths:
+                raise ValueError("The selected native package database is unavailable: " + self.manager)
+            return self
+        except BaseException as exc:
+            self.close()
+            if isinstance(exc, self.sqlite_error):
+                raise ValueError("Cannot verify SQLite RPM database consistency: " + str(exc))
+            raise
+
+    def unchanged(self):
+        try:
+            if self.sqlite_paths:
+                if self.paths != set(database_paths(self.manager)) or self.before_identities != self.identities(self.sqlite_paths):
+                    return False
+                if any(before != self.data_version(connection) for connection, before in self.connections):
+                    return False
+                return self.before == database_snapshot(self.manager, self.sqlite_paths)
+            return self.before == database_snapshot(self.manager)
+        except self.sqlite_error as exc:
+            raise ValueError("Cannot verify SQLite RPM database consistency: " + str(exc))
+
+    def close(self):
+        for connection, unused in self.connections:
+            connection.close()
+        self.connections = []
+
+    def __exit__(self, unused_type, unused_value, unused_traceback):
+        self.close()
 
 
 def debian_packages():
@@ -234,14 +316,12 @@ def collect():
         command = {"dpkg": "dpkg-query", "rpm": "rpm", "apk": "apk"}[manager]
         if not shutil.which(command):
             raise ValueError("The native package manager is unavailable: " + command)
-        before = database_snapshot(manager)
-        if not before:
-            raise ValueError("The selected native package database is unavailable: " + manager)
-        packages, error = {"dpkg": debian_packages, "rpm": rpm_packages, "apk": apk_packages}[manager]()
-        if manager == "apk":
-            extra["apkRepositories"] = apk_repositories(os_release)
-        if before != database_snapshot(manager):
-            error = "The native package database changed during collection; repeat the inventory"
+        with DatabaseConsistency(manager) as consistency:
+            packages, error = {"dpkg": debian_packages, "rpm": rpm_packages, "apk": apk_packages}[manager]()
+            if manager == "apk":
+                extra["apkRepositories"] = apk_repositories(os_release)
+            if not consistency.unchanged():
+                error = "The native package database changed during collection; repeat the inventory"
         if len(packages) > MAX_PACKAGES:
             packages, error = [], "Package count exceeds the collection budget"
     except (OSError, ValueError, UnicodeError) as exc:
