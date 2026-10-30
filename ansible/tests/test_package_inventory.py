@@ -215,12 +215,15 @@ class SQLiteRpmConsistencyTest(unittest.TestCase):
         self.addCleanup(patcher.stop)
 
     def collect(self, action=None):
-        def query():
+        def query(database=None):
             if action:
                 action()
             return [{"manager": "rpm", "name": "example", "version": "1.0-1", "arch": "x86_64"}], ""
+        database = {"path": os.path.dirname(collector.DATABASES["rpm"][0]), "backend": "sqlite",
+                    "candidates": collector.DATABASES["rpm"]}
         with patch.object(collector, "read_os_release", return_value={"ID": "rocky", "VERSION_ID": "9.8"}), \
                 patch.object(collector.shutil, "which", return_value="/usr/bin/rpm"), \
+                patch.object(collector, "resolve_rpm_database", return_value=database), \
                 patch.object(collector, "rpm_packages", side_effect=query), \
                 patch.object(collector, "read_text", side_effect=FileNotFoundError()):
             return collector.collect()
@@ -328,6 +331,158 @@ class SQLiteRpmConsistencyTest(unittest.TestCase):
         self.assertTrue(report["partial"])
         self.assertIn("cannot observe", report["packageInventory"]["error"])
         self.assertTrue(connection.closed)
+
+
+class RpmDatabaseSelectionTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="hcp-rpm-path # ? ")
+        self.addCleanup(self.temporary.cleanup)
+        self.standard = Path(self.temporary.name) / "stale-standard"
+        self.custom = Path(self.temporary.name) / "custom"
+        for path, version in ((self.standard, "1.0"), (self.custom, "2.0")):
+            path.mkdir()
+            connection = sqlite3.connect(str(path / "rpmdb.sqlite"))
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("CREATE TABLE Packages (version TEXT)")
+            connection.execute("INSERT INTO Packages VALUES (?)", (version,))
+            connection.commit()
+            connection.close()
+        self.configuration = {"path": str(self.custom), "backend": "sqlite"}
+        self.queries = []
+
+    def collect(self, before_query=None, after_query=None, macro_response=None, during_recheck=None):
+        macro_reads = [0]
+        def native(command):
+            if command == ["rpm", "--eval", collector.RPM_DATABASE_QUERY]:
+                macro_reads[0] += 1
+                if macro_reads[0] == 2 and during_recheck:
+                    during_recheck()
+                return 0, macro_response if macro_response is not None else (
+                    self.configuration["path"] + "\n" + self.configuration["backend"] + "\nHCP-RPM-DATABASE-END"), ""
+            self.assertEqual(command[:2], ["rpm", "--dbpath"])
+            self.assertEqual(command[3:5], ["--define", "_db_backend sqlite"])
+            if command[-1] == "--querytags":
+                return 0, "EPOCHNUM MODULARITYLABEL", ""
+            self.assertIn("-qa", command)
+            self.queries.append(command)
+            if before_query:
+                before_query()
+            connection = sqlite3.connect("file:" + collector.quote(str(Path(command[2]) / "rpmdb.sqlite"), safe="/") + "?mode=ro", uri=True)
+            try:
+                version = connection.execute("SELECT version FROM Packages").fetchone()[0]
+            finally:
+                connection.close()
+            if after_query:
+                after_query()
+            return 0, "example\t0\t" + version + "\t1.el9\tx86_64\texample-" + version + "-1.el9.src.rpm\tRocky Enterprise Software Foundation\tRocky\tRocky\t(none)\n", ""
+
+        with patch.dict(collector.DATABASES, {"rpm": (str(self.standard / "rpmdb.sqlite"),)}), \
+                patch.object(collector, "read_os_release", return_value={"ID": "rocky", "VERSION_ID": "9.8"}), \
+                patch.object(collector.shutil, "which", return_value="/usr/bin/rpm"), \
+                patch.object(collector, "run", side_effect=native), \
+                patch.object(collector, "read_text", side_effect=FileNotFoundError()):
+            return collector.collect()
+
+    def test_custom_db_is_selected_and_pinned_despite_stale_standard_db(self):
+        report = self.collect()
+        self.assertFalse(report["partial"], report["packageInventory"])
+        self.assertEqual(report["packages"][0]["version"], "2.0-1.el9")
+        self.assertEqual(report["packageInventory"]["rpmDatabase"], {
+            "path": str(self.custom), "backend": "sqlite", "selection": "native-macros-pinned"})
+        self.assertEqual(self.queries[0][2], str(self.custom))
+
+    def test_commit_in_custom_db_is_detected_while_stale_db_is_unchanged(self):
+        before = (self.standard / "rpmdb.sqlite").read_bytes()
+        def update():
+            connection = sqlite3.connect(str(self.custom / "rpmdb.sqlite"))
+            connection.execute("UPDATE Packages SET version='3.0'")
+            connection.commit()
+            connection.close()
+        report = self.collect(after_query=update)
+        self.assertTrue(report["partial"])
+        self.assertIn("changed", report["packageInventory"]["error"])
+        self.assertEqual((self.standard / "rpmdb.sqlite").read_bytes(), before)
+
+    def test_macro_path_migration_cannot_be_reported_complete(self):
+        def migrate():
+            self.configuration["path"] = str(self.standard)
+        report = self.collect(after_query=migrate)
+        self.assertTrue(report["partial"])
+        self.assertIn("changed", report["packageInventory"]["error"])
+
+    def test_commit_during_final_configuration_query_is_still_observed(self):
+        def update():
+            connection = sqlite3.connect(str(self.custom / "rpmdb.sqlite"))
+            connection.execute("UPDATE Packages SET version='3.0'")
+            connection.commit()
+            connection.close()
+        report = self.collect(during_recheck=update)
+        self.assertTrue(report["partial"])
+        self.assertIn("changed", report["packageInventory"]["error"])
+
+    def test_symlink_retarget_does_not_redirect_pinned_query(self):
+        alias = Path(self.temporary.name) / "current"
+        alias.symlink_to(self.custom, target_is_directory=True)
+        self.configuration["path"] = str(alias)
+        def retarget():
+            alias.unlink()
+            alias.symlink_to(self.standard, target_is_directory=True)
+        report = self.collect(before_query=retarget)
+        self.assertEqual(report["packages"][0]["version"], "2.0-1.el9")
+        self.assertTrue(report["partial"])
+        self.assertIn("changed", report["packageInventory"]["error"])
+
+    def test_new_backend_file_during_query_is_ambiguous(self):
+        report = self.collect(after_query=lambda: (self.custom / "Packages").write_bytes(b"new backend"))
+        self.assertTrue(report["partial"])
+        self.assertIn("ambiguous", report["packageInventory"]["error"])
+
+    def test_unknown_missing_or_mismatched_backend_never_runs_query(self):
+        for backend in ("unknown", "dummy", "bdb", "ndb", ""):
+            with self.subTest(backend=backend):
+                self.configuration["backend"] = backend
+                report = self.collect()
+                self.assertTrue(report["partial"])
+                self.assertEqual(self.queries, [])
+                self.assertEqual(report["packages"], [])
+        self.configuration["backend"] = "sqlite"
+        self.configuration["path"] = str(self.custom / "missing")
+        report = self.collect()
+        self.assertTrue(report["partial"])
+        self.assertFalse((self.custom / "missing").exists())
+
+    def test_invalid_macro_path_and_output_are_rejected_without_query(self):
+        for path in ("relative", "%{_dbpath}", "/tmp/%[1+1]", "/tmp/%bare_macro", "/tmp/%%literal",
+                     "/tmp/path\nsecond", "/tmp/path\x00", "/tmp/path\ufffd", "/" + "x" * 4096):
+            with self.subTest(path=path[:60]):
+                report = self.collect(macro_response=path + "\nsqlite\nHCP-RPM-DATABASE-END")
+                self.assertTrue(report["partial"])
+                self.assertEqual(self.queries, [])
+        report = self.collect(macro_response="unexpected output")
+        self.assertTrue(report["partial"])
+        self.assertEqual(self.queries, [])
+
+    def test_macro_syntax_hidden_in_canonical_symlink_target_is_rejected(self):
+        target = Path(self.temporary.name) / "literal-%[1+1]"
+        target.mkdir()
+        shutil.copyfile(str(self.custom / "rpmdb.sqlite"), str(target / "rpmdb.sqlite"))
+        alias = Path(self.temporary.name) / "alias-without-macros"
+        alias.symlink_to(target, target_is_directory=True)
+        self.configuration["path"] = str(alias)
+        report = self.collect()
+        self.assertTrue(report["partial"])
+        self.assertIn("unsupported", report["packageInventory"]["error"])
+        self.assertEqual(self.queries, [])
+
+    def test_legacy_bdb_without_backend_macro_is_explicitly_bounded(self):
+        legacy = Path(self.temporary.name) / "legacy"
+        legacy.mkdir()
+        (legacy / "Packages").write_bytes(b"BDB fixture")
+        with patch.object(collector, "run", return_value=(0, str(legacy) + "\n\nHCP-RPM-DATABASE-END", "")):
+            database = collector.resolve_rpm_database()
+        self.assertEqual(database["path"], str(legacy))
+        self.assertEqual(database["backend"], "")
+        self.assertEqual(len(database["candidates"]), 3)
 
 
 if __name__ == "__main__":

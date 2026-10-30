@@ -35,6 +35,8 @@ DATABASES = {
             "/usr/share/rpm/rpmdb.sqlite"),
     "apk": ("/lib/apk/db/installed", "/usr/lib/apk/db/installed"),
 }
+RPM_BACKENDS = {"sqlite": "rpmdb.sqlite", "ndb": "Packages.db", "bdb": "Packages", "bdb_ro": "Packages"}
+RPM_DATABASE_QUERY = "%{_dbpath}\n%{?_db_backend}\nHCP-RPM-DATABASE-END"
 
 
 def run(command):
@@ -96,9 +98,9 @@ def select_manager(os_release):
     raise ValueError("No supported native package database (dpkg/rpm/apk) found")
 
 
-def database_snapshot(manager, exclude=()):
+def database_snapshot(manager, exclude=(), paths=None):
     result = []
-    entries = [entry for entry in database_paths(manager) if entry not in exclude]
+    entries = [entry for entry in (database_paths(manager) if paths is None else paths) if entry not in exclude]
     for entry in list(entries):
         # SQLite may update WAL before the primary RPM DB changes.
         entries.extend(item for item in (entry + "-wal", entry + "-journal") if os.path.isfile(item))
@@ -118,11 +120,24 @@ class DatabaseConsistency:
     observer. Path/inode checks also reject database replacement or migration.
     Other native backends retain their physical database snapshot guard.
     """
-    def __init__(self, manager):
+    def __init__(self, manager, candidates=None):
         self.manager = manager
+        self.candidates = candidates
         self.sqlite_paths = set()
         self.connections = []
         self.sqlite_error = ()
+
+    def current_paths(self):
+        if self.candidates is None:
+            return database_paths(self.manager)
+        return [path for path in self.candidates if os.path.isfile(path)]
+
+    def snapshot(self):
+        if self.candidates is not None:
+            return database_snapshot(self.manager, self.sqlite_paths, self.current_paths())
+        if self.sqlite_paths:
+            return database_snapshot(self.manager, self.sqlite_paths)
+        return database_snapshot(self.manager)
 
     @staticmethod
     def identities(paths):
@@ -142,7 +157,7 @@ class DatabaseConsistency:
     def __enter__(self):
         try:
             if self.manager == "rpm":
-                self.paths = set(database_paths(self.manager))
+                self.paths = set(self.current_paths())
                 self.sqlite_paths = {path for path in self.paths if path.endswith("rpmdb.sqlite")}
             if self.sqlite_paths:
                 try:
@@ -159,7 +174,7 @@ class DatabaseConsistency:
                     self.connections[-1] = (connection, self.data_version(connection))
                 if self.before_identities != self.identities(self.sqlite_paths):
                     raise ValueError("The native package database changed while opening its consistency observer")
-            self.before = database_snapshot(self.manager, self.sqlite_paths) if self.sqlite_paths else database_snapshot(self.manager)
+            self.before = self.snapshot()
             if not self.before and not self.sqlite_paths:
                 raise ValueError("The selected native package database is unavailable: " + self.manager)
             return self
@@ -172,12 +187,11 @@ class DatabaseConsistency:
     def unchanged(self):
         try:
             if self.sqlite_paths:
-                if self.paths != set(database_paths(self.manager)) or self.before_identities != self.identities(self.sqlite_paths):
+                if self.paths != set(self.current_paths()) or self.before_identities != self.identities(self.sqlite_paths):
                     return False
                 if any(before != self.data_version(connection) for connection, before in self.connections):
                     return False
-                return self.before == database_snapshot(self.manager, self.sqlite_paths)
-            return self.before == database_snapshot(self.manager)
+            return self.before == self.snapshot()
         except self.sqlite_error as exc:
             raise ValueError("Cannot verify SQLite RPM database consistency: " + str(exc))
 
@@ -210,15 +224,54 @@ def debian_packages():
     return packages, ""
 
 
-def rpm_packages():
-    tag_code, tag_output, _ = run(["rpm", "--querytags"])
+def resolve_rpm_database():
+    """Resolve only RPM's native directory and three supported backend files.
+
+    The sentinel preserves empty/trailing fields through run()'s newline trim.
+    Native --dbpath and --define argv pin subsequent queries to this observed
+    database. No shell, directory walk, DB creation or implicit fallback.
+    """
+    code, output, error = run(["rpm", "--eval", RPM_DATABASE_QUERY])
+    values = output.split("\n")
+    if code != 0 or len(values) != 3 or values[2] != "HCP-RPM-DATABASE-END":
+        raise ValueError("Cannot resolve the native RPM database configuration: " + (error or "invalid macro response"))
+    path, backend = values[:2]
+    def validate_path(value):
+        # RPM can expand --dbpath again, including %[expression] and bare
+        # %macros. Reject any remaining percent, even through a symlink target.
+        if (not os.path.isabs(value) or len(value.encode("utf-8")) > 4096
+                or any(ord(char) < 32 or ord(char) == 127 for char in value)
+                or "\ufffd" in value or "%" in value):
+            raise ValueError("The native RPM database path is unresolved, non-absolute or unsupported")
+    validate_path(path)
+    if backend and backend not in RPM_BACKENDS:
+        raise ValueError("The native RPM database backend is unsupported: " + backend[:80])
+    # Older BDB-only RPM releases do not define _db_backend. Do not guess a
+    # modern backend when the native tool has not identified one.
+    expected = RPM_BACKENDS[backend] if backend else "Packages"
+    path = os.path.realpath(path)
+    validate_path(path)
+    candidates = tuple(os.path.join(path, name) for name in ("rpmdb.sqlite", "Packages", "Packages.db"))
+    existing = [entry for entry in candidates if os.path.isfile(entry)]
+    if len(existing) != 1 or os.path.basename(existing[0]) != expected:
+        raise ValueError("The configured RPM database backend is missing, ambiguous or differs from its existing files")
+    return {"path": path, "backend": backend, "candidates": candidates}
+
+
+def rpm_packages(database=None):
+    command = ["rpm"]
+    if database is not None:
+        command.extend(["--dbpath", database["path"]])
+        if database["backend"]:
+            command.extend(["--define", "_db_backend " + database["backend"]])
+    tag_code, tag_output, _ = run(command + ["--querytags"])
     tags = set(tag_output.upper().split()) if tag_code == 0 else set()
     epoch_tag = "EPOCHNUM" if "EPOCHNUM" in tags else "EPOCH"
     fields = ["NAME", epoch_tag, "VERSION", "RELEASE", "ARCH", "SOURCERPM", "VENDOR", "PACKAGER", "DISTRIBUTION"]
     modularity_queried = "MODULARITYLABEL" in tags
     fields.append("MODULARITYLABEL" if modularity_queried else None)
     query = "\t".join("%{" + field + "}" if field else "(none)" for field in fields) + "\n"
-    code, output, error = run(["rpm", "-qa", "--qf", query])
+    code, output, error = run(command + ["-qa", "--qf", query])
     packages = []
     if code != 0:
         return packages, error or "RPM query failed"
@@ -316,11 +369,16 @@ def collect():
         command = {"dpkg": "dpkg-query", "rpm": "rpm", "apk": "apk"}[manager]
         if not shutil.which(command):
             raise ValueError("The native package manager is unavailable: " + command)
-        with DatabaseConsistency(manager) as consistency:
-            packages, error = {"dpkg": debian_packages, "rpm": rpm_packages, "apk": apk_packages}[manager]()
+        rpm_database = resolve_rpm_database() if manager == "rpm" else None
+        if rpm_database is not None:
+            extra["rpmDatabase"] = {"path": rpm_database["path"], "backend": rpm_database["backend"] or "legacy-bdb",
+                                    "selection": "native-macros-pinned"}
+        with DatabaseConsistency(manager, rpm_database["candidates"] if rpm_database else None) as consistency:
+            packages, error = rpm_packages(rpm_database) if manager == "rpm" else {"dpkg": debian_packages, "apk": apk_packages}[manager]()
             if manager == "apk":
                 extra["apkRepositories"] = apk_repositories(os_release)
-            if not consistency.unchanged():
+            same_configuration = rpm_database is None or resolve_rpm_database() == rpm_database
+            if not consistency.unchanged() or not same_configuration:
                 error = "The native package database changed during collection; repeat the inventory"
         if len(packages) > MAX_PACKAGES:
             packages, error = [], "Package count exceeds the collection budget"

@@ -23,10 +23,20 @@ def main():
     spec.loader.exec_module(collector)
     result = {"scope": "read-only diagnostics; not acceptance", "rpmVersion": collector.run(["rpm", "--version"]),
               "queries": [], "sqliteQueries": [], "sqliteErrors": []}
+    try:
+        database = collector.resolve_rpm_database()
+        result["rpmDatabase"] = database
+    except (OSError, ValueError) as exc:
+        result["configurationError"] = str(exc)
+        print(json.dumps(result, ensure_ascii=True, indent=2))
+        return
+
+    def database_paths():
+        return [path for path in database["candidates"] if os.path.isfile(path)]
 
     def physical_snapshot():
         values = []
-        for entry in collector.database_paths("rpm"):
+        for entry in database_paths():
             for path in (entry, entry + "-wal", entry + "-shm", entry + "-journal"):
                 try:
                     stat = os.stat(path)
@@ -56,7 +66,7 @@ def main():
                 "processesBefore": package_processes(), "sqliteBefore": []}
         for path, connection in observers:
             item["sqliteBefore"].append({"path": path, "dataVersion": connection.execute("PRAGMA data_version").fetchone()[0]})
-        packages, error = collector.rpm_packages()
+        packages, error = collector.rpm_packages(database)
         canonical = sorted(json.dumps(package, sort_keys=True, separators=(",", ":")) for package in packages)
         item.update({"packageCount": len(packages), "error": error,
                      "packagesSha256": hashlib.sha256("\n".join(canonical).encode("utf-8")).hexdigest(),
@@ -69,7 +79,7 @@ def main():
     result["queries"] = [query(), query()]
     observers = []
     try:
-        for path in sorted(set(os.path.realpath(path) for path in collector.database_paths("rpm") if path.endswith("rpmdb.sqlite"))):
+        for path in sorted(set(os.path.realpath(path) for path in database_paths() if path.endswith("rpmdb.sqlite"))):
             try:
                 connection = sqlite3.connect("file:" + quote(path, safe="/") + "?mode=ro", uri=True, timeout=5, isolation_level=None)
                 observers.append((path, connection))

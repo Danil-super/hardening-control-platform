@@ -176,7 +176,12 @@ def main():
             time.sleep(3)
         else:
             raise RuntimeError("Guest SSH readiness timeout; inspect ssh-readiness.txt and guest-console.log")
-        remote("sudo cloud-init status --wait", output=artifacts / "cloud-init-status.txt", timeout=300)
+        # SSH user/key setup precedes cloud-init's package installation stage.
+        # status is readable without root; requiring sudo to wait for the stage
+        # which installs sudo races a successfully booting Alpine guest.
+        remote("cloud-init status --wait", output=artifacts / "cloud-init-status.txt", timeout=300)
+        remote("sudo -n true && command -v python3 && command -v apk && command -v rc-service && command -v rc-status && command -v ip",
+               output=artifacts / "bootstrap-prerequisites.txt", timeout=20)
         login_probe = '''
 import json, os, pathlib, pwd
 account = pwd.getpwnam("hcp-ci")
