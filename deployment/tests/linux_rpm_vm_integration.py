@@ -174,6 +174,7 @@ print(json.dumps({"osRelease": release, "kernel": platform.release(), "architect
             with tarfile.open(str(work / "helpers.tar"), "w") as archive:
                 archive.add(str(ROOT / "ansible/scripts"), arcname="ansible/scripts", filter=lambda member: None if "__pycache__" in member.name else member)
                 archive.add(str(ROOT / "ansible/tests/native_selinux_firewall_acceptance.py"), arcname="ansible/tests/native_selinux_firewall_acceptance.py")
+                archive.add(str(ROOT / "ansible/tests/native_rpm_inventory_diagnostics.py"), arcname="ansible/tests/native_rpm_inventory_diagnostics.py")
             run(["scp", "-i", str(work / "client"), "-P", str(ssh_port)] + ssh_options + [str(work / "helpers.tar"), "hcp-ci@127.0.0.1:/home/hcp-ci/helpers.tar"])
             remote("mkdir -m 700 /home/hcp-ci/hcp-source && tar -xf /home/hcp-ci/helpers.tar -C /home/hcp-ci/hcp-source")
             guest_source = "/home/hcp-ci/hcp-source/ansible/scripts/hcp-firewall.py"
@@ -224,7 +225,13 @@ test "$(getenforce)" = Enforcing
                     or coverage.get("osRelease", {}).get("ID") != distribution or not packages.get("packages")
                     or coverage.get("collectorVersion") != 2 or coverage.get("managerSelection") != "os-id"
                     or coverage.get("packageCount") != len(packages["packages"])):
-                raise RuntimeError("Native RPM package inventory is missing, partial or identifies a different distribution.")
+                # Preserve the failing production report. Additional read-only
+                # queries explain SQLite/WAL changes; they cannot make this
+                # inventory complete or bypass the original acceptance gate.
+                remote("sudo python3 /home/hcp-ci/hcp-source/ansible/tests/native_rpm_inventory_diagnostics.py",
+                       output=artifacts / "native-rpm-inventory-diagnostics.json", timeout=300)
+                raise RuntimeError("Native RPM package inventory is missing, partial or identifies a different distribution: "
+                                   + json.dumps(coverage, sort_keys=True))
             if not all(item.get("manager") == "rpm" and item.get("name") and item.get("version") and item.get("arch") for item in packages["packages"]):
                 raise RuntimeError("RPM inventory omitted package identity fields.")
             query = "%{NAME}\t%{EPOCHNUM}\t%{VERSION}-%{RELEASE}\t%{ARCH}\t%{SOURCERPM}\n"
