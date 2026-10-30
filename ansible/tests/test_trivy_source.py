@@ -259,6 +259,53 @@ module.main()
                         SOURCE.execute([sys.executable] + args, os.environ.copy(), lock_fd, timeout, limit)
                     self.assertEqual(caught.exception.code, expected)
 
+    def test_scan_file_transport_preserves_large_native_bytes_and_small_envelope(self):
+        expected = b'{"advisory":"' + b"x" * (17 * 1024 * 1024) + b'"}\n'
+        self.binary.write_text("#!/usr/bin/env python3\nimport sys\n"
+                               "if '--version' in sys.argv:\n print('Version: 0.74.0-contract-fixture')\n"
+                               "else:\n sys.stdout.buffer.write(b'{\"advisory\":\"'+b'x'*(17*1024*1024)+b'\"}\\n')\n")
+        output = self.root / "native.json"
+        command = self.command()
+        command[command.index("--"):command.index("--")] = ["--stdout-file", str(output)]
+        result = subprocess.run(command, env=self.environment("normal"), stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, universal_newlines=True, timeout=20)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertTrue(payload["ok"])
+        self.assertLess(len(result.stdout), 16384)
+        self.assertNotIn("stdout", payload)
+        self.assertEqual(payload["stdoutFile"], {"bytes": len(expected), "sha256": hashlib.sha256(expected).hexdigest()})
+        self.assertEqual(output.read_bytes(), expected)
+        self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(payload["sourceEvidence"]["before"], payload["sourceEvidence"]["after"])
+
+    def test_file_transport_refuses_existing_file_and_symlink_without_replacing_them(self):
+        target = self.root / "target.json"
+        target.write_bytes(b"existing private output")
+        link = self.root / "link.json"
+        link.symlink_to(target)
+        with SOURCE.source_lock(self.cache, 0) as fd:
+            for output in (target, link):
+                with self.subTest(output=output), self.assertRaises(FileExistsError):
+                    SOURCE.execute([sys.executable, "-c", "print('new')"], os.environ.copy(), fd, 5,
+                                   4096, output, 1024)
+                self.assertEqual(target.read_bytes(), b"existing private output")
+                self.assertTrue(link.is_symlink())
+
+    def test_file_transport_removes_partial_output_on_timeout_and_each_stream_limit(self):
+        with SOURCE.source_lock(self.cache, 0) as fd:
+            for code, timeout, expected in (
+                ("import sys,time; sys.stdout.write('partial'); sys.stdout.flush(); time.sleep(10)", 0.1, "native_timeout"),
+                ("import sys; sys.stdout.write('x'*50000)", 5, "output_limit"),
+                ("import sys; sys.stdout.write('partial'); sys.stdout.flush(); sys.stderr.write('x'*50000)", 5, "output_limit"),
+            ):
+                output = self.root / "failed.json"
+                with self.subTest(code=code), self.assertRaises(SOURCE.SourceError) as caught:
+                    SOURCE.execute([sys.executable, "-c", code], os.environ.copy(), fd, timeout,
+                                   4096, output, 1024)
+                self.assertEqual(caught.exception.code, expected)
+                self.assertFalse(output.exists(), "A failed producer must not leave readable partial output")
+
 
 if __name__ == "__main__":
     unittest.main()

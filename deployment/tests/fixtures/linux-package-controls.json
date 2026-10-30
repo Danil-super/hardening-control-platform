@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "scope": "Labelled metadata controls for three native CI targets; not a population accuracy or recall estimate",
+  "reviewedAt": "2026-10-30",
+  "controls": {
+    "alpine": {
+      "id": "alpine",
+      "versionId": "3.22",
+      "manager": "apk",
+      "packageName": "libcrypto3",
+      "sourceName": "openssl",
+      "arch": "x86_64",
+      "vulnerableVersion": "3.5.1-r0",
+      "fixedVersion": "3.5.4-r0",
+      "cve": "CVE-2025-9230",
+      "dataSourceId": "alpine",
+      "maintainer": "Alpine acceptance metadata <acceptance@alpinelinux.org>",
+      "references": [
+        "https://secdb.alpinelinux.org/v3.22/main.json",
+        "https://gitlab.alpinelinux.org/alpine/aports/-/blob/3.22-stable/main/openssl/APKBUILD"
+      ],
+      "basis": "Alpine v3.22 main secdb records OpenSSL CVE-2025-9230 fixed at 3.5.4-r0. libcrypto3 is tested through its source origin openssl. Supplier metadata is a labelled synthetic control, not an installed-package attestation."
+    },
+    "alma": {
+      "id": "almalinux",
+      "versionId": "9",
+      "manager": "rpm",
+      "packageName": "openssl-libs",
+      "sourceName": "openssl",
+      "arch": "x86_64",
+      "vulnerableVersion": "1:3.0.1-46.el9_1",
+      "fixedVersion": "1:3.0.1-47.el9_1",
+      "cve": "CVE-2023-0286",
+      "dataSourceId": "alma",
+      "vendor": "AlmaLinux",
+      "references": ["https://errata.almalinux.org/9/ALSA-2023-0946.html"],
+      "basis": "ALSA-2023:0946 publishes openssl-libs 3.0.1-47.el9_1 for this CVE. The predecessor is deliberately synthetic metadata immediately below the fixed EVR boundary; this does not assert that that exact predecessor binary was published. Binary epoch is 1; SOURCERPM has no observed source epoch."
+    },
+    "rocky": {
+      "id": "rocky",
+      "versionId": "9",
+      "manager": "rpm",
+      "packageName": "openssl-libs",
+      "sourceName": "openssl",
+      "arch": "x86_64",
+      "vulnerableVersion": "1:3.0.1-46.el9_1",
+      "fixedVersion": "1:3.0.1-47.el9_1",
+      "cve": "CVE-2023-0286",
+      "dataSourceId": "rocky",
+      "vendor": "Rocky Enterprise Software Foundation",
+      "references": [
+        "https://errata.rockylinux.org/RLSA-2023:0946",
+        "https://storage.googleapis.com/resf-osv-data/RLSA-2023:0946.json"
+      ],
+      "basis": "RLSA-2023:0946 and the RESF OSV feed publish fixed EVR 1:3.0.1-47.el9_1 for this CVE. The predecessor is deliberately synthetic metadata immediately below the fixed EVR boundary; this does not assert that that exact predecessor binary was published. Binary epoch is 1; SOURCERPM has no observed source epoch."
+    }
+  }
+}

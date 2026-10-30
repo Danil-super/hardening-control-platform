@@ -1,0 +1,205 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-30T15:14:28.097332+00:00",
+  "repository": "Danil-super/hardening-control-platform",
+  "workflowRun": {
+    "id": 41076462063,
+    "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41076462063",
+    "testedCommit": "36259079d925b4e242e24f179d4be330ff9ef492",
+    "workflowConclusion": "failure"
+  },
+  "scope": "Historical native SELinux metadata and IPv4 firewalld recovery evidence at the specified commit. Per-job pipeline results remain separate.",
+  "harnessSource": "https://github.com/Danil-super/hardening-control-platform/blob/36259079d925b4e242e24f179d4be330ff9ef492/deployment/tests/linux_rpm_vm_integration.py",
+  "limitations": [
+    "Pinned AlmaLinux 9.8 and Rocky Linux 9.8 x86_64 images only; other releases and architectures are not established by these runs.",
+    "SELinux uses each image's enforcing policy; arbitrary custom MLS/MCS policies were not tested.",
+    "Real incoming traffic assertions use IPv4 over QEMU port forwarding; no IPv6 traffic acceptance claim.",
+    "The isolated native xattr/crash helper uses fixture firewall I/O; actual firewalld and traffic are checked in a separate stage.",
+    "Rocky completed the SELinux/firewalld stages but its whole pipeline failed at the later Trivy output-limit gate.",
+    "The successful Alma pipeline does not establish complete vulnerability coverage or scanner-wide false-positive/false-negative rates.",
+    "This evidence predates later _dbpath and large-report fixes; it does not attest an untested newer commit."
+  ],
+  "cases": [
+    {
+      "distribution": "almalinux",
+      "version": "9.8",
+      "architecture": "x86_64",
+      "kernel": "5.14.0-687.53.1.el9_8.x86_64",
+      "pid1": "systemd",
+      "syntheticOsIdentity": false,
+      "job": {
+        "id": 124133861973,
+        "conclusion": "success",
+        "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41076462063/job/124133861973"
+      },
+      "artifact": {
+        "id": 12987208201,
+        "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41076462063/artifacts/12987208201",
+        "archiveSha256": "e2e05616c766bbdf9c8c8cd8d3fd11f3b3659e1c295dd9fb6f11725f751b846e",
+        "archiveBytes": 998545,
+        "archiveDigestVerifiedLocally": true,
+        "expiresAt": "2026-11-13",
+        "filePrefix": "hcp-rpm-almalinux/artifacts/",
+        "sourceFileSha256": {
+          "protocol.json": "ab040c7c657f808a97ceed14ae2baba491ddb36ccea18bd8150e3f2247057131",
+          "native-selinux-metadata.json": "07e977be5c0c2090e80ef96b23ae521641f734252df03a62c6dd00c14c8b6023",
+          "firewall-baseline.json": "f913a9c5e954d8c7a3bffbf5bbb46bf6ecc6af3cd4164db40018dcee9978cea4",
+          "firewall-applied.json": "f652d1933bbe1c92efe3e486365ee130201f11c7fbaedacd54615f7ff307d681",
+          "firewall-restored.json": "f913a9c5e954d8c7a3bffbf5bbb46bf6ecc6af3cd4164db40018dcee9978cea4",
+          "firewall-replayed.json": "f913a9c5e954d8c7a3bffbf5bbb46bf6ecc6af3cd4164db40018dcee9978cea4",
+          "firewall-interrupted-journal.json": "de297032da11bf7e0611d5c10b76a7799fedfe542415dfc8e3360e7ce3eb5928",
+          "firewall-reject-ssh.log": "c2c58b8a48490c1039cbf49b04cb799ce82c5dff999dbd3aedd63d40efb50f52",
+          "firewall-repeat-apply.log": "572a6b0f409044f44cbaf6c5bf7528f5720204729ecaadc8a89a7cfd13e44d4f",
+          "firewall-replayed-rollback.log": "60096f185e192a9123c309141f335261d8874a15a13946e9c3bded9457bd23b5"
+        }
+      },
+      "selinuxMetadata": {
+        "directoryContextHex": "73797374656d5f753a6f626a6563745f723a6669726577616c6c645f6574635f72775f743a733000",
+        "fileContextHex": "73797374656d5f753a6f626a6563745f723a7061737377645f66696c655f743a733000",
+        "filesystemAndCrashRecoveryChecks": [
+          "round_trip",
+          "after_move_old",
+          "after_install",
+          "after_prepared"
+        ],
+        "firewallIO": "isolated fixture; native service/traffic acceptance is separate",
+        "ok": true,
+        "realSecuritySelinuxXattrs": true,
+        "selinux": "Enforcing"
+      },
+      "firewallSnapshots": {
+        "previewEqualsBaseline": true,
+        "applyChangesConfiguration": true,
+        "secondApplyEqualsFirst": true,
+        "restoredEqualsBaseline": true,
+        "replayedRollbackEqualsBaseline": true,
+        "restoredLabelRecordCount": 10,
+        "baselineAndRestoredManifestSha256": "758c23a7e66f50d0ecb34b804ab696d230b3755c4d0634821f6f9cb76e4916e6",
+        "appliedManifestSha256": "5da9bf4a07759e33873e0195c2bf0dea4c1f172f2b79fe3f96cbf37d08cd3408"
+      },
+      "nativeTrafficAndRecovery": {
+        "status": "passed",
+        "evidenceKind": "harness assertions and passed protocol checkpoints",
+        "backend": "firewalld",
+        "tcpPort": 8088,
+        "addressFamily": "IPv4",
+        "incomingSequence": [
+          "reachable_before_apply",
+          "denied_after_apply",
+          "denied_after_reload",
+          "reachable_after_rollback"
+        ],
+        "localHttpServiceStayedReachableDuringDeny": true,
+        "sshManagementPort22Protected": true,
+        "realProcessKilled": "SIGKILL",
+        "interruptedJournalPhase": "move_old_intent",
+        "journalMetadataVersion": "posix-security-v2",
+        "resumeRestoredExactConfigurationLabelsAndRuntime": true,
+        "completedRollbackReplayChangedCount": 0
+      },
+      "laterCveStage": {
+        "status": "passed",
+        "allNativeRecordsProcessed": true,
+        "nativeRecordCount": 397,
+        "nativeCveCoverageComplete": false,
+        "labelledControlCve": "CVE-2023-0286",
+        "controlVulnerableAndFixedPassed": true
+      },
+      "image": {
+        "url": "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-9.8-20261005.x86_64.qcow2",
+        "sha256": "25942b554efaac077e2f60d6bb27bd3332c171454cc21bbd33e5f79244d7570f",
+        "bytes": 572850176
+      }
+    },
+    {
+      "distribution": "rocky",
+      "version": "9.8",
+      "architecture": "x86_64",
+      "kernel": "5.14.0-687.10.1.el9_8.0.1.x86_64",
+      "pid1": "systemd",
+      "syntheticOsIdentity": false,
+      "job": {
+        "id": 124133862604,
+        "conclusion": "failure",
+        "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41076462063/job/124133862604"
+      },
+      "artifact": {
+        "id": 12987980903,
+        "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41076462063/artifacts/12987980903",
+        "archiveSha256": "7452524c728e489b7a65f12689a8f4b7a6046877c4cd75bfca66e24ecff27420",
+        "archiveBytes": 108412,
+        "archiveDigestVerifiedLocally": true,
+        "expiresAt": "2026-11-13",
+        "filePrefix": "hcp-rpm-rocky/artifacts/",
+        "sourceFileSha256": {
+          "protocol.json": "ba268f396a12f5dda01ce20c3be32de50cc752a4c1d22b064d7f5a6b65878b39",
+          "native-selinux-metadata.json": "07e977be5c0c2090e80ef96b23ae521641f734252df03a62c6dd00c14c8b6023",
+          "firewall-baseline.json": "f913a9c5e954d8c7a3bffbf5bbb46bf6ecc6af3cd4164db40018dcee9978cea4",
+          "firewall-applied.json": "afcb12fc7f3a0d8fc838b3648f206a319ea013ed9aeae2d5182a2593cd04f5ad",
+          "firewall-restored.json": "f913a9c5e954d8c7a3bffbf5bbb46bf6ecc6af3cd4164db40018dcee9978cea4",
+          "firewall-replayed.json": "f913a9c5e954d8c7a3bffbf5bbb46bf6ecc6af3cd4164db40018dcee9978cea4",
+          "firewall-interrupted-journal.json": "38a664d765daa7f73b7d3dcd8ba484ecc4053c769a39e3b2f68b7ee8dabfa3b8",
+          "package-matching/native.hcp-report.json": "a87373eea680629a9620f926def13d7666da6b48af68edfb053511a08b494ab1",
+          "firewall-reject-ssh.log": "857dcc03f1e064c416ab1f71436edba3f73dee876f96ba3a9850683e2c4cbf52",
+          "firewall-repeat-apply.log": "572a6b0f409044f44cbaf6c5bf7528f5720204729ecaadc8a89a7cfd13e44d4f",
+          "firewall-replayed-rollback.log": "bb73ed8a634ca3691f83e0aa48aca6e56c884ab066628ef8f257d0e74761afc8"
+        }
+      },
+      "selinuxMetadata": {
+        "directoryContextHex": "73797374656d5f753a6f626a6563745f723a6669726577616c6c645f6574635f72775f743a733000",
+        "fileContextHex": "73797374656d5f753a6f626a6563745f723a7061737377645f66696c655f743a733000",
+        "filesystemAndCrashRecoveryChecks": [
+          "round_trip",
+          "after_move_old",
+          "after_install",
+          "after_prepared"
+        ],
+        "firewallIO": "isolated fixture; native service/traffic acceptance is separate",
+        "ok": true,
+        "realSecuritySelinuxXattrs": true,
+        "selinux": "Enforcing"
+      },
+      "firewallSnapshots": {
+        "previewEqualsBaseline": true,
+        "applyChangesConfiguration": true,
+        "secondApplyEqualsFirst": true,
+        "restoredEqualsBaseline": true,
+        "replayedRollbackEqualsBaseline": true,
+        "restoredLabelRecordCount": 10,
+        "baselineAndRestoredManifestSha256": "758c23a7e66f50d0ecb34b804ab696d230b3755c4d0634821f6f9cb76e4916e6",
+        "appliedManifestSha256": "5da9bf4a07759e33873e0195c2bf0dea4c1f172f2b79fe3f96cbf37d08cd3408"
+      },
+      "nativeTrafficAndRecovery": {
+        "status": "passed",
+        "evidenceKind": "harness assertions and passed protocol checkpoints",
+        "backend": "firewalld",
+        "tcpPort": 8088,
+        "addressFamily": "IPv4",
+        "incomingSequence": [
+          "reachable_before_apply",
+          "denied_after_apply",
+          "denied_after_reload",
+          "reachable_after_rollback"
+        ],
+        "localHttpServiceStayedReachableDuringDeny": true,
+        "sshManagementPort22Protected": true,
+        "realProcessKilled": "SIGKILL",
+        "interruptedJournalPhase": "move_old_intent",
+        "journalMetadataVersion": "posix-security-v2",
+        "resumeRestoredExactConfigurationLabelsAndRuntime": true,
+        "completedRollbackReplayChangedCount": 0
+      },
+      "laterCveStage": {
+        "status": "failed",
+        "failure": "output_limit",
+        "scannerAvailable": false,
+        "scannerPartial": true
+      },
+      "image": {
+        "url": "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
+        "sha256": "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8",
+        "bytes": 645988352
+      }
+    }
+  ]
+}

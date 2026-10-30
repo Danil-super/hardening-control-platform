@@ -11,6 +11,7 @@ import { hostCredentialSudoMode } from "@/lib/host-credentials";
 import type { AssetBinding, VerifiedAssetBinding } from "@/lib/asset-binding";
 import { publishCapturedAssetReports } from "@/lib/asset-report-publication";
 import { prepareAssetExecution } from "@/lib/asset-execution";
+import type { AnsibleRuntime } from "@/lib/ansible-runtime";
 import {
   appendIncident as appendStoredIncident,
   readIncidents as readStoredIncidents,
@@ -318,7 +319,7 @@ export async function runAnsiblePlaybook({
     }
 
     executionDispatched = true;
-    const result = await executeAnsiblePlaybook({ args, timeout: selected.timeout, becomePassword, sshTrust: assetExecution.sshTrust });
+    const result = await executeAnsiblePlaybook({ args, timeout: selected.timeout, becomePassword, sshTrust: assetExecution.sshTrust, ansibleRuntime: assetExecution.ansibleRuntime });
     return { ...result, reportRunId };
   } catch (error) {
     if (!executionDispatched && error instanceof Error) Object.assign(error, { remoteOutcome: "not_started" });
@@ -333,14 +334,16 @@ export async function runAnsiblePlaybook({
 }
 
 /** Run one Ansible child with the same private credential lifecycle for built-in and custom playbooks. */
-export async function executeAnsiblePlaybook({ args, timeout, becomePassword, sshTrust }: {
+export async function executeAnsiblePlaybook({ args, timeout, becomePassword, sshTrust, ansibleRuntime }: {
   args: string[];
   timeout: number;
   becomePassword?: string;
   sshTrust?: { knownHostsPath: string; algorithms: string };
+  ansibleRuntime?: AnsibleRuntime;
 }) {
   const repoRoot = getRepoRoot();
-  const command = `ansible-playbook ${args.join(" ")}`;
+  const executable = ansibleRuntime?.playbook ?? "ansible-playbook";
+  const command = `${executable} ${args.join(" ")}`;
   let secretDirectory = "";
   let spawned = false;
   try {
@@ -359,7 +362,7 @@ export async function executeAnsiblePlaybook({ args, timeout, becomePassword, ss
       writeFileSync(secretFile, ansibleLiteralExtraVars({ ansible_become_password: becomePassword }), { mode: 0o600 });
       executionArgs = [...executionArgs.slice(0, 2), "--extra-vars", `@${secretFile}`, ...executionArgs.slice(2)];
     }
-    const execution = execFileAsync("ansible-playbook", executionArgs, {
+    const execution = execFileAsync(executable, executionArgs, {
       cwd: repoRoot,
       timeout,
       maxBuffer: 1024 * 1024 * 8,

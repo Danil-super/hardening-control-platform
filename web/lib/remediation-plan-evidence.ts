@@ -89,8 +89,23 @@ function trivyAbsenceResolved(item: RemediationPlanItem, report: AnsibleReportDe
   if (!Array.isArray(packages) || !packages.length || metadata.error || metadata.packageCount !== packages.length
     || !packages.every((value) => typeof record(value).name === "string" && Boolean(record(value).name)
       && typeof record(value).version === "string" && Boolean(record(value).version))) return false;
-  return Number.isInteger(coverage.inventoryPackages) && Number(coverage.inventoryPackages) > 0
-    && coverage.scannedPackages === coverage.inventoryPackages && scan.checkedPackages === coverage.scannedPackages;
+  // RPM public-key records remain in the inventory but are not versioned
+  // software. Never accept an arbitrary claimed exclusion: derive the only
+  // allowed kind from the exact new source inventory and reconcile counts.
+  const keys = packages.map(record).filter((pkg) => pkg.manager === "rpm" && pkg.name === "gpg-pubkey");
+  const eligible = packages.length - keys.length;
+  if (coverage.inventoryPackages !== packages.length || eligible <= 0
+    || coverage.scannedPackages !== eligible || scan.checkedPackages !== eligible
+    || (coverage.eligiblePackages !== undefined && coverage.eligiblePackages !== eligible)) return false;
+  if (cvePackage(original)?.split("\0")[1] === "gpg-pubkey") return false;
+  if (!keys.length) return coverage.excludedNonSoftware === undefined
+    || (Array.isArray(coverage.excludedNonSoftware) && coverage.excludedNonSoftware.length === 0);
+  if (coverage.eligiblePackages !== eligible || coverage.decodedRecords !== packages.length
+    || !Array.isArray(coverage.excludedNonSoftware) || coverage.excludedNonSoftware.length !== keys.length) return false;
+  const expected = keys.map((pkg) => `${pkg.name}\0${pkg.version}`).sort();
+  const excluded = coverage.excludedNonSoftware.map(record);
+  return excluded.every((pkg) => pkg.manager === "rpm" && pkg.name === "gpg-pubkey" && pkg.reason === "rpm-public-key-record")
+    && excluded.map((pkg) => `${pkg.name}\0${pkg.version}`).sort().every((value, index) => value === expected[index]);
 }
 
 export function assertPlanVerification(item: RemediationPlanItem, report: AnsibleReportDetail) {

@@ -13,13 +13,13 @@ export function assetPrivateKey(alias: string, connection: AssetConnection) {
     : connection.privateKeyPath;
 }
 
-export async function observeAsset(alias: string, connection: AssetConnection): Promise<TrustedAssetObservation> {
+export async function observeAsset(alias: string, connection: AssetConnection, pythonInterpreter?: string): Promise<TrustedAssetObservation> {
   const privateKeyPath = assetPrivateKey(alias, connection);
-  return probeTrustedAssetIdentity({ ...connection, user: connection.user!, privateKeyPath });
+  return probeTrustedAssetIdentity({ ...connection, user: connection.user!, privateKeyPath, ...(pythonInterpreter ? { pythonInterpreter } : {}) });
 }
 
-export async function captureAssetTarget(alias: string, connection: AssetConnection, expected?: VerifiedAssetBinding) {
-  const observation = await observeAsset(alias, connection);
+export async function captureAssetTarget(alias: string, connection: AssetConnection, expected?: VerifiedAssetBinding, pythonInterpreter?: string) {
+  const observation = await observeAsset(alias, connection, pythonInterpreter);
   if (expected && (expected.alias !== alias || expected.assetId !== assetIdForObservation(observation))) {
     throw Object.assign(new Error("Фактическая машина отличается от сохранённой идентичности операции. Выполнение или откат на другом активе запрещён."), { code: "asset_identity_changed" });
   }

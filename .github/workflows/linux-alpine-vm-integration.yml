@@ -1,0 +1,71 @@
+name: Real Alpine OpenRC and APK acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/linux-alpine-vm-integration.yml
+      - deployment/tests/verify_alpine_vm.py
+      - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/fixtures/linux-package-controls.json
+      - ansible/playbooks/**
+      - ansible/scripts/**
+      - ansible/audit-rules/**
+      - web/lib/linux-*.ts
+      - web/lib/host-readiness.ts
+      - web/lib/vulnerability-scan.ts
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/linux-alpine-vm-integration.yml
+      - deployment/tests/verify_alpine_vm.py
+      - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/fixtures/linux-package-controls.json
+      - ansible/playbooks/**
+      - ansible/scripts/**
+      - ansible/audit-rules/**
+      - web/lib/linux-*.ts
+      - web/lib/host-readiness.ts
+      - web/lib/vulnerability-scan.ts
+
+permissions:
+  contents: read
+
+jobs:
+  alpine:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install controller and isolated VM tools
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          python -m pip install ansible-core==2.21.5
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
+          if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+          npm ci --ignore-scripts --prefix web
+          container=$(docker create aquasec/trivy:0.74.0)
+          docker cp "$container:/usr/local/bin/trivy" "$RUNNER_TEMP/trivy"
+          docker rm "$container"
+          chmod 755 "$RUNNER_TEMP/trivy"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+      - name: Verify genuine OpenRC host and production scanner paths
+        run: python deployment/tests/verify_alpine_vm.py --work-dir "$RUNNER_TEMP/hcp-alpine"
+      - name: Save public acceptance evidence only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpine-openrc-apk-acceptance
+          path: ${{ runner.temp }}/hcp-alpine/artifacts/
+          retention-days: 14
+          if-no-files-found: warn

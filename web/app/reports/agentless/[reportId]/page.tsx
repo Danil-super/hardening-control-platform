@@ -90,6 +90,8 @@ export default async function AgentlessReportDetailPage({
   const astraVersion = asRecord(asRecord(sourcePackages?.raw).packageInventory).astraVersion;
   const astraNextStep = isAstraTrivyReport ? describeAstraOvalNextStep(targetAlias, typeof astraVersion === "string" ? astraVersion : null) : null;
   const trivyFreshness = asRecord(vulnerabilityScan.databaseFreshness);
+  const packageCoverage = asRecord(vulnerabilityScan.coverage);
+  const excludedPackageRecords = Array.isArray(packageCoverage.excludedNonSoftware) ? packageCoverage.excludedNonSoftware : null;
   const scanner = asRecord(raw.scanner);
   const incompleteChecks = describeIncompleteAuditChecks(scanner.incompleteChecks);
   const scannerPartialReasons = auditReportLimitations(report.raw);
@@ -278,6 +280,16 @@ export default async function AgentlessReportDetailPage({
             <div><p className="text-slate-500">Статус в базе</p><p className="mt-1 text-slate-200">{vendorAssessment.verified === true ? "получен" : "не получен — требуется advisory поставщика"}</p></div>
             <div><p className="text-slate-500">Состояния</p><p className="mt-1 break-words text-slate-200">{vendorStatuses.length ? vendorStatuses.join(", ") : "нет CVE или статусов"}</p></div>
           </div>
+          {Object.keys(packageCoverage).length ? <div className="mt-5 border-t border-slate-800 pt-4">
+            <h3 className="font-semibold text-white">Покрытие пакетной проверки</h3>
+            <dl className="mt-3 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
+              {[["Записей в инвентаре", packageCoverage.inventoryPackages], ["Пакетов ПО в области CVE", packageCoverage.eligiblePackages],
+                ["Обработано пакетов ПО", packageCoverage.scannedPackages], ["Записей ключей RPM", excludedPackageRecords?.length]].map(([label, value]) =>
+                <div key={String(label)}><dt className="text-slate-500">{String(label)}</dt><dd className="mt-1 text-slate-200">{textValue(value)}</dd></div>)}
+            </dl>
+            <p className="mt-3 text-sm leading-6 text-slate-400">{textValue(packageCoverage.scope)}</p>
+            {excludedPackageRecords?.length ? <p className="mt-2 text-sm leading-6 text-slate-400">Записи ключей сохранены в JSON и SBOM. Они не входят в число проверенных пакетов ПО; доверие и срок действия ключей этим CVE-аудитом не оцениваются.</p> : null}
+          </div> : null}
           {Object.keys(trivyFreshness).length ? <p className={`mt-4 rounded-md border px-3 py-2 text-sm leading-6 ${trivyFreshness.status === "fresh" ? "border-emerald-400/25 bg-emerald-500/5 text-emerald-100" : "border-amber-400/25 bg-amber-500/5 text-amber-100"}`}>База Trivy: {freshnessLabels[String(trivyFreshness.status)] ?? "актуальность неизвестна"} · дата: {formatDate(typeof trivyFreshness.updatedAt === "string" ? trivyFreshness.updatedAt : null)} · возраст: {textValue(trivyFreshness.ageHours)} ч · лимит: {textValue(trivyFreshness.maxAgeHours)} ч.</p> : null}
         </section>
       ) : null}
