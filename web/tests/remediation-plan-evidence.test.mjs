@@ -196,6 +196,34 @@ test("Trivy requires a fresh post-work full inventory and rejects the same CVE/p
   }
 });
 
+test("Trivy absence reconciles RPM trust records against the exact new inventory and rejects arbitrary exclusions", async () => {
+  const original = finding({ id: "trivy_rpm_before", source: "trivy", profileId: "cve_packages", title: "CVE-2026-12345: fixture", evidence: "package=fixture; installed=1.0" });
+  for (const variant of ["valid", "wrong-key", "software-excluded", "missing-decoded", "wrong-total", "legacy-count", "unscanned-software", "removed-original-key"]) {
+    const host = `proof-trivy-rpm-${variant}`;
+    const source = variant === "removed-original-key" ? { ...original, evidence: "package=gpg-pubkey; installed=1.0" } : original;
+    const item = await completed(host, source, { mode: "vulnerabilities", profileId: "cve_packages" });
+    const packages = [{ name: "fixture", version: "2.0", manager: "rpm" }, { name: "gpg-pubkey", version: "aabbccdd-12345678", manager: "rpm" }];
+    if (variant === "removed-original-key") packages.pop();
+    const inventoryId = writeReport(host, "packages", [], { mode: "packages", profileId: "packages", packages, packageInventory: { packageCount: packages.length } });
+    await delay();
+    const coverage = { complete: true, inventoryPackages: 2, decodedRecords: 2, eligiblePackages: 1, scannedPackages: 1,
+      excludedNonSoftware: [{ name: "gpg-pubkey", version: "aabbccdd-12345678", manager: "rpm", reason: "rpm-public-key-record" }] };
+    if (variant === "wrong-key") coverage.excludedNonSoftware[0].version = "different-key";
+    if (variant === "software-excluded") coverage.excludedNonSoftware[0].name = "fixture";
+    if (variant === "missing-decoded") delete coverage.decodedRecords;
+    if (variant === "wrong-total") coverage.inventoryPackages = 3;
+    if (variant === "legacy-count") { delete coverage.eligiblePackages; delete coverage.excludedNonSoftware; coverage.scannedPackages = 2; }
+    if (variant === "unscanned-software") coverage.scannedPackages = 0;
+    if (variant === "removed-original-key") { coverage.inventoryPackages = 1; coverage.decodedRecords = 1; coverage.excludedNonSoftware = []; }
+    const reportId = writeReport(host, "after", [], { mode: "vulnerabilities", profileId: "cve_packages", vulnerabilityScan: {
+      provider: "Trivy", partial: false, checkedPackages: coverage.scannedPackages, sourcePackageReportId: inventoryId,
+      databaseFreshness: { status: "fresh" }, coverage,
+    } });
+    if (variant === "valid") assert.equal(confirm(item, reportId).status, "confirmed");
+    else assert.throws(() => confirm(item, reportId), /не содержит доказанного/);
+  }
+});
+
 test("the plan and newly rendered PDFs preserve Critical/Unknown after a clean report", async () => {
   const host = "severity-history";
   const original = [

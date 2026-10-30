@@ -511,6 +511,53 @@ test("RPM missing module evidence and mismatched vendors cannot become complete 
   }
 });
 
+test("RPM trust records stay in inventory and SBOM but are not counted as CVE-tested software", async (t) => {
+  const h = nativeRpm(harness(t));
+  const key = { name: "gpg-pubkey", version: "b86b3716-61e69f29", manager: "rpm", arch: "None",
+    sourceEpochKnown: false, rpmModularityQueried: true, packager: "AlmaLinux OS 9 <packager@almalinux.org>" };
+  h.report.packages.push(key);
+  h.report.packageInventory.packageCount = 2;
+  h.save();
+  const result = await h.scan();
+  const scan = result.report.vulnerabilityScan;
+  assert.equal(result.partial, false);
+  assert.deepEqual([scan.coverage.inventoryPackages, scan.coverage.decodedRecords, scan.coverage.eligiblePackages, scan.coverage.scannedPackages], [2, 2, 1, 1]);
+  assert.equal(scan.checkedPackages, 1);
+  assert.equal(scan.packageProvenance.unknown, 0);
+  assert.equal(scan.packageProvenance.excludedNonSoftwareRecords, 1);
+  assert.equal(scan.coverage.excludedNonSoftware[0].reason, "rpm-public-key-record");
+  assert.equal(scan.coverage.excludedNonSoftware[0].version, key.version);
+  const sbom = JSON.parse(readFileSync(path.join(h.dir, "sbom", scan.sbomFile), "utf8"));
+  assert.equal(sbom.components.length, 2);
+  const component = sbom.components.find((pkg) => pkg.name === "gpg-pubkey");
+  assert.equal(component.version, key.version);
+  assert.equal(component["bom-ref"], scan.coverage.excludedNonSoftware[0].purl);
+  assert.ok(component.properties.some((property) => property.name === "hcp:record-kind" && property.value === "rpm-public-key-record"));
+  assert.match(result.report.findings.find((finding) => finding.status === "passed").evidence, /checked=1; non_software_records=1/);
+
+  // A native record for the key cannot conceal a missing software package.
+  const output = { SchemaVersion: 2, Metadata: { OS: { Family: "alma", Name: "9.6" } },
+    Results: [{ Class: "os-pkgs", Type: "alma", Packages: [{ Name: key.name, Identifier: { BOMRef: component["bom-ref"] } }] }] };
+  const coverage = h.testing.scanCoverage(output, h.report);
+  assert.equal(coverage.complete, false);
+  assert.equal(coverage.scannedPackages, 0);
+  assert.match(coverage.reasons.join(" "), /0 из 1/);
+});
+
+test("key-only inventories and software names resembling RPM trust records cannot issue an empty PASS", async (t) => {
+  for (const variant of ["key-only", "prefix", "non-rpm"]) {
+    const h = variant === "non-rpm" ? harness(t) : nativeRpm(harness(t));
+    h.report.packages[0].name = variant === "prefix" ? "gpg-pubkey-helper" : "gpg-pubkey";
+    delete h.report.packages[0].vendor;
+    delete h.report.packages[0].maintainer;
+    h.save();
+    const result = await h.scan();
+    assert.equal(result.partial, true, variant);
+    assert.equal(result.report.vulnerabilityScan.coverage.excludedNonSoftware.length, variant === "key-only" ? 1 : 0);
+    assert.ok(!result.report.findings.some((finding) => finding.status === "passed"), variant);
+  }
+});
+
 test("RHEL content sets and native modularity properties are preserved instead of assuming coverage", async (t) => {
   const h = nativeRpm(harness(t), "rhel", "Red Hat, Inc.");
   const first = await h.scan();

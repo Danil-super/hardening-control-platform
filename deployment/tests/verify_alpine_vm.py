@@ -126,7 +126,10 @@ def main():
             run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(work / name)])
         config = {
             "hostname": HOST, "ssh_pwauth": False, "disable_root": True,
-            "users": [{"name": "hcp-ci", "groups": ["wheel"], "shell": "/bin/ash", "lock_passwd": True,
+            # Alpine's non-PAM sshd rejects a shadow-locked account even when
+            # its authorized key is valid. '*' has no usable password and is
+            # not Linux's '!' account-lock marker; password SSH stays disabled.
+            "users": [{"name": "hcp-ci", "groups": ["wheel"], "shell": "/bin/ash", "lock_passwd": False, "hashed_passwd": "*",
                        "sudo": "ALL=(ALL) NOPASSWD:ALL", "ssh_authorized_keys": [(work / "client.pub").read_text().strip()]}],
             "ssh_keys": {"ed25519_private": (work / "server").read_text(), "ed25519_public": (work / "server.pub").read_text()},
             "package_update": True, "packages": ["python3", "sudo", "iproute2", "openssh-sftp-server"],
@@ -146,6 +149,7 @@ def main():
         public = " ".join((work / "server.pub").read_text().split()[:2])
         (work / "known_hosts").write_text("[127.0.0.1]:%s %s\n" % (port, public))
         options = ["-F", "/dev/null", "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes", "-o", "StrictHostKeyChecking=yes",
+                   "-o", "PreferredAuthentications=publickey", "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
                    "-o", "HostKeyAlgorithms=ssh-ed25519", "-o", "ConnectTimeout=8", "-o", "GlobalKnownHostsFile=/dev/null", "-o", "UserKnownHostsFile=" + str(work / "known_hosts")]
         ssh = ["ssh", "-i", str(work / "client"), "-p", str(port)] + options + ["hcp-ci@127.0.0.1"]
 
@@ -173,6 +177,23 @@ def main():
         else:
             raise RuntimeError("Guest SSH readiness timeout; inspect ssh-readiness.txt and guest-console.log")
         remote("sudo cloud-init status --wait", output=artifacts / "cloud-init-status.txt", timeout=300)
+        login_probe = '''
+import json, os, pathlib, pwd
+account = pwd.getpwnam("hcp-ci")
+shadow = next(line.split(":")[1] for line in pathlib.Path("/etc/shadow").read_text().splitlines()
+              if line.split(":", 1)[0] == "hcp-ci")
+print(json.dumps({"uid": account.pw_uid, "shell": account.pw_shell,
+                  "shellExecutable": os.access(account.pw_shell, os.X_OK),
+                  "passwordDisabled": shadow == "*", "accountLocked": shadow.startswith("!")}))
+'''
+        login = json.loads(remote("sudo python3 -c " + shlex.quote(login_probe)).stdout)
+        assert login["passwordDisabled"] is True and login["accountLocked"] is False
+        assert login["uid"] > 0 and login["shell"] == "/bin/ash" and login["shellExecutable"] is True
+        sshd = dict(line.split(None, 1) for line in remote("sudo /usr/sbin/sshd -T").stdout.splitlines() if line.strip())
+        assert sshd.get("pubkeyauthentication") == "yes" and sshd.get("passwordauthentication") == "no", "Guest must enable public-key access and disable password SSH"
+        login["sshdAuthentication"] = {name: sshd[name] for name in ("pubkeyauthentication", "passwordauthentication")}
+        write_json(artifacts / "ssh-access.json", login)
+        checkpoint("Native public-key SSH access, unlocked account and unusable password", login)
         # This is the unchanged production readiness program running inside
         # the guest, not a fabricated /etc/os-release fixture.
         readiness = json.loads(remote("sudo python3 -c " + shlex.quote((ROOT / "ansible/scripts/hcp-host-readiness.py").read_text())).stdout)

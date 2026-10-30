@@ -13,11 +13,49 @@ import urllib.parse
 import urllib.request
 
 
+def verify_unavailable_cve_report(payload, item, packages, freshness):
+    """An unavailable DB is saved evidence of no scan, never a clean verdict."""
+    raw = item["raw"]
+    scan = raw["vulnerabilityScan"]
+    coverage = scan["coverage"]
+    scanner = raw["scanner"]
+    count = len(packages["raw"]["packages"])
+    if (payload.get("ok") is not True or payload.get("partial") is not True
+            or item.get("partial") is not True or scanner.get("partial") is not True
+            or scanner.get("available") is not False or scan.get("partial") is not True):
+        raise AssertionError("Unavailable CVE source must remain a saved partial/unavailable report")
+    if (freshness not in {"missing", "stale", "unknown"}
+            or scan.get("providerMode") != "offline"
+            or scan.get("databaseFreshness", {}).get("status") != freshness):
+        raise AssertionError("Unavailable CVE report lost its offline database state")
+    if (scan.get("checkedPackages") != 0 or coverage.get("scannedPackages") != 0
+            or coverage.get("inventoryPackages") != count or count <= 0
+            or coverage.get("complete") is not False or not coverage.get("reasons")):
+        raise AssertionError("Unavailable CVE source claims checked packages or complete coverage")
+    if (item["score"] is not None or raw["summary"]["score"] is not None
+            or scan.get("vendorAssessment", {}).get("verified") is not False
+            or scan.get("sourceEvidence") is not None):
+        raise AssertionError("Unavailable CVE source claims a score, verified vendor or scan evidence")
+    if (payload.get("reportId") != item.get("id")
+            or scan.get("sourcePackageReportId") != packages["id"]):
+        raise AssertionError("Unavailable CVE report is not bound to the saved package inventory")
+    for findings in (raw["findings"], item["findings"]):
+        if (not findings or any(finding.get("status") == "passed"
+                               or finding.get("id") == "trivy_no_known_vulnerabilities"
+                               for finding in findings)
+                or not any(finding.get("id") == "trivy_scan_unavailable"
+                           and finding.get("status") == "manual"
+                           and "failure=database" in finding.get("evidence", "")
+                           for finding in findings)):
+            raise AssertionError("Unavailable CVE source became a PASS or lost its manual explanation")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:3001", help="URL of the isolated lab")
     parser.add_argument("--host", default="lab-insecure", help="Inventory alias with the documented lab baseline")
     parser.add_argument("--online", action="store_true", help="Also download the real Trivy DB and compare online/offline CVE results")
+    parser.add_argument("--expect-cold-cache", action="store_true", help="Require an absent Trivy DB and verify its saved manual report before any download; never deletes a cache")
     parser.add_argument("--check-persistence", action="store_true", help="After restarting HCP, verify the reports from --output still exist")
     parser.add_argument("--output", default=".lab/verification.json", help="Save acceptance results (no password or cookie)")
     args = parser.parse_args()
@@ -70,7 +108,7 @@ def main():
             raise AssertionError(f"{action}: {result.get('message')}")
         return result
 
-    def report(result, mode):
+    def report(result, mode, snapshot=None):
         identifier = result.get("reportId")
         if not identifier:
             raise AssertionError(f"{mode}: reportId missing")
@@ -78,7 +116,7 @@ def main():
         raw = item["raw"]
         snapshots = Path(args.output).parent / "reports"
         snapshots.mkdir(parents=True, exist_ok=True)
-        (snapshots / f"{mode}.json").write_text(json.dumps(item, ensure_ascii=False, indent=2) + "\n")
+        (snapshots / f"{snapshot or mode}.json").write_text(json.dumps(item, ensure_ascii=False, indent=2) + "\n")
         if raw.get("inventoryHost") != args.host or raw.get("mode") != mode:
             raise AssertionError(f"{mode}: incorrect report host or mode")
         if item.get("reportTimeValid") is not True:
@@ -174,24 +212,18 @@ def main():
             record("Real temporary Lynis run", {"reportId": lynis["id"]})
         original_mode = request("/api/settings/vulnerability-data")["database"]["mode"]
         protocol["databaseModeBefore"] = original_mode
-        # The standard acceptance path models the current deployment: the
-        # control node has Internet access.  Download once in online mode, then
-        # prove that the same cached database works with network access off.
-        # A genuinely offline lab may have no cache; that is a documented
-        # prerequisite, not a successful partial CVE report.
-        if args.online:
-            request("/api/settings/vulnerability-data", {"mode": "online"}, method="PATCH")
-            refreshed = request("/api/settings/vulnerability-data", method="POST")
-            if refreshed.get("freshness", {}).get("status") != "fresh":
-                raise AssertionError(f"Trivy database refresh did not confirm freshness: {refreshed.get('freshness')}")
+        # Start offline even when reusing a lab whose last saved mode was online.
+        # A missing DB must produce a stored manual report before any download;
+        # CI requires this cold-cache control rather than silently skipping it.
+        request("/api/settings/vulnerability-data", {"mode": "offline"}, method="PATCH")
         with independent_check('Package inventory and Trivy'):
             packages = report(run("packageInventory"), "packages")
             if not packages["raw"].get("packages") or packages["raw"].get("packageInventory", {}).get("error"):
                 raise AssertionError("Package inventory is empty or incomplete")
 
-            def cve_scan():
+            def cve_scan(snapshot=None):
                 payload = request("/api/ansible/vulnerabilities/check", {"hostAlias": args.host, "reportId": packages["id"]})
-                item = report(payload, "vulnerabilities")
+                item = report(payload, "vulnerabilities", snapshot)
                 if item["score"] is not None:
                     raise AssertionError("CVE report invents a security percentage")
                 return payload, item
@@ -225,7 +257,27 @@ def main():
                     if "applicability=unverified" in (finding.get("evidence") or "") and finding["status"] != "manual":
                         raise AssertionError("Unverified third-party applicability became a definite finding")
 
+            freshness = request("/api/settings/vulnerability-data")["freshness"]["status"]
+            if args.expect_cold_cache and freshness != "missing":
+                raise AssertionError("Cold-cache control requires an absent Trivy DB; use a fresh disposable lab without deleting an existing cache")
+            if not args.online or freshness == "missing":
+                offline, offline_report = cve_scan("vulnerabilities-offline-initial")
+                if freshness == "fresh":
+                    verify_cve_evidence(offline, offline_report)
+                    record("Existing offline Trivy cache produces verifiable scan evidence", {"reportId": offline_report["id"]})
+                else:
+                    verify_unavailable_cve_report(offline, offline_report, packages, freshness)
+                    record("Unavailable offline Trivy database produces a saved manual report without a PASS", {
+                        "reportId": offline_report["id"], "packageReport": packages["id"], "databaseFreshness": freshness,
+                        "checkedPackages": 0, "coverageComplete": False,
+                    })
+
             if args.online:
+                # Download once, then prove both modes consume the same bytes.
+                request("/api/settings/vulnerability-data", {"mode": "online"}, method="PATCH")
+                refreshed = request("/api/settings/vulnerability-data", method="POST")
+                if refreshed.get("freshness", {}).get("status") != "fresh":
+                    raise AssertionError(f"Trivy database refresh did not confirm freshness: {refreshed.get('freshness')}")
                 online, online_report = cve_scan()
                 verify_cve_evidence(online, online_report)
                 request("/api/settings/vulnerability-data", {"mode": "offline"}, method="PATCH")
@@ -239,11 +291,6 @@ def main():
                     if online_report["raw"]["vulnerabilityScan"]["sourceEvidence"]["before"][source]["sha256"] != offline_report["raw"]["vulnerabilityScan"]["sourceEvidence"]["before"][source]["sha256"]:
                         raise AssertionError("Online/offline native scans consumed different source bytes")
                 record("Real Trivy DB: online and cached offline results match", {"onlineReport": online_report["id"], "offlineReport": offline_report["id"], "packageProvenance": online_report["raw"]["vulnerabilityScan"]["packageProvenance"], "partial": online_report["partial"]})
-            else:
-                unavailable = request("/api/ansible/vulnerabilities/check", {"hostAlias": args.host, "reportId": packages["id"]}, expected=400)
-                if "нет загруженной базы Trivy" not in unavailable.get("message", ""):
-                    raise AssertionError(f"Offline CVE precondition returned an unexpected error: {unavailable.get('message')}")
-                record("Offline CVE requires a preloaded Trivy database", {"reportId": packages["id"]})
         with independent_check('Unprepared OpenSCAP handling'):
             unprepared = request("/api/ansible/run", {
                 "action": "openScapAudit", "limit": args.host,

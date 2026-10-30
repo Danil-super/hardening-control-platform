@@ -35,7 +35,7 @@ const protocol = {
   limitations: [
     "The caller's VM/SSH harness establishes the provenance of the supplied native inventory; this helper cannot independently attest the remote machine",
     "CVE applicability remains partial for unknown/third-party package suppliers or incomplete native metadata, even when all records were processed",
-    "Two labelled version controls per CI target test one vendor advisory boundary; they do not estimate overall false-positive or false-negative rates",
+    "Labelled version controls test one vendor advisory boundary; the RPM trust-record control tests an explicit non-software exclusion. They do not estimate overall false-positive or false-negative rates",
     "Controls are synthetic metadata and are never installed. Absence is asserted for the named CVE only, not for all possible vulnerabilities",
     "Saved native JSON is a separate replay of the production-generated SBOM against the same unchanged real database",
   ],
@@ -122,6 +122,12 @@ function controlInventory(control, name, version) {
     Object.assign(inventory.packages[0], { vendor: control.vendor, sourceRpm: `${control.sourceName}-${sourceVersion}.src.rpm`,
       rpmModularityQueried: true, modularityLabel: "", rpmRepositoryEvidence: "not-recorded-in-rpmdb" });
   }
+  if (name === "control-fixed-with-trust-record") {
+    assert.equal(control.manager, "rpm");
+    inventory.packages.push({ name: "gpg-pubkey", version: "01234567-89abcdef", arch: "None", manager: "rpm",
+      sourceEpochKnown: false, rpmModularityQueried: true, rpmRepositoryEvidence: "labelled-synthetic-key-record" });
+    inventory.packageInventory.packageCount = inventory.packages.length;
+  }
   return inventory;
 }
 
@@ -206,7 +212,8 @@ try {
 
   for (const [name, input, expectedCve] of [...(controlsOnly ? [] : [["native", inventory, null]]),
     ["control-vulnerable", controlInventory(control, "control-vulnerable", control.vulnerableVersion), true],
-    ["control-fixed", controlInventory(control, "control-fixed", control.fixedVersion), false]]) {
+    ["control-fixed", controlInventory(control, "control-fixed", control.fixedVersion), false],
+    ...(control.manager === "rpm" ? [["control-fixed-with-trust-record", controlInventory(control, "control-fixed-with-trust-record", control.fixedVersion), false]] : [])]) {
     const stored = { ...input, inventoryHost: input.inventoryHost || `acceptance-${control.id}-${name}` };
     const reportId = `acceptance-${control.id}-${name}-packages-run`;
     const hostAlias = stored.inventoryHost;
@@ -242,7 +249,22 @@ try {
     assert.equal(native.SchemaVersion, 2);
     assert.deepEqual([native.Metadata?.OS?.Family, native.Metadata?.OS?.Name], [platform.trivyFamily, input.packageInventory.osRelease.VERSION_ID]);
     const { osResults, nativePackages } = assertPackageConservation(input, sbom, native);
-    assert.deepEqual([scan.coverage.inventoryPackages, scan.coverage.scannedPackages], [input.packages.length, input.packages.length]);
+    // --list-all-pkgs retains RPM keyring records even though Trivy's detector
+    // deliberately omits them from versioned-software CVE matching. Preserve
+    // every native/SBOM record above and reconcile this explicit exclusion.
+    const keys = input.packages.filter((pkg) => pkg.manager === "rpm" && pkg.name === "gpg-pubkey");
+    const eligible = input.packages.length - keys.length;
+    assert.deepEqual([scan.coverage.inventoryPackages, scan.coverage.decodedRecords, scan.coverage.eligiblePackages, scan.coverage.scannedPackages],
+      [input.packages.length, input.packages.length, eligible, eligible]);
+    assert.equal(scan.checkedPackages, eligible);
+    assert.deepEqual(scan.coverage.excludedNonSoftware.map(({ name, version, manager, reason }) => ({ name, version, manager, reason })),
+      keys.map(({ name, version, manager }) => ({ name, version, manager, reason: "rpm-public-key-record" })));
+    assert.equal(scan.packageProvenance.excludedNonSoftwareRecords, keys.length);
+    for (const key of scan.coverage.excludedNonSoftware) {
+      const component = sbom.components.find((item) => item["bom-ref"] === key.purl);
+      assert.ok(component, "Excluded trust record must remain in the SBOM");
+      assert.ok(component.properties.some((item) => item.name === "hcp:record-kind" && item.value === "rpm-public-key-record"));
+    }
     assert.equal(scan.databaseFreshness.status, "fresh");
     assert.equal(scan.sourceEvidence.status, "unchanged");
     assert.equal(scan.sourceEvidence.before.database.sha256, protocol.database.sha256);
