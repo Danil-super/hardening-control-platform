@@ -79,3 +79,43 @@ test("missing or malformed probe evidence cannot appear ready", () => {
   delete probe.tools["dpkg-query"];
   assert.equal(state(assessHostReadiness(probe), "packages"), "needs_setup");
 });
+
+test("OpenRC and APK readiness are independent of systemd and firewall mutation", () => {
+  const probe = baseline();
+  probe.osRelease = { ID: "alpine", VERSION_ID: "3.22.2" };
+  probe.initSystem = "init"; probe.serviceManager = "openrc";
+  probe.tools = { apk: "/sbin/apk", ss: "/bin/ss", sshd: "/usr/sbin/sshd", "rc-service": "/sbin/rc-service", "rc-status": "/sbin/rc-status" };
+  const result = assessHostReadiness(probe);
+  assert.equal(result.platform.trivyFamily, "alpine");
+  assert.equal(state(result, "baseline"), "ready"); assert.equal(state(result, "packages"), "ready");
+  assert.equal(state(result, "cve"), "ready"); assert.equal(state(result, "firewall"), "needs_setup");
+  probe.initSystem = "sshd";
+  assert.equal(state(assessHostReadiness(probe), "baseline"), "needs_setup");
+});
+
+test("native package manager and vendor source cannot be substituted by installed foreign tools", () => {
+  const probe = baseline();
+  probe.osRelease = { ID: "almalinux", VERSION_ID: "9.6", ID_LIKE: "rhel centos fedora" };
+  assert.equal(state(assessHostReadiness(probe), "packages"), "needs_setup");
+  probe.tools.rpm = "/usr/bin/rpm";
+  assert.equal(state(assessHostReadiness(probe), "packages"), "ready");
+  assert.equal(state(assessHostReadiness(probe), "cve"), "ready");
+  for (const os of [{ ID: "redos", ID_LIKE: "rhel" }, { ID: "custom", ID_LIKE: "rhel" }, { ID: "centos", NAME: "CentOS Stream" }]) {
+    probe.osRelease = os;
+    assert.equal(state(assessHostReadiness(probe), "packages"), "ready");
+    assert.equal(state(assessHostReadiness(probe), "cve"), "unsupported");
+  }
+  probe.osRelease = { ID: "arch" };
+  assert.equal(state(assessHostReadiness(probe), "packages"), "unsupported");
+  assert.equal(state(assessHostReadiness(probe), "cve"), "unsupported");
+});
+
+test("SysV limited status coverage and malformed optional evidence never become complete", () => {
+  const probe = baseline(); probe.initSystem = "init"; probe.serviceManager = "sysv";
+  const result = assessHostReadiness(probe);
+  assert.equal(state(result, "baseline"), "needs_setup");
+  assert.match(result.checks.find((check) => check.id === "baseline").detail, /LSB/);
+  for (const update of [{ serviceManager: "runit" }, { architecture: 1 }, { securityModules: [] }, { firewall: [] }, { tools: [] }]) {
+    assert.throws(() => assessHostReadiness({ ...probe, ...update }));
+  }
+});

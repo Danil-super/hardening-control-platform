@@ -31,7 +31,7 @@ OS_RELEASE_FIELDS = frozenset((
 ))
 TOOL_NAMES = (
     "python3", "ss", "sshd", "systemctl", "dpkg-query", "rpm", "oscap",
-    "firewall-cmd", "ufw", "iptables", "nft",
+    "firewall-cmd", "ufw", "iptables", "nft", "apk", "rc-service", "rc-status",
 )
 
 
@@ -263,10 +263,30 @@ def collect_oval_metadata():
     return result
 
 
+def read_os_release(errors):
+    # os-release(5): /etc takes precedence; use /usr/lib only if absent.
+    # A malformed/unreadable /etc file must not silently inherit another ID.
+    path = "/etc/os-release" if os.path.lexists("/etc/os-release") else "/usr/lib/os-release"
+    text = read_text(path, errors)
+    return parse_os_release(text, errors) if text is not None else {}
+
+
+def service_manager(init_system, tools, errors):
+    if init_system == "systemd" and tools.get("systemctl"):
+        return "systemd"
+    if init_system in ("init", "openrc-init") and tools.get("rc-service") and tools.get("rc-status"):
+        level = read_text("/run/openrc/softlevel", errors, optional=True, max_bytes=1024)
+        if level and level.strip():
+            return "openrc"
+    if init_system == "sysvinit" and not tools.get("rc-service"):
+        # Individual SysV scripts still need LSB status evidence during audit.
+        return "sysv"
+    return "unknown"
+
+
 def collect_readiness():
     errors = []
-    os_release_text = read_text("/etc/os-release", errors)
-    os_release = parse_os_release(os_release_text, errors) if os_release_text is not None else {}
+    os_release = read_os_release(errors)
     astra_version = read_text("/etc/astra_version", errors, optional=True, max_bytes=4096)
     if astra_version is not None:
         astra_version = astra_version.strip()
@@ -274,7 +294,11 @@ def collect_readiness():
             errors.append("/etc/astra_version: version is empty or exceeds the size limit")
             astra_version = None
     init_system = read_text("/proc/1/comm", errors, max_bytes=1024)
+    init_system = init_system.strip() if init_system is not None else None
     tools = {name: shutil.which(name, path=SAFE_PATH) for name in TOOL_NAMES}
+    manager = service_manager(init_system, tools, errors)
+    selinux = read_text("/sys/fs/selinux/enforce", errors, optional=True, max_bytes=32)
+    selinux_state = "enforcing" if selinux and selinux.strip() == "1" else "permissive" if selinux and selinux.strip() == "0" else "not_observed"
     uid = os.geteuid()
     if uid != 0:
         errors.append("Root privileges are required for complete readiness checks (effectiveUid={})".format(uid))
@@ -286,7 +310,10 @@ def collect_readiness():
         "kernel": platform.release(),
         "pythonVersion": platform.python_version(),
         "effectiveUid": uid,
-        "initSystem": init_system.strip() if init_system is not None else None,
+        "initSystem": init_system,
+        "serviceManager": manager,
+        "architecture": platform.machine(),
+        "securityModules": {"selinux": selinux_state},
         "tools": tools,
         "firewall": {
             "ufw": ufw_state(tools["ufw"], errors),

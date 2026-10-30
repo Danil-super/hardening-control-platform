@@ -21,6 +21,11 @@ CONFIG_ROOT = Path("/etc")
 BACKUP_ROOT = Path("/var/lib/hcp-backups")
 SECURITY_LABEL = "security.PDPL"
 LABEL_HEADER = "HCP.security.PDPL"
+SELINUX_LABEL = "security.selinux"
+SELINUX_HEADER = "HCP.security.selinux"
+LABEL_HEADERS = {SECURITY_LABEL: LABEL_HEADER, SELINUX_LABEL: SELINUX_HEADER}
+LEGACY_FILESYSTEM_METADATA = "posix-pdpl-v1"
+FILESYSTEM_METADATA = "posix-security-v2"
 STATE_NAME = ".operation-state.json"
 ROLLBACK_PHASES = {"preparing", "prepared", "move_old_intent", "old_saved", "install_intent", "installed",
                    "reload_intent", "reload_unknown", "reload_failed", "reload_completed", "completed"}
@@ -368,7 +373,7 @@ def mark_apply_intent(args, selected):
     directory, metadata, archive_path = verified_backup(args)
     if metadata["backend"] != selected:
         raise FirewallError("The active firewall changed after backup.")
-    if not metadata.get("configurationSha256") or tree_digest(CONFIG_ROOT / selected) != metadata["configurationSha256"]:
+    if not metadata.get("configurationSha256") or tree_digest(CONFIG_ROOT / selected, metadata_version=manifest_version(metadata)) != metadata["configurationSha256"]:
         raise FirewallError("Firewall configuration no longer matches the prepared backup; create a new transaction.")
     record_active(args, "apply_intent", selected, metadata["sha256"])
     args._mutation_started = True
@@ -381,7 +386,7 @@ def check_supported_attributes(path):
         if error.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
             return
         raise
-    unsupported = [name for name in attributes if name != SECURITY_LABEL]
+    unsupported = [name for name in attributes if name not in LABEL_HEADERS]
     if unsupported:
         raise FirewallError("Unsupported ACL or extended attribute on {}: {}. No firewall change was started.".format(path, ", ".join(sorted(unsupported))))
 
@@ -391,9 +396,16 @@ def manifest_digest(entries):
                                      separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
-def tree_digest(root, sync=False):
+def manifest_version(metadata):
+    value = metadata.get("filesystemMetadata")
+    return LEGACY_FILESYSTEM_METADATA if value is None else value
+
+
+def tree_digest(root, sync=False, metadata_version=FILESYSTEM_METADATA):
     """Content, numeric ownership, mode and supported labels; no links/devices."""
     entries = []
+    if metadata_version not in (LEGACY_FILESYSTEM_METADATA, FILESYSTEM_METADATA):
+        raise FirewallError("Unsupported filesystem manifest version.")
     root_device = root.lstat().st_dev
     def visit(path):
         details = path.lstat()
@@ -403,9 +415,14 @@ def tree_digest(root, sync=False):
             raise FirewallError("Unsupported link, mounted tree or special object in firewall configuration: {}".format(path))
         check_supported_attributes(path)
         label = security_label(path)
+        selinux = security_label(path, SELINUX_LABEL)
+        if metadata_version == LEGACY_FILESYSTEM_METADATA and selinux is not None:
+            raise FirewallError("Legacy firewall backup has no SELinux label manifest; independent recovery is required.")
         entry = {"path": str(path.relative_to(root)) if path != root else ".", "type": "file" if regular else "directory",
                  "uid": details.st_uid, "gid": details.st_gid, "mode": stat.S_IMODE(details.st_mode),
                  "label": label.hex() if label is not None else None}
+        if metadata_version == FILESYSTEM_METADATA:
+            entry["selinux"] = selinux.hex() if selinux is not None else None
         if regular:
             descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
             with os.fdopen(descriptor, "rb") as stream:
@@ -434,15 +451,18 @@ def tree_digest(root, sync=False):
     return manifest_digest(entries)
 
 
-def archive_digest(archive, selected):
+def archive_digest(archive, selected, metadata_version=FILESYSTEM_METADATA):
+    if metadata_version not in (LEGACY_FILESYSTEM_METADATA, FILESYSTEM_METADATA):
+        raise FirewallError("Unsupported filesystem manifest version.")
     entries = []
     for member in archive.getmembers():
-        label = member.pax_headers.get(LABEL_HEADER)
-        if label is None or len(label) > 4096 or not re.fullmatch(r"(?:[0-9a-fA-F]{2})*", label):
-            raise FirewallError("Invalid mandatory label metadata in firewall backup.")
+        label = archived_security_label(member, SECURITY_LABEL, required=True)
         parts = Path(member.name).parts[2:]
         entry = {"path": str(Path(*parts)) if parts else ".", "type": "file" if member.isfile() else "directory",
-                 "uid": member.uid, "gid": member.gid, "mode": member.mode, "label": label.lower() if label else None}
+                 "uid": member.uid, "gid": member.gid, "mode": member.mode, "label": label.hex() if label is not None else None}
+        if metadata_version == FILESYSTEM_METADATA:
+            selinux = archived_security_label(member, SELINUX_LABEL, required=True)
+            entry["selinux"] = selinux.hex() if selinux is not None else None
         if member.isfile():
             digest = hashlib.sha256()
             with archive.extractfile(member) as stream:
@@ -462,6 +482,9 @@ def validate_members(archive, selected):
             raise FirewallError("Unsupported or unsafe member in firewall backup archive.")
         if parts in names or any(not isinstance(value, int) or value < 0 for value in (member.uid, member.gid, member.mode)) or member.mode > 0o7777:
             raise FirewallError("Invalid or duplicate filesystem metadata in firewall backup archive.")
+        for key in member.pax_headers:
+            if key.startswith(("HCP.security.", "SCHILY.xattr.", "LIBARCHIVE.xattr.", "SCHILY.acl.", "RHT.security.")) and key not in LABEL_HEADERS.values():
+                raise FirewallError("Unsupported ACL or extended attribute in firewall backup: {}".format(key))
         names.add(parts)
         if parts == ("etc", selected) and member.isdir():
             root_directory = True
@@ -495,46 +518,87 @@ def restore_archive_metadata(archive, staging):
             os.close(descriptor)
 
 
-def security_label(path):
+def validate_security_label(value, name):
+    if value is None:
+        return
+    maximum = 4096 if name == SELINUX_LABEL else 2048
+    if not isinstance(value, bytes) or not 0 < len(value) <= maximum:
+        raise FirewallError("Invalid or oversized {} security label.".format(name))
+    if name == SELINUX_LABEL:
+        # libselinux's setfilecon_raw passes strlen(context) + 1 to setxattr.
+        # Preserve those raw bytes, including an optional terminal NUL, without
+        # translation or restorecon (which would substitute policy defaults).
+        context = value[:-1] if value.endswith(b"\x00") else value
+        if not re.fullmatch(rb"[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+:[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.,:-]+)?", context):
+            raise FirewallError("Invalid raw SELinux context in firewall backup or configuration.")
+
+
+def security_label(path, name=SECURITY_LABEL):
     try:
-        return os.getxattr(str(path), SECURITY_LABEL, follow_symlinks=False)
+        value = os.getxattr(str(path), name, follow_symlinks=False)
     except OSError as error:
-        if error.errno in (errno.ENODATA, errno.ENOTSUP):
+        if error.errno in (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP):
             return None
         raise
+    validate_security_label(value, name)
+    return value
 
 
-def restore_security_label(path, value):
-    current = security_label(path)
+def restore_security_label(path, value, name=SECURITY_LABEL):
+    validate_security_label(value, name)
+    current = security_label(path, name)
     if current == value:
         return
     if value is None:
-        os.removexattr(str(path), SECURITY_LABEL, follow_symlinks=False)
+        os.removexattr(str(path), name, follow_symlinks=False)
     else:
-        os.setxattr(str(path), SECURITY_LABEL, value, follow_symlinks=False)
-    if security_label(path) != value:
-        raise FirewallError("Mandatory security label was not restored: {}".format(path))
+        os.setxattr(str(path), name, value, follow_symlinks=False)
+    if security_label(path, name) != value:
+        raise FirewallError("Mandatory security label {} was not restored: {}".format(name, path))
+
+
+def archived_security_label(member, name, required=False):
+    header = LABEL_HEADERS[name]
+    if header not in member.pax_headers:
+        if required:
+            raise FirewallError("Mandatory label metadata {} is missing from firewall backup.".format(name))
+        return None
+    encoded = member.pax_headers[header]
+    maximum = 8192 if name == SELINUX_LABEL else 4096
+    if not isinstance(encoded, str) or len(encoded) > maximum or not re.fullmatch(r"(?:[0-9a-fA-F]{2})*", encoded):
+        raise FirewallError("Invalid mandatory label {} in firewall backup.".format(name))
+    value = bytes.fromhex(encoded) if encoded else None
+    validate_security_label(value, name)
+    return value
+
+
+def validate_archive_labels(archive, metadata):
+    version = metadata.get("securityLabels")
+    for member in archive.getmembers():
+        archived_security_label(member, SECURITY_LABEL, required=version in ("pax-v1", "pax-v2"))
+        if version == "pax-v2":
+            archived_security_label(member, SELINUX_LABEL, required=True)
+        elif SELINUX_HEADER in member.pax_headers:
+            raise FirewallError("Unexpected SELinux metadata in legacy firewall backup.")
 
 
 def archive_security_label(member):
     source = CONFIG_ROOT.joinpath(*Path(member.name).parts[1:])
-    value = security_label(source)
-    member.pax_headers[LABEL_HEADER] = value.hex() if value is not None else ""
+    for name, header in LABEL_HEADERS.items():
+        value = security_label(source, name)
+        member.pax_headers[header] = value.hex() if value is not None else ""
     return member
 
 
 def restore_archive_labels(archive, staging, metadata):
-    # Old archives predate label preservation. Keep the label of each existing
-    # object; for a missing object, inherit its nearest surviving ancestor.
-    # Never guess a numerical Astra label or lower /etc's protection.
+    # Retain the historical PDPL-only fallback for archives that predate label
+    # preservation. SELinux file types cannot be inferred from parent labels:
+    # without recorded originals those archives must stop before replacement.
     for member in sorted(archive.getmembers(), key=lambda item: len(Path(item.name).parts)):
         if LABEL_HEADER in member.pax_headers:
-            encoded = member.pax_headers[LABEL_HEADER]
-            if len(encoded) > 4096 or not re.fullmatch(r"(?:[0-9a-fA-F]{2})*", encoded):
-                raise FirewallError("Invalid mandatory label in firewall backup.")
-            value = bytes.fromhex(encoded) if encoded else None
+            value = archived_security_label(member, SECURITY_LABEL)
         else:
-            if metadata.get("securityLabels") == "pax-v1":
+            if metadata.get("securityLabels") in ("pax-v1", "pax-v2"):
                 raise FirewallError("Mandatory label metadata is missing from firewall backup.")
             source = CONFIG_ROOT.joinpath(*Path(member.name).parts[1:])
             while not source.exists() and not source.is_symlink() and source != CONFIG_ROOT:
@@ -543,6 +607,14 @@ def restore_archive_labels(archive, staging, metadata):
                 raise FirewallError("Firewall configuration must not contain symlinks.")
             value = security_label(source)
         restore_security_label(staging / member.name, value)
+        if metadata.get("securityLabels") != "pax-v2" and security_label(staging / member.name, SELINUX_LABEL) is not None:
+            raise FirewallError("Legacy firewall backup has no original SELinux labels; independent recovery is required.")
+    if metadata.get("securityLabels") == "pax-v2":
+        # Preserve the existing parent-first Astra integrity-label order above.
+        # Apply SELinux labels only after all content/metadata work, children
+        # first, so a restrictive directory type cannot hide unfinished files.
+        for member in sorted(archive.getmembers(), key=lambda item: len(Path(item.name).parts), reverse=True):
+            restore_security_label(staging / member.name, archived_security_label(member, SELINUX_LABEL, required=True), SELINUX_LABEL)
 
 
 def backup(args):
@@ -563,9 +635,9 @@ def backup(args):
         validate_members(archive, selected)
         if archive_digest(archive, selected) != original_digest or tree_digest(CONFIG_ROOT / selected) != original_digest:
             raise FirewallError("Firewall configuration changed during backup; no mutation is allowed.")
-    metadata = {"backend": selected, "machineId": machine_id(), "transactionId": args.transaction, "securityLabels": "pax-v1",
+    metadata = {"backend": selected, "machineId": machine_id(), "transactionId": args.transaction, "securityLabels": "pax-v2",
                 "sha256": hashlib.sha256(archive_path.read_bytes()).hexdigest(), "configurationSha256": original_digest,
-                "filesystemMetadata": "posix-pdpl-v1"}
+                "filesystemMetadata": FILESYSTEM_METADATA}
     descriptor = os.open(str(archive_path), os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         os.fsync(descriptor)
@@ -586,8 +658,12 @@ def verified_backup(args):
     archive_path = directory / "firewall-state.tar.gz"
     if selected not in ("ufw", "firewalld") or metadata["machineId"] != machine_id() or metadata["transactionId"] != args.transaction:
         raise FirewallError("Backup identity does not match this host and transaction.")
-    if metadata.get("securityLabels") not in (None, "pax-v1") or metadata.get("filesystemMetadata") not in (None, "posix-pdpl-v1"):
+    if metadata.get("securityLabels") not in (None, "pax-v1", "pax-v2") or manifest_version(metadata) not in (LEGACY_FILESYSTEM_METADATA, FILESYSTEM_METADATA):
         raise FirewallError("Unsupported backup metadata version.")
+    if (metadata.get("securityLabels") == "pax-v2") != (manifest_version(metadata) == FILESYSTEM_METADATA):
+        raise FirewallError("Inconsistent backup security metadata versions.")
+    if metadata.get("filesystemMetadata") is not None and (not isinstance(metadata.get("configurationSha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", metadata["configurationSha256"])):
+        raise FirewallError("Missing or invalid backup filesystem manifest.")
     descriptor = os.open(str(archive_path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(descriptor, "rb") as stream:
         details = os.fstat(stream.fileno())
@@ -607,8 +683,8 @@ def rollback_checkpoint(directory, state, phase):
     write_control_json(directory / "rollback-state.json", state)
 
 
-def require_tree(path, expected):
-    if not path.exists() or path.is_symlink() or tree_digest(path) != expected:
+def require_tree(path, expected, metadata_version=FILESYSTEM_METADATA):
+    if not path.exists() or path.is_symlink() or tree_digest(path, metadata_version=metadata_version) != expected:
         raise FirewallError("Rollback tree does not match its saved manifest: {}. Independent recovery is required.".format(path))
 
 
@@ -620,6 +696,8 @@ def rollback_state(directory, metadata):
                 "backend": metadata["backend"], "archiveSha256": metadata["sha256"]}
     if any(state.get(key) != value for key, value in required.items()) or not isinstance(state.get("phase"), str) or state.get("phase") not in ROLLBACK_PHASES:
         raise FirewallError("Rollback journal identity or phase mismatch.", outcome_unknown=True)
+    if manifest_version(state) != manifest_version(metadata):
+        raise FirewallError("Rollback journal filesystem manifest version mismatch.", outcome_unknown=True)
     if not isinstance(state.get("attemptId"), str) or not re.fullmatch(r"[a-f0-9]{32}", state.get("attemptId", "")) or state.get("stagingName") != ".hcp-rollback-" + state["attemptId"]:
         raise FirewallError("Unsafe staging identity in rollback journal.", outcome_unknown=True)
     if type(state.get("generation")) is not int or state["generation"] < 1 or not isinstance(state.get("previousSha256"), str) or not re.fullmatch(r"[a-f0-9]{64}", state.get("previousSha256", "")):
@@ -636,7 +714,8 @@ def rollback_state(directory, metadata):
 def prepare_rollback_tree(directory, state, metadata, archive_path):
     staging = CONFIG_ROOT / state["stagingName"]
     destination = CONFIG_ROOT / metadata["backend"]
-    require_tree(destination, state["previousSha256"])
+    version = manifest_version(state)
+    require_tree(destination, state["previousSha256"], version)
     if staging.exists() or staging.is_symlink():
         details = staging.lstat()
         if not stat.S_ISDIR(details.st_mode) or details.st_uid != os.geteuid() or stat.S_IMODE(details.st_mode) != 0o700:
@@ -660,19 +739,24 @@ def prepare_rollback_tree(directory, state, metadata, archive_path):
     else:
         staging.mkdir(mode=0o700)
         sync_directory(CONFIG_ROOT)
-    restore_security_label(staging, security_label(CONFIG_ROOT))
+    for name in LABEL_HEADERS:
+        restore_security_label(staging, security_label(CONFIG_ROOT, name), name)
     write_control_json(staging / "owner.json", {"attemptId": state["attemptId"], "transactionId": state["transactionId"]})
     (staging / "etc").mkdir()
-    restore_security_label(staging / "etc", security_label(CONFIG_ROOT))
+    for name in LABEL_HEADERS:
+        restore_security_label(staging / "etc", security_label(CONFIG_ROOT, name), name)
     with tarfile.open(str(archive_path)) as archive:
         validate_members(archive, metadata["backend"])
+        validate_archive_labels(archive, metadata)
+        if metadata.get("configurationSha256") and archive_digest(archive, metadata["backend"], version) != metadata["configurationSha256"]:
+            raise FirewallError("Firewall backup archive does not match its filesystem manifest.")
         archive.extractall(str(staging), **({"filter": "data"} if hasattr(tarfile, "data_filter") else {}))
         restore_archive_metadata(archive, staging)
         restore_archive_labels(archive, staging, metadata)
-    prepared = tree_digest(staging / "etc" / metadata["backend"], sync=True)
+    prepared = tree_digest(staging / "etc" / metadata["backend"], sync=True, metadata_version=version)
     if metadata.get("configurationSha256") and prepared != metadata["configurationSha256"]:
         raise FirewallError("Restored tree does not match the backup filesystem manifest.")
-    require_tree(destination, state["previousSha256"])
+    require_tree(destination, state["previousSha256"], version)
     sync_directory(staging / "etc")
     sync_directory(staging)
     state["preparedSha256"] = prepared
@@ -683,6 +767,7 @@ def prepare_rollback_tree(directory, state, metadata, archive_path):
 def rollback(args):
     directory, metadata, archive_path = verified_backup(args)
     selected = metadata["backend"]
+    version = manifest_version(metadata)
     state = rollback_state(directory, metadata)
     replayed = state is not None and state["phase"] == "completed"
     pending = active_operation()
@@ -693,11 +778,12 @@ def rollback(args):
     if state is None:
         if backend() != selected:
             raise FirewallError("The active firewall backend changed since backup.")
-        previous_hash = tree_digest(CONFIG_ROOT / selected)
+        previous_hash = tree_digest(CONFIG_ROOT / selected, metadata_version=version)
         attempt_id = uuid.uuid4().hex
         state = {"schemaVersion": 1, "machineId": metadata["machineId"], "transactionId": args.transaction,
                  "backend": selected, "archiveSha256": metadata["sha256"], "attemptId": attempt_id,
-                 "stagingName": ".hcp-rollback-" + attempt_id, "previousSha256": previous_hash, "generation": 0}
+                 "stagingName": ".hcp-rollback-" + attempt_id, "previousSha256": previous_hash, "generation": 0,
+                 "filesystemMetadata": version}
         rollback_checkpoint(directory, state, "preparing")
     record_active(args, "rollback", selected, metadata["sha256"])
     destination = CONFIG_ROOT / selected
@@ -715,32 +801,32 @@ def rollback(args):
         if read_control_json(staging / "owner.json") != {"attemptId": state["attemptId"], "transactionId": args.transaction}:
             raise FirewallError("Rollback staging owner does not match this attempt.", outcome_unknown=True)
     if state["phase"] == "prepared":
-        require_tree(destination, state["previousSha256"])
-        require_tree(prepared, state["preparedSha256"])
+        require_tree(destination, state["previousSha256"], version)
+        require_tree(prepared, state["preparedSha256"], version)
         if previous.exists() or previous.is_symlink():
             raise FirewallError("Unexpected previous tree before replacement.")
         rollback_checkpoint(directory, state, "move_old_intent")
     if state["phase"] == "move_old_intent":
-        require_tree(prepared, state["preparedSha256"])
+        require_tree(prepared, state["preparedSha256"], version)
         if destination.exists() or destination.is_symlink():
-            require_tree(destination, state["previousSha256"])
+            require_tree(destination, state["previousSha256"], version)
             if previous.exists() or previous.is_symlink():
                 raise FirewallError("Ambiguous old and current rollback trees.")
             destination.rename(str(previous))
             sync_directory(CONFIG_ROOT)
             sync_directory(staging)
-        require_tree(previous, state["previousSha256"])
+        require_tree(previous, state["previousSha256"], version)
         rollback_checkpoint(directory, state, "old_saved")
     if state["phase"] == "old_saved":
-        require_tree(previous, state["previousSha256"])
-        require_tree(prepared, state["preparedSha256"])
+        require_tree(previous, state["previousSha256"], version)
+        require_tree(prepared, state["preparedSha256"], version)
         if destination.exists() or destination.is_symlink():
             raise FirewallError("Unexpected live tree before installation.")
         rollback_checkpoint(directory, state, "install_intent")
     if state["phase"] == "install_intent":
-        require_tree(previous, state["previousSha256"])
+        require_tree(previous, state["previousSha256"], version)
         if prepared.exists() or prepared.is_symlink():
-            require_tree(prepared, state["preparedSha256"])
+            require_tree(prepared, state["preparedSha256"], version)
             if destination.exists() or destination.is_symlink():
                 raise FirewallError("Ambiguous prepared and live rollback trees.")
             try:
@@ -749,7 +835,7 @@ def rollback(args):
                 raise FirewallError("Configuration installation failed; previous configuration retained at {}: {}".format(previous, error)) from error
             sync_directory(staging / "etc")
             sync_directory(CONFIG_ROOT)
-        require_tree(destination, state["preparedSha256"])
+        require_tree(destination, state["preparedSha256"], version)
         rollback_checkpoint(directory, state, "installed")
     if state["phase"] in ("reload_intent", "reload_unknown"):
         if not getattr(args, "recovery_verified", False):
@@ -758,8 +844,8 @@ def rollback(args):
         # later interrupted attempt requires a new controller attestation.
         rollback_checkpoint(directory, state, "installed")
     if state["phase"] in ("installed", "reload_failed"):
-        require_tree(destination, state["preparedSha256"])
-        require_tree(previous, state["previousSha256"])
+        require_tree(destination, state["preparedSha256"], version)
+        require_tree(previous, state["previousSha256"], version)
         if backend() != selected:
             raise FirewallError("The active firewall backend changed before reload.")
         rollback_checkpoint(directory, state, "reload_intent")
@@ -767,18 +853,18 @@ def rollback(args):
             run("ufw", "reload") if selected == "ufw" else run("firewall-cmd", "--reload")
             if backend() != selected:
                 raise FirewallError("Firewall is not active after rollback.")
-            require_tree(destination, state["preparedSha256"])
+            require_tree(destination, state["preparedSha256"], version)
         except FirewallError as error:
             rollback_checkpoint(directory, state, "reload_unknown" if error.outcome_unknown else "reload_failed")
             raise
         rollback_checkpoint(directory, state, "reload_completed")
     if state["phase"] == "reload_completed":
-        require_tree(destination, state["preparedSha256"])
+        require_tree(destination, state["preparedSha256"], version)
         state["result"] = {"ok": True, "changed": True, "backend": selected, "rollbackAttemptId": state["attemptId"]}
         rollback_checkpoint(directory, state, "completed")
     if state["phase"] != "completed" or state.get("result") != {"ok": True, "changed": True, "backend": selected, "rollbackAttemptId": state["attemptId"]}:
         raise FirewallError("Rollback has no verified completion record.", outcome_unknown=True)
-    require_tree(destination, state["preparedSha256"])
+    require_tree(destination, state["preparedSha256"], version)
     if backend() != selected:
         raise FirewallError("Firewall state changed after completed rollback.")
     # Cleanup follows durable completion. A lost response is replayed without
@@ -842,7 +928,7 @@ def execute_operation(args):
         if args.operation == "backup":
             if pending:
                 directory, metadata, archive_path = verified_backup(args)
-                require_tree(CONFIG_ROOT / metadata["backend"], metadata.get("configurationSha256"))
+                require_tree(CONFIG_ROOT / metadata["backend"], metadata.get("configurationSha256"), manifest_version(metadata))
                 return {"ok": True, "changed": False, "backupRef": str(archive_path)}
             result = backup(args)
             directory, metadata, archive_path = verified_backup(args)

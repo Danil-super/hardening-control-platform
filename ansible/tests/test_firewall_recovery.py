@@ -12,6 +12,8 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from firewall_xattr_fixture import translated_xattrs
+
 SCRIPT = Path(__file__).parents[1] / "scripts/hcp-firewall.py"
 spec = importlib.util.spec_from_file_location("firewall_recovery", SCRIPT)
 fw = importlib.util.module_from_spec(spec)
@@ -29,6 +31,11 @@ fw = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fw)
 root = Path(temporary)
 fw.CONFIG_ROOT, fw.BACKUP_ROOT = root / "etc", root / "backups"
+if (root / "test-selinux-xattrs").exists():
+    sys.path.insert(0, str(Path(source).parents[1] / "tests"))
+    from firewall_xattr_fixture import translated_xattrs
+    xattr_fixture = translated_xattrs(fw)
+    xattr_fixture.__enter__()
 fw.backend = lambda: "ufw"
 fw.ufw_ipv6_enabled = lambda: False
 args = argparse.Namespace(operation=operation, transaction=transaction, check=False,
@@ -340,6 +347,50 @@ class RecoveryTests(unittest.TestCase):
                 fw.rollback(args)
             native.assert_not_called()
         self.assertEqual((self.configuration / "ufw/user.rules").read_text(), "current rules\n")
+
+    def test_selinux_labels_survive_sigkill_tree_replacement_and_cleanup_replay(self):
+        for failpoint in ("after_prepared", "after_rename_move_old", "after_rename_install", "during_cleanup"):
+            with self.subTest(failpoint=failpoint):
+                (self.root / "test-selinux-xattrs").touch()
+                with translated_xattrs(fw):
+                    for path in (self.configuration, self.configuration / "ufw", self.configuration / "ufw/user.rules"):
+                        value = b"system_u:object_r:etc_t:s0\x00" if path.is_dir() else b"system_u:object_r:firewalld_etc_rw_t:s0\x00"
+                        os.setxattr(str(path), fw.SELINUX_LABEL, value)
+                    expected = fw.tree_digest(self.configuration / "ufw")
+                self.prepare()
+                killed = self.child("rollback", failpoint)
+                self.assertEqual(killed.returncode, -signal.SIGKILL, killed.stdout + killed.stderr)
+                self.success(self.child("rollback", recovered=True))
+                self.restored()
+                with translated_xattrs(fw):
+                    self.assertEqual(fw.tree_digest(self.configuration / "ufw"), expected)
+                self.assertEqual((self.root / "reloads").read_text().splitlines(), ["reload"])
+                fw.shutil.rmtree(str(self.root / "backups"))
+                (self.root / "reloads").unlink()
+
+    def test_selinux_only_tampering_is_detected_in_prepared_and_previous_tree(self):
+        (self.root / "test-selinux-xattrs").touch()
+        with translated_xattrs(fw):
+            for path in (self.configuration, self.configuration / "ufw", self.configuration / "ufw/user.rules"):
+                os.setxattr(str(path), fw.SELINUX_LABEL, b"system_u:object_r:etc_t:s0\x00")
+        self.prepare()
+        killed = self.child("rollback", "after_old_saved")
+        self.assertEqual(killed.returncode, -signal.SIGKILL, killed.stdout + killed.stderr)
+        state = json.loads(self.journal().read_text())
+        staging = self.configuration / state["stagingName"]
+        for relative in ("etc/ufw/user.rules", "previous/user.rules"):
+            with self.subTest(relative=relative), translated_xattrs(fw):
+                path = staging / relative
+                original = os.getxattr(str(path), fw.SELINUX_LABEL)
+                os.setxattr(str(path), fw.SELINUX_LABEL, b"system_u:object_r:tmp_t:s0\x00")
+                rejected = self.child("rollback", recovered=True)
+                self.assertEqual(rejected.returncode, 1, rejected.stdout + rejected.stderr)
+                self.assertIn("saved manifest", json.loads(rejected.stdout)["error"])
+                self.assertFalse((self.root / "reloads").exists())
+                self.assertFalse((self.configuration / "ufw").exists())
+                os.setxattr(str(path), fw.SELINUX_LABEL, original)
+        self.success(self.child("rollback", recovered=True))
+        self.restored()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,97 @@
+name: Native RPM VM hardening and SELinux acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/linux-rpm-vm-integration.yml
+      - deployment/tests/linux_rpm_vm_integration.*
+      - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/fixtures/linux-package-controls.json
+      - ansible/scripts/**
+      - ansible/playbooks/**
+      - ansible/tasks/**
+      - ansible/audit-rules/**
+      - ansible/tests/native_selinux_firewall_acceptance.py
+      - web/lib/linux-*.ts
+      - web/lib/host-readiness.ts
+      - web/package*.json
+      - web/lib/vulnerability-scan.ts
+      - web/lib/ansible-reports.ts
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/linux-rpm-vm-integration.yml
+      - deployment/tests/linux_rpm_vm_integration.*
+      - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/fixtures/linux-package-controls.json
+      - ansible/scripts/**
+      - ansible/playbooks/**
+      - ansible/tasks/**
+      - ansible/audit-rules/**
+      - ansible/tests/native_selinux_firewall_acceptance.py
+      - web/lib/linux-*.ts
+      - web/lib/host-readiness.ts
+      - web/package*.json
+      - web/lib/vulnerability-scan.ts
+      - web/lib/ansible-reports.ts
+
+permissions:
+  contents: read
+
+jobs:
+  rpm-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution: [almalinux, rocky]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install production SBOM dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts
+      - name: Install disposable VM and SSH controller tools
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ansible-core openssh-client
+          test -e /dev/kvm
+          sudo chmod 0666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Extract the production Trivy version and record its image digest
+        run: |
+          set -euo pipefail
+          trivy_dir="$RUNNER_TEMP/hcp-rpm-trivy-${{ matrix.distribution }}"
+          mkdir -m 700 "$trivy_dir"
+          docker pull aquasec/trivy:0.74.0
+          docker image inspect aquasec/trivy:0.74.0 --format '{{index .RepoDigests 0}}' > "$trivy_dir/image-digest.txt"
+          trivy_container=$(docker create aquasec/trivy:0.74.0)
+          trap 'docker rm "$trivy_container" >/dev/null' EXIT
+          docker cp "$trivy_container:/usr/local/bin/trivy" "$trivy_dir/trivy"
+          chmod 0755 "$trivy_dir/trivy"
+          "$trivy_dir/trivy" --version
+      - name: Verify native RPM collection, labelled findings, firewall and enforcing SELinux
+        env:
+          HCP_TRIVY_BIN: ${{ runner.temp }}/hcp-rpm-trivy-${{ matrix.distribution }}/trivy
+        run: |
+          bash deployment/tests/linux_rpm_vm_integration.sh \
+            --distribution '${{ matrix.distribution }}' \
+            --work-dir "$RUNNER_TEMP/hcp-rpm-${{ matrix.distribution }}"
+      - name: Save public native acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpm-native-${{ matrix.distribution }}
+          path: |
+            ${{ runner.temp }}/hcp-rpm-${{ matrix.distribution }}/artifacts/
+            ${{ runner.temp }}/hcp-rpm-trivy-${{ matrix.distribution }}/image-digest.txt
+          retention-days: 14
+          if-no-files-found: warn

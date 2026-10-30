@@ -5,6 +5,8 @@ import { isIP } from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
 import { machineIdentityHash, validHostFingerprint, type AssetObservation } from "@/lib/asset-binding";
+import { machineIdentityProbeCommand } from "@/lib/linux-identity";
+import { parseTargetPythonVersion, targetPythonInterpreter, targetPythonProbeCommand } from "@/lib/target-python";
 
 const execFileAsync = promisify(execFile);
 
@@ -160,7 +162,9 @@ export async function hasSavedHostKey(address: string, port: number) {
   }
 }
 
-export type TrustedAssetObservation = AssetObservation & { hostKeyLine: string; hostKeyAlgorithms: string };
+export type TrustedAssetObservation = AssetObservation & {
+  hostKeyLine: string; hostKeyAlgorithms: string; pythonVersion?: string | null; pythonInterpreter?: string;
+};
 
 async function savedHostKeyCandidates(address: string, port: number): Promise<HostKeyCandidate[]> {
   const result = await execFileAsync("ssh-keygen", ["-F", hostPattern(address, port), "-f", getKnownHostsPath()], { timeout: 10_000, maxBuffer: 128 * 1024 });
@@ -180,9 +184,12 @@ async function savedHostKeyCandidates(address: string, port: number): Promise<Ho
 }
 
 /** The identity is read through an authenticated channel, never ssh-keyscan. */
-export async function probeTrustedAssetIdentity(input: { address: string; port: number; user: string; privateKeyPath: string }): Promise<TrustedAssetObservation> {
+export async function probeTrustedAssetIdentity(input: { address: string; port: number; user: string; privateKeyPath: string; pythonInterpreter?: string }): Promise<TrustedAssetObservation> {
   if (!isSafeSshHostAddress(input.address) || normalizeSshPort(input.port) === null
       || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(input.user)) throw new Error("Некорректное SSH-подключение для проверки идентичности.");
+  const pythonInterpreter = input.pythonInterpreter === undefined ? undefined : targetPythonInterpreter(input.pythonInterpreter);
+  const command = machineIdentityProbeCommand() + (pythonInterpreter
+    ? `; ${targetPythonProbeCommand(pythonInterpreter)} 2>/dev/null || true` : "");
   let candidates: HostKeyCandidate[];
   try { candidates = await savedHostKeyCandidates(input.address, input.port); }
   catch { throw Object.assign(new Error("Сначала независимо проверьте и сохраните SSH fingerprint сервера. Идентичность актива не установлена."), { code: "asset_host_key_untrusted" }); }
@@ -195,7 +202,7 @@ export async function probeTrustedAssetIdentity(input: { address: string; port: 
       "-o", "StrictHostKeyChecking=yes", "-o", `UserKnownHostsFile=${JSON.stringify(trustFile)}`, "-o", "GlobalKnownHostsFile=/dev/null",
       "-o", "UpdateHostKeys=no", "-o", "ControlMaster=no", "-o", "ControlPath=none", "-o", "ConnectTimeout=10",
       "-o", "ConnectionAttempts=1", "-o", "ServerAliveInterval=10", "-o", "ServerAliveCountMax=1", "--", input.address,
-      "LC_ALL=C; export LC_ALL; IFS= read -r hcp_machine_id < /etc/machine-id && printf 'HCP_MACHINE_ID=%s\\n' \"$hcp_machine_id\""], {
+      command], {
       timeout: 25_000, maxBuffer: 64 * 1024, env: { ...process.env, LC_ALL: "C", SSH_ASKPASS_REQUIRE: "never" },
     });
     const ids = [...result.stdout.matchAll(/^HCP_MACHINE_ID=([a-f0-9]{32})\r?$/gm)];
@@ -207,10 +214,11 @@ export async function probeTrustedAssetIdentity(input: { address: string; port: 
     if (!candidate) throw new Error("Negotiated key not in the captured trust");
     const keyType = candidate.hostKeyLine.split(/\s+/)[1];
     return { machineIdSha256: machineIdentityHash(ids[0][1]), sshHostKeyFingerprint: keys[0][1], observedAt: new Date().toISOString(),
-      hostKeyLine: candidate.hostKeyLine, hostKeyAlgorithms: keyType === "ssh-rsa" ? "rsa-sha2-512,rsa-sha2-256" : keyType };
+      hostKeyLine: candidate.hostKeyLine, hostKeyAlgorithms: keyType === "ssh-rsa" ? "rsa-sha2-512,rsa-sha2-256" : keyType,
+      ...(pythonInterpreter ? { pythonInterpreter, pythonVersion: parseTargetPythonVersion(result.stdout) } : {}) };
   } catch {
     // Never return SSH stdout/stderr: it contains raw machine-id and paths.
-    throw Object.assign(new Error("Не удалось подтвердить machine-id и доверенный SSH host key. Проверьте ключ, доступ и /etc/machine-id через независимую консоль; смена машины или host key требует явной перепривязки."), { code: "asset_identity_unverified" });
+    throw Object.assign(new Error("Не удалось подтвердить machine-id и доверенный SSH host key. Проверьте ключ, доступ и постоянный machine-id через независимую консоль; смена машины или host key требует явной перепривязки."), { code: "asset_identity_unverified" });
   } finally { rmSync(trustDirectory, { recursive: true, force: true }); }
 }
 

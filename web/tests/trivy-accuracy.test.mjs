@@ -14,6 +14,10 @@ const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const source = readFileSync(path.join(webDir, "lib/vulnerability-scan.ts"), "utf8");
 const compiled = ts.transpileModule(source + "\nexport const testing = { trivyFinding, packagePurl, writePackageSbom, scanCoverage, packageProvenance, findingProvenance };", { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+const platform = {};
+vm.runInNewContext(ts.transpileModule(readFileSync(path.join(webDir, "lib/linux-platform.ts"), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+}).outputText, { exports: platform });
 
 function harness(t, response = "normal", mode = "offline", repositories = "") {
   const dir = mkdtempSync(path.join(tmpdir(), "hcp-trivy-test-"));
@@ -26,11 +30,12 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
   writeFileSync(path.join(cache, "db/metadata.json"), JSON.stringify({ Version: 2, UpdatedAt: new Date().toISOString() }));
   // This executable is a contract fixture. These tests do not claim a live Trivy scan.
   const binary = path.join(dir, "trivy-fixture");
-  writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst response = ${JSON.stringify(response)};\nfs.writeFileSync(${JSON.stringify(path.join(dir, "args.json"))}, JSON.stringify({args, env: process.env}));\nif(args.includes('--download-db-only')) fs.appendFileSync(${JSON.stringify(path.join(dir, "downloads.jsonl"))}, JSON.stringify(args) + '\\n');\nif(args.includes('--download-db-only') && response.startsWith('fallback-') && args[args.indexOf('--db-repository') + 1] !== 'ghcr.io/aquasecurity/trivy-db') { console.error(response === 'fallback-network' ? 'context deadline exceeded' : 'manifest unknown: 404'); process.exit(1); }\nif(args.includes('--download-db-only') && response === 'download-dns') { console.error('lookup ghcr.io: no such host'); process.exit(1); }\nif(args.includes('--download-db-only')) {\n  const activeCache = args[args.indexOf('--cache-dir') + 1];\n  fs.mkdirSync(activeCache + '/db', {recursive: true});\n  fs.writeFileSync(activeCache + '/db/trivy.db', 'downloaded fixture');\n  fs.writeFileSync(activeCache + '/db/metadata.json', JSON.stringify({Version: 2, UpdatedAt: new Date().toISOString()}));\n  process.exit(0);\n}\nif(args.includes('--version')) { console.log('Version: 0.74.0-contract-fixture'); process.exit(0); }\nconst sbom = JSON.parse(fs.readFileSync(args.at(-1), 'utf8'));\nlet output = {SchemaVersion: 2, Metadata: {OS: {Family: sbom.metadata.component.name, Name: sbom.metadata.component.version}}, Results: [{Class: 'os-pkgs', Type: sbom.metadata.component.name, Packages: sbom.components.map(p => ({Name: p.name, Version: p.version, Identifier: {BOMRef: p['bom-ref'], PURL: p.purl}})), Vulnerabilities: []}]};\nif(response === 'mutate-db') fs.appendFileSync(process.env.TRIVY_CACHE_DIR + '/db/trivy.db', 'changed');\nif(response === 'mutate-sbom') fs.appendFileSync(args.at(-1), ' ');\nif(response === 'vulnerable') output.Results[0].Vulnerabilities = [{VulnerabilityID:'CVE-2023-0286', PkgName:'libssl3', InstalledVersion:sbom.components[0].version, PkgIdentifier:{BOMRef:sbom.components[0]['bom-ref']}, FixedVersion:'3.0.2-0ubuntu1.8', Status:'fixed', Severity:'HIGH', DataSource:{ID:'ubuntu'}}];\nif(response === 'empty') output = {};\nif(response === 'missing-package') output.Results[0].Packages = [];\nif(response === 'wrong-os') output.Metadata.OS.Family = 'alpine';\nif(response === 'eosl') output.Metadata.OS.EOSL = true;\nif(response === 'many') output.Results[0].Vulnerabilities = Array.from({length: 1005}, (_,i) => ({VulnerabilityID:'CVE-2026-' + i, PkgName:'libssl3', InstalledVersion:'3.0.2-0ubuntu1', FixedVersion:'3.0.2-0ubuntu2', Status:'fixed', Severity:'HIGH'}));\nconsole.log(JSON.stringify(output));\n`);
+  writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst response = ${JSON.stringify(response)};\nfs.writeFileSync(${JSON.stringify(path.join(dir, "args.json"))}, JSON.stringify({args, env: Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith('TRIVY_')))}));\nif(args.includes('--download-db-only')) fs.appendFileSync(${JSON.stringify(path.join(dir, "downloads.jsonl"))}, JSON.stringify(args) + '\\n');\nif(args.includes('--download-db-only') && response.startsWith('fallback-') && args[args.indexOf('--db-repository') + 1] !== 'ghcr.io/aquasecurity/trivy-db') { console.error(response === 'fallback-network' ? 'context deadline exceeded' : 'manifest unknown: 404'); process.exit(1); }\nif(args.includes('--download-db-only') && response === 'download-dns') { console.error('lookup ghcr.io: no such host'); process.exit(1); }\nif(args.includes('--download-db-only')) {\n  const activeCache = args[args.indexOf('--cache-dir') + 1];\n  fs.mkdirSync(activeCache + '/db', {recursive: true});\n  fs.writeFileSync(activeCache + '/db/trivy.db', 'downloaded fixture');\n  fs.writeFileSync(activeCache + '/db/metadata.json', JSON.stringify({Version: 2, UpdatedAt: new Date().toISOString()}));\n  process.exit(0);\n}\nif(args.includes('--version')) { console.log('Version: 0.74.0-contract-fixture'); process.exit(0); }\nconst sbom = JSON.parse(fs.readFileSync(args.at(-1), 'utf8'));\nlet output = {SchemaVersion: 2, Metadata: {OS: {Family: sbom.metadata.component.name, Name: sbom.metadata.component.version}}, Results: [{Class: 'os-pkgs', Type: sbom.metadata.component.name, Packages: sbom.components.map(p => ({Name: p.name, Version: p.version, Identifier: {BOMRef: p['bom-ref'], PURL: p.purl}})), Vulnerabilities: []}]};\nif(response === 'mutate-db') fs.appendFileSync(process.env.TRIVY_CACHE_DIR + '/db/trivy.db', 'changed');\nif(response === 'mutate-sbom') fs.appendFileSync(args.at(-1), ' ');\nif(response === 'vulnerable') output.Results[0].Vulnerabilities = [{VulnerabilityID:'CVE-2023-0286', PkgName:sbom.components[0].name, InstalledVersion:sbom.components[0].version, PkgIdentifier:{BOMRef:sbom.components[0]['bom-ref']}, FixedVersion:'3.0.2-0ubuntu1.8', Status:'fixed', Severity:'HIGH', DataSource:{ID:sbom.metadata.component.name}}];\nif(response === 'empty') output = {};\nif(response === 'missing-package') output.Results[0].Packages = [];\nif(response === 'wrong-os') output.Metadata.OS.Family = 'alpine';\nif(response === 'eosl') output.Metadata.OS.EOSL = true;\nif(response === 'many') output.Results[0].Vulnerabilities = Array.from({length: 1005}, (_,i) => ({VulnerabilityID:'CVE-2026-' + i, PkgName:'libssl3', InstalledVersion:'3.0.2-0ubuntu1', FixedVersion:'3.0.2-0ubuntu2', Status:'fixed', Severity:'HIGH'}));\nconsole.log(JSON.stringify(output));\n`);
   chmodSync(binary, 0o700);
   const env = { ...process.env, HCP_TRIVY_BIN: binary, HCP_TRIVY_CACHE_DIR: cache, HCP_TRIVY_MAX_DB_AGE_HOURS: "168", HCP_TRIVY_DB_REPOSITORY: repositories, TRIVY_SERVER: "https://must-not-be-used.invalid", TRIVY_SEVERITY: "LOW", TRIVY_IGNORE_UNFIXED: "true" };
   const exports = {};
   const mocks = {
+    "@/lib/linux-platform": platform,
     "@/lib/ansible-control": { getStateDir: () => dir, getRepoRoot: () => path.resolve(webDir, "..") },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
     "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), appendAuditEvent: () => {} },
@@ -393,9 +398,7 @@ test("malformed completeness metadata is rejected before a scanner invocation", 
 });
 
 test("dpkg inventory includes held installed packages and source metadata, excludes residual records", () => {
-  const playbook = readFileSync(path.join(webDir, "../ansible/playbooks/package-inventory.yml"), "utf8");
-  const body = playbook.split("python3 - <<'PY'\n")[1].split("\n        PY")[0].split("\n").map((line) => line.slice(8)).join("\n");
-  const definitions = body.split("os_release = read_os_release()\n")[0];
+  const definitions = readFileSync(path.join(webDir, "../ansible/scripts/hcp-package-inventory.py"), "utf8");
   const script = `import json\nnamespace = {}\nexec(${JSON.stringify(definitions)}, namespace)\ncommands = []\ndef fake_run(command):\n    commands.append(command)\n    return 0, 'ii \\tlibssl3:amd64\\t3.0.2-1\\tamd64\\topenssl\\t3.0.2-1\\tUbuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>\\t\\nhi \\tbash\\t5.2-1\\tamd64\\tbash\\t5.2-1\\tDebian Bash Team <pkg-bash@lists.debian.org>\\t\\nrc \\tremoved\\t1.0\\tamd64\\tremoved\\t1.0', ''\nnamespace['run'] = fake_run\npackages, error = namespace['debian_packages']()\nprint(json.dumps({'packages': packages, 'error': error, 'command': commands[0]}))`;
   const result = JSON.parse(execFileSync("python3", ["-c", script], { encoding: "utf8" }));
   assert.equal(result.error, "");
@@ -404,4 +407,173 @@ test("dpkg inventory includes held installed packages and source metadata, exclu
   assert.equal(result.packages[1].name, "bash");
   assert.equal(result.packages[1].dpkgStatus, "hi ");
   assert.match(result.command.at(-1), /\$\{source:Version\}/);
+});
+
+function nativeApk(h) {
+  h.report.packageInventory = { manager: "apk", packageCount: 1, error: "", osRelease: { ID: "alpine", VERSION_ID: "3.22.2" },
+    apkRepositories: { status: "observed", branches: ["v3.22"], unknownEntries: 0, scope: "configured-repositories; installed-origin-not-attested" } };
+  h.report.packages = [{ name: "libcrypto3", version: "3.3.3-r0", arch: "x86_64", manager: "apk", sourceName: "openssl",
+    sourceVersion: "3.3.3-r0", apkOrigin: "openssl", apkCommit: "observed-aports-commit", sourceEpochKnown: true,
+    maintainer: "Alpine Build Team <team@alpinelinux.org>" }];
+  h.save();
+  return h;
+}
+
+function nativeRpm(h, id = "almalinux", vendor = "AlmaLinux") {
+  h.report.packageInventory = { manager: "rpm", packageCount: 1, error: "", osRelease: { ID: id, VERSION_ID: "9.6" } };
+  h.report.packages = [{ name: "openssl-libs", version: "1:3.2.2-6.el9_5.1", arch: "x86_64", manager: "rpm",
+    sourceName: "openssl", sourceVersion: "3.2.2-6.el9_5.1", sourceRpm: "openssl-3.2.2-6.el9_5.1.src.rpm", sourceEpochKnown: false,
+    vendor, maintainer: vendor, packager: `${vendor} Packaging Team`, distribution: vendor, modularityLabel: "",
+    rpmModularityQueried: true, rpmRepositoryEvidence: "not-recorded-in-rpmdb" }];
+  h.save();
+  return h;
+}
+
+test("APK source origin and full revision survive SBOM and package coverage", async (t) => {
+  const h = nativeApk(harness(t));
+  const result = await h.scan();
+  assert.equal(result.partial, false);
+  assert.equal(result.report.vulnerabilityScan.coverage.scannedPackages, 1);
+  assert.match(result.report.vulnerabilityScan.coverage.scope, /apk/);
+  const sbom = JSON.parse(readFileSync(path.join(h.dir, "sbom", result.report.vulnerabilityScan.sbomFile), "utf8"));
+  assert.equal(sbom.metadata.component.name, "alpine");
+  const component = sbom.components[0];
+  assert.equal(component.version, "3.3.3-r0");
+  assert.match(component.purl, /^pkg:apk\/alpine\/libcrypto3@3\.3\.3-r0\?arch=x86_64&distro=alpine-3\.22\.2$/);
+  const props = Object.fromEntries(component.properties.map((p) => [p.name, p.value]));
+  assert.equal(props["aquasecurity:trivy:SrcName"], "openssl");
+  assert.equal(props["aquasecurity:trivy:SrcVersion"], "3.3.3-r0");
+  assert.equal(props["aquasecurity:trivy:SrcRelease"], "");
+  assert.equal(props["hcp:apk-origin"], "openssl");
+  assert.equal(props["hcp:apk-commit"], "observed-aports-commit");
+  assert.equal(props["hcp:source-epoch-known"], "true");
+  assert.equal(result.report.vulnerabilityScan.packageProvenance.cryptographicallyVerified, false);
+});
+
+test("APK mixed releases, edge, unknown origins and damaged source versions never become PASS", async (t) => {
+  const mutations = [
+    (h) => { h.report.packageInventory.apkRepositories.branches = ["v3.22", "edge"]; },
+    (h) => { h.report.packageInventory.apkRepositories.branches = ["edge"]; },
+    (h) => { delete h.report.packageInventory.apkRepositories; },
+    (h) => { h.report.packageInventory.apkRepositories.unknownEntries = 1; },
+    (h) => { h.report.packages[0].sourceVersion = "3.3.3"; },
+    (h) => { h.report.packages[0].apkOrigin = "unrelated-source"; },
+    (h) => { h.report.packages[0].maintainer = "Unknown builder <builder@example.org>"; },
+  ];
+  for (const mutate of mutations) {
+    const h = nativeApk(harness(t));
+    mutate(h);
+    h.save();
+    const result = await h.scan();
+    assert.equal(result.partial, true);
+    assert.equal(result.report.vulnerabilityScan.coverage.scannedPackages, 1);
+    assert.ok(!result.report.findings.some((finding) => finding.status === "passed"));
+  }
+});
+
+test("RPM binary epoch is preserved while unobserved source epoch does not block binary EVR detectors", async (t) => {
+  for (const [id, vendor, expectedFamily] of [["almalinux", "AlmaLinux", "alma"], ["rocky", "Rocky Enterprise Software Foundation", "rocky"],
+    ["ol", "Oracle America", "oracle"], ["amzn", "Amazon Linux", "amazon"], ["sles", "SUSE LLC", "sles"],
+    ["opensuse-leap", "openSUSE", "opensuse-leap"]]) {
+    const h = nativeRpm(harness(t), id, vendor);
+    const result = await h.scan();
+    assert.equal(result.partial, false, id);
+    const sbom = JSON.parse(readFileSync(path.join(h.dir, "sbom", result.report.vulnerabilityScan.sbomFile), "utf8"));
+    assert.equal(sbom.metadata.component.name, expectedFamily);
+    const expectedNamespace = expectedFamily === "sles" ? "suse" : expectedFamily === "opensuse-leap" ? "opensuse" : expectedFamily;
+    assert.ok(sbom.components[0].purl.startsWith(`pkg:rpm/${expectedNamespace}/`), "Native Trivy rejects mismatched OS PURL namespaces");
+    assert.match(sbom.components[0].purl, /epoch=1/);
+    const props = Object.fromEntries(sbom.components[0].properties.map((p) => [p.name, p.value]));
+    assert.equal(props["aquasecurity:trivy:SrcVersion"], "3.2.2");
+    assert.equal(props["aquasecurity:trivy:SrcRelease"], "6.el9_5.1");
+    assert.equal(props["aquasecurity:trivy:SrcEpoch"], undefined);
+    assert.equal(props["hcp:source-epoch-known"], "false");
+    assert.equal(props["hcp:rpm-vendor"], vendor);
+    assert.equal(props["hcp:source-rpm"], "openssl-3.2.2-6.el9_5.1.src.rpm");
+    assert.equal(props["hcp:rpm-repository-evidence"], "not-recorded-in-rpmdb");
+  }
+});
+
+test("RPM missing module evidence and mismatched vendors cannot become complete coverage", async (t) => {
+  const mutations = [
+    (h) => { h.report.packages[0].rpmModularityQueried = false; },
+    (h) => { h.report.packages[0].version = "1:3.2.2-6.module_el9_5.1"; },
+    (h) => { h.report.packages[0].vendor = "Independent Repository"; },
+    (h) => { delete h.report.packages[0].vendor; },
+  ];
+  for (const mutate of mutations) {
+    const h = nativeRpm(harness(t));
+    mutate(h);
+    h.save();
+    const result = await h.scan();
+    assert.equal(result.partial, true);
+    assert.ok(!result.report.findings.some((finding) => finding.status === "passed"));
+  }
+});
+
+test("RHEL content sets and native modularity properties are preserved instead of assuming coverage", async (t) => {
+  const h = nativeRpm(harness(t), "rhel", "Red Hat, Inc.");
+  const first = await h.scan();
+  assert.equal(first.partial, true);
+  assert.match(first.report.vulnerabilityScan.coverage.reasons.join(" "), /content sets/);
+  Object.assign(h.report.packages[0], { contentSets: ["rhel-9-for-x86_64-baseos-rpms", "rhel-9-for-x86_64-appstream-rpms"],
+    buildNvr: "openssl-3.2.2-6.el9_5.1", buildArch: "x86_64", modularityLabel: "openssl:3.2:90001:context" });
+  h.save();
+  const second = await h.scan();
+  assert.equal(second.partial, false);
+  const sbom = JSON.parse(readFileSync(path.join(h.dir, "sbom", second.report.vulnerabilityScan.sbomFile), "utf8"));
+  const props = sbom.components[0].properties;
+  assert.deepEqual(props.filter((p) => p.name === "aquasecurity:trivy:ContentSet").map((p) => p.value), h.report.packages[0].contentSets);
+  assert.equal(props.find((p) => p.name === "aquasecurity:trivy:Modularitylabel").value, "openssl:3.2:90001:context");
+  assert.equal(props.find((p) => p.name === "aquasecurity:trivy:NVR").value, "openssl-3.2.2-6.el9_5.1");
+  assert.equal(props.find((p) => p.name === "aquasecurity:trivy:Arch").value, "x86_64");
+  assert.match(sbom.components[0].purl, /^pkg:rpm\/redhat\//);
+});
+
+test("unknown derivatives and CentOS Stream never inherit a parent advisory database", async (t) => {
+  for (const identity of [{ ID: "private-linux", ID_LIKE: "ubuntu debian", VERSION_ID: "22.04" },
+    { ID: "centos", NAME: "CentOS Stream", ID_LIKE: "rhel fedora", VERSION_ID: "9" }]) {
+    const h = harness(t);
+    h.report.packageInventory.osRelease = identity;
+    h.save();
+    const result = await h.scan();
+    assert.equal(result.partial, true);
+    assert.equal(result.report.vulnerabilityScan.ecosystem, null);
+    assert.match(result.report.vulnerabilityScan.coverage.reasons.join(" "), /точного дистрибутива/);
+    const sbom = JSON.parse(readFileSync(path.join(h.dir, "sbom", result.report.vulnerabilityScan.sbomFile), "utf8"));
+    assert.equal(sbom.metadata.component.name, identity.ID);
+  }
+});
+
+test("CentOS vendor metadata cannot confirm CVE applicability for CentOS Stream", async (t) => {
+  for (const stream of [false, true]) {
+    const h = nativeRpm(harness(t, "vulnerable"), "centos", "CentOS");
+    h.report.packageInventory.osRelease = { ID: "centos", NAME: stream ? "CentOS Stream" : "CentOS Linux", VERSION_ID: "9" };
+    h.save();
+    const result = await h.scan();
+    const observation = result.report.findings.find((finding) => finding.id.startsWith("trivy_CVE-2023-0286_"));
+    assert.ok(observation, "Potential matches must remain visible");
+    assert.equal(observation.status, stream ? "manual" : "failed");
+    assert.equal(result.report.vulnerabilityScan.vendorAssessment.verified, !stream);
+    assert.equal(result.report.vulnerabilityScan.packageProvenance["distribution-maintainer"], 1, "The observed vendor metadata remains preserved separately");
+    if (stream) {
+      assert.equal(result.partial, true);
+      assert.match(observation.evidence, /applicability=unverified/);
+      assert.match(result.report.vulnerabilityScan.coverage.reasons.join(" "), /точного дистрибутива/);
+    }
+  }
+});
+
+test("native manager mismatch and malformed ecosystem metadata cannot bypass completeness checks", async (t) => {
+  const h = nativeApk(harness(t));
+  h.report.packageInventory.osRelease = { ID: "ubuntu", VERSION_ID: "22.04" };
+  h.save();
+  assert.match((await h.scan()).report.vulnerabilityScan.coverage.reasons.join(" "), /Менеджер пакетов/);
+  for (const invalid of [{ contentSets: "all" }, { sourceEpochKnown: "true" }, { rpmModularityQueried: "false" }, { modularityLabel: "line\nbreak" }]) {
+    const fixture = nativeRpm(harness(t));
+    Object.assign(fixture.report.packages[0], invalid);
+    fixture.save();
+    await assert.rejects(fixture.scan(), /сведения о полноте/);
+    assert.equal(existsSync(path.join(fixture.dir, "args.json")), false);
+  }
 });

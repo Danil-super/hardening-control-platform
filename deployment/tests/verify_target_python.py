@@ -140,11 +140,27 @@ class TargetPythonTests(unittest.TestCase):
                 self.assertEqual(rule.read_text(), "original\n")
                 native.assert_called_once_with("ufw", "reload")
 
+    def test_external_package_and_event_collectors_execute_without_optional_tools(self):
+        for name, entrypoint in (("hcp-package-inventory.py", "main"), ("hcp-security-events.py", "collect_events")):
+            with self.subTest(script=name):
+                module = load_script(name)
+                with patch("shutil.which", return_value=None), patch.dict(os.environ, {"INVENTORY_HOST": "compatibility"}):
+                    if name == "hcp-security-events.py":
+                        with patch.object(module, "tail_file", return_value=({"state": "unavailable", "error": "missing"}, [])), \
+                                patch.object(module, "command_sample", return_value=({"state": "unavailable", "error": "command_unavailable"}, [])):
+                            report = module.collect_events()
+                    else:
+                        output = io.StringIO()
+                        with contextlib.redirect_stdout(output):
+                            module.main()
+                        report = json.loads(output.getvalue())
+                self.assertEqual(report["schemaVersion"], 1)
+
     def test_all_embedded_target_programs_execute_with_unavailable_tools(self):
-        for name in ("agentless-audit.yml", "package-inventory.yml", "collect-security-events.yml"):
+        for name in ("agentless-audit.yml",):
             with self.subTest(playbook=name):
                 text = (ROOT / "ansible/playbooks" / name).read_text(encoding="utf-8")
-                source = textwrap.dedent(text.split("python3 - <<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+                source = textwrap.dedent(text.split("<<'PY'\n", 1)[1].split("\n        PY", 1)[0])
                 output = io.StringIO()
                 namespace = {}
                 def unavailable(argv, **kwargs):
