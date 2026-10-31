@@ -143,6 +143,78 @@ test("audit outcome marks missing and unavailable output partial", () => {
   assert.equal(result.warnings.length, 2);
 });
 
+test("reporting audits cannot claim completion without a run identifier", () => {
+  const unexpected = () => { throw new Error("Reports cannot be inspected without a run identifier"); };
+  const helper = load("lib/audit-result.ts", {
+    "@/lib/inventory": { getInventoryTargetHosts: unexpected },
+    "@/lib/ansible-control": { reportIdForRun: unexpected },
+    "@/lib/ansible-reports": { readAnsibleReport: unexpected },
+  });
+  for (const action of ["agentlessAudit", "packageInventory", "openScapAudit"]) {
+    for (const reportRunId of [null, undefined, "", " "]) {
+      const result = helper.inspectAuditReports({ action, profileId: "basic_linux", limit: "host", reportRunId });
+      assert.equal(result.partial, true);
+      assert.deepEqual(result.reportIds, []);
+      assert.equal(result.warnings.length, 1);
+      assert.match(result.warnings[0], /идентификатор запуска/);
+    }
+  }
+});
+
+test("reporting audits mark an empty Linux target set incomplete", () => {
+  for (const hosts of [[], [{ alias: "switch", groups: ["network"] }]]) {
+    const helper = load("lib/audit-result.ts", {
+      "@/lib/inventory": { getInventoryTargetHosts: () => hosts },
+      "@/lib/ansible-control": { reportIdForRun: () => { throw new Error("No report is expected for a missing Linux target"); } },
+      "@/lib/ansible-reports": { readAnsibleReport: () => { throw new Error("No report should be read"); } },
+    });
+    const result = helper.inspectAuditReports({ action: "agentlessAudit", profileId: "basic_linux", limit: "linux_hosts", reportRunId: "run-test" });
+    assert.equal(result.partial, true);
+    assert.deepEqual(result.reportIds, []);
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0], /нет хостов linux_hosts/);
+  }
+});
+
+test("a missing report identifier for one expected host does not disappear from the fleet outcome", () => {
+  const reads = [];
+  const helper = load("lib/audit-result.ts", {
+    "@/lib/inventory": { getInventoryTargetHosts: () => ["host-1", "host-2"].map((alias) => ({ alias, groups: ["linux_hosts"] })) },
+    "@/lib/ansible-control": { reportIdForRun: ({ limit }) => limit === "host-1" ? "host-1-basic_linux-run-test" : null },
+    "@/lib/ansible-reports": { readAnsibleReport: (id) => { reads.push(id); return { partial: false, available: true, reportTimeValid: true }; } },
+  });
+  const result = helper.inspectAuditReports({ action: "agentlessAudit", profileId: "basic_linux", limit: "linux_hosts", reportRunId: "run-test" });
+  assert.equal(result.partial, true);
+  assert.deepEqual(result.reportIds, ["host-1-basic_linux-run-test"]);
+  assert.deepEqual(reads, result.reportIds);
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /host-2:.*идентификатор ожидаемого отчёта/);
+});
+
+test("scanner availability independently prevents a complete audit outcome", () => {
+  const helper = load("lib/audit-result.ts", {
+    "@/lib/inventory": { getInventoryTargetHosts: () => [{ alias: "host", groups: ["linux_hosts"] }] },
+    "@/lib/ansible-control": { reportIdForRun: () => "host-openscap-run-test" },
+    "@/lib/ansible-reports": { readAnsibleReport: () => ({ partial: false, available: false, reportTimeValid: true }) },
+  });
+  const result = helper.inspectAuditReports({ action: "openScapAudit", profileId: "basic_linux", limit: "host", reportRunId: "run-test" });
+  assert.equal(result.partial, true);
+  assert.deepEqual(result.reportIds, ["host-openscap-run-test"]);
+  assert.equal(result.warnings.length, 1);
+  assert.match(result.warnings[0], /сканер не выполнил проверку/);
+});
+
+test("successful ping requires no report or inventory reinspection", () => {
+  const unexpected = () => { throw new Error("Ping intentionally has no report"); };
+  const helper = load("lib/audit-result.ts", {
+    "@/lib/inventory": { getInventoryTargetHosts: unexpected },
+    "@/lib/ansible-control": { reportIdForRun: unexpected },
+    "@/lib/ansible-reports": { readAnsibleReport: unexpected },
+  });
+  const result = helper.inspectAuditReports({ action: "ping", profileId: "basic_linux", limit: "host", reportRunId: null });
+  assert.deepEqual(result, { reportIds: [], partial: false, warnings: [] });
+});
+
 test("scheduled OpenSCAP resolves each host's policy and returns a partial result for incomplete scans", async () => {
   const calls = [];
   const annotations = [];

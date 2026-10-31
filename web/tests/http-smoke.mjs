@@ -302,6 +302,8 @@ try {
   const correlated = await (await request("/reports/correlation/smoke")).text();
   assert.match(correlated, /Риск не оценён/);
   await request("/api/internal/scheduled/openscap", { method: "POST", body: {}, auth: false, status: 401 });
+  await request("/api/internal/scheduled/agentless", { method: "POST", body: {}, auth: false, status: 401 });
+  await request("/api/internal/scheduled/package-vulnerabilities", { method: "POST", body: {}, auth: false, status: 401 });
   const report = await (await request(`/api/ansible/reports/${reportId}`)).json();
   assert.equal(report.report.partial, true);
   assert.equal(report.report.score, null);

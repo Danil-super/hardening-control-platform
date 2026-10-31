@@ -6,11 +6,78 @@ import http.cookiejar
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+
+def verify_scheduled_response(completed, host):
+    """A real scheduler CLI must fail on an incomplete or rejected API run."""
+    payload = json.loads(completed.stdout)
+    results = payload.get("results")
+    if (not isinstance(results, list) or len(results) != 1
+            or results[0].get("hostAlias") != host
+            or not isinstance(payload.get("reportRunId"), str)
+            or not payload["reportRunId"].startswith("schedule-")):
+        raise AssertionError("Scheduled API lost its requested host or run correlation")
+    result = results[0]
+    partial = bool(result.get("partial") or result.get("error"))
+    if (not isinstance(result.get("partial"), bool)
+            or payload.get("partial") is not partial
+            or payload.get("ok") is not (not partial)
+            or (completed.returncode == 0) is not (not partial)):
+        raise AssertionError("Scheduled CLI success does not match the API's incomplete/error evidence")
+    return payload, result
+
+
+def verify_scheduled_binding(item, host, observed_binding):
+    """The saved scheduler report must retain the authenticated target identity."""
+    raw = item["raw"]
+    binding = item.get("assetBinding")
+    identity_keys = ("assetId", "alias", "generation", "machineIdSha256",
+                     "sshHostKeyFingerprint", "connectionId")
+    if (not isinstance(binding, dict) or binding.get("status") != "verified"
+            or raw.get("assetBinding") != binding or binding.get("alias") != host
+            or item.get("assetBindingInvalid") is not False
+            or raw.get("inventoryHost") != host or item.get("inventoryHost") != host
+            or item.get("reportTimeValid") is not True
+            or any(binding.get(key) is None or binding.get(key) != observed_binding.get(key)
+                   for key in identity_keys)):
+        raise AssertionError("Scheduled report lost its verified SSH/machine identity or changed the target")
+
+
+def verify_native_package_snapshot(item, native_output):
+    """Compare the scheduled inventory with an independent native dpkg query."""
+    raw = item["raw"]
+    inventory = raw.get("packageInventory", {})
+    packages = raw.get("packages", [])
+    native = []
+    for line in native_output.splitlines():
+        fields = line.split("\t")
+        if len(fields) != 4:
+            raise AssertionError("Independent dpkg query returned an incomplete record")
+        if fields[0] == "installed":
+            native.append(tuple(fields[1:]))
+    collected = [(p.get("name"), p.get("version"), p.get("arch")) for p in packages]
+    if (not native or sorted(native) != sorted(collected)
+            or any(p.get("manager") != "dpkg" for p in packages)
+            or inventory.get("manager") != "dpkg"
+            or inventory.get("packageCount") != len(native)
+            or inventory.get("error") or inventory.get("partial") is not False
+            or item.get("partial") is not False):
+        raise AssertionError("Scheduled inventory differs from the real installed package database")
+
+
+def verify_known_ssh_deviations(item):
+    failed = [finding for finding in item["findings"] if finding.get("status") == "failed"]
+    for evidence in ("PermitRootLogin=yes", "MaxAuthTries=8"):
+        if not any(evidence in finding.get("evidence", "") for finding in failed):
+            observed = [{"id": f.get("id"), "status": f.get("status"), "evidence": f.get("evidence")}
+                        for f in item["findings"] if f.get("category") == "SSH"]
+            raise AssertionError(f"Known lab deviation was not detected: {evidence}; observed={observed}")
 
 
 def verify_unavailable_cve_report(payload, item, packages, freshness):
@@ -54,6 +121,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:3001", help="URL of the isolated lab")
     parser.add_argument("--host", default="lab-insecure", help="Inventory alias with the documented lab baseline")
+    parser.add_argument("--scheduled-host", default="lab-scheduled", help="Separate administrator-prepared NOPASSWD lab target")
     parser.add_argument("--online", action="store_true", help="Also download the real Trivy DB and compare online/offline CVE results")
     parser.add_argument("--expect-cold-cache", action="store_true", help="Require an absent Trivy DB and verify its saved manual report before any download; never deletes a cache")
     parser.add_argument("--check-persistence", action="store_true", help="After restarting HCP, verify the reports from --output still exist")
@@ -108,7 +176,7 @@ def main():
             raise AssertionError(f"{action}: {result.get('message')}")
         return result
 
-    def report(result, mode, snapshot=None):
+    def report(result, mode, snapshot=None, host=None):
         identifier = result.get("reportId")
         if not identifier:
             raise AssertionError(f"{mode}: reportId missing")
@@ -117,13 +185,46 @@ def main():
         snapshots = Path(args.output).parent / "reports"
         snapshots.mkdir(parents=True, exist_ok=True)
         (snapshots / f"{snapshot or mode}.json").write_text(json.dumps(item, ensure_ascii=False, indent=2) + "\n")
-        if raw.get("inventoryHost") != args.host or raw.get("mode") != mode:
+        if raw.get("inventoryHost") != (host or args.host) or raw.get("mode") != mode:
             raise AssertionError(f"{mode}: incorrect report host or mode")
         if item.get("reportTimeValid") is not True:
             raise AssertionError(f"{mode}: invalid report time")
         return item
 
+    compose = ["docker", "compose", "-f", str(Path(__file__).resolve().parent / "docker-compose.yml")]
+
+    def lab_command(arguments, timeout=60):
+        completed = subprocess.run(compose + arguments, text=True, capture_output=True, timeout=timeout)
+        if completed.returncode:
+            raise AssertionError("Native lab command failed: " + completed.stderr[-1000:])
+        return completed.stdout
+
+    def scheduled(task, host, suffix=""):
+        # Use the installed production CLI as the same unprivileged user as the
+        # systemd units. The schedule key comes only from the lab container env.
+        completed = subprocess.run(compose + ["exec", "--user", "node", "-T",
+            "-e", "HCP_SCHEDULE_TASKS=" + task,
+            "-e", "HCP_SCHEDULE_PROFILE=basic_linux",
+            "-e", "HCP_SCHEDULE_LIMIT=" + host,
+            "-e", "HCP_SCHEDULE_DEEP_LIMIT=" + host,
+            "hcp", "/usr/local/bin/hcp-scheduled-audit"],
+            text=True, capture_output=True, timeout=2000)
+        if any(secret in completed.stdout + completed.stderr for secret in (password, sudo_password) if secret):
+            raise AssertionError("Scheduled CLI exposed a lab credential")
+        try:
+            payload, result = verify_scheduled_response(completed, host)
+        except (AssertionError, ValueError) as error:
+            raise AssertionError(f"Scheduled {task}: {error}; stderr={completed.stderr[-1500:]}") from error
+        snapshots = Path(args.output).parent / "reports"
+        snapshots.mkdir(parents=True, exist_ok=True)
+        (snapshots / f"scheduled-{task}{suffix}-cli.json").write_text(json.dumps({
+            "task": task, "host": host, "exitCode": completed.returncode, "response": payload,
+        }, ensure_ascii=False, indent=2) + "\n")
+        return payload, result, completed.returncode
+
     original_mode = None
+    scheduled_binding = None
+    scheduled_facts = None
     failures = []
 
     @contextlib.contextmanager
@@ -148,16 +249,17 @@ def main():
             raise AssertionError("Lab host missing from inventory")
         record("Login, Ansible health and inventory")
         if args.check_persistence:
-            identifiers = set()
+            identifiers = {}
             for check in protocol["checks"]:
-                for key, value in check.get("details", {}).items():
-                    if key in {"reportId", "onlineReport", "offlineReport"}:
-                        identifiers.add(value)
+                details = check.get("details", {})
+                for key, value in details.items():
+                    if key in {"reportId", "onlineReport", "offlineReport", "packageReportId", "vulnerabilityReportId"}:
+                        identifiers[value] = details.get("hostAlias", args.host)
             if not identifiers:
                 raise AssertionError("Earlier protocol contains no reports to verify")
-            for identifier in identifiers:
+            for identifier, expected_host in identifiers.items():
                 stored = request("/api/ansible/reports/" + urllib.parse.quote(identifier, safe=""))["report"]
-                if stored.get("inventoryHost") != args.host:
+                if stored.get("inventoryHost") != expected_host:
                     raise AssertionError("Persisted report lost host identity")
             if request("/api/settings/vulnerability-data")["database"]["mode"] != protocol["databaseModeBefore"]:
                 raise AssertionError("Database selection did not survive restart")
@@ -179,18 +281,74 @@ def main():
             if checks["packages"]["state"] != "ready" or checks["openscap"]["state"] != "needs_setup":
                 raise AssertionError("Readiness incorrectly classified package or SCAP prerequisites")
             record("Host readiness through real SSH", readiness)
+        with independent_check("Scheduled target readiness and modern runtime through real SSH"):
+            scheduled_host = next((host for host in hosts if host["alias"] == args.scheduled_host), None)
+            if (not scheduled_host or scheduled_host.get("address") != "lab-scheduled-target"
+                    or scheduled_host.get("user") != "lab" or scheduled_host.get("credentialId")
+                    or args.scheduled_host == args.host):
+                raise AssertionError("The separate preprovisioned scheduled fixture is missing; start a fresh lab with its seed inventory")
+            observed = json.loads(lab_command(["exec", "--user", "lab", "-T", "lab-scheduled-target",
+                "sudo", "-n", "/usr/bin/python3", "-c",
+                'import json, os, sys; print(json.dumps({"pythonVersion": ".".join(map(str, sys.version_info[:3])), "uid": os.geteuid()}))']))
+            preflight = request("/api/ansible/hosts/preflight", {
+                "alias": args.scheduled_host, "address": scheduled_host["address"],
+                "user": scheduled_host["user"], "port": scheduled_host.get("port", 22), "become": True,
+            })
+            scheduled_facts = preflight.get("facts", {})
+            if (observed.get("uid") != 0 or not preflight.get("ok")
+                    or preflight.get("checks", {}).get("sudo", {}).get("state") != "passed"
+                    or scheduled_facts.get("pythonVersion") != observed.get("pythonVersion")
+                    or scheduled_facts.get("configuredPython") != "/usr/bin/python3"
+                    or scheduled_facts.get("ansibleRuntime") != "modern"
+                    or scheduled_facts.get("ansibleCoreVersion") != "2.21.5"
+                    or preflight.get("assetBinding", {}).get("status") != "verified"):
+                raise AssertionError("Scheduled target lacks verified identity, native passwordless sudo or the selected modern runtime")
+            scheduled_binding = preflight["assetBinding"]
+            record("Scheduled target readiness and modern runtime through real SSH", {
+                "hostAlias": args.scheduled_host, "facts": scheduled_facts,
+                "nativeSudoUid": observed["uid"], "assetBindingStatus": scheduled_binding["status"],
+            })
+        with independent_check("On-demand sudo is rejected by the real scheduler without storing a password"):
+            enrolled = next(host for host in hosts if host["alias"] == args.host)
+            if enrolled.get("sudoMode") != "on_demand":
+                raise AssertionError("Run verify-ssh-enrollment.py before the scheduled on-demand denial control")
+            for task in ("agentless", "packages"):
+                _, denied, exit_code = scheduled(task, args.host, "-on-demand-denied")
+                if (denied.get("errorCode") != "sudo_password_required" or not denied.get("error")
+                        or any(denied.get(key) for key in ("reportId", "packageReportId", "vulnerabilityReportId"))):
+                    raise AssertionError("Scheduler did not reject the on-demand target before collecting a report")
+                record("Scheduled " + task + " rejects on-demand sudo before collection", {
+                    "hostAlias": args.host, "errorCode": denied["errorCode"], "exitCode": exit_code,
+                })
         facts = report(run("collectFacts"), "facts")
         if not facts["raw"].get("os"):
             raise AssertionError("Facts did not identify an operating system")
         record("Host facts", {"reportId": facts["id"], "os": facts["raw"]["os"]})
         with independent_check('Known SSH configuration deviations'):
             baseline = report(run("agentlessAudit"), "agentless")
-            failed = [finding for finding in baseline["findings"] if finding.get("status") == "failed"]
-            for evidence in ("PermitRootLogin=yes", "MaxAuthTries=8"):
-                if not any(evidence in finding.get("evidence", "") for finding in failed):
-                    observed = [{"id": f.get("id"), "status": f.get("status"), "evidence": f.get("evidence")} for f in baseline["findings"] if f.get("category") == "SSH"]
-                    raise AssertionError(f"Known lab deviation was not detected: {evidence}; observed={observed}")
+            verify_known_ssh_deviations(baseline)
             record("Known SSH configuration deviations", {"reportId": baseline["id"]})
+        with independent_check("Production scheduled agentless collection, publication and partial exit"):
+            if not scheduled_binding:
+                raise AssertionError("The independent scheduled preflight did not complete")
+            payload, result, exit_code = scheduled("agentless", args.scheduled_host)
+            if result.get("error"):
+                raise AssertionError("Scheduled agentless collector failed: " + result["error"])
+            item = report(result, "agentless", "scheduled-agentless", args.scheduled_host)
+            verify_scheduled_binding(item, args.scheduled_host, scheduled_binding)
+            verify_known_ssh_deviations(item)
+            scanner = item["raw"].get("scanner", {})
+            if (scanner.get("source") != "agentless"
+                    or result.get("partial") is not item.get("partial")
+                    or scanner.get("partial") is not item.get("partial")
+                    or bool(scanner.get("incompleteChecks")) is not item.get("partial")):
+                raise AssertionError("Scheduled agentless API/CLI lost the real collector's incomplete checks")
+            record("Production scheduled agentless collection, publication and partial exit", {
+                "hostAlias": args.scheduled_host, "reportId": item["id"], "scheduleRunId": payload["reportRunId"],
+                "exitCode": exit_code, "partial": item["partial"], "findings": len(item["findings"]),
+                "incompleteChecks": scanner["incompleteChecks"], "assetBindingStatus": "verified",
+                "facts": scheduled_facts,
+            })
         with independent_check('Real ssh-audit negotiation'):
             ssh = report(run("sshCryptoAudit"), "ssh-audit")
             if ssh["raw"].get("scanner", {}).get("available") is not True or ssh["raw"]["scanner"].get("partial"):
@@ -228,18 +386,19 @@ def main():
                     raise AssertionError("CVE report invents a security percentage")
                 return payload, item
 
-            def verify_cve_evidence(payload, item):
+            def verify_cve_evidence(payload, item, source_packages=None):
+                source_packages = packages if source_packages is None else source_packages
                 raw = item["raw"]
                 scan = raw["vulnerabilityScan"]
                 coverage = scan["coverage"]
                 provenance = scan["packageProvenance"]
                 evidence = scan["sourceEvidence"]
-                count = len(packages["raw"]["packages"])
+                count = len(source_packages["raw"]["packages"])
                 if not raw.get("scanner", {}).get("available") or coverage["scannedPackages"] != count or coverage["inventoryPackages"] != count:
                     raise AssertionError("Native Trivy did not account for every collected package")
                 if scan["databaseFreshness"]["status"] != "fresh" or evidence["status"] != "unchanged" or evidence["before"] != evidence["after"]:
                     raise AssertionError("Native Trivy source freshness or byte identity is unproven")
-                if any(not isinstance(pkg.get("maintainer"), str) or not isinstance(pkg.get("origin"), str) for pkg in packages["raw"]["packages"]):
+                if any(not isinstance(pkg.get("maintainer"), str) or not isinstance(pkg.get("origin"), str) for pkg in source_packages["raw"]["packages"]):
                     raise AssertionError("Collector lost installed package provenance observations")
                 uncertain = provenance["unknown"] + provenance["third-party"]
                 if provenance["cryptographicallyVerified"] or provenance["distribution-maintainer"] + uncertain != count:
@@ -291,6 +450,39 @@ def main():
                     if online_report["raw"]["vulnerabilityScan"]["sourceEvidence"]["before"][source]["sha256"] != offline_report["raw"]["vulnerabilityScan"]["sourceEvidence"]["before"][source]["sha256"]:
                         raise AssertionError("Online/offline native scans consumed different source bytes")
                 record("Real Trivy DB: online and cached offline results match", {"onlineReport": online_report["id"], "offlineReport": offline_report["id"], "packageProvenance": online_report["raw"]["vulnerabilityScan"]["packageProvenance"], "partial": online_report["partial"]})
+            if request("/api/settings/vulnerability-data")["freshness"]["status"] == "fresh":
+                with independent_check("Production scheduled inventory and native Trivy preserve complete evidence"):
+                    if not scheduled_binding:
+                        raise AssertionError("The independent scheduled preflight did not complete")
+                    payload, result, exit_code = scheduled("packages", args.scheduled_host)
+                    if result.get("error") or result.get("dependencyTrackStatus") != "skipped":
+                        raise AssertionError("Scheduled inventory/Trivy failed or unexpectedly used Dependency-Track")
+                    saved_packages = report({"reportId": result.get("packageReportId")}, "packages", "scheduled-packages", args.scheduled_host)
+                    saved_scan = report({"reportId": result.get("vulnerabilityReportId")}, "vulnerabilities", "scheduled-vulnerabilities", args.scheduled_host)
+                    for item in (saved_packages, saved_scan):
+                        verify_scheduled_binding(item, args.scheduled_host, scheduled_binding)
+                    native_packages = lab_command(["exec", "-T", "lab-scheduled-target", "dpkg-query", "--show",
+                        "--showformat=${db:Status-Status}\t${binary:Package}\t${Version}\t${Architecture}\n"])
+                    verify_native_package_snapshot(saved_packages, native_packages)
+                    verify_cve_evidence(payload, saved_scan, saved_packages)
+                    scan = saved_scan["raw"]["vulnerabilityScan"]
+                    if (scan.get("sourcePackageReportId") != saved_packages["id"]
+                            or result.get("partial") is not saved_scan.get("partial")
+                            or saved_scan.get("score") is not None):
+                        raise AssertionError("Scheduled CVE report lost its source inventory, partial status or unscored assessment")
+                    record("Production scheduled inventory and native Trivy preserve complete evidence", {
+                        "hostAlias": args.scheduled_host, "packageReportId": saved_packages["id"],
+                        "vulnerabilityReportId": saved_scan["id"], "scheduleRunId": payload["reportRunId"],
+                        "exitCode": exit_code, "partial": saved_scan["partial"],
+                        "packageCount": len(saved_packages["raw"]["packages"]),
+                        "checkedPackages": scan["checkedPackages"], "coverage": scan["coverage"],
+                        "packageProvenance": scan["packageProvenance"], "assetBindingStatus": "verified",
+                        "facts": scheduled_facts,
+                    })
+            elif args.online:
+                raise AssertionError("Scheduled package acceptance requires the fresh DB established by the online control")
+            else:
+                protocol["limitations"].append("Scheduled native Trivy acceptance requires --online or an already fresh cache; the cold-cache control was retained")
         with independent_check('Unprepared OpenSCAP handling'):
             unprepared = request("/api/ansible/run", {
                 "action": "openScapAudit", "limit": args.host,

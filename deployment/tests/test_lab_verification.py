@@ -1,7 +1,9 @@
-"""The lab's unavailable-CVE gate rejects misleading saved report evidence."""
+"""Lab acceptance rejects misleading scheduler and unavailable-CVE evidence."""
 import copy
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
 import unittest
 
 
@@ -9,6 +11,106 @@ SPEC = importlib.util.spec_from_file_location(
     "hcp_lab_verify", Path(__file__).resolve().parents[1] / "lab" / "verify.py")
 VERIFY = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(VERIFY)
+
+
+class ScheduledAcceptanceTests(unittest.TestCase):
+    def response(self, partial=False, error=None, returncode=None):
+        result = {"hostAlias": "lab-scheduled", "partial": partial}
+        if error:
+            result["error"] = error
+        payload = {"ok": not partial, "partial": partial,
+                   "reportRunId": "schedule-20261030T180000Z", "results": [result]}
+        return subprocess.CompletedProcess(["hcp-scheduled-audit"],
+                                           int(partial) if returncode is None else returncode,
+                                           stdout=json.dumps(payload), stderr=""), payload
+
+    def test_complete_and_partial_native_results_have_opposite_exit_states(self):
+        for partial in (False, True):
+            completed, _ = self.response(partial)
+            payload, result = VERIFY.verify_scheduled_response(completed, "lab-scheduled")
+            self.assertIs(payload["partial"], partial)
+            self.assertEqual(result["hostAlias"], "lab-scheduled")
+        completed, _ = self.response(True, error="sudo_password_required")
+        VERIFY.verify_scheduled_response(completed, "lab-scheduled")
+
+    def test_partial_or_error_cannot_be_successful_cli_exit(self):
+        for error in (None, "sudo_password_required"):
+            completed, _ = self.response(True, error=error, returncode=0)
+            with self.subTest(error=error), self.assertRaises(AssertionError):
+                VERIFY.verify_scheduled_response(completed, "lab-scheduled")
+        completed, _ = self.response(False, returncode=1)
+        with self.assertRaises(AssertionError):
+            VERIFY.verify_scheduled_response(completed, "lab-scheduled")
+
+    def test_misleading_result_aggregate_or_wrong_host_is_rejected(self):
+        changes = [lambda p: p.update(ok=True), lambda p: p.update(partial=False),
+                   lambda p: p.update(results=[]),
+                   lambda p: p["results"][0].update(hostAlias="different-host"),
+                   lambda p: p["results"][0].pop("partial"),
+                   lambda p: p.update(reportRunId="run-unrelated")]
+        for change in changes:
+            completed, payload = self.response(True)
+            change(payload)
+            completed.stdout = json.dumps(payload)
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                VERIFY.verify_scheduled_response(completed, "lab-scheduled")
+
+    def binding_fixture(self):
+        binding = {"status": "verified", "assetId": "asset-native", "alias": "lab-scheduled",
+                   "generation": 1, "machineIdSha256": "a" * 64,
+                   "sshHostKeyFingerprint": "SHA256:fixture", "connectionId": "b" * 64}
+        return {"inventoryHost": "lab-scheduled", "assetBinding": copy.deepcopy(binding),
+                "assetBindingInvalid": False, "reportTimeValid": True,
+                "raw": {"inventoryHost": "lab-scheduled", "assetBinding": copy.deepcopy(binding)}}, binding
+
+    def test_saved_report_preserves_the_independent_preflight_identity(self):
+        item, binding = self.binding_fixture()
+        VERIFY.verify_scheduled_binding(item, "lab-scheduled", binding)
+
+    def test_missing_or_replaced_asset_evidence_cannot_pass(self):
+        changes = [lambda p: p.pop("assetBinding"),
+                   lambda p: p["raw"].pop("assetBinding"),
+                   lambda p: p["assetBinding"].update(status="unverified"),
+                   lambda p: p.update(assetBindingInvalid=True),
+                   lambda p: p.update(reportTimeValid=False),
+                   lambda p: p["raw"].update(inventoryHost="different-host")]
+        for change in changes:
+            item, binding = self.binding_fixture()
+            change(item)
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                VERIFY.verify_scheduled_binding(item, "lab-scheduled", binding)
+        for key in ("assetId", "generation", "machineIdSha256", "sshHostKeyFingerprint", "connectionId"):
+            item, binding = self.binding_fixture()
+            item["assetBinding"][key] = item["raw"]["assetBinding"][key] = "replaced"
+            with self.subTest(key=key), self.assertRaises(AssertionError):
+                VERIFY.verify_scheduled_binding(item, "lab-scheduled", binding)
+
+    def package_fixture(self):
+        native = "installed\tlibssl3:amd64\t3.0.14-1~deb12u2\tamd64\ninstalled\topenssl\t3.0.14-1~deb12u2\tamd64\nconfig-files\tremoved-package\t1.0\tall\n"
+        packages = [{"name": "libssl3:amd64", "version": "3.0.14-1~deb12u2", "arch": "amd64", "manager": "dpkg"},
+                    {"name": "openssl", "version": "3.0.14-1~deb12u2", "arch": "amd64", "manager": "dpkg"}]
+        item = {"partial": False, "raw": {"packages": packages, "packageInventory": {
+            "manager": "dpkg", "packageCount": 2, "partial": False, "error": ""}}}
+        return item, native
+
+    def test_scheduled_inventory_matches_native_versions_architectures_and_count(self):
+        VERIFY.verify_native_package_snapshot(*self.package_fixture())
+
+    def test_dropped_changed_duplicate_or_incomplete_inventory_is_rejected(self):
+        changes = [lambda p: p["raw"]["packages"].pop(),
+                   lambda p: p["raw"]["packages"].append(copy.deepcopy(p["raw"]["packages"][0])),
+                   lambda p: p["raw"]["packages"][0].update(version="3.0.14-1"),
+                   lambda p: p["raw"]["packages"][0].update(arch="arm64"),
+                   lambda p: p["raw"]["packages"][0].update(manager="rpm"),
+                   lambda p: p["raw"]["packageInventory"].update(partial=True),
+                   lambda p: p["raw"]["packageInventory"].update(error="database changed"),
+                   lambda p: p["raw"]["packageInventory"].update(packageCount=3),
+                   lambda p: p.update(partial=True)]
+        for change in changes:
+            item, native = self.package_fixture()
+            change(item)
+            with self.subTest(change=change), self.assertRaises(AssertionError):
+                VERIFY.verify_native_package_snapshot(item, native)
 
 
 class UnavailableCveAcceptanceTests(unittest.TestCase):
