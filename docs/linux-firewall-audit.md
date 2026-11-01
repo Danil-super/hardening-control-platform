@@ -110,6 +110,9 @@ firewalld во всех трёх фазах. Стенд сохраняет `fire
 `firewall-audit-normalized/protocol.json`. Нормализация должна сохранить
 идентификаторы, статусы, риски, evidence и причины неполноты.
 
+Результаты конкретных запусков, исправления по CI и проверяемые границы
+собраны в [протоколе от 1 ноября 2026 года](linux-firewall-validation-2026-11-01.md).
+
 ## Первичные источники семантики
 
 - [nft(8), ruleset evaluation, verdict и table flags](https://www.netfilter.org/projects/nftables/manpage.html).

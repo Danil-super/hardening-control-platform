@@ -1,0 +1,1978 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-01",
+  "generatedAt": "2026-11-01T10:30:03Z",
+  "repository": "https://github.com/Danil-super/hardening-control-platform",
+  "pullRequest": 7,
+  "source": {
+    "headSha": "0df309c9990a585f776ea707c209cc330f156f89",
+    "treeSha": "99a658912ed0e03478c2f77c8103f80adf8f0b30",
+    "baseSha": "1279d660061378262cde9a862f8b775d9d6f1729",
+    "testedPullRequestMergeSha": "f09c3b18d3df81c123782c27a320230a93b4a1a8",
+    "testedMergeTreeEqualsHeadTree": true,
+    "mainMergeSha": "f224f370d0d5b07ed8da993f7bcf796866fc4d96",
+    "mainMergeTreeEqualsHeadTree": true,
+    "documentationCommitChangesSource": false
+  },
+  "allEightTriggeredCandidateWorkflowsSucceeded": true,
+  "workflowRuns": [
+    {
+      "id": 41297007636,
+      "name": "Legacy target Python compatibility",
+      "event": "pull_request",
+      "headSha": "0df309c9990a585f776ea707c209cc330f156f89",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1,
+      "startedAt": "2026-11-01T10:19:50Z",
+      "updatedAt": "2026-11-01T10:20:02Z",
+      "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007636",
+      "workflowPath": ".github/workflows/target-python.yml"
+    },
+    {
+      "id": 41297007641,
+      "name": "Real UFW apply and rollback acceptance",
+      "event": "pull_request",
+      "headSha": "0df309c9990a585f776ea707c209cc330f156f89",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1,
+      "startedAt": "2026-11-01T10:19:50Z",
+      "updatedAt": "2026-11-01T10:20:34Z",
+      "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007641",
+      "workflowPath": ".github/workflows/firewall.yml"
+    },
+    {
+      "id": 41297007626,
+      "name": "Real firewalld SSH apply and rollback acceptance",
+      "event": "pull_request",
+      "headSha": "0df309c9990a585f776ea707c209cc330f156f89",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1,
+      "startedAt": "2026-11-01T10:19:50Z",
+      "updatedAt": "2026-11-01T10:22:08Z",
+      "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007626",
+      "workflowPath": ".github/workflows/firewalld.yml"
+    },
+    {
+      "id": 41297007591,
+      "name": "Real Alpine OpenRC and APK acceptance",
+      "event": "pull_request",
+      "headSha": "0df309c9990a585f776ea707c209cc330f156f89",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1,
+      "startedAt": "2026-11-01T10:19:50Z",
+      "updatedAt": "2026-11-01T10:22:31Z",
+      "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007591",
+      "workflowPath": ".github/workflows/linux-alpine-vm-integration.yml"
+    },
+    {
+      "id": 41297007616,
+      "name": "Native RPM VM hardening and SELinux acceptance",
+      "event": "pull_request",
+      "headSha": "0df309c9990a585f776ea707c209cc330f156f89",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1,
+      "startedAt": "2026-11-01T10:19:50Z",
+      "updatedAt": "2026-11-01T10:23:53Z",
+      "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007616",
+      "workflowPath": ".github/workflows/linux-rpm-vm-integration.yml"
+    },
+    {
+      "id": 41297007597,
+      "name": "OpenSCAP full-profile acceptance",
+      "event": "pull_request",
+      "headSha": "0df309c9990a585f776ea707c209cc330f156f89",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1,
+      "startedAt": "2026-11-01T10:19:50Z",
+      "updatedAt": "2026-11-01T10:25:00Z",
+      "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007597",
+      "workflowPath": ".github/workflows/openscap.yml"
+    },
+    {
+      "id": 41297007696,
+      "name": "Verify hardening platform",
+      "event": "pull_request",
+      "headSha": "0df309c9990a585f776ea707c209cc330f156f89",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1,
+      "startedAt": "2026-11-01T10:19:50Z",
+      "updatedAt": "2026-11-01T10:25:51Z",
+      "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007696",
+      "workflowPath": ".github/workflows/verify.yml"
+    },
+    {
+      "id": 41297007622,
+      "name": "Real Astra VM scanner acceptance",
+      "event": "pull_request",
+      "headSha": "0df309c9990a585f776ea707c209cc330f156f89",
+      "status": "completed",
+      "conclusion": "success",
+      "attempt": 1,
+      "startedAt": "2026-11-01T10:19:50Z",
+      "updatedAt": "2026-11-01T10:26:49Z",
+      "url": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007622",
+      "workflowPath": ".github/workflows/astra-vm.yml"
+    }
+  ],
+  "sourceFilesSha256": {
+    "ansible/playbooks/agentless-audit.yml": "075322190f351fe673c2e085fdf48bebfbe03974a7222c29465fc5462d51d80f",
+    "ansible/tests/test_agentless_audit.py": "716ad4f81054aab86312b2ecf577706e15234b08c351198cfd31c536938260c8",
+    "deployment/tests/verify_target_python.py": "a7c33971aef9149c3bbb3f466c127d27ee57bc45ad08f13ec00472939dcb7073",
+    "deployment/tests/linux_rpm_vm_integration.py": "5d7f5b0b809e5490c90cf4d4d2d74f05935299581217bb174587743ea6d5bd06",
+    "deployment/tests/verify_firewall_audit_normalization.mjs": "a2e04ac22282a376513a540e8f22a7ffe621bb6aff1f9ed8eb5916a5251ba131",
+    "deployment/tests/test_firewall_audit_control.py": "43f25da4656be2d20ec3f6a1e9924959099d35e0e5f2b42421459ae9c59a8526",
+    "deployment/tests/firewall_audit_normalization.test.mjs": "3b239937b459dc10bed01518f48b3aaabd81da6a7e0bb79f977d69178de5b2b4",
+    ".github/workflows/linux-rpm-vm-integration.yml": "be40a8ae80aa26f780e92205b6c90d578f2c11300e57e462a5575797ae8d3f9c",
+    "web/lib/ansible-reports.ts": "09a35a83443a776834c18691145d96016aa93f99a3545f96fc1ae086955b8f38",
+    "ansible/tests/fixtures/firewalld-almalinux9-main-2026-11-01.nft.json": "9cbe025048fdacfbc5bf96a101afaa558818c8366912156becd354bda4aa0853"
+  },
+  "ciTests": {
+    "web": 401,
+    "http": 69,
+    "python": {
+      "total": 293,
+      "passed": 291,
+      "skipped": 2,
+      "skipReason": "native OpenSCAP environment unavailable"
+    },
+    "deployment": 38,
+    "syntaxPlaybooks": 14,
+    "agentless": 56,
+    "normalization": 3,
+    "legacy": {
+      "python": "3.5.10",
+      "tests": 8
+    },
+    "typecheck": "passed",
+    "webBuild": "passed",
+    "containerBuild": "passed"
+  },
+  "localChecks": {
+    "pythonInitial": {
+      "total": 292,
+      "passed": 290,
+      "skipped": 2,
+      "skipReason": "native OpenSCAP environment unavailable"
+    },
+    "deployment": {
+      "total": 38,
+      "passed": 38,
+      "skipped": 0
+    },
+    "normalization": {
+      "total": 3,
+      "passed": 3,
+      "skipped": 0
+    },
+    "finalAgentless": {
+      "total": 56,
+      "passed": 56,
+      "skipped": 0,
+      "ansibleCore": "2.21.5"
+    },
+    "playbookSyntax": {
+      "total": 14,
+      "passed": 14,
+      "ansibleCore": "2.21.5"
+    },
+    "targetSmoke": {
+      "total": 8,
+      "passed": 8,
+      "python": "3.12.14",
+      "nativePython35": false
+    },
+    "decodedCommandUnchanged": {
+      "bytes": 64413,
+      "sha256": "860958ca39fdb0136219dd0874802509039872455e6cbfc88fb334d3a6f5a607"
+    }
+  },
+  "initialCiFailure": {
+    "sourceHead": "c72039a974492ebe9d94b4b3460baced4946a643",
+    "tree": "fbf768d2ed1dcb38e41b888114b66cf413621558",
+    "rootCause": "Ansible free-form shell argument parser rejected an apostrophe in an embedded Python comment before target audit execution",
+    "affectedRuns": [
+      41296505335,
+      41296505340,
+      41296505373
+    ],
+    "rpmMutationReached": false,
+    "artifact": {
+      "id": 13079836100,
+      "size": 63099,
+      "sha256": "db4974acd4d63776221f093a9c738cf9b7356bfdd23b0a262fc08db26aea76a1"
+    },
+    "fix": "Use explicit ansible.builtin.shell.cmd and exercise actual Ansible task parsing"
+  },
+  "nativeRpm": [
+    {
+      "distribution": "almalinux",
+      "version": "9.8",
+      "architecture": "x86_64",
+      "kernel": "5.14.0-687.53.1.el9_8.x86_64",
+      "pid1": "systemd",
+      "selinuxMode": "Enforcing",
+      "artifact": {
+        "id": 13080256107,
+        "name": "rpm-native-almalinux",
+        "bytes": 1201458,
+        "sha256": "25ad993c094aa4806c40d0e63d846237590961c4acc08c2c06a852b21245953a"
+      },
+      "firewallAudit": {
+        "reports": [
+          {
+            "phase": "baseline",
+            "firewallStatus": "passed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findings": 17,
+            "filterProofs": {
+              "iptables": {},
+              "nftables": {
+                "deny_chains": [
+                  "inet/firewalld/filter_INPUT"
+                ],
+                "destination_port": 1,
+                "evaluated_input_chains": [
+                  "inet/firewalld/filter_INPUT"
+                ],
+                "family": "ip",
+                "kind": "deny_witness",
+                "protocol": "tcp"
+              }
+            },
+            "rawSha256": "b54edb5522dd3d1904d70824e92c71ad5dbdee7b0b2592aae987e31dca4b4fab",
+            "normalizedSha256": "7384a4041ac0877506a750d23317f3a29c08adfaee3ab027a77ce3231e1b15e0"
+          },
+          {
+            "phase": "allow-all",
+            "firewallStatus": "failed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findings": 17,
+            "filterProofs": {
+              "iptables": {},
+              "nftables": {}
+            },
+            "rawSha256": "129ef7987961ec30c2ba260d1e58acd03d341a4c9bafce093a9e1711beacff69",
+            "normalizedSha256": "1856fa89c6d3ba54a38f8f131f495014ef5b602984216ecda5dadcaaa8e9c452"
+          },
+          {
+            "phase": "restored",
+            "firewallStatus": "passed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findings": 17,
+            "filterProofs": {
+              "iptables": {},
+              "nftables": {
+                "deny_chains": [
+                  "inet/firewalld/filter_INPUT"
+                ],
+                "destination_port": 1,
+                "evaluated_input_chains": [
+                  "inet/firewalld/filter_INPUT"
+                ],
+                "family": "ip",
+                "kind": "deny_witness",
+                "protocol": "tcp"
+              }
+            },
+            "rawSha256": "eabb86b1c3a5e73af5f7e333d294330082ddb7172594525b5d594194b31ab25a",
+            "normalizedSha256": "93c72bdad0553cacf4f8ad6bef42ba900c22b8295999e4dfa3d24d792616f5c5"
+          }
+        ],
+        "exactRuntimeConfigLabelsAndKernelRestore": true,
+        "singleRuntimeAcceptWasOnlyKernelDelta": true,
+        "activeInputChains": [
+          {
+            "family": "inet",
+            "table": "firewalld",
+            "chain": "filter_INPUT",
+            "type": "filter",
+            "priority": 10,
+            "policy": "accept",
+            "tableFlags": [
+              "owner",
+              "persist"
+            ]
+          }
+        ],
+        "snapshots": [
+          {
+            "phase": "baseline",
+            "nftFile": "firewall-audit-baseline.nft.json",
+            "nftSha256": "cb38f8a461efb3275334e52b59b0e4cb6f8052c02294e6522295aec5c4c821c5",
+            "nftSemanticSha256": "9595b565377c5dedd8c82706622596ca66196d7cbcb1ad94ae4410460473d722",
+            "activeInputChains": [
+              {
+                "family": "inet",
+                "table": "firewalld",
+                "chain": "filter_INPUT",
+                "type": "filter",
+                "priority": 10,
+                "policy": "accept",
+                "tableFlags": [
+                  "owner",
+                  "persist"
+                ]
+              }
+            ],
+            "selinux": "Enforcing",
+            "firewalld": "running"
+          },
+          {
+            "phase": "allow-all",
+            "nftFile": "firewall-audit-allow-all.nft.json",
+            "nftSha256": "fba489437f4a5ecfb099a9bdf39a416e6e3904cf8d1b746eecefa13f19e37026",
+            "nftSemanticSha256": "1a3868856eef0bafca3e22d677673808c956bbda86222c1e59589ef45f23ca1e",
+            "activeInputChains": [
+              {
+                "family": "inet",
+                "table": "firewalld",
+                "chain": "filter_INPUT",
+                "type": "filter",
+                "priority": 10,
+                "policy": "accept",
+                "tableFlags": [
+                  "owner",
+                  "persist"
+                ]
+              }
+            ],
+            "selinux": "Enforcing",
+            "firewalld": "running"
+          },
+          {
+            "phase": "restored",
+            "nftFile": "firewall-audit-restored.nft.json",
+            "nftSha256": "cb38f8a461efb3275334e52b59b0e4cb6f8052c02294e6522295aec5c4c821c5",
+            "nftSemanticSha256": "9595b565377c5dedd8c82706622596ca66196d7cbcb1ad94ae4410460473d722",
+            "activeInputChains": [
+              {
+                "family": "inet",
+                "table": "firewalld",
+                "chain": "filter_INPUT",
+                "type": "filter",
+                "priority": 10,
+                "policy": "accept",
+                "tableFlags": [
+                  "owner",
+                  "persist"
+                ]
+              }
+            ],
+            "selinux": "Enforcing",
+            "firewalld": "running"
+          }
+        ],
+        "normalizationProtocolSha256": "95f6d0c243ca513549c64ef6c7e0bff04d7f49481b798adb73e6bd8d1a975f29"
+      },
+      "rootVerification": {
+        "artifactSha256": "25ad993c094aa4806c40d0e63d846237590961c4acc08c2c06a852b21245953a",
+        "allRawNormalizedFindingsConserved": true,
+        "exactRestore": true,
+        "phases": [
+          {
+            "phase": "baseline",
+            "firewallStatus": "passed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findingCounts": {
+              "failed": 4,
+              "passed": 7,
+              "manual": 6
+            },
+            "score": 67
+          },
+          {
+            "phase": "allow-all",
+            "firewallStatus": "failed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findingCounts": {
+              "failed": 5,
+              "passed": 6,
+              "manual": 6
+            },
+            "score": 60
+          },
+          {
+            "phase": "restored",
+            "firewallStatus": "passed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findingCounts": {
+              "failed": 4,
+              "passed": 7,
+              "manual": 6
+            },
+            "score": 67
+          }
+        ],
+        "checks": "root independently verified digests, native proof, raw/normalized equality and state restoration"
+      },
+      "selinuxMetadata": {
+        "mode": "Enforcing",
+        "realLabels": true,
+        "metadataChecks": [
+          "round_trip",
+          "after_move_old",
+          "after_install",
+          "after_prepared"
+        ],
+        "realFirewallLabelsRestored": 10
+      },
+      "firewallRemediation": {
+        "sigkillPhase": "move_old_intent",
+        "exactRestoreAndReplay": true,
+        "realTrafficGateCompleted": true,
+        "sshProtectionAndPreviewCompleted": true
+      },
+      "nativeInventory": {
+        "count": 397,
+        "partial": false,
+        "error": "",
+        "rpmDatabase": {
+          "path": "/var/lib/rpm",
+          "backend": "sqlite",
+          "selection": "native-macros-pinned"
+        }
+      },
+      "packageMatching": [
+        {
+          "name": "native",
+          "softwareCoverage": {
+            "inventoryPackages": 397,
+            "decodedRecords": 397,
+            "eligiblePackages": 396,
+            "scannedPackages": 396,
+            "excludedNonSoftware": [
+              {
+                "name": "gpg-pubkey",
+                "version": "b86b3716-61e69f29",
+                "manager": "rpm",
+                "purl": "pkg:rpm/alma/gpg-pubkey@b86b3716-61e69f29?arch=None&distro=alma-9.8",
+                "reason": "rpm-public-key-record"
+              }
+            ],
+            "complete": true,
+            "reasons": [],
+            "scope": "Пакеты ПО из dpkg/rpm/apk; записи ключей RPM сохранены отдельно и не являются объектом пакетных CVE. Приложения, контейнеры и вручную установленные программы не включены."
+          },
+          "inputRecords": 397,
+          "processedRecords": 397,
+          "findingEntries": 518,
+          "distinctCveIdentifiers": 113,
+          "exactNativeHcpTuplesEqual": true,
+          "normalizedRawEqual": true
+        },
+        {
+          "name": "control-vulnerable",
+          "softwareCoverage": {
+            "inventoryPackages": 1,
+            "decodedRecords": 1,
+            "eligiblePackages": 1,
+            "scannedPackages": 1,
+            "excludedNonSoftware": [],
+            "complete": true,
+            "reasons": [],
+            "scope": "Пакеты ПО из dpkg/rpm/apk; записи ключей RPM сохранены отдельно и не являются объектом пакетных CVE. Приложения, контейнеры и вручную установленные программы не включены."
+          },
+          "inputRecords": 1,
+          "processedRecords": 1,
+          "findingEntries": 70,
+          "distinctCveIdentifiers": 70,
+          "exactNativeHcpTuplesEqual": true,
+          "normalizedRawEqual": true
+        },
+        {
+          "name": "control-fixed",
+          "softwareCoverage": {
+            "inventoryPackages": 1,
+            "decodedRecords": 1,
+            "eligiblePackages": 1,
+            "scannedPackages": 1,
+            "excludedNonSoftware": [],
+            "complete": true,
+            "reasons": [],
+            "scope": "Пакеты ПО из dpkg/rpm/apk; записи ключей RPM сохранены отдельно и не являются объектом пакетных CVE. Приложения, контейнеры и вручную установленные программы не включены."
+          },
+          "inputRecords": 1,
+          "processedRecords": 1,
+          "findingEntries": 62,
+          "distinctCveIdentifiers": 62,
+          "exactNativeHcpTuplesEqual": true,
+          "normalizedRawEqual": true
+        },
+        {
+          "name": "control-fixed-with-trust-record",
+          "softwareCoverage": {
+            "inventoryPackages": 2,
+            "decodedRecords": 2,
+            "eligiblePackages": 1,
+            "scannedPackages": 1,
+            "excludedNonSoftware": [
+              {
+                "name": "gpg-pubkey",
+                "version": "01234567-89abcdef",
+                "manager": "rpm",
+                "purl": "pkg:rpm/alma/gpg-pubkey@01234567-89abcdef?arch=None&distro=alma-9",
+                "reason": "rpm-public-key-record"
+              }
+            ],
+            "complete": true,
+            "reasons": [],
+            "scope": "Пакеты ПО из dpkg/rpm/apk; записи ключей RPM сохранены отдельно и не являются объектом пакетных CVE. Приложения, контейнеры и вручную установленные программы не включены."
+          },
+          "inputRecords": 2,
+          "processedRecords": 2,
+          "findingEntries": 62,
+          "distinctCveIdentifiers": 62,
+          "exactNativeHcpTuplesEqual": true,
+          "normalizedRawEqual": true
+        }
+      ],
+      "checkpoints": [
+        "Pinned official guest image verified",
+        "Genuine RPM guest with independent kernel and enforcing SELinux",
+        "Production SSH facts and complete native RPM collection",
+        "Native agentless pass/fail/restored rule and honest coverage",
+        "Native firewall_active passed/failed/restored with kernel evidence and production normalization",
+        "Native enforcing SELinux metadata and crash recovery",
+        "Native firewalld preview, management guard, incoming deny and persistent idempotence",
+        "Native SIGKILL rollback resumes with exact SELinux labels and restored traffic",
+        "Native inventory through production SBOM and Trivy vendor controls"
+      ],
+      "limitations": [
+        "Pinned x86_64 RPM base images only; other releases require native acceptance",
+        "Incoming traffic control is IPv4 over QEMU forwarding; no IPv6 coverage claim",
+        "firewall_active proves conditional NEW/non-loopback/non-DNAT TCP/UDP kernel paths, not external reachability or all packet classes",
+        "Native SELinux validation uses the image's policy; no claim about every custom MLS/MCS policy",
+        "Labelled controls establish specific behavior, not overall vulnerability recall"
+      ]
+    },
+    {
+      "distribution": "rocky",
+      "version": "9.8",
+      "architecture": "x86_64",
+      "kernel": "5.14.0-687.10.1.el9_8.0.1.x86_64",
+      "pid1": "systemd",
+      "selinuxMode": "Enforcing",
+      "artifact": {
+        "id": 13079741499,
+        "name": "rpm-native-rocky",
+        "bytes": 4093109,
+        "sha256": "18ed1a35fb847a1eeab1423c9437fdd274bc2b0a4e04e7a361930af4e3c55712"
+      },
+      "firewallAudit": {
+        "reports": [
+          {
+            "phase": "baseline",
+            "firewallStatus": "passed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findings": 17,
+            "filterProofs": {
+              "iptables": {},
+              "nftables": {
+                "deny_chains": [
+                  "inet/firewalld/filter_INPUT"
+                ],
+                "destination_port": 1,
+                "evaluated_input_chains": [
+                  "inet/firewalld/filter_INPUT"
+                ],
+                "family": "ip",
+                "kind": "deny_witness",
+                "protocol": "tcp"
+              }
+            },
+            "rawSha256": "d695d68a940934c3b9be0589f90bf986f602d4a411766618007223258d5afcb6",
+            "normalizedSha256": "f3a3f7aef51c689ee68d375a24b316c5985f953e7af0121650253f335a47da29"
+          },
+          {
+            "phase": "allow-all",
+            "firewallStatus": "failed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findings": 17,
+            "filterProofs": {
+              "iptables": {},
+              "nftables": {}
+            },
+            "rawSha256": "e6ba4758499283714edc7f80a33af5b6269b19c695660ed5d3e5018e4474af10",
+            "normalizedSha256": "57d33250cc478d2feffbcff2c4aaec43232e443bcc91d103c7d0266c7778f3fa"
+          },
+          {
+            "phase": "restored",
+            "firewallStatus": "passed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findings": 17,
+            "filterProofs": {
+              "iptables": {},
+              "nftables": {
+                "deny_chains": [
+                  "inet/firewalld/filter_INPUT"
+                ],
+                "destination_port": 1,
+                "evaluated_input_chains": [
+                  "inet/firewalld/filter_INPUT"
+                ],
+                "family": "ip",
+                "kind": "deny_witness",
+                "protocol": "tcp"
+              }
+            },
+            "rawSha256": "fedb4b987672531e6991b51952363041da515645538a3de963de848818d7d75c",
+            "normalizedSha256": "ef629e6cb97938f223ad87cda9e1b2304e3ba2522a65805a3f68c22480385279"
+          }
+        ],
+        "exactRuntimeConfigLabelsAndKernelRestore": true,
+        "singleRuntimeAcceptWasOnlyKernelDelta": true,
+        "activeInputChains": [
+          {
+            "family": "inet",
+            "table": "firewalld",
+            "chain": "filter_INPUT",
+            "type": "filter",
+            "priority": 10,
+            "policy": "accept",
+            "tableFlags": [
+              "owner",
+              "persist"
+            ]
+          }
+        ],
+        "snapshots": [
+          {
+            "phase": "baseline",
+            "nftFile": "firewall-audit-baseline.nft.json",
+            "nftSha256": "cb38f8a461efb3275334e52b59b0e4cb6f8052c02294e6522295aec5c4c821c5",
+            "nftSemanticSha256": "9595b565377c5dedd8c82706622596ca66196d7cbcb1ad94ae4410460473d722",
+            "activeInputChains": [
+              {
+                "family": "inet",
+                "table": "firewalld",
+                "chain": "filter_INPUT",
+                "type": "filter",
+                "priority": 10,
+                "policy": "accept",
+                "tableFlags": [
+                  "owner",
+                  "persist"
+                ]
+              }
+            ],
+            "selinux": "Enforcing",
+            "firewalld": "running"
+          },
+          {
+            "phase": "allow-all",
+            "nftFile": "firewall-audit-allow-all.nft.json",
+            "nftSha256": "fba489437f4a5ecfb099a9bdf39a416e6e3904cf8d1b746eecefa13f19e37026",
+            "nftSemanticSha256": "1a3868856eef0bafca3e22d677673808c956bbda86222c1e59589ef45f23ca1e",
+            "activeInputChains": [
+              {
+                "family": "inet",
+                "table": "firewalld",
+                "chain": "filter_INPUT",
+                "type": "filter",
+                "priority": 10,
+                "policy": "accept",
+                "tableFlags": [
+                  "owner",
+                  "persist"
+                ]
+              }
+            ],
+            "selinux": "Enforcing",
+            "firewalld": "running"
+          },
+          {
+            "phase": "restored",
+            "nftFile": "firewall-audit-restored.nft.json",
+            "nftSha256": "cb38f8a461efb3275334e52b59b0e4cb6f8052c02294e6522295aec5c4c821c5",
+            "nftSemanticSha256": "9595b565377c5dedd8c82706622596ca66196d7cbcb1ad94ae4410460473d722",
+            "activeInputChains": [
+              {
+                "family": "inet",
+                "table": "firewalld",
+                "chain": "filter_INPUT",
+                "type": "filter",
+                "priority": 10,
+                "policy": "accept",
+                "tableFlags": [
+                  "owner",
+                  "persist"
+                ]
+              }
+            ],
+            "selinux": "Enforcing",
+            "firewalld": "running"
+          }
+        ],
+        "normalizationProtocolSha256": "df169a5cb091399ab65f11f6c9a4c4e3fae8c098c1f902b16796be0fd8d0e4c4"
+      },
+      "rootVerification": {
+        "artifactSha256": "18ed1a35fb847a1eeab1423c9437fdd274bc2b0a4e04e7a361930af4e3c55712",
+        "allRawNormalizedFindingsConserved": true,
+        "exactRestore": true,
+        "phases": [
+          {
+            "phase": "baseline",
+            "firewallStatus": "passed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findingCounts": {
+              "failed": 4,
+              "passed": 7,
+              "manual": 6
+            },
+            "score": 67
+          },
+          {
+            "phase": "allow-all",
+            "firewallStatus": "failed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findingCounts": {
+              "failed": 5,
+              "passed": 6,
+              "manual": 6
+            },
+            "score": 60
+          },
+          {
+            "phase": "restored",
+            "firewallStatus": "passed",
+            "partial": false,
+            "incompleteChecks": [],
+            "findingCounts": {
+              "failed": 4,
+              "passed": 7,
+              "manual": 6
+            },
+            "score": 67
+          }
+        ],
+        "checks": "root independently verified digests, native proof, raw/normalized equality and state restoration"
+      },
+      "selinuxMetadata": {
+        "mode": "Enforcing",
+        "realLabels": true,
+        "metadataChecks": [
+          "round_trip",
+          "after_move_old",
+          "after_install",
+          "after_prepared"
+        ],
+        "realFirewallLabelsRestored": 10
+      },
+      "firewallRemediation": {
+        "sigkillPhase": "move_old_intent",
+        "exactRestoreAndReplay": true,
+        "realTrafficGateCompleted": true,
+        "sshProtectionAndPreviewCompleted": true
+      },
+      "nativeInventory": {
+        "count": 433,
+        "partial": false,
+        "error": "",
+        "rpmDatabase": {
+          "path": "/var/lib/rpm",
+          "backend": "sqlite",
+          "selection": "native-macros-pinned"
+        }
+      },
+      "packageMatching": [
+        {
+          "name": "native",
+          "softwareCoverage": {
+            "inventoryPackages": 433,
+            "decodedRecords": 433,
+            "eligiblePackages": 432,
+            "scannedPackages": 432,
+            "excludedNonSoftware": [
+              {
+                "name": "gpg-pubkey",
+                "version": "350d275d-6279464b",
+                "manager": "rpm",
+                "purl": "pkg:rpm/rocky/gpg-pubkey@350d275d-6279464b?arch=None&distro=rocky-9.8",
+                "reason": "rpm-public-key-record"
+              }
+            ],
+            "complete": true,
+            "reasons": [],
+            "scope": "Пакеты ПО из dpkg/rpm/apk; записи ключей RPM сохранены отдельно и не являются объектом пакетных CVE. Приложения, контейнеры и вручную установленные программы не включены."
+          },
+          "inputRecords": 433,
+          "processedRecords": 433,
+          "findingEntries": 2755,
+          "distinctCveIdentifiers": 589,
+          "exactNativeHcpTuplesEqual": true,
+          "normalizedRawEqual": true
+        },
+        {
+          "name": "control-vulnerable",
+          "softwareCoverage": {
+            "inventoryPackages": 1,
+            "decodedRecords": 1,
+            "eligiblePackages": 1,
+            "scannedPackages": 1,
+            "excludedNonSoftware": [],
+            "complete": true,
+            "reasons": [],
+            "scope": "Пакеты ПО из dpkg/rpm/apk; записи ключей RPM сохранены отдельно и не являются объектом пакетных CVE. Приложения, контейнеры и вручную установленные программы не включены."
+          },
+          "inputRecords": 1,
+          "processedRecords": 1,
+          "findingEntries": 54,
+          "distinctCveIdentifiers": 54,
+          "exactNativeHcpTuplesEqual": true,
+          "normalizedRawEqual": true
+        },
+        {
+          "name": "control-fixed",
+          "softwareCoverage": {
+            "inventoryPackages": 1,
+            "decodedRecords": 1,
+            "eligiblePackages": 1,
+            "scannedPackages": 1,
+            "excludedNonSoftware": [],
+            "complete": true,
+            "reasons": [],
+            "scope": "Пакеты ПО из dpkg/rpm/apk; записи ключей RPM сохранены отдельно и не являются объектом пакетных CVE. Приложения, контейнеры и вручную установленные программы не включены."
+          },
+          "inputRecords": 1,
+          "processedRecords": 1,
+          "findingEntries": 46,
+          "distinctCveIdentifiers": 46,
+          "exactNativeHcpTuplesEqual": true,
+          "normalizedRawEqual": true
+        },
+        {
+          "name": "control-fixed-with-trust-record",
+          "softwareCoverage": {
+            "inventoryPackages": 2,
+            "decodedRecords": 2,
+            "eligiblePackages": 1,
+            "scannedPackages": 1,
+            "excludedNonSoftware": [
+              {
+                "name": "gpg-pubkey",
+                "version": "01234567-89abcdef",
+                "manager": "rpm",
+                "purl": "pkg:rpm/rocky/gpg-pubkey@01234567-89abcdef?arch=None&distro=rocky-9",
+                "reason": "rpm-public-key-record"
+              }
+            ],
+            "complete": true,
+            "reasons": [],
+            "scope": "Пакеты ПО из dpkg/rpm/apk; записи ключей RPM сохранены отдельно и не являются объектом пакетных CVE. Приложения, контейнеры и вручную установленные программы не включены."
+          },
+          "inputRecords": 2,
+          "processedRecords": 2,
+          "findingEntries": 46,
+          "distinctCveIdentifiers": 46,
+          "exactNativeHcpTuplesEqual": true,
+          "normalizedRawEqual": true
+        }
+      ],
+      "checkpoints": [
+        "Pinned official guest image verified",
+        "Genuine RPM guest with independent kernel and enforcing SELinux",
+        "Production SSH facts and complete native RPM collection",
+        "Native agentless pass/fail/restored rule and honest coverage",
+        "Native firewall_active passed/failed/restored with kernel evidence and production normalization",
+        "Native enforcing SELinux metadata and crash recovery",
+        "Native firewalld preview, management guard, incoming deny and persistent idempotence",
+        "Native SIGKILL rollback resumes with exact SELinux labels and restored traffic",
+        "Native inventory through production SBOM and Trivy vendor controls"
+      ],
+      "limitations": [
+        "Pinned x86_64 RPM base images only; other releases require native acceptance",
+        "Incoming traffic control is IPv4 over QEMU forwarding; no IPv6 coverage claim",
+        "firewall_active proves conditional NEW/non-loopback/non-DNAT TCP/UDP kernel paths, not external reachability or all packet classes",
+        "Native SELinux validation uses the image's policy; no claim about every custom MLS/MCS policy",
+        "Labelled controls establish specific behavior, not overall vulnerability recall"
+      ]
+    }
+  ],
+  "otherNativeAcceptance": {
+    "ufw": {
+      "runId": 41297007641,
+      "jobId": 124819857648,
+      "conclusion": "success",
+      "artifactId": 13079423041,
+      "artifactBytes": 10476,
+      "artifactSha256": "8d147816aa522ef75df867e2d3e87126eea9095263b59a9a7ed7688c3581e314",
+      "zipDigestVerified": true,
+      "scope": "real UFW kernel and Ansible playbooks; isolated Docker-to-VM HTTP probe",
+      "checkCount": 12,
+      "checks": [
+        {
+          "name": "initial-bridge-http",
+          "ok": true,
+          "reachable": true
+        },
+        {
+          "name": "active-firewall-baseline-http",
+          "ok": true,
+          "reachable": true
+        },
+        {
+          "name": "preview-leaves-http-open",
+          "ok": true,
+          "reachable": true
+        },
+        {
+          "name": "preview-config-unchanged",
+          "ok": true
+        },
+        {
+          "name": "deny-blocks-container-to-vm-http",
+          "ok": true,
+          "reachable": false
+        },
+        {
+          "name": "http-service-still-running-locally",
+          "ok": true
+        },
+        {
+          "name": "repeated-apply-idempotent",
+          "ok": true
+        },
+        {
+          "name": "killed-rollback-retains-previous-and-journal",
+          "ok": true
+        },
+        {
+          "name": "runtime-deny-survives-interrupted-filesystem-rollback",
+          "ok": true,
+          "reachable": false
+        },
+        {
+          "name": "rollback-restores-container-to-vm-http",
+          "ok": true,
+          "reachable": true
+        },
+        {
+          "name": "rollback-config-restored",
+          "ok": true
+        },
+        {
+          "name": "completed-rollback-replay-unchanged",
+          "ok": true
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "originalUfwState": "inactive",
+        "originalConfigurationRestored": true
+      },
+      "interruptedRollback": {
+        "returncode": -9,
+        "backend": "ufw",
+        "phase": "move_old_intent",
+        "schemaVersion": 1
+      },
+      "artifactName": "ufw-kernel-acceptance",
+      "artifactUrl": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007641/artifacts/13079423041",
+      "sourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "checkoutMerge": "f09c3b18d3df81c123782c27a320230a93b4a1a8",
+      "artifactDigest": "sha256:8d147816aa522ef75df867e2d3e87126eea9095263b59a9a7ed7688c3581e314",
+      "artifactCreatedAt": "2026-11-01T10:20:32Z",
+      "artifactExpiresAt": "2027-01-30T10:19:50Z",
+      "artifactSourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "artifactRunId": 41297007641
+    },
+    "firewalld": {
+      "runId": 41297007626,
+      "jobId": 124819857545,
+      "conclusion": "success",
+      "artifactId": 13080250380,
+      "artifactBytes": 33959,
+      "artifactSha256": "b63700ebf0a972bd906639f6aa7d892bd39aea859f1560670eac06e6eb26dacc",
+      "zipDigestVerified": true,
+      "scope": "real firewalld kernel, fresh SSH connections and actual Ansible playbooks on Ubuntu 24.04",
+      "checkCount": 21,
+      "checks": [
+        {
+          "name": "initial-namespace-http",
+          "ok": true,
+          "reachable": true
+        },
+        {
+          "name": "initial-namespace-ssh",
+          "ok": true
+        },
+        {
+          "name": "active-firewall-baseline-http",
+          "ok": true,
+          "reachable": true
+        },
+        {
+          "name": "active-firewall-baseline-ssh",
+          "ok": true
+        },
+        {
+          "name": "ssh-port-controller-and-target-protection",
+          "ok": true
+        },
+        {
+          "name": "management-still-reachable-after-rejected-requests",
+          "ok": true
+        },
+        {
+          "name": "preview-leaves-http-open",
+          "ok": true,
+          "reachable": true
+        },
+        {
+          "name": "preview-config-and-runtime-unchanged",
+          "ok": true
+        },
+        {
+          "name": "deny-blocks-namespace-to-vm-http",
+          "ok": true,
+          "reachable": false
+        },
+        {
+          "name": "fresh-ssh-survives-apply",
+          "ok": true
+        },
+        {
+          "name": "http-service-still-running-locally",
+          "ok": true
+        },
+        {
+          "name": "repeated-apply-idempotent",
+          "ok": true
+        },
+        {
+          "name": "deny-survives-firewalld-reload",
+          "ok": true,
+          "reachable": false
+        },
+        {
+          "name": "fresh-ssh-survives-firewalld-reload",
+          "ok": true
+        },
+        {
+          "name": "killed-rollback-retains-previous-and-journal",
+          "ok": true
+        },
+        {
+          "name": "runtime-deny-survives-interrupted-filesystem-rollback",
+          "ok": true,
+          "reachable": false
+        },
+        {
+          "name": "fresh-ssh-survives-interrupted-rollback",
+          "ok": true
+        },
+        {
+          "name": "rollback-restores-namespace-http",
+          "ok": true,
+          "reachable": true
+        },
+        {
+          "name": "fresh-ssh-survives-rollback",
+          "ok": true
+        },
+        {
+          "name": "rollback-config-and-runtime-restored",
+          "ok": true
+        },
+        {
+          "name": "completed-rollback-replay-unchanged",
+          "ok": true
+        }
+      ],
+      "cleanup": {
+        "ok": true,
+        "originalFirewalldState": "inactive",
+        "originalConfigurationRestored": true
+      },
+      "interruptedRollback": {
+        "returncode": -9,
+        "backend": "firewalld",
+        "phase": "move_old_intent",
+        "schemaVersion": 1
+      },
+      "artifactName": "firewalld-kernel-acceptance",
+      "artifactUrl": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007626/artifacts/13080250380",
+      "sourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "checkoutMerge": "f09c3b18d3df81c123782c27a320230a93b4a1a8",
+      "artifactDigest": "sha256:b63700ebf0a972bd906639f6aa7d892bd39aea859f1560670eac06e6eb26dacc",
+      "artifactCreatedAt": "2026-11-01T10:22:06Z",
+      "artifactExpiresAt": "2027-01-30T10:19:50Z",
+      "artifactSourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "artifactRunId": 41297007626
+    },
+    "openscap": {
+      "runId": 41297007597,
+      "jobId": 124819857395,
+      "conclusion": "success",
+      "artifactId": 13079581975,
+      "artifactName": "openscap-full-profile-acceptance",
+      "artifactBytes": 7822834,
+      "artifactSha256": "1d1509b5d7091b61b44241b55cfc97dfffe21e6ac0292ec2df702853a1549b57",
+      "zipDigestVerified": true,
+      "scope": "full unmodified official CIS Level 1 Server profile on Ubuntu 24.04; separate six-rule negative/restoration checks",
+      "fullProfile": {
+        "phase": "full-baseline",
+        "profile": "xccdf_org.ssgproject.content_profile_cis_level1_server",
+        "fullOfficialProfile": true,
+        "selectedRules": 405,
+        "benchmarkRules": 639,
+        "counts": {
+          "fail": 120,
+          "notapplicable": 63,
+          "notselected": 234,
+          "pass": 222
+        },
+        "scannerExitCode": 2,
+        "partial": false,
+        "normalizedMatchesRawArf": true,
+        "arfSha256": "cad23b10402317fb2cc8ed3ed2850b868b10be9e674814aa2bd108e89883235e"
+      },
+      "negativeControl": {
+        "phase": "controlled-violation",
+        "profile": "xccdf_org.hcp.content_profile_ci_six_rules",
+        "fullOfficialProfile": false,
+        "selectedRules": 6,
+        "benchmarkRules": 639,
+        "counts": {
+          "fail": 1,
+          "notselected": 633,
+          "pass": 5
+        },
+        "scannerExitCode": 2,
+        "partial": false,
+        "normalizedMatchesRawArf": true,
+        "arfSha256": "34b39a6139c1236562cbfb3f057bd2e33e28b17bef409034c52064313bc979c1"
+      },
+      "restoredControl": {
+        "phase": "controlled-restored",
+        "profile": "xccdf_org.hcp.content_profile_ci_six_rules",
+        "fullOfficialProfile": false,
+        "selectedRules": 6,
+        "benchmarkRules": 639,
+        "counts": {
+          "notselected": 633,
+          "pass": 6
+        },
+        "scannerExitCode": 0,
+        "partial": false,
+        "normalizedMatchesRawArf": true,
+        "arfSha256": "165466334bdf57d5ca6b57905b77b4d115180db3efce45467bf2334213d9ee20"
+      },
+      "exception": {
+        "ok": true,
+        "realFailedFinding": "xccdf_org.ssgproject.content_rule_file_permissions_etc_passwd",
+        "exceptionPersisted": true,
+        "expiredAndUnrelatedIgnored": true,
+        "originalStatusRiskEvidenceAndTotalsPreserved": true,
+        "repeatedApplicationIdempotent": true
+      },
+      "cleanup": {
+        "ok": true,
+        "passwdMode": "0o644",
+        "contentsUnchanged": true
+      },
+      "limitation": "Only file_permissions_etc_passwd was deliberately perturbed; other baseline controls have no seeded accuracy test. Manual/error rules remain partial.",
+      "provenance": {
+        "scope": "full unmodified official CIS Level 1 Server profile on Ubuntu 24.04; separate six-rule negative/restoration checks",
+        "source": "https://github.com/ComplianceAsCode/content/releases/tag/v0.1.79",
+        "version": "0.1.79",
+        "archiveSha256": "946718cf6f88e7a976d7e2b4f01ceaba6af9b18cace37d2c8bbffa8b205dd3e8",
+        "originalDatastreamSha256": "3036a53c6a153b1fadca2119010d028480d07bdb886a77d90be6315ad757f4ea",
+        "profile": "xccdf_org.ssgproject.content_profile_cis_level1_server",
+        "profileTitle": "CIS Ubuntu Linux 24.04 LTS Benchmark for Level 1 - Server",
+        "controlDatastreamSha256": "c3942476b1280067c5e4a81938930ab787bfb096c379ef25374bdcafbd78d07f",
+        "controlProfile": "xccdf_org.hcp.content_profile_ci_six_rules",
+        "controlRuleIds": [
+          "xccdf_org.ssgproject.content_rule_accounts_no_uid_except_zero",
+          "xccdf_org.ssgproject.content_rule_accounts_root_gid_zero",
+          "xccdf_org.ssgproject.content_rule_file_groupowner_etc_passwd",
+          "xccdf_org.ssgproject.content_rule_file_owner_etc_passwd",
+          "xccdf_org.ssgproject.content_rule_file_permissions_etc_passwd",
+          "xccdf_org.ssgproject.content_rule_file_permissions_etc_shadow"
+        ],
+        "benchmarkRuleCount": 639,
+        "system": "Ubuntu 24.04 GitHub-hosted VM; no Astra compatibility claim"
+      },
+      "artifactUrl": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007597/artifacts/13079581975",
+      "sourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "checkoutMerge": "f09c3b18d3df81c123782c27a320230a93b4a1a8",
+      "independentArfVerification": [
+        {
+          "phase": "full-baseline",
+          "rawArfPath": "full-baseline.arf.xml",
+          "sha256Matches": true,
+          "rawCountsMatchAcceptance": true
+        },
+        {
+          "phase": "controlled-violation",
+          "rawArfPath": "controlled-violation.arf.xml",
+          "sha256Matches": true,
+          "rawCountsMatchAcceptance": true
+        },
+        {
+          "phase": "controlled-restored",
+          "rawArfPath": "controlled-restored.arf.xml",
+          "sha256Matches": true,
+          "rawCountsMatchAcceptance": true
+        }
+      ],
+      "artifactDigest": "sha256:1d1509b5d7091b61b44241b55cfc97dfffe21e6ac0292ec2df702853a1549b57",
+      "artifactCreatedAt": "2026-11-01T10:24:56Z",
+      "artifactExpiresAt": "2026-11-15T10:24:54Z",
+      "artifactSourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "artifactRunId": 41297007597
+    },
+    "astra181": {
+      "runId": 41297007622,
+      "jobId": 124819857492,
+      "conclusion": "success",
+      "release": "1.8.1",
+      "sourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "checkoutMerge": "f09c3b18d3df81c123782c27a320230a93b4a1a8",
+      "artifactId": 13079681872,
+      "artifactName": "astra-vm-1.8.1",
+      "artifactBytes": 15603710,
+      "artifactSha256": "a044b7c96b111f0b9fa59de5c4abec9e0a81b11d2b65b674a7302b4a88cdcfd1",
+      "artifactDigest": "sha256:a044b7c96b111f0b9fa59de5c4abec9e0a81b11d2b65b674a7302b4a88cdcfd1",
+      "artifactCreatedAt": "2026-11-01T10:26:30Z",
+      "artifactExpiresAt": "2026-11-15T10:26:27Z",
+      "artifactSourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "artifactRunId": 41297007622,
+      "artifactUrl": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007622/artifacts/13079681872",
+      "zipDigestVerified": true,
+      "checkCount": 7,
+      "checkNames": [
+        "Publisher images and full OVAL verified by SHA-256",
+        "Genuine guest identity and independent Astra kernel",
+        "Independent installed-package version control",
+        "Production SSH facts and package collection",
+        "Unmodified Astra baseline: native pass/fail/restored",
+        "Full vendor OVAL and labelled native CVE result",
+        "Production asset publication and web normalization preserve full native CVE evidence"
+      ],
+      "realAstraHostVerified": true,
+      "nativePackageInventory": {
+        "packages": 622,
+        "os": "Astra Linux"
+      },
+      "ovalControl": {
+        "definitionId": "oval:astra:def:4214940672944626263348052579907",
+        "cve": "CVE-2024-5535",
+        "result": "true",
+        "definitionCount": 8284,
+        "partial": false,
+        "partialReasons": [],
+        "resultSha256": "8b49d4d82a0e0f95bbb7d577bf6936ff36f2fc0150075ed3bafcdbdab66beb2b"
+      },
+      "ovalEvaluation": {
+        "partial": false,
+        "partialReasons": [],
+        "fullCveCoverage": false,
+        "definitionCount": 8284,
+        "evaluatedDefinitionCount": 8284,
+        "vulnerabilityDefinitionCount": 8284,
+        "evaluatedVulnerabilityDefinitionCount": 8284,
+        "excludedPlatformDefinitionCount": 0,
+        "uniqueCveCount": 415,
+        "unratedVulnerabilityCount": 460,
+        "definitionResultCounts": {
+          "false": 7824,
+          "true": 460
+        },
+        "nativeFindingsCount": 461
+      },
+      "baseline": [
+        {
+          "phase": "baseline",
+          "profile": "xccdf_org.hcp_profile_astra_baseline",
+          "rawRuleCount": 18,
+          "counts": {
+            "pass": 14,
+            "fail": 4
+          },
+          "controlResult": "pass",
+          "controlFindingStatus": "passed",
+          "partial": false,
+          "findingsCount": 18,
+          "arfSha256": "3654e0a29ba99f45759ea5de8cea94a8be4da3fbc17c287f3563c91fccebbae6"
+        },
+        {
+          "phase": "violation",
+          "profile": "xccdf_org.hcp_profile_astra_baseline",
+          "rawRuleCount": 18,
+          "counts": {
+            "fail": 5,
+            "pass": 13
+          },
+          "controlResult": "fail",
+          "controlFindingStatus": "failed",
+          "partial": false,
+          "findingsCount": 18,
+          "arfSha256": "bbb6ed60307b060a225db732ddfc15b648731cd482dc0c8bb803aca0fc78d901"
+        },
+        {
+          "phase": "restored",
+          "profile": "xccdf_org.hcp_profile_astra_baseline",
+          "rawRuleCount": 18,
+          "counts": {
+            "pass": 14,
+            "fail": 4
+          },
+          "controlResult": "pass",
+          "controlFindingStatus": "passed",
+          "partial": false,
+          "findingsCount": 18,
+          "arfSha256": "7e67ac6fede563403d5b5b4574c480d5633f48307587571007ddd7b130daa65e"
+        }
+      ],
+      "publicationAndNormalization": {
+        "nativeReportBytes": 75820814,
+        "publishedReportBytes": 75821338,
+        "normalizedReportBytes": 81741645,
+        "verifiedAssetBinding": true,
+        "allNativeDataPreserved": true,
+        "normalizedRawMatchesPublished": true,
+        "normalizedPartialPreserved": true,
+        "scoreIsNull": true,
+        "findingsCountPreserved": true
+      },
+      "limitations": [
+        "Two base amd64 images only; no claim about max/mandatory controls or other releases",
+        "One vendor CVE control does not estimate all-scanner recall/precision",
+        "Official full OVAL evaluated; unknown definitions retain partial status"
+      ]
+    },
+    "astra186": {
+      "runId": 41297007622,
+      "jobId": 124819857642,
+      "conclusion": "success",
+      "release": "1.8.6",
+      "sourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "checkoutMerge": "f09c3b18d3df81c123782c27a320230a93b4a1a8",
+      "artifactId": 13080086313,
+      "artifactName": "astra-vm-1.8.6",
+      "artifactBytes": 15131354,
+      "artifactSha256": "59fe83c81d14c27ff111c48d843bb1f9d19a08c35c441157f23aba986d390bf9",
+      "artifactDigest": "sha256:59fe83c81d14c27ff111c48d843bb1f9d19a08c35c441157f23aba986d390bf9",
+      "artifactCreatedAt": "2026-11-01T10:26:46Z",
+      "artifactExpiresAt": "2026-11-15T10:26:43Z",
+      "artifactSourceHead": "0df309c9990a585f776ea707c209cc330f156f89",
+      "artifactRunId": 41297007622,
+      "artifactUrl": "https://github.com/Danil-super/hardening-control-platform/actions/runs/41297007622/artifacts/13080086313",
+      "zipDigestVerified": true,
+      "checkCount": 7,
+      "checkNames": [
+        "Publisher images and full OVAL verified by SHA-256",
+        "Genuine guest identity and independent Astra kernel",
+        "Independent installed-package version control",
+        "Production SSH facts and package collection",
+        "Unmodified Astra baseline: native pass/fail/restored",
+        "Full vendor OVAL and labelled native CVE result",
+        "Production asset publication and web normalization preserve full native CVE evidence"
+      ],
+      "realAstraHostVerified": true,
+      "nativePackageInventory": {
+        "packages": 595,
+        "os": "Astra Linux"
+      },
+      "ovalControl": {
+        "definitionId": "oval:astra:def:4214940672944626263348052579907",
+        "cve": "CVE-2024-5535",
+        "result": "false",
+        "definitionCount": 8284,
+        "partial": false,
+        "partialReasons": [],
+        "resultSha256": "7115952b7868476d198a1ad0bce56d730692d5ba8a0d36982f8a5e69c225a1cd"
+      },
+      "ovalEvaluation": {
+        "partial": false,
+        "partialReasons": [],
+        "fullCveCoverage": false,
+        "definitionCount": 8284,
+        "evaluatedDefinitionCount": 8284,
+        "vulnerabilityDefinitionCount": 8284,
+        "evaluatedVulnerabilityDefinitionCount": 8284,
+        "excludedPlatformDefinitionCount": 0,
+        "uniqueCveCount": 45,
+        "unratedVulnerabilityCount": 45,
+        "definitionResultCounts": {
+          "false": 8239,
+          "true": 45
+        },
+        "nativeFindingsCount": 46
+      },
+      "baseline": [
+        {
+          "phase": "baseline",
+          "profile": "xccdf_org.hcp_profile_astra_baseline",
+          "rawRuleCount": 18,
+          "counts": {
+            "pass": 14,
+            "fail": 4
+          },
+          "controlResult": "pass",
+          "controlFindingStatus": "passed",
+          "partial": false,
+          "findingsCount": 18,
+          "arfSha256": "ddd6ec7c72c812fd7bf62d340bbb7a4d94040608a99f89cf5b86685e8625a4ba"
+        },
+        {
+          "phase": "violation",
+          "profile": "xccdf_org.hcp_profile_astra_baseline",
+          "rawRuleCount": 18,
+          "counts": {
+            "fail": 5,
+            "pass": 13
+          },
+          "controlResult": "fail",
+          "controlFindingStatus": "failed",
+          "partial": false,
+          "findingsCount": 18,
+          "arfSha256": "d643adfbbcfc122b117bc1ceca9bf8ca6479a1cfea0589ca6ad0c3c1cc9dd73c"
+        },
+        {
+          "phase": "restored",
+          "profile": "xccdf_org.hcp_profile_astra_baseline",
+          "rawRuleCount": 18,
+          "counts": {
+            "pass": 14,
+            "fail": 4
+          },
+          "controlResult": "pass",
+          "controlFindingStatus": "passed",
+          "partial": false,
+          "findingsCount": 18,
+          "arfSha256": "7751ba0bab9ca4b3ea01f1405f0cecdccc5c28ad9d5fcd6b77502401dd6f2aad"
+        }
+      ],
+      "publicationAndNormalization": {
+        "nativeReportBytes": 74727479,
+        "publishedReportBytes": 74728003,
+        "normalizedReportBytes": 79543227,
+        "verifiedAssetBinding": true,
+        "allNativeDataPreserved": true,
+        "normalizedRawMatchesPublished": true,
+        "normalizedPartialPreserved": true,
+        "scoreIsNull": true,
+        "findingsCountPreserved": true
+      },
+      "limitations": [
+        "Two base amd64 images only; no claim about max/mandatory controls or other releases",
+        "One vendor CVE control does not estimate all-scanner recall/precision",
+        "Official full OVAL evaluated; unknown definitions retain partial status"
+      ]
+    }
+  },
+  "alpine": {
+    "runId": 41297007591,
+    "jobId": 124819857440,
+    "conclusion": "success",
+    "artifactId": 13079263605,
+    "artifactHeadVerified": "0df309c9990a585f776ea707c209cc330f156f89",
+    "sha256": "cbb9dc50970542b3b60a125467cf8ef6a64e50b250438e378517c62fb69f46f7",
+    "artifactBytes": 250393,
+    "nativeStatus": "passed",
+    "image": {
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/cloud/alpine-3.22.6-x86_64-bios-cloudinit-r0.qcow2",
+      "sha512": "864ad8b9e3d14272d592f380c814c647bb6666fcd5b73c86dc21528da71306a93f2ce29b89ea8e6099b76786bb7835f0e27ca1824ec7f4b0b243160a13ba262d",
+      "bytes": 166658048
+    },
+    "architecture": "x86_64",
+    "syntheticIdentity": false,
+    "onboardingEvaluated": false,
+    "pythonVersion": "3.12.14",
+    "serviceManager": "openrc",
+    "kernel": "6.12.110-0-virt",
+    "checkNames": [
+      "Official image pinned by SHA-512 and exact byte count",
+      "Native public-key SSH access, unlocked account and unusable password",
+      "Existing machine-id availability only; HCP onboarding is outside this VM gate",
+      "Native Alpine kernel, Python, APK and active OpenRC",
+      "Production APK collection",
+      "Real OpenRC and filesystem pass/fail/restored controls",
+      "Portable production event collection",
+      "Native inventory to production SBOM and labelled Trivy controls"
+    ],
+    "phases": [
+      {
+        "phase": "baseline",
+        "serviceManager": "openrc",
+        "evaluatorVersion": "1.2.0",
+        "rulesVersion": "1.1.0",
+        "crond": "active",
+        "stickyBitStatus": "passed",
+        "firewallStatus": "manual",
+        "partial": true,
+        "incompleteChecks": [
+          "failed_logins",
+          "firewall_active",
+          "package_updates_available",
+          "security_auto_updates"
+        ],
+        "score": null
+      },
+      {
+        "phase": "violation",
+        "serviceManager": "openrc",
+        "evaluatorVersion": "1.2.0",
+        "rulesVersion": "1.1.0",
+        "crond": "inactive",
+        "stickyBitStatus": "failed",
+        "firewallStatus": "manual",
+        "partial": true,
+        "incompleteChecks": [
+          "failed_logins",
+          "firewall_active",
+          "package_updates_available",
+          "security_auto_updates"
+        ],
+        "score": null
+      },
+      {
+        "phase": "restored",
+        "serviceManager": "openrc",
+        "evaluatorVersion": "1.2.0",
+        "rulesVersion": "1.1.0",
+        "crond": "active",
+        "stickyBitStatus": "passed",
+        "firewallStatus": "manual",
+        "partial": true,
+        "incompleteChecks": [
+          "failed_logins",
+          "firewall_active",
+          "package_updates_available",
+          "security_auto_updates"
+        ],
+        "score": null
+      }
+    ],
+    "events": {
+      "count": 3,
+      "ownedAuthenticationMarkerDetected": true,
+      "partial": true,
+      "incompleteChecks": [
+        "authentication_log_routing_unverified"
+      ]
+    },
+    "packageMatching": {
+      "status": "passed",
+      "trivyVersion": "0.74.0",
+      "databaseFreshness": {
+        "status": "fresh",
+        "checkedAt": "2026-11-01T10:22:15.036Z",
+        "updatedAt": "2026-11-01T07:08:40.846Z",
+        "ageHours": 3.2,
+        "maxAgeHours": 24
+      },
+      "databaseUnchanged": true,
+      "cases": [
+        {
+          "name": "native",
+          "syntheticInventory": false,
+          "expectedCve": null,
+          "inputPackages": 152,
+          "nativePackages": 152,
+          "coverage": {
+            "inventoryPackages": 152,
+            "decodedRecords": 152,
+            "eligiblePackages": 152,
+            "scannedPackages": 152,
+            "complete": false,
+            "reasons": [
+              "Происхождение пакетов не позволяет подтвердить применимость advisory ОС: сторонних — 0, неизвестных — 53. Для старых инвентарей без Maintainer/Origin/Vendor выполните новый сбор; для сторонних пакетов используйте данные их поставщика."
+            ]
+          },
+          "provenanceCounts": {
+            "distribution-maintainer": 99,
+            "third-party": 0,
+            "unknown": 53
+          },
+          "targetCve": "CVE-2025-9230",
+          "nativeTargetMatches": 0,
+          "hcpTargetMatches": 0,
+          "normalizedFindings": 51
+        },
+        {
+          "name": "control-vulnerable",
+          "syntheticInventory": true,
+          "expectedCve": true,
+          "inputPackages": 1,
+          "nativePackages": 1,
+          "coverage": {
+            "inventoryPackages": 1,
+            "decodedRecords": 1,
+            "eligiblePackages": 1,
+            "scannedPackages": 1,
+            "complete": true,
+            "reasons": []
+          },
+          "provenanceCounts": {
+            "distribution-maintainer": 1,
+            "third-party": 0,
+            "unknown": 0
+          },
+          "targetCve": "CVE-2025-9230",
+          "nativeTargetMatches": 1,
+          "hcpTargetMatches": 1,
+          "normalizedFindings": 47
+        },
+        {
+          "name": "control-fixed",
+          "syntheticInventory": true,
+          "expectedCve": false,
+          "inputPackages": 1,
+          "nativePackages": 1,
+          "coverage": {
+            "inventoryPackages": 1,
+            "decodedRecords": 1,
+            "eligiblePackages": 1,
+            "scannedPackages": 1,
+            "complete": true,
+            "reasons": []
+          },
+          "provenanceCounts": {
+            "distribution-maintainer": 1,
+            "third-party": 0,
+            "unknown": 0
+          },
+          "targetCve": "CVE-2025-9230",
+          "nativeTargetMatches": 0,
+          "hcpTargetMatches": 0,
+          "normalizedFindings": 44
+        }
+      ]
+    }
+  },
+  "legacyPython": {
+    "runId": 41297007636,
+    "jobId": 124819857467,
+    "conclusion": "success",
+    "artifactId": 13079791745,
+    "artifactHeadVerified": "0df309c9990a585f776ea707c209cc330f156f89",
+    "sha256": "a987132c8b624d07f8b490c1d5119db9700a7c1dcb5e59732fd8dcdd90a7b99e",
+    "artifactBytes": 750,
+    "pythonVersion": "3.5.10",
+    "imageDigest": "python@sha256:2348c9c9fa90808066919c036d59919fbf82c7f9277c2ff8b6b8cc6e72f5b9d7",
+    "tests": {
+      "total": 8,
+      "passed": 8,
+      "skipped": 0
+    }
+  },
+  "verifyDetails": {
+    "runId": 41297007696,
+    "status": "completed",
+    "web": {
+      "jobId": 124819857842,
+      "conclusion": "success",
+      "tests": {
+        "web": {
+          "total": 401,
+          "passed": 401,
+          "skipped": 0
+        },
+        "http": {
+          "total": 69,
+          "passed": 69
+        },
+        "python": {
+          "total": 293,
+          "passed": 291,
+          "skipped": 2,
+          "skipReasons": [
+            "native OpenSCAP engine is required",
+            "Requires actual controller OpenSCAP"
+          ]
+        }
+      },
+      "typecheck": "passed",
+      "productionBuild": "passed",
+      "nextVersion": "16.4.1",
+      "realAnsibleParserRegression": "passed"
+    },
+    "ansible": {
+      "jobId": 124819858021,
+      "conclusion": "success",
+      "deploymentTests": {
+        "total": 38,
+        "passed": 38,
+        "skipped": 0
+      },
+      "syntaxCheckedPlaybooks": 14
+    },
+    "container": {
+      "jobId": 124819858054,
+      "conclusion": "success",
+      "modernAnsibleVersion": "2.21.5",
+      "modernControllerPython": "3.13.18",
+      "legacyAnsibleDebianPackage": "2.14.18-0+deb12u2",
+      "systemPythonReportlabImport": "passed"
+    },
+    "lab": {
+      "jobId": 124819858100,
+      "status": "completed",
+      "conclusion": "success",
+      "artifactId": 13079636958,
+      "artifactHeadVerified": "0df309c9990a585f776ea707c209cc330f156f89",
+      "sha256": "6209066f8689a8315de6907aadd8d3092428f38be46190e3aa052902784c7280",
+      "artifactBytes": 562947,
+      "nativeProtocolStatus": "passed",
+      "checkCount": 20,
+      "checks": [
+        {
+          "name": "Unauthenticated control API is blocked",
+          "status": "passed"
+        },
+        {
+          "name": "Login, Ansible health and inventory",
+          "status": "passed"
+        },
+        {
+          "name": "Real SSH / Ansible ping",
+          "status": "passed"
+        },
+        {
+          "name": "Host readiness through real SSH",
+          "status": "passed"
+        },
+        {
+          "name": "Scheduled target readiness and modern runtime through real SSH",
+          "status": "passed"
+        },
+        {
+          "name": "Scheduled agentless rejects on-demand sudo before collection",
+          "status": "passed"
+        },
+        {
+          "name": "Scheduled packages rejects on-demand sudo before collection",
+          "status": "passed"
+        },
+        {
+          "name": "Host facts",
+          "status": "passed"
+        },
+        {
+          "name": "Known SSH configuration deviations",
+          "status": "passed"
+        },
+        {
+          "name": "Production scheduled agentless collection, publication and partial exit",
+          "status": "passed"
+        },
+        {
+          "name": "Real ssh-audit negotiation",
+          "status": "passed"
+        },
+        {
+          "name": "Real Nmap observes TCP ports 22 and 23",
+          "status": "passed"
+        },
+        {
+          "name": "Real temporary Lynis run",
+          "status": "passed"
+        },
+        {
+          "name": "Unavailable offline Trivy database produces a saved manual report without a PASS",
+          "status": "passed"
+        },
+        {
+          "name": "Real Trivy DB: online and cached offline results match",
+          "status": "passed"
+        },
+        {
+          "name": "Production scheduled inventory and native Trivy preserve complete evidence",
+          "status": "passed"
+        },
+        {
+          "name": "Unconfigured OpenSCAP is rejected before starting a scan",
+          "status": "passed"
+        },
+        {
+          "name": "Unauthenticated control API is blocked",
+          "status": "passed"
+        },
+        {
+          "name": "Login, Ansible health and inventory",
+          "status": "passed"
+        },
+        {
+          "name": "Reports, host and database selection survive HCP restart",
+          "status": "passed"
+        }
+      ],
+      "scheduled": {
+        "agentless": {
+          "exitCode": 1,
+          "partial": true,
+          "findings": 17,
+          "incompleteChecks": [
+            "failed_logins",
+            "firewall_active",
+            "service_auditd",
+            "service_fail2ban"
+          ],
+          "assetBindingStatus": "verified",
+          "facts": {
+            "os": "Debian GNU/Linux 12 (bookworm)",
+            "python": "/usr/bin/python3",
+            "pythonVersion": "3.11.2",
+            "ansibleCoreVersion": "2.21.5",
+            "ansibleRuntime": "modern",
+            "configuredPython": "/usr/bin/python3"
+          }
+        },
+        "packages": {
+          "exitCode": 1,
+          "partial": true,
+          "packageCount": 139,
+          "checkedPackages": 139,
+          "assetBindingStatus": "verified",
+          "facts": {
+            "os": "Debian GNU/Linux 12 (bookworm)",
+            "python": "/usr/bin/python3",
+            "pythonVersion": "3.11.2",
+            "ansibleCoreVersion": "2.21.5",
+            "ansibleRuntime": "modern",
+            "configuredPython": "/usr/bin/python3"
+          },
+          "coverage": {
+            "inventoryPackages": 139,
+            "decodedRecords": 139,
+            "eligiblePackages": 139,
+            "scannedPackages": 139,
+            "complete": false,
+            "reasons": [
+              "Происхождение пакетов не позволяет подтвердить применимость advisory ОС: сторонних — 0, неизвестных — 18. Для старых инвентарей без Maintainer/Origin/Vendor выполните новый сбор; для сторонних пакетов используйте данные их поставщика."
+            ]
+          }
+        },
+        "onDemandDenial": [
+          {
+            "task": "agentless",
+            "exitCode": 1,
+            "errorCode": "sudo_password_required"
+          },
+          {
+            "task": "packages",
+            "exitCode": 1,
+            "errorCode": "sudo_password_required"
+          }
+        ],
+        "rawAndNormalizedBindingEqual": true,
+        "rawAndNormalizedPartialEqual": true,
+        "firewallEvidencePreserved": true,
+        "publishedAgentlessCliReportMatchesSavedReport": true,
+        "evaluatorVersion": "1.2.0",
+        "rulesVersion": "1.1.0",
+        "rawFindings": 17,
+        "normalizedFindings": 17,
+        "score": null
+      },
+      "coldCache": {
+        "databaseFreshness": "missing",
+        "checkedPackages": 0,
+        "coverageComplete": false
+      },
+      "ubuntuMatching": {
+        "status": "passed",
+        "cve": "CVE-2023-0286",
+        "syntheticInventory": true,
+        "databaseUnchanged": true,
+        "cases": [
+          {
+            "name": "vulnerable",
+            "version": "3.0.2-0ubuntu1.7",
+            "expectedCve": true,
+            "nativeTargetDetected": true,
+            "hcpTargetDetected": true,
+            "hcpObservationPresent": true,
+            "normalizedTargetDetected": true
+          },
+          {
+            "name": "vendor-fixed-backport",
+            "version": "3.0.2-0ubuntu1.8",
+            "expectedCve": false,
+            "nativeTargetDetected": false,
+            "hcpTargetDetected": false,
+            "hcpObservationPresent": false,
+            "normalizedTargetDetected": false
+          },
+          {
+            "name": "vulnerable-i386",
+            "version": "3.0.2-0ubuntu1.7",
+            "arch": "i386",
+            "expectedCve": true,
+            "nativeTargetDetected": true,
+            "hcpTargetDetected": true,
+            "hcpObservationPresent": true,
+            "normalizedTargetDetected": true
+          },
+          {
+            "name": "source-epoch",
+            "version": "1:3.0.2-0ubuntu1.7",
+            "epoch": 1,
+            "expectedCve": false,
+            "nativeTargetDetected": false,
+            "hcpTargetDetected": false,
+            "hcpObservationPresent": false,
+            "normalizedTargetDetected": false
+          },
+          {
+            "name": "unknown-supplier",
+            "version": "3.0.2-0ubuntu1.7",
+            "expectedCve": true,
+            "applicabilityUnverified": true,
+            "nativeTargetDetected": true,
+            "hcpTargetDetected": false,
+            "hcpObservationPresent": true,
+            "normalizedTargetDetected": false
+          }
+        ]
+      },
+      "sshEnrollmentPassed": true,
+      "sshEnrollmentCheckCount": 10
+    },
+    "conclusion": "success"
+  },
+  "packetModel": {
+    "scope": "local_input",
+    "connectionState": "new",
+    "interface": "non-loopback",
+    "dnat": false,
+    "protocols": [
+      "tcp",
+      "udp"
+    ],
+    "evaluation": "conditional_ruleset_path",
+    "externalReachability": "unverified",
+    "positiveMeaning": "a concrete deny witness in the observed compatible INPUT chains",
+    "negativeMeaning": "all symbolic ports accepted within the declared model or no observed INPUT filtering",
+    "unknownMeaning": "manual with firewall_active retained in incompleteChecks"
+  },
+  "limitations": [
+    "This is not full Linux distribution, architecture or vulnerability coverage",
+    "IPv4 deny witness does not establish IPv6 or external reachability",
+    "Native controls run only on owned disposable CI machines; no production hosts were modified",
+    "Other failed/manual findings remain even when firewall_active passes",
+    "Package metadata controls establish specific detector behavior, not overall CVE precision or recall",
+    "Source artifact retention is limited; hashes and exact source/run identity are preserved here"
+  ]
+}
