@@ -258,25 +258,53 @@ def validate_ufw_ruleset(ruleset):
     return ["/".join(value) for value in sorted(inputs)]
 
 
-def verify_allow_delta(baseline, allowed, token):
+def verify_allow_delta(baseline, allowed, token, baseline_runtime, allowed_runtime):
+    """Bind the hidden xt_comment text through an exact native -S delta.
+
+    iptables-nft can store the comment in an opaque xt match instead of nft
+    rule metadata. Require both representations to identify the same two first
+    INPUT rules; neither a comment-shaped expression nor a token alone owns it.
+    """
+    if not isinstance(token, str) or not re.fullmatch(r"hcp-deb-input-[a-f0-9]{32}", token):
+        raise ValueError("Invalid owned INPUT control token")
+    expected = ["-A", "INPUT", "-m", "comment", "--comment", token, "-j", "ACCEPT"]
+    for key in ("ipv4", "ipv6"):
+        before_output, after_output = baseline_runtime.get(key), allowed_runtime.get(key)
+        if (not isinstance(before_output, str) or not isinstance(after_output, str)
+                or not before_output or not after_output or token in before_output):
+            raise ValueError("Missing decoded INPUT evidence or pre-existing control token")
+        before_lines, after_lines = before_output.splitlines(keepends=True), after_output.splitlines(keepends=True)
+        parsed = [shlex.split(line) for line in after_lines]
+        if any(not words or words[0] not in ("-P", "-N", "-A") for words in parsed):
+            raise ValueError("Unexpected native -S output in owned INPUT evidence")
+        tagged = [index for index, line in enumerate(after_lines) if token in line]
+        first = next((index for index, words in enumerate(parsed) if words[:2] == ["-A", "INPUT"]), None)
+        if len(tagged) != 1 or tagged[0] != first or parsed[tagged[0]] != expected:
+            raise ValueError("Expected one exact, uniquely tagged first INPUT accept per family")
+        if before_lines != after_lines[:first] + after_lines[first + 1:]:
+            raise ValueError("Temporary control changed unrelated decoded kernel rules")
+
     before, after = semantic_nftables(baseline), semantic_nftables(allowed)
-    owned = [entry["rule"] for entry in after["nftables"] if entry.get("rule", {}).get("comment") == token]
-    if any(entry.get("rule", {}).get("comment") == token for entry in before["nftables"]) or len(owned) != 2:
-        raise ValueError("Expected exactly two new owned kernel rules")
-    if {(r.get("family"), r.get("table"), r.get("chain")) for r in owned} != INPUTS:
-        raise ValueError("Owned rules do not cover both observed INPUT chains")
-    for rule in owned:
-        if set(rule) != {"family", "table", "chain", "expr", "comment"}:
-            raise ValueError("Unexpected data on the owned kernel rule")
-        expressions = [e for e in rule["expr"] if "counter" not in e]
-        counters = [e for e in rule["expr"] if "counter" in e]
-        if expressions != [{"accept": None}] or len(counters) > 1 or any(e != {"counter": {"packets": 0, "bytes": 0}} for e in counters):
-            raise ValueError("Owned rule contains a condition or unexpected action")
-        first = next(entry["rule"] for entry in after["nftables"] if "rule" in entry and
-                     all(entry["rule"].get(key) == rule[key] for key in ("family", "table", "chain")))
-        if first != rule:
-            raise ValueError("Owned accept rule is not first in its INPUT chain")
-    after["nftables"] = [entry for entry in after["nftables"] if entry.get("rule", {}).get("comment") != token]
+    if any(entry.get("rule", {}).get("comment") == token for entry in before["nftables"]):
+        raise ValueError("Control token already belongs to native rule metadata")
+    owned = set()
+    counter, accept = {"counter": {"packets": 0, "bytes": 0}}, {"accept": None}
+    for family, table, chain in sorted(INPUTS):
+        index = next((index for index, entry in enumerate(after["nftables"])
+                      if (entry.get("rule", {}).get("family"), entry.get("rule", {}).get("table"),
+                          entry.get("rule", {}).get("chain")) == (family, table, chain)), None)
+        if index is None:
+            raise ValueError("Owned rules do not cover both observed INPUT chains")
+        rule = after["nftables"][index]["rule"]
+        metadata = "comment" in rule
+        fields = {"family", "table", "chain", "expr"} | ({"comment"} if metadata else set())
+        expressions = [counter, accept] if metadata else [{"xt": {"type": "match", "name": "comment"}}, counter, accept]
+        if set(rule) != fields or (metadata and rule["comment"] != token) or rule["expr"] != expressions:
+            raise ValueError("First owned INPUT rule contains unexpected metadata, conditions or actions")
+        owned.add(index)
+    if len(owned) != 2:
+        raise ValueError("Expected exactly two correlated owned kernel rules")
+    after["nftables"] = [entry for index, entry in enumerate(after["nftables"]) if index not in owned]
     if before != after:
         raise ValueError("Temporary control changed unrelated kernel semantics")
 
@@ -543,7 +571,7 @@ def verify_ufw_audit(remote_python, playbook, checkpoint, artifacts, guest_sourc
             remote_python(UFW_INPUT_CONTROL, ("prepare", marker, token), output=artifacts / "firewall-audit-prepare.json")
             remote_python(UFW_INPUT_CONTROL, ("add", marker, token), output=artifacts / "firewall-audit-add.json", timeout=450)
             allowed, allowed_state = snapshot("allow-all")
-            verify_allow_delta(baseline, allowed, token)
+            verify_allow_delta(baseline, allowed, token, baseline_state["runtime"], allowed_state["runtime"])
             for key in ("manifest", "defaultUfw", "versions", "securityModules", "pid1"):
                 if baseline_state.get(key) != allowed_state.get(key):
                     raise RuntimeError("Temporary INPUT control changed permanent configuration or security modules")

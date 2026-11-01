@@ -577,6 +577,12 @@
                               if protocol is not None and protocol != header:
                                   raise ValueError("conflicting protocol predicates")
                               protocol, key, value = header, field, right
+                          elif header == rule["family"] == "ip" and field == "protocol" and isinstance(right, str) and right in {"tcp", "udp", "icmp"}:
+                              # iptables 1.8.10 can emit the IPv4 header protocol
+                              # instead of meta l4proto. IPv6 nexthdr is different.
+                              if protocol is not None and protocol != right:
+                                  raise ValueError("conflicting protocol predicates")
+                              protocol, key, value = right, "l4proto", right
                           elif header == rule["family"] and field in {"saddr", "daddr"}:
                               key, value = field, compat_ip_prefix(right, rule["family"])
                           else:
@@ -859,6 +865,9 @@
                                        or ("dport" if left.get("payload", {}).get("field") == "dport" and left["payload"].get("protocol") in {"tcp", "udp"} else None)) if isinstance(left, dict) else None
                               if match.get("op") not in {"==", "!=", "in"}:
                                   field = None
+                              if (key[0] == "ip" and left == {"payload": {"protocol": "ip", "field": "protocol"}}
+                                      and match.get("op") == "==" and match.get("right") in ("tcp", "udp", "icmp")):
+                                  field = "protocol"
                               guards.append((field, match.get("op"), match.get("right")))
                               # Typed transport headers imply their protocol even
                               # when their particular field is not evaluated. An
@@ -875,6 +884,10 @@
                               # Kernel addrtype is a boolean route/address read.
                               # INPUT does not establish which address type matched.
                               guards.append((None, "==", None))
+                          elif set(expression) == {"xt"} and expression["xt"] == {"type": "match", "name": "comment"}:
+                              # Kernel xt_comment always returns true and has no
+                              # packet effect; its hidden text is not inferred.
+                              pass
                           elif set(expression) == {"xt"} and expression["xt"] == {"type": "target", "name": "LOG"}:
                               pass
                           elif set(expression) == {"xt"} and expression["xt"] == {"type": "target", "name": "REJECT"}:

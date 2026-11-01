@@ -12,6 +12,7 @@ on:
       - deployment/tests/verify_linux_packages.mjs
       - deployment/tests/test_linux_package_contracts.mjs
       - deployment/tests/fixtures/linux-deb-images.json
+      - deployment/tests/fixtures/debian12-ufw-owned-input-*.json
       - deployment/tests/fixtures/linux-package-controls.json
       - ansible/scripts/**
       - ansible/playbooks/**
@@ -38,6 +39,7 @@ on:
       - deployment/tests/verify_linux_packages.mjs
       - deployment/tests/test_linux_package_contracts.mjs
       - deployment/tests/fixtures/linux-deb-images.json
+      - deployment/tests/fixtures/debian12-ufw-owned-input-*.json
       - deployment/tests/fixtures/linux-package-controls.json
       - ansible/scripts/**
       - ansible/playbooks/**

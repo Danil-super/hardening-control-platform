@@ -1,4 +1,4 @@
-"""Controller regressions with synthetic data and owned temporary processes.
+"""Controller regressions with synthetic/captured data and owned processes.
 
 These tests never run a VM, query a host package database or change host firewall
 rules. The native workflow supplies the separate runtime evidence.
@@ -254,6 +254,12 @@ def ufw_fixture():
 TOKEN = "hcp-deb-input-" + "a" * 32
 
 
+def input_control_runtime(added=False):
+    owned = "-A INPUT -m comment --comment " + TOKEN + " -j ACCEPT\n" if added else ""
+    output = "-P INPUT DROP\n" + owned + "-A INPUT -j DROP\n"
+    return {"ipv4": output, "ipv6": output}
+
+
 def with_owned_accepts(baseline):
     result = copy.deepcopy(baseline)
     for family in ("ip", "ip6"):
@@ -278,7 +284,7 @@ class UfwRulesetGuardTests(unittest.TestCase):
             for expression in value.get("expr", []):
                 if "counter" in expression:
                     expression["counter"] = {"packets": 99, "bytes": 9999}
-        NATIVE.verify_allow_delta(baseline, allowed, TOKEN)
+        NATIVE.verify_allow_delta(baseline, allowed, TOKEN, input_control_runtime(), input_control_runtime(True))
         self.assertEqual(baseline, ufw_fixture())
 
     def test_unobserved_input_chain_dormant_table_or_dangling_rule_blocks_mutation(self):
@@ -315,9 +321,43 @@ class UfwRulesetGuardTests(unittest.TestCase):
             else:
                 owned["comment"] = "another-owner"
             with self.subTest(mutation=mutation), self.assertRaises(ValueError):
-                NATIVE.verify_allow_delta(baseline, allowed, TOKEN)
+                NATIVE.verify_allow_delta(baseline, allowed, TOKEN, input_control_runtime(), input_control_runtime(True))
         with self.assertRaises(ValueError):
-            NATIVE.verify_allow_delta(with_owned_accepts(baseline), with_owned_accepts(baseline), TOKEN)
+            NATIVE.verify_allow_delta(with_owned_accepts(baseline), with_owned_accepts(baseline), TOKEN,
+                                     input_control_runtime(True), input_control_runtime(True))
+
+    def test_captured_debian_xt_comment_control_is_bound_to_exact_native_and_decoded_deltas(self):
+        fixture = json.loads((TESTS / "fixtures/debian12-ufw-owned-input-41340962736.json").read_text())
+        original = copy.deepcopy(fixture)
+        NATIVE.verify_allow_delta(fixture["before"], fixture["after"], fixture["token"],
+                                 fixture["beforeRuntime"], fixture["afterRuntime"])
+        self.assertEqual(fixture, original, "Verification must preserve the captured evidence")
+
+    def test_captured_control_rejects_wrong_token_extra_expressions_and_unrelated_changes(self):
+        fixture = json.loads((TESTS / "fixtures/debian12-ufw-owned-input-41340962736.json").read_text())
+        for mutation in ("wrong-token", "different-decoded-token", "duplicate-token", "decoded-condition",
+                         "extra-expression", "unrelated-native", "unrelated-decoded"):
+            candidate = copy.deepcopy(fixture)
+            rules = [entry["rule"] for entry in candidate["after"]["nftables"]
+                     if entry.get("rule", {}).get("family") == "ip" and entry["rule"].get("chain") == "INPUT"]
+            if mutation == "wrong-token":
+                candidate["token"] = TOKEN
+            elif mutation == "different-decoded-token":
+                candidate["afterRuntime"]["ipv6"] = candidate["afterRuntime"]["ipv6"].replace(candidate["token"], TOKEN)
+            elif mutation == "duplicate-token":
+                candidate["afterRuntime"]["ipv4"] += "-A INPUT -m comment --comment " + candidate["token"] + " -j ACCEPT\n"
+            elif mutation == "decoded-condition":
+                candidate["afterRuntime"]["ipv4"] = candidate["afterRuntime"]["ipv4"].replace(
+                    candidate["token"] + " -j ACCEPT", candidate["token"] + " -p tcp -j ACCEPT", 1)
+            elif mutation == "extra-expression":
+                rules[0]["expr"].insert(0, {"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}})
+            elif mutation == "unrelated-native":
+                rules[1]["expr"][-1] = {"accept": None}
+            else:
+                candidate["afterRuntime"]["ipv6"] += "-A FORWARD -j ACCEPT\n"
+            with self.subTest(mutation=mutation), self.assertRaises(ValueError):
+                NATIVE.verify_allow_delta(candidate["before"], candidate["after"], candidate["token"],
+                                         candidate["beforeRuntime"], candidate["afterRuntime"])
 
 
 class ProcessAndPrivacyTests(unittest.TestCase):
