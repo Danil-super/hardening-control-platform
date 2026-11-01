@@ -110,6 +110,30 @@ test("SBOM preserves distro, source version, epoch, arch and OS identity", (t) =
   assert.deepEqual(sbom.dependencies[0].dependsOn, [sbom.components[0]["bom-ref"]]);
 });
 
+test("DEB SBOM assigns distinct native IDs to equal-version multiarch records", (t) => {
+  const h = harness(t);
+  h.report.packages[0].sourceVersion = "1:3.0.2-0ubuntu1";
+  h.report.packages[0].version = "1:3.0.2-0ubuntu1";
+  h.report.packages.push({ ...h.report.packages[0], name: "libssl3:i386", arch: "i386" });
+  h.report.packageInventory.packageCount = 2;
+  const out = h.testing.writePackageSbom({ report: h.report, sourcePackageReportId: "lab-host-packages-run1", scanRunId: "multiarch-identity" });
+  const sbom = JSON.parse(readFileSync(out.sbomPath, "utf8"));
+  assert.equal(sbom.components.length, 2);
+  const ids = [];
+  for (const [index, component] of sbom.components.entries()) {
+    const props = Object.fromEntries(component.properties.map((item) => [item.name, item.value]));
+    const arch = h.report.packages[index].arch;
+    assert.equal(component.name, "libssl3");
+    assert.equal(component.version, "1:3.0.2-0ubuntu1");
+    assert.match(component.purl, new RegExp(`arch=${arch}&distro=ubuntu-22\\.04&epoch=1`));
+    assert.equal(props["aquasecurity:trivy:PkgID"], component.purl);
+    assert.equal(props["aquasecurity:trivy:SrcEpoch"], "1");
+    ids.push(props["aquasecurity:trivy:PkgID"]);
+  }
+  assert.equal(new Set(ids).size, 2, "The real Trivy decoder uses these IDs when deduplicating OS packages");
+  assert.deepEqual(sbom.dependencies[0].dependsOn, sbom.components.map((component) => component["bom-ref"]));
+});
+
 test("complete contract result records coverage without inventing a security score", async (t) => {
   const h = harness(t);
   const result = await h.scan();
@@ -161,6 +185,48 @@ test("third-party and unknown package matches remain visible with unverified app
     assert.equal(result.partial, true);
     assert.equal(result.report.vulnerabilityScan.vendorAssessment.verified, false);
     assert.equal(result.report.vulnerabilityScan.coverage.complete, false);
+  }
+});
+
+test("exact Debian Alioth list metadata is recognized without repository or signature attestation", async (t) => {
+  for (const [family, version] of [["debian", "12"], ["ubuntu", "24.04"]]) {
+    const h = harness(t, "vulnerable");
+    h.report.packageInventory.osRelease = { ID: family, VERSION_ID: version };
+    Object.assign(h.report.packages[0], { maintainer: "Debian OpenSSL Team <pkg-openssl-devel@alioth-lists.debian.net>", origin: "" });
+    h.save();
+    const result = await h.scan();
+    const finding = result.report.findings.find((item) => item.id.startsWith("trivy_CVE-2023-0286_"));
+    assert.equal(finding.status, "failed");
+    assert.match(finding.evidence, /package_provenance=distribution-maintainer/);
+    assert.equal(result.partial, false);
+    assert.equal(result.report.vulnerabilityScan.packageProvenance.cryptographicallyVerified, false);
+    const component = JSON.parse(readFileSync(path.join(h.dir, "sbom", result.report.vulnerabilityScan.sbomFile), "utf8")).components[0];
+    assert.equal(component.supplier.name, h.report.packages[0].maintainer);
+    assert.ok(component.properties.some((item) => item.name === "hcp:provenance-method" && item.value === "installed-metadata-heuristic; repository-origin-unverified"));
+  }
+});
+
+test("Alioth recognition rejects lookalikes, subdomains and contradictory package origins", async (t) => {
+  for (const metadata of [
+    { maintainer: "Team <package@debian.net>", origin: "", expected: "unknown" },
+    { maintainer: "Team <package@alioth-lists.debian.net.attacker.invalid>", origin: "", expected: "unknown" },
+    { maintainer: "Team <package@sub.alioth-lists.debian.net>", origin: "", expected: "unknown" },
+    { maintainer: "Team <package@not-alioth-lists.debian.net>", origin: "", expected: "unknown" },
+    { maintainer: "Team <package@alioth-lists.debian.net>", origin: "Unrelated repository", expected: "third-party" },
+    { maintainer: "NodeSource <support@nodesource.com> Team <package@alioth-lists.debian.net>", origin: "", expected: "third-party" },
+  ]) {
+    const h = harness(t, "vulnerable");
+    h.report.packageInventory.osRelease = { ID: "debian", VERSION_ID: "12" };
+    const { expected, ...observed } = metadata;
+    Object.assign(h.report.packages[0], observed);
+    h.save();
+    const result = await h.scan();
+    const finding = result.report.findings.find((item) => item.id.startsWith("trivy_CVE-2023-0286_"));
+    assert.equal(finding.status, "manual");
+    assert.match(finding.evidence, new RegExp(`package_provenance=${expected};`));
+    assert.equal(result.partial, true);
+    assert.equal(result.report.vulnerabilityScan.packageProvenance.cryptographicallyVerified, false);
+    assert.ok(!result.report.findings.some((item) => item.id === "trivy_no_known_vulnerabilities"));
   }
 });
 

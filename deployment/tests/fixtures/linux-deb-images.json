@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "retrievedAt": "2026-11-01T18:19:18Z",
+  "purpose": "Content-pinned official cloud images for the native Debian/Ubuntu CI guests; image retrieval alone does not establish HCP runtime support.",
+  "authenticity": {
+    "publisherChecksumFilesRetrievedOverHttps": true,
+    "fullImageBytesMatchedPublisherChecksums": true,
+    "checksumSignaturesVerified": false,
+    "limitation": "No independent OpenPGP signature or signing-key trust chain was verified in this pinning step. HTTPS retrieval and matching a checksum from the same publisher establish the recorded byte integrity, not independent publisher authentication. Dated URLs are paired with fixed digests so replacement content fails verification."
+  },
+  "images": {
+    "debian": {
+      "publisher": "Debian",
+      "release": "12",
+      "codename": "bookworm",
+      "build": "20261026-2643",
+      "flavor": "genericcloud",
+      "url": "https://cloud.debian.org/images/cloud/bookworm/20261026-2643/debian-12-genericcloud-amd64-20261026-2643.qcow2",
+      "sha256": "24036a8b79cbb11d809752c60f2f885b1a3b02b1d663faa0b648eb87bd7a256e",
+      "bytes": 349831168,
+      "checksumUrl": "https://cloud.debian.org/images/cloud/bookworm/20261026-2643/SHA512SUMS",
+      "publisherChecksum": {
+        "algorithm": "sha512",
+        "value": "0464b5d4ae3aa4f658468d88da83af7857b71548b30d46dcb6282770955a747fb95a983476db90d25afd0653af607224c7ebd05122ab71faa106fd712aaad652"
+      },
+      "sourceIndexUrl": "https://cloud.debian.org/images/cloud/bookworm/20261026-2643/",
+      "metadataUrl": "https://cloud.debian.org/images/cloud/bookworm/20261026-2643/debian-12-genericcloud-amd64-20261026-2643.json",
+      "metadataSha256": "b0b827d666ad5a8e74746cc15cfd48f89d236ab39b32d44166b7e51b80b1de44",
+      "checksumFileSha256": "089516de68111e28139618161c289ddfea0d872ec1c2cf452ee87e466c84904c",
+      "expectedOsId": "debian",
+      "expectedVersionId": "12",
+      "architecture": "x86_64",
+      "packageArchitecture": "amd64",
+      "format": "qcow2",
+      "verification": {
+        "verifiedAt": "2026-11-01T18:19:18Z",
+        "method": "Full bounded HTTPS download; exact file length; publisher digest for image and package metadata; QCOW2 header inspection.",
+        "sha256Source": "computed from the full image after matching publisher SHA512SUMS and the QCOW2 upload digest in the publisher JSON",
+        "qcow2HeaderVersion": 3,
+        "virtualBytes": 3221225472,
+        "backingFilePresent": false,
+        "nativeBootVerifiedByThisPinningStep": false
+      },
+      "publisherPackageMetadata": {
+        "cloud-init": "22.4.2-1+deb12u4",
+        "python3-minimal": "3.11.2-1+b1"
+      }
+    },
+    "ubuntu": {
+      "publisher": "Ubuntu",
+      "release": "24.04",
+      "codename": "noble",
+      "build": "20261017",
+      "flavor": "server-cloudimg",
+      "url": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img",
+      "sha256": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94",
+      "bytes": 621284352,
+      "checksumUrl": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/SHA256SUMS",
+      "publisherChecksum": {
+        "algorithm": "sha256",
+        "value": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94"
+      },
+      "sourceIndexUrl": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/",
+      "metadataUrl": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.manifest",
+      "metadataSha256": "78d7da6ab1556daa6c0f685bf4e0e3da36395f170e8fad411d7ba032f14d08c2",
+      "checksumFileSha256": "0449a33b78dddb301a3ce2b80398984bc3e1f7880e27b86a31e58bdcbd3d3816",
+      "expectedOsId": "ubuntu",
+      "expectedVersionId": "24.04",
+      "architecture": "x86_64",
+      "packageArchitecture": "amd64",
+      "format": "qcow2",
+      "verification": {
+        "verifiedAt": "2026-11-01T18:19:18Z",
+        "method": "Full bounded HTTPS download; exact file length; publisher digest for image and package metadata; QCOW2 header inspection.",
+        "sha256Source": "publisher SHA256SUMS, also recomputed from the full image",
+        "qcow2HeaderVersion": 3,
+        "virtualBytes": 3758096384,
+        "backingFilePresent": false,
+        "nativeBootVerifiedByThisPinningStep": false
+      },
+      "publisherPackageMetadata": {
+        "cloud-init": "26.1-0ubuntu1~24.04.1",
+        "python3-minimal": "3.12.3-0ubuntu2.1"
+      },
+      "checksumSignatureUrl": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/SHA256SUMS.gpg"
+    }
+  }
+}

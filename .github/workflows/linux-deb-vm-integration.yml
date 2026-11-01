@@ -1,0 +1,146 @@
+name: Native Debian and Ubuntu hardening acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/linux-deb-vm-integration.yml
+      - deployment/tests/linux_deb_vm_integration.*
+      - deployment/tests/linux_rpm_vm_integration.py
+      - deployment/tests/test_deb_vm.py
+      - deployment/tests/verify_deb_vm_normalization.*
+      - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/test_linux_package_contracts.mjs
+      - deployment/tests/fixtures/linux-deb-images.json
+      - deployment/tests/fixtures/linux-package-controls.json
+      - ansible/scripts/**
+      - ansible/playbooks/**
+      - ansible/tasks/**
+      - ansible/audit-rules/**
+      - web/lib/linux-*.ts
+      - web/lib/host-readiness.ts
+      - web/lib/vulnerability-scan.ts
+      - web/lib/trivy-output.ts
+      - web/lib/ansible-reports.ts
+      - web/lib/asset-binding.ts
+      - web/lib/asset-report-publication.ts
+      - web/lib/state-store.ts
+      - web/tests/_typescript-loader.mjs
+      - web/package*.json
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/linux-deb-vm-integration.yml
+      - deployment/tests/linux_deb_vm_integration.*
+      - deployment/tests/linux_rpm_vm_integration.py
+      - deployment/tests/test_deb_vm.py
+      - deployment/tests/verify_deb_vm_normalization.*
+      - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/test_linux_package_contracts.mjs
+      - deployment/tests/fixtures/linux-deb-images.json
+      - deployment/tests/fixtures/linux-package-controls.json
+      - ansible/scripts/**
+      - ansible/playbooks/**
+      - ansible/tasks/**
+      - ansible/audit-rules/**
+      - web/lib/linux-*.ts
+      - web/lib/host-readiness.ts
+      - web/lib/vulnerability-scan.ts
+      - web/lib/trivy-output.ts
+      - web/lib/ansible-reports.ts
+      - web/lib/asset-binding.ts
+      - web/lib/asset-report-publication.ts
+      - web/lib/state-store.ts
+      - web/tests/_typescript-loader.mjs
+      - web/package*.json
+
+permissions:
+  contents: read
+
+jobs:
+  deb-native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        distribution: [debian, ubuntu]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - name: Install pinned controller and production report dependencies
+        run: |
+          set -euo pipefail
+          python -m pip install ansible-core==2.21.5
+          npm ci --ignore-scripts --prefix web
+      - name: Verify isolated harness, asset publication and package contracts
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s deployment/tests -p 'test_deb_vm.py'
+          node --test deployment/tests/verify_deb_vm_normalization.test.mjs
+          node --test deployment/tests/test_linux_package_contracts.mjs
+      - name: Install disposable KVM and authenticated SSH tools
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils openssh-client
+          test -e /dev/kvm
+          sudo chmod 0666 /dev/kvm
+          test -r /dev/kvm && test -w /dev/kvm
+      - name: Extract pinned production Trivy and record image digest
+        run: |
+          set -euo pipefail
+          trivy_dir="$RUNNER_TEMP/hcp-deb-trivy-${{ matrix.distribution }}"
+          mkdir -m 700 "$trivy_dir"
+          docker pull aquasec/trivy:0.74.0
+          docker image inspect aquasec/trivy:0.74.0 --format '{{index .RepoDigests 0}}' > "$trivy_dir/image-digest.txt"
+          trivy_container=$(docker create aquasec/trivy:0.74.0)
+          trap 'docker rm "$trivy_container" >/dev/null' EXIT
+          docker cp "$trivy_container:/usr/local/bin/trivy" "$trivy_dir/trivy"
+          chmod 0755 "$trivy_dir/trivy"
+          "$trivy_dir/trivy" --version
+      - name: Verify genuine guest, six native reports, vendor CVEs and UFW recovery
+        env:
+          HCP_TRIVY_BIN: ${{ runner.temp }}/hcp-deb-trivy-${{ matrix.distribution }}/trivy
+        run: |
+          bash deployment/tests/linux_deb_vm_integration.sh \
+            --distribution '${{ matrix.distribution }}' \
+            --work-dir "$RUNNER_TEMP/hcp-deb-${{ matrix.distribution }}"
+      - name: Require the completed privacy gate before artifact publication
+        if: always()
+        id: public-evidence
+        env:
+          HCP_NATIVE_PROTOCOL: ${{ runner.temp }}/hcp-deb-${{ matrix.distribution }}/artifacts/protocol.json
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import json, os, stat
+          safe = False
+          try:
+              descriptor = os.open(os.environ["HCP_NATIVE_PROTOCOL"], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+              with os.fdopen(descriptor, "rb") as stream:
+                  info = os.fstat(stream.fileno())
+                  if stat.S_ISREG(info.st_mode) and info.st_size <= 4 * 1024 * 1024:
+                      protocol = json.loads(stream.read(4 * 1024 * 1024 + 1))
+                      safe = isinstance(protocol, dict) and protocol.get("publicationPrivacyVerified") is True
+          except (OSError, ValueError, TypeError):
+              pass
+          print("safe=" + ("true" if safe else "false"))
+          PY
+      - name: Save public native evidence only
+        if: always() && steps.public-evidence.outputs.safe == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: deb-native-${{ matrix.distribution }}
+          path: |
+            ${{ runner.temp }}/hcp-deb-${{ matrix.distribution }}/artifacts/
+            ${{ runner.temp }}/hcp-deb-trivy-${{ matrix.distribution }}/image-digest.txt
+          retention-days: 14
+          if-no-files-found: warn
