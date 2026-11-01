@@ -100,7 +100,7 @@ const args = process.argv.slice(2);
 if (args.includes('--version')) { console.log('Version: 0.74.0-contract-fixture'); process.exit(0); }
 if (${JSON.stringify(mode)} === 'overflow') {
   const chunk = Buffer.alloc(65536, 'x');
-  for (let i = 0; i < 1025; i++) fs.writeSync(1, chunk);
+  for (let i = 0; i < ${TRIVY_STDOUT_LIMIT / 65536 + 1}; i++) fs.writeSync(1, chunk);
   process.exit(0);
 }
 const sbom = JSON.parse(fs.readFileSync(args.at(-1), 'utf8'));
@@ -108,7 +108,7 @@ const pkg = sbom.components[0];
 const vulnerabilities = Array.from({ length: 2662 }, (_, index) => ({
   VulnerabilityID: 'CVE-2026-' + (10000 + index), PkgName: pkg.name, InstalledVersion: pkg.version,
   PkgID: pkg['bom-ref'], PkgIdentifier: { BOMRef: pkg['bom-ref'] }, Status: 'affected', Severity: 'HIGH',
-  Description: 'Fixture advisory with quoted "text" and unicode Кириллица. '.repeat(110),
+  Description: 'Fixture advisory with quoted "text" and unicode Кириллица. '.repeat(420),
 }));
 const output = JSON.stringify({ SchemaVersion: 2, Metadata: { OS: { Family: sbom.metadata.component.name, Name: sbom.metadata.component.version } },
   Results: [{ Class: 'os-pkgs', Type: sbom.metadata.component.name, Packages: sbom.components.map(p => ({
@@ -130,7 +130,7 @@ fs.writeSync(1, output);
   return { root, reportId, marker, temporary };
 }
 
-test("large native output reaches saved and normalized reports without losing any finding", async (t) => {
+test("native JSON above 64 MiB reaches saved and normalized reports without losing any finding", async (t) => {
   const fixture = scanFixture(t, "large");
   const { scanPackageInventory } = await import(compiled.url("vulnerability-scan"));
   const { readAnsibleReport } = await import(compiled.url("ansible-reports"));
@@ -138,7 +138,7 @@ test("large native output reaches saved and normalized reports without losing an
   assert.equal(result.report.scanner.available, true);
   assert.equal(result.partial, false);
   const native = JSON.parse(fs.readFileSync(fixture.marker, "utf8"));
-  assert.ok(native.bytes > 16 * 1024 * 1024 && native.bytes < TRIVY_STDOUT_LIMIT);
+  assert.ok(native.bytes > 64 * 1024 * 1024 && native.bytes < TRIVY_STDOUT_LIMIT);
   assert.deepEqual(result.report.vulnerabilityScan.sourceEvidence.nativeOutput, native);
   assert.equal(result.report.findings.length, 2662);
   const normalized = readAnsibleReport(result.reportId);

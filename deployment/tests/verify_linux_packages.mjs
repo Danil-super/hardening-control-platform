@@ -331,7 +331,7 @@ export async function main(args = process.argv.slice(2)) {
         "--scanners", "vuln", "--pkg-types", "os", "--list-all-pkgs", "--disable-telemetry", "--ignorefile", "/dev/null", "--skip-db-update", "--skip-java-db-update", "--offline-scan", sbomPath];
       let replay;
       try {
-        replay = await run(binary, nativeArgs, { env: environment, timeout: 300_000, maxBuffer: 64 * 1024 * 1024 });
+        replay = await run(binary, nativeArgs, { env: environment, timeout: 300_000, maxBuffer: 128 * 1024 * 1024 });
       } catch (error) {
         save(name + ".trivy.stderr.txt", error.stderr ?? "");
         throw new Error(`Native Trivy replay failed (${error.code ?? error.signal ?? "unknown"}); see ${name}.trivy.stderr.txt`);

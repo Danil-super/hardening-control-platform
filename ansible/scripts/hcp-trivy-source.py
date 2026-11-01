@@ -27,9 +27,9 @@ from datetime import datetime, timezone
 
 
 # Native JSON includes repeated advisory descriptions, references and CVSS
-# records. A real 433-package Rocky inventory already produces over 22 MiB.
+# records. Real Rocky/Ubuntu inventories produce over 22/85 MiB respectively.
 # Keep a finite scan budget without duplicating that output in a JSON envelope.
-SCAN_STDOUT_LIMIT = 64 * 1024 * 1024
+SCAN_STDOUT_LIMIT = 128 * 1024 * 1024
 SCAN_STDERR_LIMIT = 1024 * 1024
 
 
