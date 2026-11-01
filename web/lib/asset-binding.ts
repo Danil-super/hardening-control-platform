@@ -19,7 +19,7 @@ export const validHostFingerprint = (value: unknown): value is string => typeof 
 
 /** Never persist or expose the raw machine-id (systemd treats it as confidential). */
 export function machineIdentityHash(machineId: string) {
-  if (!/^[a-f0-9]{32}$/.test(machineId) || /^0+$/.test(machineId)) throw new Error("Хост не предоставил корректный непустой /etc/machine-id.");
+  if (!/^[a-f0-9]{32}$/.test(machineId) || /^0+$/.test(machineId)) throw new Error("Хост не предоставил корректный непустой machine-id (/etc/machine-id либо /var/lib/dbus/machine-id).");
   return createHmac("sha256", "hardening-control-platform/asset-identity/v1").update(machineId).digest("hex");
 }
 

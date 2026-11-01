@@ -33,15 +33,23 @@ export function inspectAuditReports({ action, profileId, limit, reportRunId }: {
 }) {
   const reportIds: string[] = [];
   const warnings: string[] = [];
+  // A successful ping intentionally produces no report. All other audit
+  // actions must account for the reports expected from this exact run.
+  if (action === "ping") return { reportIds, partial: false, warnings };
+  if (!reportRunId?.trim()) {
+    warnings.push("Не получен идентификатор запуска; нельзя подтвердить создание ожидаемых отчётов.");
+    return { reportIds, partial: true, warnings };
+  }
   const hosts = new Set((limit || "linux_hosts").split(",").flatMap((target) => getInventoryTargetHosts(target))
     .filter((host) => host.groups.includes("linux_hosts")).map((host) => host.alias));
+  if (!hosts.size) warnings.push("В выбранной цели нет хостов linux_hosts; ожидаемые отчёты не определены.");
   for (const alias of hosts) {
     const reportId = reportIdForRun({ action, profileId, limit: alias, reportRunId });
-    if (!reportId) continue;
+    if (!reportId) { warnings.push(`${alias}: не получен идентификатор ожидаемого отчёта.`); continue; }
     const report = readAnsibleReport(reportId);
     if (!report) { warnings.push(`${alias}: ожидаемый отчёт не создан или повреждён.`); continue; }
     reportIds.push(reportId);
-    if (report.partial || !report.reportTimeValid) {
+    if (report.partial || !report.reportTimeValid || report.available === false) {
       const detail = auditReportLimitations(report.raw).join(" ");
       warnings.push(`${alias}: ${report.available === false ? "сканер не выполнил проверку. " : ""}${detail || "проверка неполная; ограничения указаны в отчёте."}`);
     }

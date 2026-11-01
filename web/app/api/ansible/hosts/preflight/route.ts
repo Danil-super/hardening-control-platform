@@ -14,6 +14,9 @@ import { credentialTransportAllowed } from "@/lib/ssh-bootstrap";
 import { ansibleLiteralExtraVars } from "@/lib/ansible-literal-vars";
 import { assetConnectionId, type VerifiedAssetBinding } from "@/lib/asset-binding";
 import { recordAssetObservation } from "@/lib/state-store";
+import { connectionFromInventoryVariables, resolvedInventoryVariables } from "@/lib/inventory";
+import { hasModernAnsibleRuntime, selectAnsibleRuntime, type AnsibleRuntime } from "@/lib/ansible-runtime";
+import { parseTargetPythonVersion, targetPythonInterpreter, targetPythonProbeCommand } from "@/lib/target-python";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -56,7 +59,7 @@ function treeFailureDetails(data: AnsibleTreeResult | null) {
     .join("\n");
 }
 
-async function runAnsible(args: string[], inventoryPath: string, stage: string, becomePassword = "") {
+async function runAnsible(args: string[], inventoryPath: string, stage: string, becomePassword = "", ansibleRuntime?: AnsibleRuntime) {
   const resultDir = path.join(path.dirname(inventoryPath), stage);
   let secretDirectory = "";
   try {
@@ -71,11 +74,11 @@ async function runAnsible(args: string[], inventoryPath: string, stage: string, 
       writeFileSync(secretFile, ansibleLiteralExtraVars({ ansible_become_password: becomePassword }), { mode: 0o600 });
       secretArgs.push("--extra-vars", `@${secretFile}`);
     }
-    const result = await execFileAsync("ansible", ["-i", inventoryPath, ...secretArgs, "--tree", resultDir, ...args], {
+    const result = await execFileAsync(ansibleRuntime?.ansible ?? "ansible", ["-i", inventoryPath, ...secretArgs, "--tree", resultDir, ...args], {
       cwd: getRepoRoot(),
       timeout: 60_000,
       maxBuffer: 1024 * 1024 * 4,
-      // Some hardened Astra policies require a terminal for sudo.  Keep that
+      // Some hardened Linux policies require a terminal for sudo. Keep that
       // TTY exclusive to ssh itself: transfer programs must remain protocol
       // clean so Ansible can upload its Python module through sftp/scp.
       env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False", ...ansibleSshEnvironment({ useTty: Boolean(becomePassword) }), ANSIBLE_PRIVATE_KEY_FILE: configuredPrivateKeyPath() },
@@ -115,7 +118,7 @@ function incompleteSudoResponse() {
 
 function sudoPasswordRequiredResponse() {
   return NextResponse.json({ ok: false, error: "sudo_password_required",
-    message: "Для этого хоста Astra разрешает sudo по паролю. Введите пароль sudo для разовой проверки; HCP не сохраняет его и не меняет sudoers." }, { status: 409 });
+    message: "Для этого хоста настроен sudo по паролю. Введите пароль sudo для разовой проверки; HCP не сохраняет его и не меняет sudoers." }, { status: 409 });
 }
 
 export async function POST(request: Request) {
@@ -149,23 +152,34 @@ export async function POST(request: Request) {
   // an Ansible `sudo -n` attempt.  Existing inventory hosts remain compatible
   // with credentials created before this status was recorded.
   let resolvedCredentialId = credentialId;
+  let inventoryHost: ReturnType<typeof readInventoryCloseoutHost> = null;
+  let pythonInterpreter = "/usr/bin/python3";
+  let inventoryPrivateKeyPath: string | undefined;
+  try {
+    inventoryHost = readInventoryCloseoutHost(alias);
+    if (inventoryHost) {
+      // Use effective host/group variables, just as the actual frozen run does.
+      // The identity comparison applies to root and non-elevated requests too.
+      const variables = resolvedInventoryVariables(alias);
+      const connection = connectionFromInventoryVariables(alias, variables);
+      const saved = { alias, address: connection.address, port: connection.port, user: connection.user ?? "", credentialId: connection.credentialId ?? null };
+      const comparedCredentialId = credentialId ?? saved.credentialId;
+      if (!sameInventoryConnection(saved, { alias, address, user, port, credentialId: comparedCredentialId })) {
+        return NextResponse.json({ ok: false, error: "inventory_connection_mismatch",
+          message: "Сохранённое подключение с таким именем отличается от введённых данных. Откройте его через «Настроить» или укажите другой alias." }, { status: 409 });
+      }
+      resolvedCredentialId = comparedCredentialId;
+      pythonInterpreter = targetPythonInterpreter(variables.ansible_python_interpreter ?? "/usr/bin/python3");
+      inventoryPrivateKeyPath = connection.privateKeyPath;
+    }
+  } catch (error) {
+    return NextResponse.json({ ok: false, error: "inventory_state_invalid",
+      message: error instanceof Error && (error as { code?: string }).code === "target_python_path_invalid" ? error.message
+        : "Не удалось безопасно подтвердить состояние подключения. Проверьте inventory и повторите настройку хоста." }, { status: 409 });
+  }
   let onDemandSudo = false;
   if (become && user !== "root") {
     try {
-      const inventoryHost = readInventoryCloseoutHost(alias);
-      if (inventoryHost) {
-        // Existing connections can be checked by older callers that do not
-        // send the credential id.  In that case bind the request to the
-        // already saved id before comparing it.  An explicitly supplied
-        // foreign id still produces a conflict and can never select another
-        // host's key.
-        const comparedCredentialId = credentialId ?? inventoryHost.credentialId;
-        if (!sameInventoryConnection(inventoryHost, { alias, address, user, port, credentialId: comparedCredentialId })) {
-          return NextResponse.json({ ok: false, error: "inventory_connection_mismatch",
-            message: "Сохранённое подключение с таким именем отличается от введённых данных. Откройте его через «Настроить» или укажите другой alias." }, { status: 409 });
-        }
-        resolvedCredentialId = comparedCredentialId;
-      }
       const identity = { alias, address, user, port };
       const mode = resolvedCredentialId ? hostCredentialSudoMode(resolvedCredentialId, identity) : null;
       onDemandSudo = mode === "on_demand";
@@ -184,7 +198,7 @@ export async function POST(request: Request) {
   }
 
   let sshKeyPath: string;
-  try { sshKeyPath = connectionPrivateKey({ alias, address, user, port }, resolvedCredentialId); }
+  try { sshKeyPath = !resolvedCredentialId && inventoryPrivateKeyPath ? inventoryPrivateKeyPath : connectionPrivateKey({ alias, address, user, port }, resolvedCredentialId); }
   catch (error) { return NextResponse.json({ ok: false, message: error instanceof HostCredentialError ? error.message : "Ключ подключения недоступен." }, { status: 400 }); }
   if (!existsSync(sshKeyPath)) {
     return NextResponse.json({ ok: false, message: "SSH-ключ не найден. Подключите этот хост по паролю через форму выше." }, { status: 400 });
@@ -195,7 +209,7 @@ export async function POST(request: Request) {
     inventoryPath,
     JSON.stringify({ all: { hosts: { [alias]: {
       ansible_host: address, ansible_port: port, ansible_user: user, ansible_become: false,
-      ansible_python_interpreter: "/usr/bin/python3", ansible_ssh_private_key_file: sshKeyPath,
+      ansible_python_interpreter: pythonInterpreter, ansible_ssh_private_key_file: sshKeyPath,
     } } } }),
     { mode: 0o600 },
   );
@@ -204,41 +218,47 @@ export async function POST(request: Request) {
     const ssh = await runAnsible([alias, "-m", "raw", "-a", "true"], inventoryPath, "ssh");
     let assetBinding: VerifiedAssetBinding | null = null;
     let identityError: string | null = null;
+    let targetPython: string | null = null;
+    const useTrustedPythonProbe = hasModernAnsibleRuntime();
     if (ssh.ok) {
       try {
-        const observation = await probeTrustedAssetIdentity({ address, port, user, privateKeyPath: sshKeyPath });
+        const observation = await probeTrustedAssetIdentity({ address, port, user, privateKeyPath: sshKeyPath,
+          ...(useTrustedPythonProbe ? { pythonInterpreter } : {}) });
+        targetPython = observation.pythonVersion ?? null;
         assetBinding = recordAssetObservation({ alias, connectionId: assetConnectionId({ address, port, user }), observation });
       } catch (error) { identityError = error instanceof Error ? error.message : "Идентичность актива не подтверждена."; }
     }
     // raw needs no target Python: diagnose old or missing runtimes before
     // transferring Ansible modules which may use unsupported syntax.
-    const pythonProbe = ssh.ok
-      ? await runAnsible([alias, "-m", "raw", "-a", '/usr/bin/python3 -c "import sys; print(\'HCP_PYTHON=%s.%s.%s\' % sys.version_info[:3])"'], inventoryPath, "python-version")
+    const pythonProbe = ssh.ok && !useTrustedPythonProbe
+      ? await runAnsible([alias, "-m", "raw", "-a", targetPythonProbeCommand(pythonInterpreter)], inventoryPath, "python-version")
       : null;
-    const targetPython = pythonProbe?.ok ? pythonProbe.data?.stdout?.match(/^HCP_PYTHON=(\d+\.\d+\.\d+)\r?$/m)?.[1] ?? null : null;
-    let coreVersion: string | null = null;
-    try {
-      const version = await execFileAsync("ansible", ["--version"], { cwd: getRepoRoot(), timeout: 10_000, maxBuffer: 65536 });
-      coreVersion = version.stdout.match(/^ansible\s+\[core\s+(\d+\.\d+\.\d+)/)?.[1] ?? null;
-    } catch { /* Actual setup below remains the authority for unknown versions. */ }
+    if (pythonProbe) targetPython = pythonProbe.ok ? parseTargetPythonVersion(pythonProbe.data?.stdout ?? "") : null;
+    let ansibleRuntime: AnsibleRuntime | undefined;
+    let runtimeError: string | null = null;
+    if (ssh.ok) {
+      try { ansibleRuntime = await selectAnsibleRuntime([{ alias, pythonVersion: targetPython }]); }
+      catch (error) { runtimeError = error instanceof Error ? error.message : "Не удалось выбрать совместимый Ansible."; }
+    }
+    const coreVersion = ansibleRuntime?.coreVersion ?? null;
     const pythonCompatibility = assessTargetPython(targetPython, coreVersion);
-    const setup = ssh.ok && pythonCompatibility.compatible !== false
-      ? await runAnsible([alias, "-m", "setup", "-a", "filter=ansible_distribution*,ansible_python*"], inventoryPath, "setup")
-      : { ok: false, stdout: "", stderr: ssh.ok ? pythonCompatibility.message : "Сначала требуется SSH-подключение.", data: null };
+    const setup = ssh.ok && ansibleRuntime && pythonCompatibility.compatible === true
+      ? await runAnsible([alias, "-m", "setup", "-a", "filter=ansible_distribution*,ansible_python*"], inventoryPath, "setup", "", ansibleRuntime)
+      : { ok: false, stdout: "", stderr: ssh.ok ? runtimeError ?? pythonCompatibility.message : "Сначала требуется SSH-подключение.", data: null };
     // Test a real elevated Python module, not only a whitelisted `sudo id`.
     const sudo = setup.ok && become
-      ? await runAnsible([alias, "-b", "-e", "ansible_become=true", "-m", "command", "-a", "id -u"], inventoryPath, "sudo", onDemandSudo ? sudoPassword : "")
+      ? await runAnsible([alias, "-b", "-e", "ansible_become=true", "-m", "command", "-a", "id -u"], inventoryPath, "sudo", onDemandSudo ? sudoPassword : "", ansibleRuntime)
       : { ok: !become, stdout: become ? "" : "skipped", stderr: "", data: null };
     if (become && sudo.ok && sudo.data?.stdout?.trim() !== "0") sudo.ok = false;
 
     const facts = setup.data?.ansible_facts ?? {};
     let readiness: HostReadiness | null = null;
-    let readinessError: string | null = ssh.ok && pythonCompatibility.compatible === false ? pythonCompatibility.message : null;
+    let readinessError: string | null = runtimeError ?? (ssh.ok && pythonCompatibility.compatible === false ? pythonCompatibility.message : null);
     if (setup.ok && sudo.ok) {
       try {
         const source = readFileSync(path.join(getRepoRoot(), "ansible/scripts/hcp-host-readiness.py"), "utf8");
         const probe = await runAnsible([alias, ...(become ? ["-b", "-e", "ansible_become=true"] : []),
-          "-m", "command", "-a", JSON.stringify({ argv: ["/usr/bin/python3", "-c", source] })], inventoryPath, "readiness", onDemandSudo ? sudoPassword : "");
+          "-m", "command", "-a", JSON.stringify({ argv: [pythonInterpreter, "-c", source] })], inventoryPath, "readiness", onDemandSudo ? sudoPassword : "", ansibleRuntime);
         if (!probe.ok) throw new Error("Не удалось собрать сведения о готовности. Проверьте доступ к системным командам на хосте.");
         readiness = assessHostReadiness(JSON.parse(probe.data?.stdout ?? ""));
       } catch (error) {
@@ -248,11 +268,12 @@ export async function POST(request: Request) {
 
     const os = readiness?.os ?? ([facts.ansible_distribution, facts.ansible_distribution_version].filter(Boolean).join(" ") || null);
     const summary = summarizePreflight({ ssh, setup, sudo, become, os, sudoMode: onDemandSudo ? "on_demand" : null,
-      pythonMessage: `Python ${targetPython}: модуль Ansible выполнен (${facts.ansible_python?.executable ?? "/usr/bin/python3"}).` });
+      pythonMessage: `Python ${targetPython}: модуль Ansible выполнен (${facts.ansible_python?.executable ?? pythonInterpreter}), ansible-core ${coreVersion}.` });
+    if (runtimeError) summary.checks.python.message = runtimeError;
     return NextResponse.json({
       ...summary,
       ok: summary.ok && Boolean(assetBinding),
-      message: identityError ?? summary.message,
+      message: identityError ?? runtimeError ?? summary.message,
       checks: { ...summary.checks, identity: { ok: Boolean(assetBinding), state: assetBinding ? "passed" : ssh.ok ? "failed" : "skipped",
         message: assetBinding ? "machine-id и доверенный SSH host key подтверждены." : identityError ?? "Сначала требуется SSH-подключение." } },
       assetBinding,
@@ -261,6 +282,8 @@ export async function POST(request: Request) {
         python: facts.ansible_python?.executable ?? null,
         pythonVersion: targetPython,
         ansibleCoreVersion: coreVersion,
+        ansibleRuntime: ansibleRuntime?.id ?? null,
+        configuredPython: pythonInterpreter,
       },
       readiness,
       readinessError,

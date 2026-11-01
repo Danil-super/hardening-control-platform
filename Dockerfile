@@ -1,6 +1,13 @@
 ARG TRIVY_IMAGE=aquasec/trivy:0.74.0
 FROM ${TRIVY_IMAGE} AS trivy
 
+FROM python:3.13-slim-bookworm AS ansible-modern
+
+# Separate controller Python supports current targets without replacing either
+# the Debian Python used by ReportLab or Python on any audited server.
+RUN python3.13 -m venv /opt/hcp-tools/ansible-modern \
+  && /opt/hcp-tools/ansible-modern/bin/pip install --no-cache-dir --only-binary=:all: ansible-core==2.21.5
+
 FROM node:24-bookworm-slim AS dependencies
 
 WORKDIR /app/web
@@ -19,6 +26,14 @@ FROM node:24-bookworm-slim AS runtime
 RUN apt-get update \
   && apt-get install -y --no-install-recommends ansible ca-certificates fonts-dejavu-core iproute2 iputils-ping lynis nmap openscap-scanner openssh-client python3 python3-paramiko python3-reportlab python3-venv util-linux \
   && rm -rf /var/lib/apt/lists/*
+
+COPY --from=ansible-modern /usr/local/bin/python3.13 /usr/local/bin/python3.13
+COPY --from=ansible-modern /usr/local/lib/python3.13 /usr/local/lib/python3.13
+COPY --from=ansible-modern /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
+COPY --from=ansible-modern /opt/hcp-tools/ansible-modern /opt/hcp-tools/ansible-modern
+RUN ldconfig \
+  && /opt/hcp-tools/ansible-modern/bin/ansible --version \
+  && /usr/bin/python3 -c "import reportlab"
 
 # Debian bookworm packages ssh-audit 2.5, whose JSON omits recommendations and
 # lacks --skip-rate-test. Keep the supported scanner isolated from system Python.
@@ -39,7 +54,8 @@ ENV NODE_ENV=production \
   PORT=3000 \
   HCP_REPORTS_DIR=/var/lib/hcp/reports \
   HCP_STATE_DIR=/var/lib/hcp \
-  HCP_TRIVY_MODE=online
+  HCP_TRIVY_MODE=online \
+  HCP_ANSIBLE_MODERN_BIN_DIR=/opt/hcp-tools/ansible-modern/bin
 
 WORKDIR /app
 COPY --chown=node:node --from=dependencies /app/web/node_modules ./web/node_modules

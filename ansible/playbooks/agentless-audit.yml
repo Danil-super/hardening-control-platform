@@ -37,7 +37,7 @@
 
     - name: Build agentless audit JSON
       ansible.builtin.shell: |
-        python3 - <<'PY'
+        "$HCP_TARGET_PYTHON" - <<'PY'
         import json
         import ipaddress
         import os
@@ -87,14 +87,174 @@
         def bool_text(value):
             return "yes" if value else "no"
 
-        def service_active(service):
-            code, output, error = run(["systemctl", "is-active", service])
-            if code == 0 and output == "active":
-                return True, output
-            if code == 3 and output in {"inactive", "failed", "activating", "deactivating"}:
-                return False, output
-            incomplete_checks.append("service_" + service)
-            return None, output or error or str(code)
+        def read_small(path, limit=65536):
+            try:
+                with open(path, encoding="utf-8", errors="replace") as handle:
+                    value = handle.read(limit + 1)
+                return value if len(value) <= limit else None
+            except (OSError, ValueError):
+                return None
+
+        def detect_service_manager():
+            pid_one = (read_small("/proc/1/comm", 256) or "").strip()
+            if pid_one == "systemd":
+                return ("systemd" if shutil.which("systemctl") else "unknown"), "pid1=systemd", False
+            # Installed binaries alone do not prove which init owns services.
+            # OpenRC normally runs under init, rather than as PID 1 itself.
+            softlevel = read_small("/run/openrc/softlevel", 256)
+            if softlevel and softlevel.strip() and shutil.which("rc-service"):
+                return "openrc", "pid1={}; openrc_runtime={}".format(pid_one or "unknown", softlevel.strip()), False
+            if pid_one in {"init", "sysvinit"} and not shutil.which("rc-service") and os.path.isdir("/etc/init.d"):
+                # BusyBox and Upstart can also be named init and retain init.d.
+                # Existing LSB scripts provide a bounded status contract, but
+                # their absence cannot prove an unmanaged service is inactive.
+                known = pid_one == "sysvinit"
+                return ("sysv" if known else "unknown"), "pid1={}; scope=LSB_init_scripts; init_identity={}".format(pid_one, "sysvinit" if known else "unverified"), True
+            return "unknown", "pid1={}; running_service_manager_unverified".format(pid_one or "unknown"), False
+
+        service_manager, service_manager_evidence, lsb_status_available = detect_service_manager()
+        service_cache = {}
+        service_aliases = {
+            "ssh": ("ssh", "sshd"), "sshd": ("sshd", "ssh"),
+            "cron": ("cron", "crond"), "crond": ("crond", "cron"),
+            "apache2": ("apache2", "httpd"), "httpd": ("httpd", "apache2"),
+        }
+
+        def query_service(name):
+            if name in service_cache:
+                return service_cache[name]
+            active, detail = None, "service manager unavailable"
+            if service_manager == "systemd":
+                unit = name if name.endswith(".service") else name + ".service"
+                code, output, error = run(["systemctl", "show", "--no-pager", "--property=LoadState", "--property=ActiveState", "--", unit])
+                fields = {}
+                malformed = False
+                for line in output.splitlines():
+                    key, separator, value = line.partition("=")
+                    if not separator or key in fields:
+                        malformed = True
+                    fields[key] = value
+                load, state = fields.get("LoadState"), fields.get("ActiveState")
+                if code == 0 and not error and not malformed:
+                    if load in {"loaded", "masked"} and state == "active":
+                        active = True
+                    elif load in {"loaded", "masked", "not-found"} and state in {"inactive", "failed"}:
+                        active = False
+                # Transient activation/reload, a missing bus, invalid unit data,
+                # or unrecognised states never become a proved inactive service.
+                detail = "exit={}; {}".format(code, output or error or "no state properties")
+            elif service_manager == "openrc":
+                exists, output, error = run(["rc-service", "--exists", name])
+                if exists == 1 and not output and not error:
+                    active, detail = False, "service_missing"
+                elif exists == 0 and not error:
+                    code, output, error = run(["rc-service", "--nocolor", name, "status"])
+                    status = re.search(r"\bstatus:\s*(started|stopped|inactive|crashed|starting|stopping)\b", output + "\n" + error)
+                    observed = status.group(1) if status else None
+                    if code == 0 and observed in (None, "started"):
+                        active = True
+                    elif code in (3, 16, 32) and observed in (None, "stopped", "inactive", "crashed"):
+                        active = False
+                    detail = "exit={}; {}".format(code, output or error or "no status text")
+                else:
+                    detail = "existence_exit={}; {}".format(exists, output or error or "unverified service existence")
+            elif lsb_status_available:
+                script = "/etc/init.d/" + name
+                header = read_small(script)
+                if header is None:
+                    # A permission/read error is different from a missing script.
+                    try:
+                        os.stat(script)
+                    except FileNotFoundError:
+                        active = False if service_manager == "sysv" else None
+                        detail = "init_script_missing" if active is False else "init_script_missing; service_manager_unverified"
+                    except OSError as error:
+                        detail = "init_script_unreadable: " + str(error)
+                    else:
+                        detail = "init_script_unreadable_or_above_64KiB"
+                elif "### BEGIN INIT INFO" not in header or "### END INIT INFO" not in header:
+                    detail = "non_LSB_status_contract_unverified"
+                else:
+                    # LSB status: 0 running; 1/2 dead with pid/lock; 3 stopped;
+                    # 4 unknown. Never invoke start/stop/reload or a shell wrapper.
+                    code, output, error = run([script, "status"])
+                    if code == 0:
+                        active = True
+                    elif code in (1, 2, 3):
+                        active = False
+                    detail = "exit={}; {}".format(code, output or error or "LSB status result")
+            evidence = "manager={}; service={}; {}".format(service_manager, name, detail)
+            service_cache[name] = (active, evidence)
+            return service_cache[name]
+
+        def service_active(service, required=True):
+            if not isinstance(service, str) or not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.@+-]{0,79}$", service):
+                if required:
+                    incomplete_checks.append("service_invalid_name")
+                return None, "invalid service name"
+            results = [query_service(name) for name in service_aliases.get(service, (service,))]
+            active = True if any(value[0] is True for value in results) else None if any(value[0] is None for value in results) else False
+            if active is None and required:
+                incomplete_checks.append("service_" + service)
+            return active, "; ".join(value[1] for value in results)
+
+        def authentication_log_evidence():
+            pattern = re.compile(r"failed password|authentication failure|invalid user", re.I)
+            sources, matches, errors = [], [], []
+            for log_class, paths in (("authentication", ("/var/log/auth.log", "/var/log/secure", "/var/log/authlog")),
+                                     ("mixed_syslog", ("/var/log/messages", "/var/log/syslog"))):
+                for logfile in paths:
+                    if not os.path.exists(logfile):
+                        continue
+                    code, output, error = run(["tail", "-n", "1000", logfile])
+                    if code == 0 and not error:
+                        lines = output.splitlines()[-1000:]
+                        sources.append(logfile)
+                        matches.extend(logfile + ": " + line for line in lines if pattern.search(line))
+                    else:
+                        errors.append(logfile + ": " + (error or output or str(code)))
+                if sources:
+                    detail = "source=files; scope=last_1000_lines_per_file; log_class={}; files={}; matches={}; displayed={}".format(
+                        log_class, ",".join(sources), len(matches), min(100, len(matches)))
+                    if errors:
+                        detail += "; unreadable_sources=" + "; ".join(errors)
+                    if log_class == "mixed_syslog":
+                        # A readable general log does not establish auth/authpriv
+                        # routing. Keep observed events without claiming coverage.
+                        detail += "; authentication_routing=unverified"
+                    return not errors and log_class == "authentication", bool(matches), detail + ("\n" + "\n".join(matches[:100]) if matches else "")
+            if not shutil.which("journalctl"):
+                return False, False, "auth.log/secure/authlog/messages/syslog unavailable; journalctl unavailable; " + "; ".join(errors)
+            # A successful empty filter alone does not prove journal access.
+            # First require an actual readable journal entry; then query a
+            # declared, bounded auth/authpriv window (same-field matches OR).
+            probe_code, probe_output, probe_error = run(["journalctl", "--no-pager", "--output=json", "--lines=1"])
+            try:
+                probe = json.loads(probe_output)
+                readable = (probe_code == 0 and not probe_error and isinstance(probe, dict)
+                            and str(probe.get("__REALTIME_TIMESTAMP", "")).isdigit())
+            except (ValueError, TypeError):
+                readable = False
+            if not readable:
+                return False, False, "source=journald; readable_journal_unverified; " + (probe_error or "no valid journal entry")
+            code, output, error = run(["journalctl", "--no-pager", "--output=json", "--since=-24h", "--lines=1000", "SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10"])
+            known, count = code == 0 and not error, 0
+            for line in output.splitlines():
+                try:
+                    entry = json.loads(line)
+                    message = entry.get("MESSAGE") if isinstance(entry, dict) else None
+                    timestamp = entry.get("__REALTIME_TIMESTAMP") if isinstance(entry, dict) else None
+                    if not isinstance(message, str) or not str(timestamp or "").isdigit():
+                        raise ValueError("unrecognised journal record")
+                    count += 1
+                    if pattern.search(message):
+                        matches.append(message)
+                except (ValueError, TypeError):
+                    known = False
+            detail = "source=journald; scope=auth_authpriv_last_24h_max_1000_entries; retrieved={}; matches={}; displayed={}".format(count, len(matches), min(100, len(matches)))
+            if not known:
+                detail += "; incomplete=" + (error or "invalid journal records or failed query")
+            return known, bool(matches), detail + ("\n" + "\n".join(matches[:100]) if matches else "")
 
         def result_available(check_id, code, accepted=(0,)):
             if code in accepted:
@@ -550,7 +710,7 @@
                 "Сервисы",
                 rule.get("risk", "medium"),
                 "passed" if active else "manual" if active is None else "failed",
-                'Проверяется активность systemd-сервиса {}.'.format(service),
+                'Проверяется активность сервиса {} через обнаруженный менеджер служб; учитываются известные имена-алиасы.'.format(service),
                 rule["recommendation"],
                 '{}={}'.format(service, evidence),
             ))
@@ -595,7 +755,7 @@
             updates_output or updates_error or "no upgradable packages detected",
         ))
 
-        sudo_code, sudo_output, sudo_error = run(["bash", "-lc", "getent group sudo wheel adm 2>/dev/null"])
+        sudo_code, sudo_output, sudo_error = run(["getent", "group", "sudo", "wheel", "adm"])
         sudo_evidence = sudo_output or sudo_error or "groups unavailable"
         sudo_users = []
         for line in sudo_output.splitlines():
@@ -647,33 +807,32 @@
             ["/etc/shadow"],
         ))
 
-        auth_logs = [value for value in ("/var/log/auth.log", "/var/log/secure") if os.path.exists(value)]
-        failed_log_code, failed_log_output, failed_log_error = run(["grep", "-Ei", "failed password|authentication failure|invalid user", *auth_logs]) if auth_logs else (None, "", "auth.log/secure недоступны; проверьте journalctl")
-        failed_log_known = result_available("failed_logins", failed_log_code, (0, 1))
-        failed_login_detected = bool(failed_log_output.strip())
+        failed_log_known, failed_login_detected, failed_log_evidence = authentication_log_evidence()
+        if not failed_log_known:
+            incomplete_checks.append("failed_logins")
         findings.append(finding(
             "failed_logins",
             "Обнаружены неудачные попытки входа" if failed_login_detected else "Неудачные попытки входа не найдены в доступных логах" if failed_log_known else "Журналы аутентификации не проверены",
             "Аутентификация",
             "medium",
             "manual",
-            "Проверяются доступные auth.log/secure. Неудачная попытка входа сама по себе не подтверждает уязвимость или компрометацию.",
+            "Проверяются последние 1000 строк каждого доступного auth.log/secure/authlog; запасной источник — последние 1000 строк messages/syslog с неподтверждённой маршрутизацией аутентификации. При отсутствии читаемых файлов проверяется до 1000 записей auth/authpriv из journald за последние 24 часа. Это ограниченная выборка. Неудачная попытка входа сама по себе не подтверждает уязвимость или компрометацию.",
             "При множественных попытках включите блокировку источника, fail2ban или правила firewall.",
-            failed_log_output or failed_log_error or "no matching log lines",
+            failed_log_evidence,
         ))
 
-        critical_services = ["ssh", "sshd", "nginx", "apache2", "docker"]
+        critical_services = ["ssh", "cron", "nginx", "apache2", "docker"]
         service_lines = []
         for service in critical_services:
-            code, output, error = run(["systemctl", "is-active", service])
-            service_lines.append('{}={}'.format(service, output or error or code))
+            active, evidence = service_active(service, required=False)
+            service_lines.append('{}={}; {}'.format(service, "active" if active is True else "inactive" if active is False else "unknown", evidence))
         findings.append(finding(
             "critical_services_review",
             "Проверить состояние критичных сервисов",
             "Сервисы",
             "info",
             "manual",
-            "Собрано состояние распространенных сервисов: SSH, web и Docker.",
+            "Собрано состояние распространенных сервисов: SSH, cron, web и Docker с учётом менеджера служб и имён-алиасов. Неизвестное состояние не означает, что служба остановлена.",
             "Проверьте, что каждый активный сервис нужен хосту и защищен.",
             "; ".join(service_lines),
         ))
@@ -687,17 +846,18 @@
                     active_web_services.append(service)
                 findings.append(finding(
                     'web_service_{}'.format(service),
-                    'Web-сервис {} активен'.format(service) if active else 'Web-сервис {} не активен'.format(service),
+                    'Web-сервис {} активен'.format(service) if active else 'Web-сервис {} не активен'.format(service) if active is False else 'Состояние web-сервиса {} неизвестно'.format(service),
                     "Web-сервер",
                     "info" if active else "low",
                     "passed" if active else "manual",
-                    'Проверяется состояние systemd-сервиса {}.'.format(service),
+                    'Проверяется состояние сервиса {} через обнаруженный менеджер служб и известные имена-алиасы.'.format(service),
                     "Отключите неиспользуемый web-сервис или проверьте его конфигурацию.",
                     '{}={}'.format(service, evidence),
                 ))
 
-            nginx_code, nginx_output, nginx_error = run(["bash", "-lc", "nginx -T 2>&1"])
+            nginx_code, nginx_output, nginx_error = run(["nginx", "-T"])
             if nginx_code == 0:
+                nginx_output = "\n".join(value for value in (nginx_output, nginx_error) if value)
                 active_nginx_lines = [line.split("#", 1)[0].strip().lower() for line in nginx_output.splitlines()]
                 server_tokens_off = any(line.startswith("server_tokens off;") for line in active_nginx_lines)
                 findings.append(finding(
@@ -717,8 +877,10 @@
                 findings.append(finding("nginx_config_unavailable", "Конфигурация активного Nginx не проверена", "Web-сервер", "info", "manual",
                     "nginx -T завершился с ошибкой.", "Проверьте nginx -t и доступ к конфигурации.", nginx_error or nginx_output))
 
-            apache_code, apache_output, apache_error = run(["bash", "-lc", "apache2ctl -t -D DUMP_RUN_CFG 2>&1 || httpd -t -D DUMP_RUN_CFG 2>&1"])
+            apache_command = next((name for name in ("apache2ctl", "apachectl", "httpd") if shutil.which(name)), None)
+            apache_code, apache_output, apache_error = run([apache_command, "-t", "-D", "DUMP_RUN_CFG"]) if apache_command else (None, "", "Apache configuration tool unavailable")
             if apache_code == 0:
+                apache_output = "\n".join(value for value in (apache_output, apache_error) if value)
                 apache_hardened = "servertokens: prod" in apache_output.lower() and "serversignature: off" in apache_output.lower()
                 findings.append(finding(
                     "apache_banner_hardening",
@@ -744,13 +906,13 @@
                     "Web-сервер",
                     "info",
                     "manual",
-                    "Nginx и Apache не обнаружены как активные systemd-сервисы.",
+                    "Nginx и Apache не подтверждены как активные сервисы выбранного менеджера служб; неизвестное состояние не является доказательством отсутствия web-сервера.",
                     "Выберите другой профиль или укажите реальный web-сервис на хосте.",
                     "active_services=none",
                 ))
 
         if profile_id == "docker_host":
-            docker_code, docker_output, docker_error = run(["bash", "-lc", "docker info 2>&1"])
+            docker_code, docker_output, docker_error = run(["docker", "info"])
             docker_available = docker_code == 0
             findings.append(finding(
                 "docker_engine_available",
@@ -785,7 +947,7 @@
                     "Оцените возможность rootless Docker или ограничьте доступ к docker.sock.",
                     security_output or security_error or "SecurityOptions unavailable",
                 ))
-                socket_code, socket_output, socket_error = run(["bash", "-lc", "stat -c '%a %U:%G' /var/run/docker.sock 2>/dev/null"])
+                socket_code, socket_output, socket_error = run(["stat", "-c", "%a %U:%G", "/var/run/docker.sock"])
                 socket_known = result_available("docker_socket_permissions", socket_code)
                 socket_safe = socket_known and socket_output in {"660 root:docker", "600 root:root", "600 root:docker"}
                 findings.append(finding(
@@ -910,14 +1072,19 @@
                 "rulesFile": os.environ.get("AUDIT_RULES_FILE", "ansible/audit-rules/basic-linux.yml"),
                 "openPorts": sorted(open_ports),
                 "openSockets": open_sockets,
+                "serviceManager": service_manager,
+                "serviceManagerEvidence": service_manager_evidence,
+                "serviceObservations": [{"service": name, "state": "active" if value[0] is True else "inactive" if value[0] is False else "unknown", "evidence": value[1]}
+                                        for name, value in sorted(service_cache.items())],
             },
             "summary": summary,
             "findings": findings,
         }, ensure_ascii=True))
         PY
       args:
-        executable: /bin/bash
+        executable: /bin/sh
       environment:
+        HCP_TARGET_PYTHON: "{{ ansible_python_interpreter | default('/usr/bin/python3') }}"
         AUDIT_PROFILE: "{{ audit_profile | default('basic_linux') }}"
         REPORT_RUN_ID: "{{ report_suffix }}"
         INVENTORY_HOST: "{{ inventory_hostname }}"

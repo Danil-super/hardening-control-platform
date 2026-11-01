@@ -115,7 +115,7 @@
         - name: Identify the exact bundled sources independently of generated datastream timestamps
           ansible.builtin.command:
             argv:
-              - python3
+              - "{{ ansible_python_interpreter | default('/usr/bin/python3') }}"
               - -c
               - |
                 import hashlib, os, sys

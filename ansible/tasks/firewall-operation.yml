@@ -19,7 +19,7 @@
 
     - name: Execute firewall operation or read-only preview
       ansible.builtin.command:
-        argv: "{{ ['python3', hcp_firewall_temp.path + '/hcp-firewall.py'] + hcp_firewall_argv }}"
+        argv: "{{ [ansible_python_interpreter | default('/usr/bin/python3'), hcp_firewall_temp.path + '/hcp-firewall.py'] + hcp_firewall_argv }}"
       register: hcp_firewall_result
       check_mode: false
       changed_when: (hcp_firewall_result.stdout | from_json).changed | default(false)

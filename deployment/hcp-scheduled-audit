@@ -13,75 +13,95 @@ case "$HCP_SCHEDULE_PROFILE" in
 esac
 
 case "$HCP_SCHEDULE_LIMIT" in
-  *[!A-Za-z0-9_.-]*|"") echo "HCP_SCHEDULE_LIMIT must be one inventory host or group." >&2; exit 64 ;;
+  *[!A-Za-z0-9_.-]*|[.-]*|"") echo "HCP_SCHEDULE_LIMIT must be one inventory host or group." >&2; exit 64 ;;
 esac
 
 case "$HCP_SCHEDULE_DEEP_LIMIT" in
-  *[!A-Za-z0-9_.-]*|"") echo "HCP_SCHEDULE_DEEP_LIMIT must be one inventory host or group." >&2; exit 64 ;;
+  *[!A-Za-z0-9_.-]*|[.-]*|"") echo "HCP_SCHEDULE_DEEP_LIMIT must be one inventory host or group." >&2; exit 64 ;;
 esac
 
 case "$HCP_SCHEDULE_TASKS" in
-  *[!a-z,]*|""|,*|*,) echo "HCP_SCHEDULE_TASKS must be a comma-separated list of agentless,packages,openscap." >&2; exit 64 ;;
+  *[!a-z,]*|""|,*|*,|*,,*) echo "HCP_SCHEDULE_TASKS must be a comma-separated list of agentless,packages,openscap." >&2; exit 64 ;;
+esac
+
+# Validate the entire batch before the first HTTP request or remote operation.
+original_ifs="$IFS"
+IFS=","; set -- $HCP_SCHEDULE_TASKS; IFS="$original_ifs"
+for task in "$@"; do
+  case "$task" in
+    agentless|packages|openscap) ;;
+    *) echo "Unsupported scheduled task: $task" >&2; exit 64 ;;
+  esac
+done
+
+case "${HCP_SCHEDULE_API_KEY:-}" in
+  *[![:space:]]*) ;;
+  *) echo "Set HCP_SCHEDULE_API_KEY before scheduling audits." >&2; exit 64 ;;
 esac
 
 REPORT_RUN_ID="schedule-$(date -u +%Y%m%dT%H%M%SZ)"
 
-run_agentless() {
-  ansible-playbook -i /app/ansible/inventory.ini /app/ansible/playbooks/agentless-audit.yml \
-    --limit "$HCP_SCHEDULE_LIMIT" \
-    -e "audit_profile=$HCP_SCHEDULE_PROFILE" \
-    -e "hcp_reports_dir=${HCP_REPORTS_DIR:-/var/lib/hcp/reports}" \
-    -e "report_run_id=$REPORT_RUN_ID"
+request_scheduled_audit() {
+  node - "$1" "$2" "$HCP_SCHEDULE_PROFILE" <<'JS'
+const http = require("node:http");
+const [task, limit, profileId] = process.argv.slice(2);
+const port = Number(process.env.PORT || "3000");
+if (!Number.isInteger(port) || port < 1 || port > 65535) {
+  console.error("PORT must be an integer between 1 and 65535.");
+  process.exit(64);
+}
+const payload = JSON.stringify({ reportRunId: process.env.REPORT_RUN_ID, limit,
+  ...(task === "agentless" ? { profileId } : {}) });
+const fail = error => { console.error(`Scheduled ${task} failed: ${error.message}`); process.exitCode = 1; };
+// The fleet can take longer than fetch's default response-header timeout.
+// Keep an explicit six-hour batch deadline and bounded response memory.
+const request = http.request({ hostname: "127.0.0.1", port, path: `/api/internal/scheduled/${task}`, method: "POST",
+  headers: { "content-type": "application/json", "content-length": Buffer.byteLength(payload),
+    "x-hcp-schedule-key": process.env.HCP_SCHEDULE_API_KEY.trim() } }, response => {
+  const chunks = [];
+  let bytes = 0;
+  response.on("data", chunk => {
+    bytes += chunk.length;
+    if (bytes > 4 * 1024 * 1024) response.destroy(new Error("Scheduled response exceeds 4 MiB."));
+    else chunks.push(chunk);
+  });
+  response.on("error", fail);
+  response.on("end", () => {
+    try {
+      const body = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+      process.stdout.write(`${JSON.stringify(body)}\n`);
+      if (response.statusCode < 200 || response.statusCode >= 300 || body.ok !== true || body.partial !== false
+          || !Array.isArray(body.results) || !body.results.length) {
+        throw new Error(`${response.statusCode}: ${JSON.stringify(body)}`);
+      }
+    } catch (error) { fail(error); }
+  });
+});
+const deadline = setTimeout(() => request.destroy(new Error("Scheduled batch exceeded six hours.")), 6 * 60 * 60 * 1000);
+deadline.unref();
+request.on("close", () => clearTimeout(deadline));
+request.on("error", fail);
+request.end(payload);
+JS
 }
 
-run_packages() {
-  : "${HCP_SCHEDULE_API_KEY:?Set HCP_SCHEDULE_API_KEY before scheduling packages/Trivy scans.}"
-  ansible-playbook -i /app/ansible/inventory.ini /app/ansible/playbooks/package-inventory.yml \
-    --limit "$HCP_SCHEDULE_DEEP_LIMIT" \
-    -e "hcp_reports_dir=${HCP_REPORTS_DIR:-/var/lib/hcp/reports}" \
-    -e "report_run_id=$REPORT_RUN_ID"
-  node -e '
-    const endpoint = `http://127.0.0.1:${process.env.PORT || "3000"}/api/internal/scheduled/package-vulnerabilities`;
-    fetch(endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-hcp-schedule-key": process.env.HCP_SCHEDULE_API_KEY },
-      body: JSON.stringify({ reportRunId: process.env.REPORT_RUN_ID }),
-    }).then(async (response) => {
-      const body = await response.json();
-      if (!response.ok || body.ok !== true || body.partial === true) throw new Error(`${response.status}: ${JSON.stringify(body)}`);
-      process.stdout.write(`${JSON.stringify(body)}\n`);
-    }).catch((error) => { console.error(`Scheduled CVE scan failed: ${error.message}`); process.exit(1); });
-  '
-}
-
-run_openscap() {
-  : "${HCP_SCHEDULE_API_KEY:?Set HCP_SCHEDULE_API_KEY before scheduling OpenSCAP scans.}"
-  export HCP_SCHEDULE_DEEP_LIMIT
-  node -e '
-    const endpoint = `http://127.0.0.1:${process.env.PORT || "3000"}/api/internal/scheduled/openscap`;
-    fetch(endpoint, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-hcp-schedule-key": process.env.HCP_SCHEDULE_API_KEY },
-      body: JSON.stringify({ reportRunId: process.env.REPORT_RUN_ID, limit: process.env.HCP_SCHEDULE_DEEP_LIMIT }),
-    }).then(async (response) => {
-      const body = await response.json();
-      if (!response.ok || body.ok !== true || body.partial === true) throw new Error(`${response.status}: ${JSON.stringify(body)}`);
-      process.stdout.write(`${JSON.stringify(body)}\n`);
-    }).catch((error) => { console.error(`Scheduled OpenSCAP failed: ${error.message}`); process.exit(1); });
-  '
-}
+run_agentless() { request_scheduled_audit agentless "$HCP_SCHEDULE_LIMIT"; }
+run_packages() { request_scheduled_audit package-vulnerabilities "$HCP_SCHEDULE_DEEP_LIMIT"; }
+run_openscap() { request_scheduled_audit openscap "$HCP_SCHEDULE_DEEP_LIMIT"; }
 
 run_tasks() {
+  failed=0
   original_ifs="$IFS"
   IFS=","; set -- $HCP_SCHEDULE_TASKS; IFS="$original_ifs"
   for task in "$@"; do
     case "$task" in
-      agentless) run_agentless ;;
-      packages) run_packages ;;
-      openscap) run_openscap ;;
+      agentless) run_agentless || failed=1 ;;
+      packages) run_packages || failed=1 ;;
+      openscap) run_openscap || failed=1 ;;
       *) echo "Unsupported scheduled task: $task" >&2; exit 64 ;;
     esac
   done
+  return "$failed"
 }
 
 export REPORT_RUN_ID

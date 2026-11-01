@@ -9,14 +9,14 @@ import { compileServerModules } from "./_typescript-loader.mjs";
 
 const webDirectory = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const originalCwd = process.cwd();
-const environmentKeys = ["PATH", "TMPDIR", "HCP_STATE_DIR", "HCP_REPORTS_DIR", "HCP_AUDIT_HMAC_KEY", "HCP_SSH_PRIVATE_KEY_PATH", "HCP_KNOWN_HOSTS_PATH", "HCP_ASSET_EXECUTION_RECORD", "HCP_ASSET_CHILD_FAIL"];
+const environmentKeys = ["PATH", "TMPDIR", "HCP_STATE_DIR", "HCP_REPORTS_DIR", "HCP_AUDIT_HMAC_KEY", "HCP_SSH_PRIVATE_KEY_PATH", "HCP_KNOWN_HOSTS_PATH", "HCP_ASSET_EXECUTION_RECORD", "HCP_ASSET_CHILD_FAIL", "HCP_ANSIBLE_MODERN_BIN_DIR"];
 const originalEnvironment = Object.fromEntries(environmentKeys.map((key) => [key, process.env[key]]));
 let hasNativeAnsible;
 try { execFileSync("ansible-inventory", ["--version"], { stdio: "pipe", timeout: 15000 }); hasNativeAnsible = true; }
 catch (error) { if (error.code !== "ENOENT") throw error; hasNativeAnsible = false; }
 const native = { skip: hasNativeAnsible ? false : "Requires the real ansible-inventory executable (installed in CI)." };
 
-const compiled = compileServerModules(["asset-execution", "ansible-control", "host-credentials", "audit-correlation"]);
+const compiled = compileServerModules(["asset-execution", "ansible-control", "host-credentials", "audit-correlation", "scheduled-audit"]);
 // The network observation is the only replaced server module boundary. Native
 // inventory resolution, immutable bindings, SQLite locks and report publication
 // execute their production implementations.
@@ -34,6 +34,7 @@ const { installObservation } = await import(compiled.url("ssh-access"));
 const { prepareAssetExecution } = await import(compiled.url("asset-execution"));
 const { freezeInventoryTargets, connectionFromInventoryVariables, explicitInventoryConnectionId } = await import(compiled.url("inventory"));
 const { runAnsiblePlaybook } = await import(compiled.url("ansible-control"));
+const { runScheduledInventoryAudit } = await import(compiled.url("scheduled-audit"));
 const credentials = await import(compiled.url("host-credentials"));
 const identity = await import(compiled.url("asset-binding"));
 const store = await import(compiled.url("state-store"));
@@ -73,6 +74,7 @@ beforeEach(() => {
   process.env.HCP_KNOWN_HOSTS_PATH = path.join(directory, "live known_hosts");
   process.env.HCP_ASSET_EXECUTION_RECORD = path.join(directory, "execution.json");
   delete process.env.HCP_ASSET_CHILD_FAIL;
+  delete process.env.HCP_ANSIBLE_MODERN_BIN_DIR;
   writeFileSync(process.env.HCP_SSH_PRIVATE_KEY_PATH, "fixture key; no SSH process uses it\n", { mode: 0o600 });
   writeFileSync(process.env.HCP_KNOWN_HOSTS_PATH, "mutable trust fixture\n", { mode: 0o600 });
   installObservation(undefined);
@@ -143,18 +145,93 @@ function installRecordingAnsibleChild() {
     "hosts = resolved['_meta']['hostvars']",
     "ssh_args = shlex.split(variables['ansible_ssh_args'])",
     "known_hosts = next(item.split('=', 1)[1] for item in ssh_args if item.startswith('UserKnownHostsFile='))",
-    "record = {'args': args, 'hosts': hosts, 'inventoryPath': inventory, 'inventoryMode': os.stat(inventory).st_mode & 0o777, 'trustPath': known_hosts, 'trust': open(known_hosts).read(), 'sshArgs': ssh_args, 'extraVars': variables}",
+    "record = {'executable': sys.argv[0], 'args': args, 'hosts': hosts, 'inventoryPath': inventory, 'inventoryMode': os.stat(inventory).st_mode & 0o777, 'trustPath': known_hosts, 'trust': open(known_hosts).read(), 'sshArgs': ssh_args, 'extraVars': variables}",
     "json.dump(record, open(os.environ['HCP_ASSET_EXECUTION_RECORD'], 'w'))",
     "destination = pathlib.Path(variables['hcp_reports_dir'])",
+    "package_inventory = pathlib.Path(args[2]).name == 'package-inventory.yml'",
+    "report_profile = 'packages' if package_inventory else variables['audit_profile']",
     "for alias, host in hosts.items():",
-    "    report = {'inventoryHost': alias, 'hostname': alias, 'mode': 'agentless', 'profileId': variables['audit_profile'], 'createdAt': '2026-10-28T12:00:00Z', 'scanner': {'available': True, 'partial': os.environ.get('HCP_ASSET_CHILD_FAIL') == 'true'}, 'findings': [], 'executedAddress': host['ansible_host'], 'assetBinding': {'status': 'untrusted-child-claim'}}",
+    "    report = {'inventoryHost': alias, 'hostname': alias, 'mode': 'packages' if package_inventory else 'agentless', 'profileId': report_profile, 'createdAt': '2026-10-28T12:00:00Z', 'scanner': {'available': True, 'partial': os.environ.get('HCP_ASSET_CHILD_FAIL') == 'true'}, 'findings': [], 'executedAddress': host['ansible_host'], 'assetBinding': {'status': 'untrusted-child-claim'}}",
+    "    if package_inventory: report.update({'packages': [{'name': 'fixture-package', 'version': '1.0', 'manager': 'deb'}], 'packageInventory': {'packageCount': 1}})",
     "    if os.environ.get('HCP_ASSET_CHILD_FAIL') == 'true': report['scanner']['error'] = 'Controlled scanner failure after a diagnostic report'",
-    "    report_path = destination / (alias + '-' + variables['audit_profile'] + '-' + variables['report_run_id'] + '.json')",
+    "    report_path = destination / (alias + '-' + report_profile + '-' + variables['report_run_id'] + '.json')",
     "    report_path.write_text(json.dumps(report))",
     "if os.environ.get('HCP_ASSET_CHILD_FAIL') == 'true': sys.exit(2)",
     "print('Controlled Ansible boundary completed')",
   ].join("\n") + "\n", { mode: 0o700 });
 }
+
+function installRuntimeChoices() {
+  const modern = path.join(directory, "modern-bin");
+  mkdirSync(modern);
+  for (const [bin, version] of [[path.join(directory, "bin"), "2.14.18"], [modern, "2.21.5"]]) {
+    writeFileSync(path.join(bin, "ansible"), `#!/bin/sh\n[ "$1" = '--version' ] || exit 42\nprintf 'ansible [core ${version}]\\n'\n`, { mode: 0o700 });
+  }
+  process.env.HCP_ANSIBLE_MODERN_BIN_DIR = modern;
+  installRecordingAnsibleChild();
+  copyFileSync(path.join(directory, "bin/ansible-playbook"), path.join(modern, "ansible-playbook"));
+  return modern;
+}
+
+test("the selected runtime executes the frozen inventory with the same configured Python path", native, async () => {
+  const modern = installRuntimeChoices();
+  writeInventory(["fixture-one ansible_host=192.0.2.10 ansible_user=audit ansible_port=2222 ansible_python_interpreter=/opt/python3.14/bin/python3"]);
+  let probe;
+  installObservation((connection) => { probe = connection; return { ...observed(connection), pythonVersion: "3.14.0" }; });
+  const result = await runAnsiblePlaybook({ action: "agentlessAudit", profileId: "basic_linux", limit: "fixture-one" });
+  const execution = JSON.parse(readFileSync(process.env.HCP_ASSET_EXECUTION_RECORD, "utf8"));
+  assert.equal(probe.pythonInterpreter, "/opt/python3.14/bin/python3");
+  assert.equal(execution.hosts["fixture-one"].ansible_python_interpreter, probe.pythonInterpreter);
+  assert.equal(execution.executable, path.join(modern, "ansible-playbook"));
+  assert.ok(result.command.startsWith(path.join(modern, "ansible-playbook")));
+});
+
+for (const action of ["agentlessAudit", "packageInventory"]) test(`scheduled ${action} uses modern runtime, authenticated frozen targets and verified publication`, native, async () => {
+  const modern = installRuntimeChoices();
+  writeInventory(["fixture-one ansible_host=192.0.2.10 ansible_user=audit ansible_port=2222 ansible_python_interpreter=/opt/python3.14/bin/python3"]);
+  const observations = [];
+  installObservation(connection => { observations.push(connection); return { ...observed(connection), pythonVersion: "3.14.0" }; });
+  const result = await runScheduledInventoryAudit({ action, profileId: "basic_linux", limit: "linux_hosts" });
+  assert.equal(result.length, 1);
+  assert.equal(result[0].hostAlias, "fixture-one");
+  assert.equal(result[0].partial, false, JSON.stringify(result));
+  assert.equal(result[0].error, undefined);
+  assert.equal(observations.length, 1);
+  const execution = JSON.parse(readFileSync(process.env.HCP_ASSET_EXECUTION_RECORD, "utf8"));
+  assert.equal(execution.executable, path.join(modern, "ansible-playbook"));
+  assert.equal(observations[0].pythonInterpreter, "/opt/python3.14/bin/python3");
+  assert.equal(execution.hosts["fixture-one"].ansible_python_interpreter, observations[0].pythonInterpreter);
+  assert.notEqual(execution.inventoryPath, inventoryPath);
+  assert.equal(execution.trust, observed(observations[0]).hostKeyLine + "\n");
+  const report = reports.readAnsibleReport(result[0].reportId);
+  assert.equal(report.assetBinding.status, "verified");
+  assert.equal(report.assetBindingInvalid, false);
+  assert.equal(report.assetBinding.connectionId, identity.assetConnectionId(observations[0]));
+  assert.equal(report.mode, action === "packageInventory" ? "packages" : "agentless");
+  assert.equal(existsSync(execution.inventoryPath), false);
+  assert.equal(existsSync(execution.trustPath), false);
+});
+
+test("incompatible mixed targets and missing Python observations are stopped before any playbook", native, async () => {
+  installRuntimeChoices();
+  writeInventory([
+    "fixture-one ansible_host=192.0.2.10 ansible_user=audit ansible_port=2222",
+    "fixture-two ansible_host=192.0.2.11 ansible_user=audit ansible_port=2222",
+  ]);
+  const probes = [];
+  installObservation((connection) => {
+    probes.push(connection);
+    return { ...observed(connection), pythonVersion: connection.address.endsWith(".10") ? "3.8.20" : "3.14.0" };
+  });
+  await assert.rejects(runAnsiblePlaybook({ action: "agentlessAudit", profileId: "basic_linux", limit: "linux_hosts" }), /Нет установленного Ansible/);
+  assert.equal(probes.length, 2);
+  assert.ok(probes.every((probe) => probe.pythonInterpreter === "/usr/bin/python3"));
+  assert.equal(existsSync(process.env.HCP_ASSET_EXECUTION_RECORD), false);
+  installObservation((connection) => ({ ...observed(connection), pythonVersion: null }));
+  await assert.rejects(prepareAssetExecution("fixture-one", { authenticate: true }), { code: "ansible_runtime_incompatible" });
+  assert.equal(existsSync(process.env.HCP_ASSET_EXECUTION_RECORD), false);
+  assert.equal(readdirSync(process.env.TMPDIR).some((name) => name.startsWith("hcp-execution-inventory-")), false, "failed selection cleans its private snapshot");
+});
 
 for (const fails of [false, true]) test("live inventory and trust edits during identity capture cannot change executed or published targets" + (fails ? "; failed child retains its diagnostic reports" : ""), native, async () => {
   writeInventory([

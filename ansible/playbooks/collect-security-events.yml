@@ -19,50 +19,11 @@
       run_once: true
 
     - name: Build security event summary
-      ansible.builtin.shell: |
-        python3 - <<'PY'
-        import json
-        import os
-        import socket
-        import subprocess
-        from datetime import datetime, timezone
-
-        sources = {
-            "auth_failed": "grep -Ei 'failed password|authentication failure|invalid user' /var/log/auth.log /var/log/secure 2>/dev/null | tail -n 30",
-            "ufw_denied": "grep -Ei 'UFW BLOCK|UFW DENY' /var/log/syslog /var/log/ufw.log 2>/dev/null | tail -n 30",
-            "suricata_fast": "tail -n 30 /var/log/suricata/fast.log 2>/dev/null",
-            "suricata_eve": "grep -Ei 'alert|drop|blocked' /var/log/suricata/eve.json 2>/dev/null | tail -n 30",
-            "kernel_network": "dmesg 2>/dev/null | grep -Ei 'denied|blocked|martian|syn flood' | tail -n 30",
-        }
-
-        events = []
-        for source, command in sources.items():
-            completed = subprocess.run(["bash", "-lc", command], check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
-            completed.stdout = completed.stdout.decode("utf-8", "replace") if isinstance(completed.stdout, bytes) else completed.stdout
-            completed.stderr = completed.stderr.decode("utf-8", "replace") if isinstance(completed.stderr, bytes) else completed.stderr
-            lines = [line for line in completed.stdout.splitlines() if line.strip()]
-            for line in lines:
-                events.append({"source": source, "message": line[:500]})
-
-        severity = "high" if any(event["source"].startswith("suricata") for event in events) else "medium" if events else "info"
-        print(json.dumps({
-            "schemaVersion": 1,
-            "action": "collectEvents",
-            "runId": os.environ.get("REPORT_RUN_ID"),
-            "inventoryHost": os.environ.get("INVENTORY_HOST"),
-            "createdAt": datetime.now(timezone.utc).isoformat(),
-            "hostname": socket.gethostname(),
-            "mode": "events",
-            "summary": {
-                "total": len(events),
-                "severity": severity,
-                "sources": sorted(set(event["source"] for event in events)),
-            },
-            "events": events[:120],
-        }, ensure_ascii=True))
-        PY
-      args:
-        executable: /bin/bash
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_python_interpreter | default('/usr/bin/python3') }}"
+          - -c
+          - "{{ lookup('file', playbook_dir ~ '/../scripts/hcp-security-events.py') }}"
       environment:
         REPORT_RUN_ID: "{{ report_suffix }}"
         INVENTORY_HOST: "{{ inventory_hostname }}"
@@ -73,7 +34,7 @@
       ansible.builtin.copy:
         content: "{{ security_events.stdout }}"
         dest: "{{ events_report_dir }}/{{ inventory_hostname }}-events-{{ report_suffix }}.json"
-        mode: "0644"
+        mode: "0600"
       delegate_to: localhost
       become: false
 

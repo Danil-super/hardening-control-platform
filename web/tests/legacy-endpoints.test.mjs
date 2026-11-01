@@ -179,19 +179,22 @@ test("custom variable values remain one JSON value rather than injected Ansible 
   process.env.HCP_ENABLE_CUSTOM_AUDITS = "true";
   process.env.HCP_PRODUCTION_MODE = "false";
   let executedArgs;
+  let executedRuntime;
+  const selectedRuntime = { id: "modern", ansible: "/fixture/ansible", playbook: "/fixture/ansible-playbook", coreVersion: "2.21.5" };
   const exec = () => {};
   exec[promisify.custom] = async (_binary, args) => { executedArgs = args; return { stdout: "", stderr: "" }; };
   const registry = load("lib/playbook-registry.ts", {
     "node:child_process": { execFile: exec },
     "@/lib/ansible-control": { getRepoRoot: () => "/tmp/fake-hcp-test", isSafeLimit: () => true, appendIncident: () => {}, playbooks: {}, onDemandSudoHostForLimit: () => null,
-      beginCustomAuditAssetExecution: async () => ({ inventoryPath: "/tmp/frozen-fixture.json", release() {} }),
+      beginCustomAuditAssetExecution: async () => ({ inventoryPath: "/tmp/frozen-fixture.json", ansibleRuntime: selectedRuntime, release() {} }),
       endCustomAuditAssetExecution: () => {},
-      executeAnsiblePlaybook: async ({args}) => { executedArgs = args; return { stdout: "", stderr: "" }; } },
+      executeAnsiblePlaybook: async ({args, ansibleRuntime}) => { executedArgs = args; executedRuntime = ansibleRuntime; return { stdout: "", stderr: "" }; } },
     "@/lib/inventory": { getInventoryTargetHosts: target => target === "target" ? [{ alias: "target", groups: ["linux_hosts"] }] : [] },
   });
   const playbook = { id: "custom-test", kind: "audit", source: "custom", file: "playbook.yml", requiresLimit: false, timeout: 10, variables: [{ name: "package_name", required: true }] };
   try {
     await registry.runRegisteredPlaybook({ playbook, limit: "target", variables: { package_name: "openssl ansible_connection=local" } });
+    assert.deepEqual(executedRuntime, selectedRuntime);
     assert.deepEqual(JSON.parse(executedArgs[executedArgs.indexOf("-e") + 1]), { package_name: { __ansible_unsafe: "openssl ansible_connection=local" } });
     await registry.runRegisteredPlaybook({playbook:{...playbook,variables:[{name:"package_name",required:true,defaultValue:"bash"}]},limit:"target",variables:{}});
     assert.deepEqual(JSON.parse(executedArgs[executedArgs.indexOf("-e") + 1]),{package_name:{__ansible_unsafe:"bash"}});

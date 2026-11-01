@@ -56,7 +56,7 @@ jobs:
       - name: Enroll two real SSH hosts with separate keys
         run: python3 deployment/lab/verify-ssh-enrollment.py
       - name: Exercise real SSH, Ansible, Nmap, Lynis and Trivy
-        run: python3 deployment/lab/verify.py --online
+        run: python3 deployment/lab/verify.py --online --expect-cold-cache
       - name: Verify native Trivy detection and Ubuntu vendor backport matching
         run: bash deployment/lab/verify-trivy-matching.sh
       - name: Check temporary Lynis cleanup

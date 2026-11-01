@@ -16,7 +16,7 @@ function read(relativePath) {
 test("all production audit profiles have their own versioned rule files", () => {
   for (const fileName of ["basic-linux.yml", "ssh-security.yml", "web-server.yml", "docker-host.yml"]) {
     const content = read(path.join("ansible", "audit-rules", fileName));
-    assert.match(content, /audit_rules_version:\s*"1\.0\.0"/);
+    assert.match(content, /audit_rules_version:\s*"1\.1\.0"/);
   }
 });
 
@@ -50,7 +50,7 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.match(hosts, /Локальные правила HCP — Ansible/);
   assert.match(hosts, /Набор правил HCP/);
   assert.match(hosts, /Внешний аудит/);
-  assert.match(hosts, /не запускает команды на Astra/);
+  assert.match(hosts, /не запускает команды на целевом сервере/);
   assert.match(hosts, /runsOnlyOnControlNode/);
   assert.match(hosts, /Охват проверки портов/);
   assert.match(hosts, /Полная TCP: 1–65 535/);
@@ -279,7 +279,7 @@ test("correlation and vendor-aware package evidence are available in reports", (
   const correlation = read(path.join("web", "lib", "audit-correlation.ts"));
   const reportPage = read(path.join("web", "app", "reports", "correlation", "[hostAlias]", "page.tsx"));
   const vulnerabilities = read(path.join("web", "lib", "vulnerability-scan.ts"));
-  const inventory = read(path.join("ansible", "playbooks", "package-inventory.yml"));
+  const inventory = read(path.join("ansible", "scripts", "hcp-package-inventory.py"));
   assert.match(correlation, /CVE-\\d\{4\}/);
   assert.match(correlation, /HCP_CORRELATION_MAX_AGE_HOURS/);
   assert.match(reportPage, /Совпадение CVE или порта не подтверждает уязвимость/);

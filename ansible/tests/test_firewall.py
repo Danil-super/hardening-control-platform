@@ -420,6 +420,8 @@ class FirewallTests(unittest.TestCase):
                 original_rename = Path.rename
 
                 def get_label(path, name, **kwargs):
+                    if name == "security.selinux":
+                        raise OSError(errno.ENODATA, "SELinux is not enabled in this Astra fixture")
                     self.assertEqual(name, "security.PDPL")
                     return labels.get(str(path), b"low-integrity")
 
@@ -481,7 +483,9 @@ class FirewallTests(unittest.TestCase):
             with patch.object(fw, "CONFIG_ROOT", configuration), patch.object(fw, "BACKUP_ROOT", root / "backups"), patch.object(fw, "backend", return_value="ufw"), patch.object(fw, "run") as command:
                 fw.backup(args())
                 rules.write_text("current rules")
-                def get_label(path, *args, **kwargs):
+                def get_label(path, name, **kwargs):
+                    if name == "security.selinux":
+                        raise OSError(errno.ENODATA, "SELinux is not enabled in this Astra fixture")
                     return b"high" if Path(path) == configuration else b"low"
                 with patch.object(fw.os, "getxattr", side_effect=get_label), patch.object(fw.os, "setxattr", side_effect=PermissionError("cannot set mandatory label")):
                     with self.assertRaisesRegex(PermissionError, "cannot set mandatory label"):

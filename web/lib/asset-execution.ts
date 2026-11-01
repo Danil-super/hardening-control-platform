@@ -4,6 +4,8 @@ import { freezeInventoryTargets } from "@/lib/inventory";
 import { assetPrivateKey, captureAssetTarget, networkAssetBinding } from "@/lib/asset-registry";
 import type { AssetBinding, VerifiedAssetBinding } from "@/lib/asset-binding";
 import { acquireAssetExecution, releaseAssetExecution } from "@/lib/state-store";
+import { hasModernAnsibleRuntime, selectAnsibleRuntime, type TargetPythonObservation } from "@/lib/ansible-runtime";
+import { targetPythonInterpreter } from "@/lib/target-python";
 
 function booleanVariable(value: unknown) {
   if (typeof value === "boolean") return value;
@@ -24,12 +26,16 @@ export async function prepareAssetExecution(limit: string | undefined, options: 
     const bindings = new Map<string, AssetBinding>();
     const trust = new Map<string, { fingerprint: string; line: string }>();
     const algorithms = new Set<string>();
+    const selectRuntime = options.authenticate && hasModernAnsibleRuntime();
+    const targetVersions: TargetPythonObservation[] = [];
     for (const target of frozen.targets) {
       const { alias, connection, variables } = target;
+      const python = targetPythonInterpreter(variables.ansible_python_interpreter ?? "/usr/bin/python3");
       let binding: AssetBinding;
       if (options.authenticate) {
-        const captured = await captureAssetTarget(alias, connection, options.expectedAssetBinding);
+        const captured = await captureAssetTarget(alias, connection, options.expectedAssetBinding, selectRuntime ? python : undefined);
         binding = captured.binding;
+        if (selectRuntime) targetVersions.push({ alias, pythonVersion: captured.observation.pythonVersion ?? null });
         const endpoint = `${connection.address.toLowerCase()}\0${connection.port}`;
         const previous = trust.get(endpoint);
         if (previous && previous.fingerprint !== captured.observation.sshHostKeyFingerprint) throw new Error("Один SSH endpoint сменил ключ во время подготовки группы. Запуск остановлен.");
@@ -37,8 +43,6 @@ export async function prepareAssetExecution(limit: string | undefined, options: 
         for (const algorithm of captured.observation.hostKeyAlgorithms.split(",")) algorithms.add(algorithm);
       } else binding = networkAssetBinding(alias, connection);
       bindings.set(alias, binding);
-      const python = variables.ansible_python_interpreter ?? "/usr/bin/python3";
-      if (typeof python !== "string" || !/^(?:\/[A-Za-z0-9_.+-]+)+$/.test(python)) throw new Error("Укажите явный абсолютный путь ansible_python_interpreter.");
       if (variables.ansible_become_method != null && variables.ansible_become_method !== "sudo") throw new Error("Поддерживается проверяемое повышение прав через sudo.");
       const becomeUser = variables.ansible_become_user ?? "root";
       if (typeof becomeUser !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9_.-]{0,63}$/.test(becomeUser)) throw new Error("Недопустимый пользователь повышения прав.");
@@ -51,11 +55,12 @@ export async function prepareAssetExecution(limit: string | undefined, options: 
         groups[group] ??= { hosts: {} }; groups[group].hosts[alias] = {};
       }
     }
+    const ansibleRuntime = selectRuntime ? await selectAnsibleRuntime(targetVersions) : undefined;
     const knownHostsPath = path.join(frozen.directory, "known_hosts");
     writeFileSync(knownHostsPath, [...trust.values()].map((item) => item.line).join("\n") + "\n", { mode: 0o600 });
     writeFileSync(frozen.inventoryPath, JSON.stringify({ all: { hosts, children: groups } }), { mode: 0o600 });
     lease = acquireAssetExecution([...bindings].map(([alias, binding]) => ({ alias, binding: binding.status === "verified" ? binding : null })), options.remediationId);
-    return { inventoryPath: frozen.inventoryPath, bindings, sshTrust: options.authenticate ? { knownHostsPath, algorithms: [...algorithms].join(",") } : undefined,
+    return { inventoryPath: frozen.inventoryPath, bindings, ansibleRuntime, sshTrust: options.authenticate ? { knownHostsPath, algorithms: [...algorithms].join(",") } : undefined,
       release: () => { if (lease) releaseAssetExecution(lease); rmSync(frozen.directory, { recursive: true, force: true }); } };
   } catch (error) {
     if (lease) releaseAssetExecution(lease);

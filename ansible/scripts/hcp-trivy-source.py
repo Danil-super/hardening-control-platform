@@ -26,6 +26,13 @@ import time
 from datetime import datetime, timezone
 
 
+# Native JSON includes repeated advisory descriptions, references and CVSS
+# records. A real 433-package Rocky inventory already produces over 22 MiB.
+# Keep a finite scan budget without duplicating that output in a JSON envelope.
+SCAN_STDOUT_LIMIT = 64 * 1024 * 1024
+SCAN_STDERR_LIMIT = 1024 * 1024
+
+
 class SourceError(Exception):
     def __init__(self, code, message):
         super().__init__(message)
@@ -84,13 +91,24 @@ def source_lock(cache, timeout):
         os.close(fd)
 
 
-def execute(command, environment, lock_fd, timeout, limit=16 * 1024 * 1024):
-    process = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               pass_fds=(lock_fd,), start_new_session=True)
+def execute(command, environment, lock_fd, timeout, limit=16 * 1024 * 1024,
+            stdout_path=None, stderr_limit=None):
+    output_fd = None
+    completed = False
+    process = None
     output = {"stdout": bytearray(), "stderr": bytearray()}
+    counts = {"stdout": 0, "stderr": 0}
+    digest = hashlib.sha256()
+    limits = {"stdout": limit, "stderr": limit if stderr_limit is None else stderr_limit}
     deadline = time.monotonic() + timeout
     try:
+        if stdout_path is not None:
+            # The caller owns a private temporary directory. Never follow or
+            # replace an existing file, including a dangling symbolic link.
+            output_fd = os.open(str(stdout_path), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        process = subprocess.Popen(command, env=environment, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   pass_fds=(lock_fd,), start_new_session=True)
         with selectors.DefaultSelector() as selector:
             for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
                 os.set_blocking(pipe.fileno(), False)
@@ -104,21 +122,44 @@ def execute(command, environment, lock_fd, timeout, limit=16 * 1024 * 1024):
                     if not chunk:
                         selector.unregister(key.fileobj)
                         continue
-                    target = output[key.data]
-                    if len(target) + len(chunk) > limit:
+                    name = key.data
+                    if counts[name] + len(chunk) > limits[name]:
                         raise SourceError("output_limit", "Trivy output exceeded the allowed size")
-                    target.extend(chunk)
+                    counts[name] += len(chunk)
+                    if name == "stdout" and output_fd is not None:
+                        remaining_chunk = memoryview(chunk)
+                        while remaining_chunk:
+                            written = os.write(output_fd, remaining_chunk)
+                            if written <= 0:
+                                raise SourceError("output_write", "Trivy output file write did not complete")
+                            remaining_chunk = remaining_chunk[written:]
+                        digest.update(chunk)
+                    else:
+                        output[name].extend(chunk)
             code = process.wait(timeout=max(0.01, deadline - time.monotonic()))
+        completed = True
     except BaseException:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
         raise
     finally:
-        process.stdout.close()
-        process.stderr.close()
+        if process is not None:
+            process.stdout.close()
+            process.stderr.close()
+        if output_fd is not None:
+            os.close(output_fd)
+            if not completed:
+                try:
+                    os.unlink(str(stdout_path))
+                except FileNotFoundError:
+                    pass
+    if stdout_path is not None:
+        return code, {"stdoutFile": {"sha256": digest.hexdigest(), "bytes": counts["stdout"]},
+                      "stderr": bytes(output["stderr"]).decode("utf-8", "replace")}
     return code, {name: bytes(value).decode("utf-8", "replace") for name, value in output.items()}
 
 
@@ -236,6 +277,7 @@ def main():
     parser.add_argument("--action", choices=("scan", "download", "register-import"), required=True)
     parser.add_argument("--sbom")
     parser.add_argument("--config")
+    parser.add_argument("--stdout-file", help="New private file for bounded scan JSON; existing files are refused")
     parser.add_argument("--lock-timeout", type=float, default=60)
     parser.add_argument("--timeout", type=float, default=315)
     parser.add_argument("--expected-db-sha256")
@@ -245,6 +287,8 @@ def main():
     command = options.command[1:] if options.command[:1] == ["--"] else options.command
     if (not command and options.action != "register-import") or not 0 < options.timeout <= 315 or not 0 <= options.lock_timeout <= 600:
         parser.error("A native command and bounded positive timeouts are required")
+    if options.stdout_file and (options.action != "scan" or not os.path.isabs(options.stdout_file)):
+        parser.error("A scan stdout file must be an absolute path")
     cache = Path(options.cache_dir).resolve()
     binary = shutil.which(command[0]) if command else None
     if binary is None and options.action != "register-import":
@@ -296,7 +340,13 @@ def main():
                 if code != 0 or not re.search(r"^Version:\s+\S+", version["stdout"], re.MULTILINE):
                     raise SourceError("engine_version", "Cannot identify the native Trivy engine")
                 evidence["engineVersion"] = version["stdout"].strip()[:4096]
-                code, output = execute([binary] + command[1:], environment, lock_fd, options.timeout)
+                if options.stdout_file:
+                    code, output = execute([binary] + command[1:], environment, lock_fd, options.timeout,
+                                           SCAN_STDOUT_LIMIT, options.stdout_file, SCAN_STDERR_LIMIT)
+                    evidence["nativeOutput"] = output["stdoutFile"]
+                else:
+                    # Existing CLI callers retain the inline response contract.
+                    code, output = execute([binary] + command[1:], environment, lock_fd, options.timeout)
                 after = describe_files(files)
                 evidence["after"] = after
                 evidence["status"] = "unchanged" if before == after else "changed"

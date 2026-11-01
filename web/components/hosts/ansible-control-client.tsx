@@ -237,7 +237,7 @@ const additionalAuditGroups = ["CVE и пакеты", "Безопасность 
 type AdditionalAuditActionId = (typeof additionalAuditActions)[number]["id"];
 
 // These checks run only on the control node. They use the address and port
-// already stored in inventory, but do not log in to Astra and do not execute
+// already stored in inventory, but do not log in to the target and do not execute
 // anything on it.
 const controlNodeOnlyAuditActionIds = new Set<string>(["sshCryptoAudit", "networkPortScan"]);
 const controlNodeOnlyAuditActions = additionalAuditActions.filter((action) => controlNodeOnlyAuditActionIds.has(action.id));
@@ -489,7 +489,7 @@ export function AnsibleControlClient() {
       setHostKeyScan(payload);
       setAccessMessage(payload.message || (payload.ok ? "Ключи получены. Сверьте отпечаток с доверенным источником." : "Не удалось получить ключи сервера."), payload.ok ? "info" : "error");
     } catch (error) {
-      setAccessMessage(errorMessage(error, "Не удалось получить отпечаток ключа целевой Astra."));
+      setAccessMessage(errorMessage(error, "Не удалось получить отпечаток ключа целевого сервера."));
     } finally {
       setAccessLoading("");
     }
@@ -497,7 +497,7 @@ export function AnsibleControlClient() {
 
   async function trustScannedHostKey() {
     if (!manualAddress || !trustedFingerprint) {
-      setAccessMessage("Укажите хост и вставьте его отпечаток из доверенной консоли Astra или реестра.");
+      setAccessMessage("Укажите хост и вставьте его отпечаток из доверенной консоли сервера или реестра.");
       return;
     }
     setServerTrusted(false);
@@ -579,7 +579,7 @@ export function AnsibleControlClient() {
       return;
     }
     if (sudoPassword && !secureCredentialTransport) {
-      const message = "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu.";
+      const message = "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющем узле.";
       setRunResult({ ok: false, message }); notify(message, "warning");
       return;
     }
@@ -709,11 +709,11 @@ export function AnsibleControlClient() {
 
     const sudoPassword = !runsOnlyOnControlNode && selectedHost?.sudoMode === "on_demand" ? operationSudoPassword : "";
     if (!runsOnlyOnControlNode && selectedHost?.sudoMode === "on_demand" && !sudoPassword) {
-      setRunResult({ ok: false, action, message: "Для выбранной Astra введите пароль sudo для этой операции. HCP не сохраняет его." });
+      setRunResult({ ok: false, action, message: "Для выбранного сервера введите пароль sudo для этой операции. HCP не сохраняет его." });
       return;
     }
     if (sudoPassword && !secureCredentialTransport) {
-      setRunResult({ ok: false, action, message: "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu." });
+      setRunResult({ ok: false, action, message: "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющем узле." });
       return;
     }
 
@@ -839,7 +839,7 @@ export function AnsibleControlClient() {
       : "";
     if (target?.sudoMode === "on_demand" && !sudoPassword) return;
     if (sudoPassword && !secureCredentialTransport) {
-      setRunResult({ ok: false, message: "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu." });
+      setRunResult({ ok: false, message: "Для пароля sudo откройте HCP через HTTPS либо http://127.0.0.1 на управляющем узле." });
       return;
     }
     setLoading(`rollback-${transaction.id}`);
@@ -889,7 +889,7 @@ export function AnsibleControlClient() {
     setManualGroup("linux_hosts");
     setPreflight(null);
     setPreflightFor("");
-    if (address) notify(`Адрес ${address} подставлен. Введите пользователя и пароль Astra ниже.`, "info");
+    if (address) notify(`Адрес ${address} подставлен. Введите пользователя и пароль сервера ниже.`, "info");
   }
 
   function fillHostForm(host: ManagedHost) {
@@ -946,13 +946,13 @@ export function AnsibleControlClient() {
         <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
             <h2 id="host-form-title" className="text-lg font-semibold text-white">{editingHost ? `2. Подключение: ${editingHost}` : "2. Подключение по паролю"}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">Вы вводите данные на сайте. HCP сам входит на Astra по паролю, затем настраивает ключ и сохраняет подключение.</p>
+            <p className="mt-2 text-sm leading-6 text-slate-400">Вы вводите данные на сайте. HCP входит на Linux-сервер по паролю, затем настраивает ключ и сохраняет подключение.</p>
       </div>
           {editingHost ? <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)}>Добавить другой хост</Button> : null}
         </div>
         <fieldset disabled={Boolean(loading) || Boolean(accessLoading)} className="grid min-w-0 gap-3 sm:grid-cols-2">
-          <Field label="Адрес Astra" value={manualAddress} onChange={(value) => { setManualAddress(value); invalidateCredential(); }} placeholder="192.168.1.10" />
-          <Field label="Администратор Astra" value={manualUser} onChange={(value) => { setManualUser(value); invalidateCredential(); }} placeholder="root или логин администратора" />
+          <Field label="Адрес сервера" value={manualAddress} onChange={(value) => { setManualAddress(value); invalidateCredential(); }} placeholder="192.168.1.10" />
+          <Field label="Администратор сервера" value={manualUser} onChange={(value) => { setManualUser(value); invalidateCredential(); }} placeholder="root или логин администратора" />
           <details className="rounded-lg border border-slate-800 p-3 sm:col-span-2">
             <summary className="cursor-pointer text-sm text-slate-300">Дополнительные параметры: имя, порт и группа</summary>
             <div className="mt-3 grid gap-3 sm:grid-cols-3">
@@ -1000,6 +1000,8 @@ export function AnsibleControlClient() {
               <p className="mt-1 break-words text-xs leading-5 text-slate-400">
                 {preflight.readiness.astraVersion ? `Выпуск Astra: ${preflight.readiness.astraVersion}. ` : ""}
                 Ядро: {preflight.readiness.kernel}. Python: {preflight.readiness.pythonVersion}.
+                {preflight.readiness.architecture ? ` Архитектура: ${preflight.readiness.architecture}.` : ""}
+                {` Службы: ${preflight.readiness.serviceManager}. Пакеты: ${preflight.readiness.platform.packageManager ?? "адаптер не определён"}.`}
               </p>
               <div className="mt-3 grid gap-2 lg:grid-cols-2">
                 {preflight.readiness.checks.map((check) => (
@@ -1097,7 +1099,7 @@ export function AnsibleControlClient() {
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.14em] text-sky-200">Без доступа к ОС</p>
               <h2 className="mt-1 text-lg font-semibold text-white">Внешний аудит</h2>
-              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-300">Проверка выполняется с control node: HCP не входит по SSH, не использует sudo и не запускает команды на Astra. Она показывает только сетевую поверхность и параметры SSH, а не заменяет аудит локальной конфигурации.</p>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-300">Проверка выполняется с control node: HCP не входит по SSH, не использует sudo и не запускает команды на целевом сервере. Она показывает только сетевую поверхность и параметры SSH, а не заменяет аудит локальной конфигурации.</p>
             </div>
             <div className="flex flex-wrap gap-2">
               {controlNodeOnlyAuditActions.map((action) => {
@@ -1154,15 +1156,15 @@ export function AnsibleControlClient() {
               <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr] lg:items-end">
                 <Field label="Пароль sudo для проверки на хосте" value={operationSudoPassword} onChange={setOperationSudoPassword}
                   type="password" placeholder="Тот же пароль, что принимает sudo su" disabled={Boolean(loading) || !secureCredentialTransport} />
-                <p className="text-xs leading-5 text-slate-300">У этой Astra права root подтверждены через обычный sudo по паролю. Он нужен только для основного и других локальных аудитов; кнопки «Проверить порты» и «Проверить SSH» выше не используют пароль, вход по SSH или команды на Astra. HCP не сохраняет пароль и не меняет <code>/etc/sudoers.d</code>.</p>
+                <p className="text-xs leading-5 text-slate-300">На этом сервере права root подтверждены через обычный sudo по паролю. Он нужен только для основного и других локальных аудитов; кнопки «Проверить порты» и «Проверить SSH» выше не используют пароль, вход по SSH или команды на сервере. HCP не сохраняет пароль и не меняет <code>/etc/sudoers.d</code>.</p>
               </div>
-              {!secureCredentialTransport ? <p className="mt-2 text-xs leading-5 text-amber-100">Для ввода пароля откройте HCP через HTTPS либо http://127.0.0.1 на управляющей Ubuntu.</p> : null}
+              {!secureCredentialTransport ? <p className="mt-2 text-xs leading-5 text-amber-100">Для ввода пароля откройте HCP через HTTPS либо http://127.0.0.1 на управляющем узле.</p> : null}
             </div>
           ) : null}
 
           <details open className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
             <summary className="cursor-pointer text-sm font-semibold text-slate-200">Инструменты проверки</summary>
-            <p className="mt-1 text-xs leading-5 text-slate-400">Эти инструменты получают сведения с Astra через уже настроенный доступ. Они не меняют настройки хоста; выберите только одну нужную проверку.</p>
+            <p className="mt-1 text-xs leading-5 text-slate-400">Эти инструменты получают сведения с Linux-сервера через уже настроенный доступ. Они не меняют настройки хоста; выберите только одну нужную проверку.</p>
             <div className="mt-3 grid min-w-0 gap-x-3 gap-y-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
               <div className={`grid min-w-0 gap-3 ${additionalAuditActionId === "agentlessAudit" ? "md:grid-cols-[minmax(0,360px)_minmax(0,250px)]" : ""}`}>
                 <label className="block min-w-0 max-w-[360px]">
@@ -1210,13 +1212,13 @@ export function AnsibleControlClient() {
           <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
             <summary className="cursor-pointer text-sm font-semibold text-slate-200">Сетевой сканер Greenbone / OpenVAS — импорт XML</summary>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
-              Установите Greenbone на управляющей Ubuntu отдельным Docker-проектом или на отдельной ВМ сканера. Astra — только цель проверки. Задача запускается в веб-интерфейсе Greenbone; сюда загружается её готовый XML-отчёт.
+              Установите Greenbone на управляющем узле отдельным Docker-проектом или на отдельной ВМ сканера. Linux-сервер является целью проверки. Задача запускается в веб-интерфейсе Greenbone; сюда загружается её готовый XML-отчёт.
             </p>
             <ol className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 md:grid-cols-2">
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">1. Greenbone: цель</span><br />В браузере откройте Greenbone: на Ubuntu со сканером это <code>https://localhost</code>. В Configuration → Targets укажите адрес именно того хоста, который выбран выше в HCP. Возьмите его из настроек подключения.</li>
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">2. Greenbone: запуск</span><br />В Scans → Tasks создайте задачу для этой цели, выберите Full and fast и запустите. Дождитесь <code>Done</code>. Первый запуск — без учётных данных Astra.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">1. Greenbone: цель</span><br />В браузере откройте Greenbone: на узле со сканером это <code>https://localhost</code>. В Configuration → Targets укажите адрес именно того хоста, который выбран выше в HCP. Возьмите его из настроек подключения.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">2. Greenbone: запуск</span><br />В Scans → Tasks создайте задачу для этой цели, выберите Full and fast и запустите. Дождитесь <code>Done</code>. Первый запуск — без учётных данных сервера.</li>
               <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">3. Greenbone: скачивание</span><br />В Scans → Reports скачайте завершённый отчёт в формате <strong>XML</strong>, со всеми результатами. Anonymous XML заменяет адреса хостов и не подходит. Файл появится в загрузках компьютера с браузером.</li>
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">4. HCP: импорт</span><br />Вернитесь сюда, оставьте выбранной ту же Astra и выберите скачанный XML в поле ниже. Нажмите «Импортировать XML»: новая проверка при этом не запускается.</li>
+              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">4. HCP: импорт</span><br />Вернитесь сюда, оставьте выбранным тот же сервер и выберите скачанный XML в поле ниже. Нажмите «Импортировать XML»: новая проверка при этом не запускается.</li>
             </ol>
             <div className="mt-3 flex flex-wrap items-center gap-3">
               <LinkButton href="/guide#greenbone" variant="secondary">Полная инструкция Greenbone</LinkButton>
@@ -1335,7 +1337,7 @@ export function AnsibleControlClient() {
                       {requiresSudo ? (
                         <div className="max-w-md">
                           <Field label="Пароль sudo для отката" value={rollbackSudoPassword} onChange={setRollbackSudoPassword} type="password" disabled={Boolean(loading)} />
-                          <p className="mt-1 text-xs leading-5 text-slate-400">Пароль пользователя SSH нужен для восстановления файлов на Astra. HCP не сохраняет его; после попытки поле очищается.</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-400">Пароль пользователя SSH нужен для восстановления файлов на сервере. HCP не сохраняет его; после попытки поле очищается.</p>
                         </div>
                       ) : null}
                       <div className="flex flex-wrap gap-2">

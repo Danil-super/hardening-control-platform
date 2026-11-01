@@ -456,7 +456,7 @@ export async function runRegisteredPlaybook({
   try {
     assetLease = await beginCustomAuditAssetExecution(limit);
     args[1] = assetLease.inventoryPath;
-    result = await executeAnsiblePlaybook({ args, timeout: playbook.timeout, becomePassword, sshTrust: assetLease.sshTrust });
+    result = await executeAnsiblePlaybook({ args, timeout: playbook.timeout, becomePassword, sshTrust: assetLease.sshTrust, ansibleRuntime: assetLease.ansibleRuntime });
     if (/skipping: no hosts matched/i.test(result.stdout) && !/\s+ok=\d+\s+changed=\d+/.test(result.stdout)) throw new Error("Сценарий не выполнил задачи: его hosts не совпадает с выбранной целью.");
   } catch (error) {
     appendIncident({ action: playbook.id, kind: playbook.kind, status: "failed", profileId: "custom", limit, message: error instanceof Error ? error.message : "Сценарий завершился ошибкой." });

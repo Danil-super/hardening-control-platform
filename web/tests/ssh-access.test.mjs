@@ -108,4 +108,30 @@ console.log('HCP_MACHINE_ID=1234567890abcdef1234567890abcdef');
   assert.ok(invoked.args.includes("GlobalKnownHostsFile=/dev/null"));
   assert.match(invoked.bytes, /ssh-ed25519/);
   assert.equal(existsSync(invoked.trust), false, "temporary trust is removed after use");
+  assert.equal(result.pythonVersion, undefined);
+  assert.equal(invoked.args.at(-1).includes("HCP_PYTHON="), false, "identity-only callers do not add a Python protocol");
+});
+
+test("trusted identity and the configured Python version share one authenticated SSH command", async () => {
+  const fingerprint = execFileSync("ssh-keygen", ["-lf", `${process.env.HCP_SSH_PRIVATE_KEY_PATH}.pub`, "-E", "sha256"], { encoding: "utf8" }).split(/\s+/)[1];
+  const capture = path.join(directory, "python-probe.json");
+  for (const output of ["HCP_PYTHON=3.14.0", "", "HCP_PYTHON=broken", "HCP_PYTHON=3.14.0\nHCP_PYTHON=3.11.9"]) {
+    writeFileSync(process.env.HCP_KNOWN_HOSTS_PATH, `192.0.2.10 ${publicKey}\n`);
+    writeFileSync(path.join(directory, "bin/ssh"), `#!${process.execPath}
+const fs = require('node:fs');
+fs.writeFileSync(${JSON.stringify(capture)}, JSON.stringify(process.argv.slice(2)));
+console.error(${JSON.stringify(`debug1: Server host key: ssh-ed25519 ${fingerprint}`)});
+console.log('HCP_MACHINE_ID=1234567890abcdef1234567890abcdef');
+console.log(${JSON.stringify(output)});
+`, { mode: 0o700 });
+    const result = await ssh.probeTrustedAssetIdentity({ address: "192.0.2.10", port: 22, user: "audit", privateKeyPath: process.env.HCP_SSH_PRIVATE_KEY_PATH, pythonInterpreter: "/opt/python3.14/bin/python3" });
+    assert.equal(result.pythonInterpreter, "/opt/python3.14/bin/python3");
+    assert.equal(result.pythonVersion, output === "HCP_PYTHON=3.14.0" ? "3.14.0" : null);
+    assert.equal(result.sshHostKeyFingerprint, fingerprint);
+    const args = JSON.parse(readFileSync(capture, "utf8"));
+    assert.match(args.at(-1), /\/var\/lib\/dbus\/machine-id/);
+    assert.match(args.at(-1), /'\/opt\/python3\.14\/bin\/python3' -c/);
+    assert.ok(args.includes("StrictHostKeyChecking=yes"));
+  }
+  await assert.rejects(ssh.probeTrustedAssetIdentity({ address: "192.0.2.10", port: 22, user: "audit", privateKeyPath: process.env.HCP_SSH_PRIVATE_KEY_PATH, pythonInterpreter: "/tmp/python3; touch /tmp/marker" }), /абсолютный путь/);
 });

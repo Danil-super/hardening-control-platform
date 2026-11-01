@@ -22,6 +22,30 @@ def completed(code=0, stdout="", stderr=""):
 
 
 class HostReadinessTests(unittest.TestCase):
+    def test_os_release_uses_fallback_only_when_etc_is_absent(self):
+        for exists, expected in ((True, "/etc/os-release"), (False, "/usr/lib/os-release")):
+            with self.subTest(exists=exists), patch.object(probe.os.path, "lexists", return_value=exists), \
+                    patch.object(probe, "read_text", return_value="ID=alpine\nVERSION_ID=3.22\n") as read:
+                self.assertEqual(probe.read_os_release([])["ID"], "alpine")
+                self.assertEqual(read.call_args[0][0], expected)
+                self.assertEqual(read.call_count, 1)
+        with patch.object(probe.os.path, "lexists", return_value=True), patch.object(probe, "read_text", return_value=None) as read:
+            self.assertEqual(probe.read_os_release([]), {})
+            self.assertEqual(read.call_count, 1)
+
+    def test_service_manager_requires_live_evidence_not_just_installed_tools(self):
+        tools = {"systemctl": "/bin/systemctl", "rc-service": "/sbin/rc-service", "rc-status": "/sbin/rc-status"}
+        self.assertEqual(probe.service_manager("systemd", tools, []), "systemd")
+        with patch.object(probe, "read_text", return_value="default\n"):
+            self.assertEqual(probe.service_manager("init", tools, []), "openrc")
+            self.assertEqual(probe.service_manager("openrc-init", tools, []), "openrc")
+            self.assertEqual(probe.service_manager("sshd", tools, []), "unknown")
+        with patch.object(probe, "read_text", return_value=None):
+            self.assertEqual(probe.service_manager("init", tools, []), "unknown")
+        self.assertEqual(probe.service_manager("init", {}, []), "unknown")
+        self.assertEqual(probe.service_manager("sysvinit", {}, []), "sysv")
+        self.assertEqual(probe.service_manager("tini", {}, []), "unknown")
+
     def test_local_oval_metadata_hashes_package_files_without_claiming_cve_coverage(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate = Path(directory) / "vendor.xml"
@@ -222,7 +246,8 @@ class HostReadinessTests(unittest.TestCase):
             "/etc/astra_version": "1.7.6.15\n",
             "/proc/1/comm": "systemd\n",
         }
-        with patch.object(probe, "read_text", side_effect=lambda path, *args, **kwargs: files[path]), \
+        with patch.object(probe, "read_text", side_effect=lambda path, *args, **kwargs: files.get(path)), \
+                patch.object(probe.os.path, "lexists", return_value=True), \
                 patch.object(probe.shutil, "which", return_value=None), \
                 patch.object(probe.Path, "exists", return_value=False), \
                 patch.object(probe.os, "geteuid", return_value=1000):
