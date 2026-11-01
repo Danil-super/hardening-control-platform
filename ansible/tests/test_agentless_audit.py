@@ -6,6 +6,7 @@ import io
 import json
 import os
 import re
+import struct
 import subprocess
 import tempfile
 import textwrap
@@ -105,9 +106,34 @@ def systemd_show(service):
     return ("systemctl", "show", "--no-pager", "--property=LoadState", "--property=ActiveState", "--", service + ".service")
 
 
+def captured_ufw_fixture(prefix, version):
+    directory = Path(__file__).parent / "fixtures"
+    return {
+        ("nft", "-j", "list", "ruleset"): (0, (directory / (prefix + "nft.json")).read_text(), ""),
+        ("iptables", "-S"): (0, (directory / (prefix + "iptables.txt")).read_text(), ""),
+        ("ip6tables", "-S"): (0, (directory / (prefix + "ip6tables.txt")).read_text(), ""),
+        ("iptables", "--version"): (0, "iptables v" + version + " (nf_tables)", ""),
+        ("ip6tables", "--version"): (0, "ip6tables v" + version + " (nf_tables)", ""),
+    }
+
+
+def captured_debian_ufw():
+    return captured_ufw_fixture("ufw-debian12-pr8-2026-11-01.", "1.8.9")
+
+
+def captured_ubuntu_ufw():
+    return captured_ufw_fixture("ufw-ubuntu2404-pr8-2026-11-01.", "1.8.10")
+
+
+def firewall_proofs(findings):
+    return json.JSONDecoder().raw_decode(findings["firewall_active"]["evidence"].split("filter_proofs=", 1)[1])[0]
+
+
 class AgentlessAuditTest(unittest.TestCase):
-    def execute_audit(self, overrides=None, profile="basic_linux", rules=None, init="systemd", tools=None, files=None, absent_paths=()):
+    def execute_audit(self, overrides=None, profile="basic_linux", rules=None, init="systemd", tools=None, files=None, absent_paths=(), netlink_generations=()):
         overrides = overrides or {}
+        responses = {key: iter(value) for key, value in overrides.items() if isinstance(value, list)}
+        generations = iter(netlink_generations)
         commands = []
         host_files = {"/etc/os-release": 'PRETTY_NAME="Test Linux"\n', "/proc/1/comm": ("init" if init == "openrc" else "sysvinit" if init == "sysv" else init) + "\n"}
         if init == "openrc":
@@ -121,9 +147,10 @@ class AgentlessAuditTest(unittest.TestCase):
             command = tuple(command)
             commands.append(command)
             if command in overrides:
-                if isinstance(overrides[command], BaseException):
-                    raise overrides[command]
-                code, stdout, stderr = overrides[command]
+                response = next(responses[command]) if command in responses else overrides[command]
+                if isinstance(response, BaseException):
+                    raise response
+                code, stdout, stderr = response
             elif command[0] == "ss":
                 code, stdout, stderr = 0, "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port", ""
             elif command[0] == "sshd":
@@ -174,9 +201,28 @@ class AgentlessAuditTest(unittest.TestCase):
                     raise FileNotFoundError(str(path))
                 return os.stat_result((0o100755, 0, 0, 1, 0, 0, len(host_files[str(path)] or ""), 0, 0, 0))
             return original_stat(path, *args, **kwargs)
+        def generation_socket(*args):
+            generation = next(generations, None)
+            if generation is None:
+                raise OSError("No kernel generation fixture available")
+            class Channel:
+                def settimeout(self, timeout): pass
+                def bind(self, address): pass
+                def getsockname(self): return (4242, 0)
+                def sendto(self, request, destination):
+                    self.sequence = struct.unpack_from("=IHHII", request)[3]
+                    return len(request)
+                def recvmsg(self, capacity):
+                    attribute = struct.pack("=HH", 8, 1) + struct.pack("!I", generation)
+                    reply = (struct.pack("=IHHII", 28, (10 << 8) | 15, 0, self.sequence, 4242)
+                             + struct.pack("!BBH", 0, 0, generation & 0xffff) + attribute)
+                    return reply, [], 0, (0, 0)
+                def close(self): pass
+            return Channel()
         with patch("subprocess.run", side_effect=execute), patch("shutil.which", side_effect=lambda name: "/test/" + name if name in available_tools else None), \
                 patch("builtins.open", side_effect=open_file), patch("os.path.exists", side_effect=lambda name: name not in absent_paths), \
                 patch("os.path.isdir", side_effect=lambda name: name == "/etc/init.d" and init in {"sysv", "init"}), patch("os.stat", side_effect=stat_file), \
+                patch("socket.socket", side_effect=generation_socket), \
                 patch.dict(os.environ, {"AUDIT_PROFILE": profile, "AUDIT_RULES_JSON": json.dumps(RULES if rules is None else rules)}), contextlib.redirect_stdout(output):
             exec(compile(SOURCE, str(PLAYBOOK), "exec"), {})
         self.last_commands = commands
@@ -265,6 +311,88 @@ class AgentlessAuditTest(unittest.TestCase):
         self.assertEqual(findings["firewall_active"]["status"], "manual")
         self.assertTrue(report["scanner"]["partial"])
 
+    def check_iptables_extension(self, rules, expected):
+        report, findings = self.execute_audit({
+            ("nft", "-j", "list", "ruleset"): (127, "", "missing"),
+            ("iptables", "-S"): (0, rules, ""),
+        })
+        finding = findings["firewall_active"]
+        self.assertEqual(finding["status"], expected)
+        if expected == "manual":
+            self.assertIn("filter_coverage=nftables:missing,iptables:unknown", finding["evidence"])
+            self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+            self.assertTrue(report["scanner"]["partial"])
+            self.assertIsNone(report["summary"]["score"])
+        else:
+            self.assertNotIn("firewall_active", report["scanner"]["incompleteChecks"])
+        return report, finding
+
+    def test_iptables_hashlimit_hotdrop_cannot_be_reduced_to_a_boolean_accept_guard(self):
+        # Linux v6.8 xt_hashlimit.c:241,739,792: a configured full table
+        # returns NULL before allocation and causes hotdrop. With size/max=1,
+        # a second source can be dropped despite this ACCEPT and base policy.
+        # This is an HCP parser fixture, not a claim of native packet execution.
+        rule = ("-A INPUT -m conntrack --ctstate NEW -m hashlimit --hashlimit-upto 1/sec "
+                "--hashlimit-burst 1 --hashlimit-mode srcip --hashlimit-name hcp_review "
+                "--hashlimit-htable-size 1 --hashlimit-htable-max 1 --hashlimit-htable-expire 600000 -j ACCEPT")
+        self.check_iptables_extension("-P INPUT ACCEPT\n" + rule, "manual")
+
+    def test_iptables_unsupported_match_is_not_hidden_by_later_terminal_verdicts(self):
+        # socket's restore-skmark is an actual side effect. Its internals and
+        # arbitrary extensions are outside this evaluator's bounded contract.
+        for policy, target in (("ACCEPT", "ACCEPT"), ("DROP", "DROP")):
+            with self.subTest(policy=policy, target=target):
+                self.check_iptables_extension(
+                    "-P INPUT " + policy + "\n-A INPUT -m socket --restore-skmark -j " + target, "manual")
+
+    def test_iptables_unsupported_option_of_supported_module_stays_opaque(self):
+        # Recognizing -m tcp does not establish the semantics of every TCP
+        # extension option. A later ACCEPT must not overwrite this uncertainty.
+        self.check_iptables_extension(
+            "-P INPUT ACCEPT\n-A INPUT -p tcp -m tcp --tcp-option 2 -j ACCEPT", "manual")
+
+    def test_iptables_later_false_match_cannot_hide_an_earlier_hotdrop_extension(self):
+        # Kernel match modules execute in order. hashlimit runs before the
+        # later ESTABLISHED check can reject a packet from our NEW model.
+        self.check_iptables_extension(
+            "-P INPUT ACCEPT\n-A INPUT -m hashlimit --hashlimit-upto 1/sec --hashlimit-mode srcip "
+            "--hashlimit-name hcp_review --hashlimit-htable-size 1 --hashlimit-htable-max 1 "
+            "-m conntrack --ctstate ESTABLISHED -j ACCEPT", "manual")
+
+    def test_iptables_preceding_false_match_keeps_opaque_extension_unreachable(self):
+        for policy, expected in (("ACCEPT", "failed"), ("DROP", "passed")):
+            with self.subTest(policy=policy):
+                self.check_iptables_extension(
+                    "-P INPUT " + policy + "\n-A INPUT -m conntrack --ctstate ESTABLISHED "
+                    "-m hashlimit --hashlimit-upto 1/sec --hashlimit-mode srcip "
+                    "--hashlimit-name hcp_review -j ACCEPT", expected)
+
+    def test_iptables_terminal_rule_shadows_later_opaque_extension(self):
+        for verdict, expected in (("ACCEPT", "failed"), ("DROP", "passed")):
+            with self.subTest(verdict=verdict):
+                self.check_iptables_extension(
+                    "-P INPUT ACCEPT\n-A INPUT -j " + verdict + "\n-A INPUT -m socket --restore-skmark -j ACCEPT", expected)
+
+    def test_iptables_limit_defaults_remain_a_predicate_without_printed_options(self):
+        for module in ("limit", "limit --limit 3/hour --limit-burst 5", "addrtype --dst-type LOCAL"):
+            for policy, expected in (("DROP", "manual"), ("ACCEPT", "failed")):
+                with self.subTest(module=module, policy=policy):
+                    self.check_iptables_extension("-P INPUT " + policy + "\n-A INPUT -m " + module + " -j ACCEPT", expected)
+        self.check_iptables_extension("-P INPUT ACCEPT\n-A INPUT -m limit --unknown-limit-option 1 -j ACCEPT", "manual")
+        self.check_iptables_extension("-P INPUT ACCEPT\n-A INPUT -m limit -m hashlimit --hashlimit-name full -j ACCEPT", "manual")
+
+    def test_firewall_command_warnings_do_not_confirm_complete_observation(self):
+        for stdout, stderr in (("-P INPUT ACCEPT\n# Warning: incompatible base-chains", ""),
+                               ("-P INPUT ACCEPT", "# Warning: legacy tables present"),
+                               ("-P INPUT ACCEPT\n-P INPUT ACCEPT", "")):
+            with self.subTest(stdout=stdout, stderr=stderr):
+                report, findings = self.execute_audit({("iptables", "-S"): (0, stdout, stderr)})
+                self.assertEqual(findings["firewall_active"]["status"], "manual")
+                self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+        report, findings = self.execute_audit({("nft", "-j", "list", "ruleset"): (0, nft_input(), "incomplete dump warning")})
+        self.assertEqual(findings["firewall_active"]["status"], "manual")
+        self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+
     def test_supported_ufw_style_input_chains_keep_the_manager_identity(self):
         rules = "\n".join([
             "-P INPUT DROP", "-N ufw-before-input", "-N ufw-user-input", "-A INPUT -j ufw-before-input",
@@ -318,6 +446,269 @@ class AgentlessAuditTest(unittest.TestCase):
             self.assertIn(marker, result["evidence"])
         self.assertIn("nftables=" + data, result["evidence"])
         return report, result
+
+    def test_nft_rate_limited_logging_then_drop_keeps_a_deny_witness(self):
+        rate = {"limit": {"rate": 3, "per": "minute", "burst": 10}}
+        samples = [
+            nft_input(expressions=[[rate, {"log": {"prefix": "[UFW BLOCK] "}}]]),
+            nft_graph({"input": "accept"}, {"input": [[rate, {"jump": {"target": "logging"}}], [{"drop": None}]],
+                                              "logging": [[{"xt": {"type": "target", "name": "LOG"}}], [{"return": None}]]}),
+        ]
+        for data in samples:
+            with self.subTest(data=data):
+                self.check_nft_input(data, "passed")
+        self.check_nft_input(nft_input(policy="accept", expressions=[[rate, {"log": {"prefix": "[UFW LOG] "}}]]), "failed")
+
+    def test_nft_rate_limited_terminal_verdict_cannot_become_certain(self):
+        for limits in ({"rate": 3, "per": "minute", "burst": 10},
+                       {"rate": 1, "per": "second", "rate_unit": "mbytes", "burst": 4, "burst_unit": "kbytes", "inv": True}):
+            for verdict, policy in (("accept", "drop"), ("drop", "accept")):
+                with self.subTest(limits=limits, verdict=verdict):
+                    self.check_nft_input(nft_input(policy=policy, expressions=[[{"limit": limits}, {verdict: None}]]), "manual")
+
+    def test_nft_pure_rate_predicate_cannot_hide_later_opaque_actions_or_fallback(self):
+        rate = {"limit": {"rate": 3, "per": "minute", "burst": 10}}
+        for opaque in (
+                {"mangle": {"key": {"payload": {"protocol": "tcp", "field": "dport"}}, "value": 80}},
+                {"mangle": {"key": {"meta": {"key": "mark"}}, "value": 1}},
+                {"xt": {"type": "match", "name": "hashlimit"}},
+                {"xt": {"type": "target", "name": "MARK"}},
+                {"queue": {"num": 0}}):
+            with self.subTest(opaque=opaque):
+                self.check_nft_input(nft_input(expressions=[[rate, opaque, {"drop": None}]]), "manual", iptables=(0, "-P INPUT DROP", ""))
+                unreachable = [nft_match({"meta": {"key": "l4proto"}}, "icmp"), rate, opaque]
+                self.check_nft_input(nft_input(expressions=[unreachable]), "passed")
+
+    def test_nft_limit_unsupported_shapes_remain_opaque(self):
+        invalid = ["@named-limit", [], None, {}, {"rate": 3}, {"per": "minute"},
+                   {"rate": True, "per": "minute"}, {"rate": "3", "per": "minute"},
+                   {"rate": 0, "per": "minute"}, {"rate": 3, "per": {"second": 1}},
+                   {"rate": 3, "per": "minute", "burst": -1}, {"rate": 3, "per": "minute", "burst": True},
+                   {"rate": 3, "per": "minute", "inv": "false"},
+                   {"rate": 3, "per": "minute", "rate_unit": "future-unit"},
+                   {"rate": 3, "per": "minute", "burst_unit": "future-unit"},
+                   {"rate": 3, "per": "minute", "unknown": {"mark": 1}}]
+        for limits in invalid:
+            with self.subTest(limits=limits):
+                self.check_nft_input(nft_input(expressions=[[{"limit": limits}, {"drop": None}]]), "manual")
+
+    def test_nft_rt_hotdrop_is_only_supported_with_an_immediate_drop_tail(self):
+        rt = {"xt": {"type": "match", "name": "rt"}}
+        counter = {"counter": {"packets": 0, "bytes": 0}}
+        self.check_nft_input(nft_input(expressions=[[rt, counter, {"drop": None}]]), "passed")
+        self.check_nft_input(nft_input(policy="accept", expressions=[[rt, counter, {"drop": None}]]), "manual")
+        for tail in ([counter, {"accept": None}],
+                     [nft_match({"meta": {"key": "l4proto"}}, "icmp"), counter, {"drop": None}]):
+            with self.subTest(tail=tail):
+                self.check_nft_input(nft_input(expressions=[[rt] + tail]), "manual")
+
+    def test_nft_terminal_verdict_cannot_be_overwritten_by_later_expressions(self):
+        terminals = [{"xt": {"type": "target", "name": "REJECT"}}, {"drop": None}, {"reject": {"type": "icmpx", "expr": "admin-prohibited"}}]
+        for terminal in terminals:
+            with self.subTest(terminal=terminal):
+                self.check_nft_input(nft_input(policy="accept", expressions=[[terminal, {"accept": None}]]), "passed")
+                unreachable = [nft_match({"meta": {"key": "l4proto"}}, "icmp"), terminal, {"drop": None}]
+                self.check_nft_input(nft_input(policy="accept", expressions=[unreachable]), "failed")
+        self.check_nft_input(nft_input(expressions=[[{"accept": None}, {"drop": None}]]), "failed")
+        self.check_nft_input(nft_input(policy="accept", expressions=[[{"return": None}, {"drop": None}]]), "failed")
+
+    def check_captured_ufw_baseline_accept_restore(self, original, comment_as_xt=False):
+        changed = dict(original)
+        nft_key = ("nft", "-j", "list", "ruleset")
+        data = json.loads(original[nft_key][1])
+        for family, binary in (("ip", "iptables"), ("ip6", "ip6tables")):
+            index = next(i for i, entry in enumerate(data["nftables"])
+                         if entry.get("rule", {}).get("family") == family and entry["rule"]["chain"] == "INPUT")
+            added = {"family": family, "table": "filter", "chain": "INPUT", "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"accept": None}]}
+            if comment_as_xt:
+                added["expr"].insert(0, {"xt": {"type": "match", "name": "comment"}})
+            else:
+                added["comment"] = "hcp-test-owned"
+            data["nftables"].insert(index, {"rule": added})
+            key = (binary, "-S")
+            changed[key] = (0, original[key][1].replace("-A INPUT ", "-A INPUT -m comment --comment hcp-test-owned -j ACCEPT\n-A INPUT ", 1), "")
+        changed[nft_key] = (0, json.dumps(data), "")
+        for phase, commands, expected in (("baseline", original, "passed"), ("owned_accept", changed, "failed"), ("restored", original, "passed")):
+            with self.subTest(phase=phase):
+                report, findings = self.execute_audit(commands, netlink_generations=(42, 42))
+                self.assertEqual(findings["firewall_active"]["status"], expected)
+                self.assertNotIn("firewall_active", report["scanner"]["incompleteChecks"])
+                proof = firewall_proofs(findings)["nftables"]
+                bridge = proof["compatibility_bridge"]
+                if comment_as_xt and phase == "owned_accept":
+                    # The hidden comment text is not reconstructed. Early ACCEPT
+                    # is provable from the unchanged native graph alone.
+                    self.assertEqual(bridge["status"], "unavailable")
+                    self.assertNotIn("decoder_snapshots", bridge)
+                else:
+                    self.assertEqual(bridge["status"], "verified", bridge.get("reason"))
+                    self.assertEqual(bridge["restored_conntrack_rules"], 16)
+                    self.assertEqual(bridge["families"], ["ip", "ip6"])
+                    self.assertEqual(bridge["scope"], "repeated_observations_not_atomic_lock")
+                    for family, binary in (("ip", "iptables"), ("ip6", "ip6tables")):
+                        self.assertEqual(bridge["decoder_snapshots"][family], commands[(binary, "-S")][1].strip())
+                        self.assertEqual(self.last_commands.count((binary, "--version")), 1)
+                self.assertEqual(self.last_commands.count(nft_key), 3)
+                self.assertIn("nftables=" + commands[nft_key][1].strip(), findings["firewall_active"]["evidence"])
+                if expected == "passed":
+                    self.assertEqual((proof["kind"], proof["family"], proof["protocol"], proof["destination_port"]), ("deny_witness", "ip", "tcp", 1))
+        # An unavailable optional bridge cannot poison unreachable opaque rules
+        # after the owned early ACCEPT. No hidden state parameters are used.
+        report, findings = self.execute_audit(changed)
+        self.assertEqual(findings["firewall_active"]["status"], "failed")
+        self.assertEqual(firewall_proofs(findings)["nftables"]["compatibility_bridge"]["status"], "unavailable")
+        self.assertNotIn("firewall_active", report["scanner"]["incompleteChecks"])
+
+    def test_captured_debian_ufw_baseline_owned_accept_and_restored(self):
+        self.check_captured_ufw_baseline_accept_restore(captured_debian_ufw())
+
+    def test_captured_ubuntu_protocol_header_baseline_owned_accept_and_restored(self):
+        self.check_captured_ufw_baseline_accept_restore(captured_ubuntu_ufw(), comment_as_xt=True)
+
+    def test_captured_debian_owned_xt_comment_accept_is_known_without_enrichment(self):
+        commands = captured_ufw_fixture("ufw-debian12-owned-accept-pr8-2026-11-01.", "1.8.9")
+        for generations in ((42, 42), ()):
+            with self.subTest(generation_available=bool(generations)):
+                report, findings = self.execute_audit(commands, netlink_generations=generations)
+                self.assertEqual(findings["firewall_active"]["status"], "failed")
+                self.assertNotIn("firewall_active", report["scanner"]["incompleteChecks"])
+                self.assertEqual(firewall_proofs(findings)["nftables"]["compatibility_bridge"]["status"], "unavailable")
+
+    def test_ipv4_protocol_header_does_not_generalize_other_families_or_operands(self):
+        left = {"payload": {"protocol": "ip", "field": "protocol"}}
+        opaque = {"xt": {"type": "match", "name": "icmp"}}
+        cases = [
+            ("ip", left, "icmp", "==", "passed"),
+            ("ip", left, "tcp", "==", "manual"),
+            ("ip", left, 1, "==", "manual"),
+            ("ip", left, "icmp", ">", "manual"),
+            ("ip", left, "icmp", "in", "manual"),
+            ("inet", left, "icmp", "==", "manual"),
+            ("ip6", {"payload": {"protocol": "ip6", "field": "nexthdr"}}, "ipv6-icmp", "==", "manual"),
+            ("ip", {"payload": {"protocol": "ip", "field": "protocol", "offset": 9}}, "icmp", "==", "manual"),
+        ]
+        for family, operand, value, operation, expected in cases:
+            with self.subTest(family=family, operand=operand, value=value, operation=operation):
+                rule = [nft_match(operand, value, operation), opaque, {"accept": None}]
+                self.check_nft_input(nft_graph({"input": "drop"}, {"input": [rule]}, family), expected)
+
+    def test_exact_xt_comment_is_noop_but_cannot_hide_other_extensions(self):
+        comment = {"xt": {"type": "match", "name": "comment"}}
+        self.check_nft_input(nft_input(expressions=[[comment, {"accept": None}]]), "failed")
+        for unsupported in ({"xt": {"type": "match", "name": "comment", "unknown": True}},
+                            {"xt": {"type": "match", "name": "commentary"}},
+                            {"xt": {"type": "match", "name": "hashlimit"}}):
+            with self.subTest(unsupported=unsupported):
+                self.check_nft_input(nft_input(expressions=[[comment, unsupported, {"accept": None}]]), "manual")
+
+    def test_captured_ufw_connection_state_is_read_not_guessed_from_chain_names(self):
+        for ipv4_only, expected in ((True, "failed"), (False, "manual")):
+            with self.subTest(ipv4_only=ipv4_only):
+                commands = captured_debian_ufw()
+                for binary in ("iptables", "ip6tables"):
+                    key = (binary, "-S")
+                    commands[key] = (0, commands[key][1].replace("--ctstate RELATED,ESTABLISHED", "--ctstate NEW"), "")
+                if ipv4_only:
+                    key = ("nft", "-j", "list", "ruleset")
+                    data = json.loads(commands[key][1])
+                    data["nftables"] = [entry for entry in data["nftables"] if next(iter(entry.values())).get("family") != "ip6"]
+                    commands[key] = (0, json.dumps(data), "")
+                report, findings = self.execute_audit(commands, netlink_generations=(42, 42))
+                self.assertEqual(findings["firewall_active"]["status"], expected)
+                self.assertEqual(firewall_proofs(findings)["nftables"]["compatibility_bridge"]["status"], "verified")
+                self.assertEqual("firewall_active" in report["scanner"]["incompleteChecks"], expected == "manual")
+                # IPv6's earlier rt DROP remains a possible deny; it must not be
+                # erased to manufacture an all-accept claim for the second case.
+
+    def test_compat_bridge_rejects_unmapped_native_predicates_without_losing_rules(self):
+        tcp = nft_match({"meta": {"key": "l4proto"}}, "tcp")
+        deltas = [[{"lookup": {"source": "@foreign", "register": 1}}], [tcp, tcp],
+                  [nft_match({"payload": {"protocol": "tcp", "field": "dport"}}, 22, ">")],
+                  [nft_match({"payload": {"protocol": "udp", "field": "sport"}}, 67), tcp]]
+        for delta in deltas:
+            with self.subTest(delta=delta):
+                commands = captured_debian_ufw()
+                key = ("nft", "-j", "list", "ruleset")
+                data = json.loads(commands[key][1])
+                rule = next(entry["rule"] for entry in data["nftables"]
+                            if entry.get("rule", {}).get("chain") == "ufw-before-input" and entry["rule"]["expr"][0] == {"xt": {"type": "match", "name": "conntrack"}})
+                rule["expr"][:0] = delta
+                commands[key] = (0, json.dumps(data), "")
+                report, findings = self.execute_audit(commands, netlink_generations=(42, 42))
+                self.assertEqual(findings["firewall_active"]["status"], "manual")
+                self.assertEqual(firewall_proofs(findings)["nftables"]["compatibility_bridge"]["status"], "unavailable")
+                self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+
+    def test_compat_bridge_rejects_hidden_conntrack_options_negation_and_decoder_warnings(self):
+        for replacement in ("! --ctstate RELATED,ESTABLISHED", "--ctstate RELATED,ESTABLISHED --ctstatus DNAT",
+                            "--ctstate RELATED,ESTABLISHED --ctproto tcp", "--ctstate RELATED,ESTABLISHED --ctdir ORIGINAL"):
+            with self.subTest(replacement=replacement):
+                commands = captured_debian_ufw()
+                key = ("iptables", "-S")
+                commands[key] = (0, commands[key][1].replace("--ctstate RELATED,ESTABLISHED", replacement), "")
+                report, findings = self.execute_audit(commands, netlink_generations=(42, 42))
+                self.assertEqual(findings["firewall_active"]["status"], "manual")
+                self.assertEqual(firewall_proofs(findings)["nftables"]["compatibility_bridge"]["status"], "unavailable")
+                self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+        commands = captured_debian_ufw()
+        commands[("ip6tables", "-S")] = (0, commands[("ip6tables", "-S")][1] + "\n# Warning: incompatible base-chains", "")
+        _, findings = self.execute_audit(commands, netlink_generations=(42, 42))
+        self.assertEqual(findings["firewall_active"]["status"], "manual")
+        self.assertEqual(firewall_proofs(findings)["nftables"]["compatibility_bridge"]["status"], "unavailable")
+
+    def test_compat_bridge_requires_stable_generation_decoded_and_native_observations(self):
+        for change in ("generation_missing", "generation_changed", "decoded_changed", "nft_changed", "unknown_decoder", "partial_stderr"):
+            with self.subTest(change=change):
+                commands = captured_debian_ufw()
+                generations = (42, 42)
+                if change.startswith("generation_"):
+                    generations = (None,) if change == "generation_missing" else (42, 43)
+                elif change == "decoded_changed":
+                    key = ("iptables", "-S")
+                    original = commands[key]
+                    commands[key] = [original, (0, original[1].replace("RELATED,ESTABLISHED", "NEW"), ""), original]
+                elif change == "nft_changed":
+                    key = ("nft", "-j", "list", "ruleset")
+                    original = commands[key]
+                    data = json.loads(original[1])
+                    next(entry["chain"] for entry in data["nftables"] if entry.get("chain", {}).get("name") == "INPUT")["policy"] = "accept"
+                    commands[key] = [original, original, (0, json.dumps(data), "")]
+                elif change == "unknown_decoder":
+                    commands[("ip6tables", "--version")] = (0, "ip6tables v1.8.9 (legacy)", "")
+                else:
+                    key = ("ip6tables", "-S")
+                    commands[key] = (0, commands[key][1], "partially unreadable")
+                report, findings = self.execute_audit(commands, netlink_generations=generations)
+                self.assertEqual(findings["firewall_active"]["status"], "manual")
+                bridge = firewall_proofs(findings)["nftables"]["compatibility_bridge"]
+                self.assertEqual(bridge["status"], "unavailable")
+                self.assertNotIn("decoder_snapshots", bridge)
+                self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+
+    def test_compat_bridge_allows_counter_changes_but_keeps_foreign_input_opaque(self):
+        for foreign in (False, True):
+            with self.subTest(foreign_input=foreign):
+                commands = captured_debian_ufw()
+                key = ("nft", "-j", "list", "ruleset")
+                data = json.loads(commands[key][1])
+                if foreign:
+                    data["nftables"].extend([
+                        {"table": {"family": "inet", "name": "foreign"}},
+                        {"chain": {"family": "inet", "table": "foreign", "name": "rewrite", "type": "filter", "hook": "input", "prio": -10, "policy": "accept"}},
+                        {"rule": {"family": "inet", "table": "foreign", "chain": "rewrite", "expr": [{"mangle": {"key": {"payload": {"protocol": "tcp", "field": "dport"}}, "value": 80}}]}},
+                    ])
+                before = (0, json.dumps(data), "")
+                for entry in data["nftables"]:
+                    for expression in entry.get("rule", {}).get("expr", []):
+                        if "counter" in expression:
+                            expression["counter"]["packets"] += 1
+                            expression["counter"]["bytes"] += 64
+                commands[key] = [before, before, (0, json.dumps(data), "")]
+                report, findings = self.execute_audit(commands, netlink_generations=(42, 42))
+                self.assertEqual(findings["firewall_active"]["status"], "manual" if foreign else "passed")
+                bridge = firewall_proofs(findings)["nftables"]["compatibility_bridge"]
+                self.assertEqual(bridge["status"], "verified", bridge.get("reason"))
+                self.assertEqual("firewall_active" in report["scanner"]["incompleteChecks"], foreign)
 
     def test_native_firewalld_input_clauses_and_runtime_allow_all_restore(self):
         for phase, allow_all, expected in (("baseline", False, "passed"), ("allow_all", True, "failed"), ("restored", False, "passed")):
@@ -782,7 +1173,7 @@ class AgentlessAuditTest(unittest.TestCase):
                 report, findings = self.execute_audit(rules=dict(RULES, audit_rules_version=version, evaluatorVersion="custom-override"))
                 self.assertEqual(report["schemaVersion"], 1)
                 self.assertEqual(report["agentless"]["version"], version)
-                self.assertEqual(report["agentless"]["evaluatorVersion"], "1.2.0")
+                self.assertEqual(report["agentless"]["evaluatorVersion"], "1.3.0")
                 self.assertIn("filter_proofs=", findings["firewall_active"]["evidence"])
 
 

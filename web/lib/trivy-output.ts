@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { closeSync, constants, fstatSync, lstatSync, openSync, readSync, type BigIntStats } from "node:fs";
 
 // Match hcp-trivy-source.py; the native acceptance replay uses the same budget.
-export const TRIVY_STDOUT_LIMIT = 64 * 1024 * 1024;
+export const TRIVY_STDOUT_LIMIT = 128 * 1024 * 1024;
 export type TrivyStdoutFileEvidence = { sha256: string; bytes: number };
 
 function sameFile(left: BigIntStats, right: BigIntStats) {
