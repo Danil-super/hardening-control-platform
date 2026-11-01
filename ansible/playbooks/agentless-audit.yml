@@ -46,6 +46,7 @@
           import shlex
           import shutil
           import socket
+          import struct
           import subprocess
           from datetime import datetime, timezone
 
@@ -411,15 +412,410 @@
               # chain. Unsupported actions, cycles and exhausted budget stay unknown.
               return "inactive" if all(values == {"accept"} for values in symbolic) else "unknown"
 
+          def nft_ruleset_generation():
+              """Read the current namespace's nftables generation without changing it.
+
+              A failed or ambiguous reply is unusable for joining two tool snapshots.
+              Only one bounded, unicast NFT_MSG_GETGEN request is made; no retries can
+              silently move the beginning of the observation window.
+              """
+              channel = None
+              try:
+                  channel = socket.socket(socket.AF_NETLINK, socket.SOCK_RAW, 12)
+                  channel.settimeout(1.0)
+                  channel.bind((0, 0))
+                  port_id = channel.getsockname()[0]
+                  if type(port_id) is not int or not 1 <= port_id <= 0xffffffff:
+                      return None
+                  sequence = struct.unpack("=I", os.urandom(4))[0] or 1
+                  # NFNL_SUBSYS_NFTABLES=10, NFT_MSG_GETGEN=16, NLM_F_REQUEST=1.
+                  request = struct.pack("=IHHII", 20, (10 << 8) | 16, 1, sequence, port_id)
+                  request += struct.pack("!BBH", 0, 0, 0)
+                  if channel.sendto(request, (0, 0)) != len(request):
+                      return None
+                  reply, ancillary, flags, sender = channel.recvmsg(4096)
+                  if flags or ancillary or sender != (0, 0) or len(reply) < 20:
+                      return None
+                  length, kind, response_flags, response_sequence, response_port = struct.unpack_from("=IHHII", reply)
+                  # A GETGEN response is one NFT_MSG_NEWGEN, not a dump or an ACK.
+                  if (length < 20 or length > len(reply) or (length + 3) & ~3 != len(reply)
+                          or kind != (10 << 8) | 15 or response_flags != 0
+                          or response_sequence != sequence or response_port != port_id):
+                      return None
+                  family, version, generation_low = struct.unpack_from("!BBH", reply, 16)
+                  # nft_base_seq() puts the low 16 generation bits in res_id; it is
+                  # not a reserved zero field. NFTA_GEN_ID below carries all 32 bits.
+                  if family != 0 or version != 0 or any(reply[length:]):
+                      return None
+                  generation, offset = None, 20
+                  while offset < length:
+                      if offset + 4 > length:
+                          return None
+                      attribute_length, attribute_type = struct.unpack_from("=HH", reply, offset)
+                      if attribute_length < 4 or offset + attribute_length > length:
+                          return None
+                      # nft_gen_fill_info uses network byte order for NFTA_GEN_ID=1.
+                      if attribute_type in (1, 0x4001):
+                          if generation is not None or attribute_length != 8:
+                              return None
+                          generation = struct.unpack_from("!I", reply, offset + 4)[0]
+                      elif attribute_type & 0x3fff == 1:
+                          return None
+                      padded_end = offset + ((attribute_length + 3) & ~3)
+                      if padded_end > length or any(reply[offset + attribute_length:padded_end]):
+                          return None
+                      offset = padded_end
+                  if generation is None or generation == 0 or generation_low != generation & 0xffff:
+                      return None
+                  return generation
+              except (OSError, ValueError, TypeError, AttributeError, struct.error):
+                  return None
+              finally:
+                  if channel is not None:
+                      try:
+                          channel.close()
+                      except OSError:
+                          pass
+
+          def nft_limit_predicate(value):
+              # libnftables 1.0.6 anonymous limit output. The token bucket's
+              # current state is unobserved, so never assume a rate match.
+              # Named references and future/ambiguous forms remain opaque.
+              allowed = {"rate", "per", "burst", "rate_unit", "burst_unit", "inv"}
+              if not isinstance(value, dict) or not {"rate", "per"}.issubset(value) or not set(value).issubset(allowed):
+                  return False
+              if type(value["rate"]) is not int or not 0 < value["rate"] <= 0xffffffffffffffff:
+                  return False
+              if not isinstance(value["per"], str) or value["per"] not in {"second", "minute", "hour", "day", "week"}:
+                  return False
+              burst = value.get("burst", 0)
+              if type(burst) is not int or not 0 <= burst <= 0xffffffff:
+                  return False
+              if "inv" in value and type(value["inv"]) is not bool:
+                  return False
+              byte_units = {"bytes", "kbytes", "mbytes"}
+              rate_unit = value.get("rate_unit", "packets")
+              burst_unit = value.get("burst_unit", "bytes")
+              return (isinstance(rate_unit, str) and rate_unit in byte_units | {"packets"}
+                      and isinstance(burst_unit, str) and burst_unit in byte_units)
+
+          def compat_ip_prefix(value, family):
+              if isinstance(value, dict):
+                  if set(value) != {"prefix"} or not isinstance(value["prefix"], dict) or set(value["prefix"]) != {"addr", "len"}:
+                      raise ValueError("unsupported address expression")
+                  prefix = value["prefix"]
+                  if not isinstance(prefix["addr"], str) or type(prefix["len"]) is not int:
+                      raise ValueError("invalid address prefix")
+                  value = prefix["addr"] + "/" + str(prefix["len"])
+              if not isinstance(value, str):
+                  raise ValueError("invalid address operand")
+              network = ipaddress.ip_network(value, strict=False)
+              if network.version != (4 if family == "ip" else 6):
+                  raise ValueError("address family mismatch")
+              return str(network)
+
+
+          def compat_limit_shape(value):
+              # iptables 1.8.9/1.8.10 only projects non-inverted packet limits.
+              if not nft_limit_predicate(value) or value.get("inv", False) or value.get("rate_unit", "packets") != "packets" or "burst_unit" in value:
+                  raise ValueError("limit cannot be projected without loss")
+              return [value["rate"], value["per"], value.get("burst", 5)]
+
+
+          def compat_native_rule_shape(rule):
+              if not set(rule).issubset({"family", "table", "chain", "handle", "expr", "comment"}):
+                  raise ValueError("unsupported rule metadata")
+              expressions = rule["expr"]
+              if not isinstance(expressions, list) or not 2 <= len(expressions) <= 32:
+                  raise ValueError("unsupported rule expression count")
+              if set(expressions[-2]) != {"counter"}:
+                  raise ValueError("rule counter/order is not represented")
+              counter = expressions[-2]["counter"]
+              if not isinstance(counter, dict) or set(counter) != {"packets", "bytes"} or any(type(value) is not int or value < 0 for value in counter.values()):
+                  raise ValueError("invalid anonymous counter")
+              terminal = expressions[-1]
+              if len(terminal) != 1:
+                  raise ValueError("ambiguous verdict")
+              action = next(iter(terminal))
+              if action in {"accept", "drop", "return"} and terminal[action] is None:
+                  verdict = [action, None]
+              elif action == "jump" and isinstance(terminal[action], dict) and set(terminal[action]) == {"target"} and isinstance(terminal[action]["target"], str):
+                  verdict = [action, terminal[action]["target"]]
+              elif action == "xt" and terminal[action] in ({"type": "target", "name": "LOG"}, {"type": "target", "name": "REJECT"}):
+                  verdict = [terminal[action]["name"], None]
+              else:
+                  raise ValueError("unsupported verdict projection")
+              visible, modules, limit, protocol, seen_xt = {}, [], None, None, False
+              for expression in expressions[:-2]:
+                  if len(expression) != 1:
+                      raise ValueError("ambiguous predicate")
+                  if "match" in expression:
+                      # Avoid decoder overwrites and reordering a visible guard past a
+                      # possibly hotdropping extension. Only exact emitted forms join.
+                      if seen_xt:
+                          raise ValueError("visible predicate after xt extension")
+                      match = expression["match"]
+                      if not isinstance(match, dict) or set(match) != {"op", "left", "right"} or match["op"] != "==":
+                          raise ValueError("unsupported comparison operation")
+                      left, right = match["left"], match["right"]
+                      if not isinstance(left, dict) or len(left) != 1:
+                          raise ValueError("unsupported comparison operand")
+                      if "meta" in left and isinstance(left["meta"], dict) and set(left["meta"]) == {"key"}:
+                          field = left["meta"]["key"]
+                          if field not in {"l4proto", "iifname", "oifname"} or not isinstance(right, str):
+                              raise ValueError("unsupported metadata comparison")
+                          if field == "l4proto":
+                              if right not in {"tcp", "udp", "icmp", "ipv6-icmp"}:
+                                  raise ValueError("unsupported protocol")
+                              if protocol is not None and protocol != right:
+                                  raise ValueError("conflicting protocol predicates")
+                              protocol = right
+                          key, value = field, right
+                      elif "payload" in left and isinstance(left["payload"], dict) and set(left["payload"]) == {"protocol", "field"}:
+                          header, field = left["payload"]["protocol"], left["payload"]["field"]
+                          if header in {"tcp", "udp"} and field in {"sport", "dport"} and type(right) is int and 0 <= right <= 65535:
+                              if protocol is not None and protocol != header:
+                                  raise ValueError("conflicting protocol predicates")
+                              protocol, key, value = header, field, right
+                          elif header == rule["family"] and field in {"saddr", "daddr"}:
+                              key, value = field, compat_ip_prefix(right, rule["family"])
+                          else:
+                              raise ValueError("unsupported payload comparison")
+                      else:
+                          raise ValueError("unmapped native predicate")
+                      if key in visible:
+                          raise ValueError("duplicate visible predicate")
+                      visible[key] = value
+                  elif "xt" in expression:
+                      xt = expression["xt"]
+                      if not isinstance(xt, dict) or set(xt) != {"type", "name"} or xt["type"] != "match" or xt["name"] not in {"conntrack", "icmp", "icmp6", "addrtype", "hl", "rt"}:
+                          raise ValueError("unsupported xt projection")
+                      if xt["name"] in modules:
+                          raise ValueError("duplicate xt extension")
+                      modules.append(xt["name"])
+                      seen_xt = True
+                  elif "limit" in expression and limit is None:
+                      limit = compat_limit_shape(expression["limit"])
+                  else:
+                      raise ValueError("unmapped native expression")
+              if protocol is not None:
+                  visible["l4proto"] = protocol
+              comment = rule.get("comment")
+              if comment is not None and not isinstance(comment, str):
+                  raise ValueError("invalid rule comment")
+              return {"visible": visible, "modules": modules, "limit": limit, "verdict": verdict, "comment": comment}
+
+
+          def compat_iptables_rule_shape(words, family):
+              visible, modules, seen_modules, options = {}, [], set(), set()
+              limit, states, comment, verdict, current = None, None, None, None, None
+              index = 2
+              while index < len(words):
+                  token = words[index]
+                  if index + 1 >= len(words):
+                      raise ValueError("missing decoded argument")
+                  value, index = words[index + 1], index + 2
+                  if verdict is not None and token not in {"--log-prefix", "--reject-with"}:
+                      raise ValueError("decoded predicate after terminal target")
+                  if token in {"-p", "-i", "-o", "-s", "-d", "--sport", "--dport"}:
+                      field = {"-p": "l4proto", "-i": "iifname", "-o": "oifname", "-s": "saddr", "-d": "daddr", "--sport": "sport", "--dport": "dport"}[token]
+                      if field in visible:
+                          raise ValueError("duplicate decoded predicate")
+                      if field in {"sport", "dport"}:
+                          if current not in {"tcp", "udp"} or not value.isdigit() or not 0 <= int(value) <= 65535:
+                              raise ValueError("unsupported decoded port")
+                          value = int(value)
+                      elif field in {"saddr", "daddr"}:
+                          value = compat_ip_prefix(value, family)
+                      elif field == "l4proto" and value not in {"tcp", "udp", "icmp", "ipv6-icmp"}:
+                          raise ValueError("unsupported decoded protocol")
+                      visible[field] = value
+                  elif token == "-m":
+                      if value not in {"tcp", "udp", "conntrack", "icmp", "icmp6", "addrtype", "hl", "rt", "limit", "comment"} or value in seen_modules:
+                          raise ValueError("unsupported/duplicate decoded extension")
+                      seen_modules.add(value)
+                      current = value
+                      if value in {"tcp", "udp"}:
+                          if visible.get("l4proto") != value:
+                              raise ValueError("decoded protocol/module mismatch")
+                      elif value == "limit":
+                          limit = [3, "hour", 5]
+                      elif value != "comment":
+                          modules.append(value)
+                  elif token == "-j" and verdict is None:
+                      current = "target:" + value
+                      verdict = [{"ACCEPT": "accept", "DROP": "drop", "RETURN": "return"}.get(value, value if value in {"LOG", "REJECT"} else "jump"),
+                                 None if value in {"ACCEPT", "DROP", "RETURN", "LOG", "REJECT"} else value]
+                  else:
+                      allowed = {"conntrack": {"--ctstate"}, "icmp": {"--icmp-type"}, "icmp6": {"--icmpv6-type"}, "addrtype": {"--dst-type"},
+                                 "hl": {"--hl-eq"}, "rt": {"--rt-type"}, "limit": {"--limit", "--limit-burst"}, "comment": {"--comment"},
+                                 "target:LOG": {"--log-prefix"}, "target:REJECT": {"--reject-with"}}
+                      if token not in allowed.get(current, set()) or token in options:
+                          raise ValueError("unmapped decoded option or negation")
+                      options.add(token)
+                      if token == "--ctstate":
+                          states = value.split(",")
+                          if not states or len(set(states)) != len(states) or any(state not in {"NEW", "RELATED", "ESTABLISHED", "INVALID", "UNTRACKED"} for state in states):
+                              raise ValueError("unsupported decoded connection state")
+                      elif token == "--limit":
+                          parsed = re.match(r"^([1-9][0-9]*)/(sec|second|min|minute|hour|day)$", value)
+                          if not parsed:
+                              raise ValueError("unsupported decoded limit")
+                          limit[:2] = [int(parsed.group(1)), {"sec": "second", "min": "minute"}.get(parsed.group(2), parsed.group(2))]
+                      elif token == "--limit-burst":
+                          if not value.isdigit() or not 0 < int(value) <= 0xffffffff:
+                              raise ValueError("invalid decoded burst")
+                          limit[2] = int(value)
+                      elif token == "--comment":
+                          comment = value
+              if verdict is None or ("conntrack" in modules and states is None):
+                  raise ValueError("incomplete decoded rule")
+              return {"visible": visible, "modules": modules, "limit": limit, "verdict": verdict, "comment": comment}, states
+
+
+          def compat_conntrack_projection(entries, family, output):
+              decoded, policies = {}, {}
+              for raw in output.splitlines():
+                  if not raw.strip():
+                      continue
+                  words = shlex.split(raw)
+                  if len(words) > 96:
+                      raise ValueError("decoded rule exceeds bounds")
+                  if words[0] in {"-P", "-N"}:
+                      if len(words) != (3 if words[0] == "-P" else 2) or words[1] in decoded:
+                          raise ValueError("duplicate/invalid decoded chain")
+                      policy = words[2].lower() if words[0] == "-P" else None
+                      if policy is not None and (words[1] not in {"INPUT", "FORWARD", "OUTPUT"} or policy not in {"accept", "drop"}):
+                          raise ValueError("unsupported base policy")
+                      decoded[words[1]], policies[words[1]] = [], policy
+                  elif words[0] == "-A" and len(words) > 2 and words[1] in decoded:
+                      decoded[words[1]].append(words)
+                  else:
+                      # Incompatible-base-chain warnings can be stdout with exit 0.
+                      raise ValueError("unrecognized decoded output")
+              if not decoded or len(decoded) > 1024:
+                  raise ValueError("invalid decoded chain count")
+              chains, rules, tables = {}, {}, 0
+              for entry in entries:
+                  if not isinstance(entry, dict) or len(entry) != 1:
+                      raise ValueError("ambiguous nft object")
+                  kind, value = next(iter(entry.items()))
+                  if not isinstance(value, dict) or value.get("family") != family or value.get("table", value.get("name") if kind == "table" else None) != "filter":
+                      continue
+                  if kind == "table":
+                      if set(value) - {"family", "name", "handle", "flags"} or value.get("flags", []):
+                          raise ValueError("unsupported compatibility table flags")
+                      tables += 1
+                  elif kind == "chain":
+                      if set(value) - {"family", "table", "name", "handle", "type", "hook", "prio", "policy"} or value["name"] in chains:
+                          raise ValueError("unsupported/duplicate native chain")
+                      chains[value["name"]], rules[value["name"]] = value, []
+                  elif kind == "rule":
+                      if value.get("chain") not in rules:
+                          raise ValueError("unmapped native rule chain")
+                      rules[value["chain"]].append(value)
+                  else:
+                      raise ValueError("unmapped compatibility table object")
+              if tables != 1 or set(chains) != set(decoded) or not {"INPUT", "FORWARD", "OUTPUT"}.issubset(chains):
+                  raise ValueError("compatibility chain/table coverage mismatch")
+              restored = {}
+              for name, chain in chains.items():
+                  policy = policies[name]
+                  if policy is not None:
+                      if (chain.get("hook"), chain.get("type"), chain.get("prio"), chain.get("policy")) != (name.lower(), "filter", 0, policy):
+                          raise ValueError("compatibility hook/priority/policy mismatch")
+                  elif any(field in chain for field in ("hook", "type", "prio", "policy")):
+                      raise ValueError("unmapped base chain")
+                  if len(rules[name]) != len(decoded[name]) or len(rules[name]) > 4096:
+                      raise ValueError("compatibility rule count mismatch")
+                  for index, (rule, words) in enumerate(zip(rules[name], decoded[name])):
+                      native_shape = compat_native_rule_shape(rule)
+                      decoded_shape, states = compat_iptables_rule_shape(words, family)
+                      if native_shape != decoded_shape:
+                          raise ValueError("native/decoded visible rule projection mismatch")
+                      if states is not None:
+                          # Restore only this exact conntrack grammar. No addresses,
+                          # unknown xt options, extra modules or predicates are inferred.
+                          if native_shape["modules"] != ["conntrack"] or set(native_shape["visible"]) - {"l4proto"} or native_shape["comment"] is not None or native_shape["verdict"][0] not in {"accept", "drop", "return", "jump"}:
+                              raise ValueError("conntrack enrichment shape not supported")
+                          restored[(family, "filter", name, index)] = {"set": [state.lower() for state in states]}
+              return restored
+
+
+          def nft_snapshot_semantics(value):
+              if isinstance(value, list):
+                  return [nft_snapshot_semantics(item) for item in value]
+              if isinstance(value, dict):
+                  return {key: ({field: (0 if field in {"packets", "bytes"} else nft_snapshot_semantics(item)) for field, item in content.items()}
+                                if key == "counter" and isinstance(content, dict) else nft_snapshot_semantics(content)) for key, content in value.items()}
+              return value
+
+
+          def nft_compat_observations(initial_output, proof):
+              """Bounded repeated observations, not an atomic kernel snapshot lock."""
+              try:
+                  before_generation = nft_ruleset_generation()
+                  if before_generation is None:
+                      raise ValueError("nft generation unavailable")
+                  code, before, error = run(["nft", "-j", "list", "ruleset"])
+                  if code != 0 or error or len(before) > 4 * 1024 * 1024:
+                      raise ValueError("nft before observation unavailable")
+                  entries = json.loads(before)["nftables"]
+                  if not isinstance(entries, list) or len(entries) > 10000:
+                      raise ValueError("nft observation exceeds bounds")
+                  families = sorted({rule["family"] for entry in entries for rule in [entry.get("rule", {})]
+                                     if rule.get("family") in {"ip", "ip6"} and rule.get("table") == "filter" and any(expression.get("xt") == {"type": "match", "name": "conntrack"} for expression in rule.get("expr", []))})
+                  if not families:
+                      raise ValueError("compatibility conntrack rules unavailable")
+                  observations, versions = {}, {}
+                  for family in families:
+                      binary = "iptables" if family == "ip" else "ip6tables"
+                      code, version, error = run([binary, "--version"])
+                      if code != 0 or error or not re.match(r"^" + binary + r" v1\.8\.(?:9|10) \(nf_tables\)\s*$", version):
+                          raise ValueError("unverified nf_tables decoder version")
+                      versions[family] = version.strip()
+                      code, output, error = run([binary, "-S"])
+                      if code != 0 or error or len(output) > 1024 * 1024:
+                          raise ValueError("compatibility before observation unavailable")
+                      observations[family] = output
+                  for family in families:
+                      binary = "iptables" if family == "ip" else "ip6tables"
+                      code, output, error = run([binary, "-S"])
+                      if code != 0 or error or output != observations[family]:
+                          raise ValueError("compatibility observation changed")
+                  code, after, error = run(["nft", "-j", "list", "ruleset"])
+                  after_generation = nft_ruleset_generation()
+                  if code != 0 or error or len(after) > 4 * 1024 * 1024 or before_generation != after_generation:
+                      raise ValueError("nft observation generation changed or unavailable")
+                  if nft_snapshot_semantics(json.loads(before)) != nft_snapshot_semantics(json.loads(after)):
+                      raise ValueError("nft observation changed")
+                  restored = {}
+                  for family in families:
+                      restored.update(compat_conntrack_projection(entries, family, observations[family]))
+                  proof["compatibility_bridge"] = {"status": "verified", "scope": "repeated_observations_not_atomic_lock", "families": families,
+                                                   "generation": before_generation, "decoder_versions": versions, "restored_conntrack_rules": len(restored),
+                                                   "native_graph_preserved": True, "nft_semantics_equal": True, "decoded_snapshots_equal": True,
+                                                   "decoder_snapshots": observations}
+                  return before, restored
+              except (ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
+                  proof["compatibility_bridge"] = {"status": "unavailable", "reason": str(error)}
+                  return initial_output, {}
+
           def nftables_firewall_state(proof=None):
               code, output, error = run(["nft", "-j", "list", "ruleset"])
               evidence = command_evidence("nftables", output, error)
-              if code != 0:
+              if code != 0 or error:
                   return ("missing" if command_is_missing(code, error) else "unknown"), "nftables", evidence
               try:
                   entries = json.loads(output)["nftables"]
                   if not isinstance(entries, list):
                       raise ValueError("invalid nftables JSON")
+                  restored_states = {}
+                  if any(expression.get("xt") == {"type": "match", "name": "conntrack"}
+                         for entry in entries for expression in entry.get("rule", {}).get("expr", [])):
+                      output, restored_states = nft_compat_observations(output, proof if proof is not None else {})
+                      entries = json.loads(output)["nftables"]
+                      evidence = command_evidence("nftables", output, "")
                   chains, inputs = {}, []
                   dormant_tables = set()
                   for entry in entries:
@@ -443,6 +839,7 @@
                       chains[key] = ([], "deny" if chain.get("policy") == "drop" else "accept" if chain.get("policy") == "accept" else "return")
                       if chain.get("hook") == "input" and chain.get("type") == "filter":
                           inputs.append(key)
+                  rule_indexes = {}
                   for entry in entries:
                       rule = entry.get("rule")
                       if not rule:
@@ -450,8 +847,10 @@
                       key = (rule["family"], rule["table"], rule["chain"])
                       if key not in chains:
                           continue
+                      ordinal = rule_indexes.get(key, 0)
+                      rule_indexes[key] = ordinal + 1
                       guards, action, target = [], "continue", None
-                      for expression in rule["expr"]:
+                      for expression_index, expression in enumerate(rule["expr"]):
                           if "match" in expression:
                               match = expression["match"]
                               left = match.get("left", {})
@@ -468,10 +867,30 @@
                               dependency = {"tcp": "tcp", "udp": "udp", "icmp": "icmp", "icmpv6": "ipv6-icmp"}.get(payload.get("protocol"))
                               if dependency:
                                   guards.append(("protocol", "==", dependency))
+                          elif set(expression) == {"limit"} and nft_limit_predicate(expression["limit"]):
+                              guards.append((None, "==", None))
+                          elif set(expression) == {"xt"} and expression["xt"] == {"type": "match", "name": "conntrack"} and key + (ordinal,) in restored_states:
+                              guards.append(("state", "==", restored_states[key + (ordinal,)]))
+                          elif set(expression) == {"xt"} and expression["xt"] == {"type": "match", "name": "addrtype"}:
+                              # Kernel addrtype is a boolean route/address read.
+                              # INPUT does not establish which address type matched.
+                              guards.append((None, "==", None))
+                          elif set(expression) == {"xt"} and expression["xt"] == {"type": "target", "name": "LOG"}:
+                              pass
+                          elif set(expression) == {"xt"} and expression["xt"] == {"type": "target", "name": "REJECT"}:
+                              action = "deny"
+                              break
+                          elif set(expression) == {"xt"} and expression["xt"] == {"type": "match", "name": "rt"} and len(rule["expr"][expression_index:]) == 3 and set(rule["expr"][expression_index + 1]) == {"counter"} and rule["expr"][-1] == {"drop": None}:
+                              # rt can hotdrop on an unreadable extension header.
+                              # Only this immediate DROP tail includes that verdict
+                              # without moving it past any subsequent predicate.
+                              guards.append((None, "==", None))
                           elif "drop" in expression or "reject" in expression:
                               action = "deny"
+                              break
                           elif "accept" in expression or "return" in expression:
                               action = "accept" if "accept" in expression else "return"
+                              break
                           elif "jump" in expression or "goto" in expression:
                               action = "jump" if "jump" in expression else "goto"
                               target = (key[0], key[1], expression[action]["target"])
@@ -490,12 +909,18 @@
           def iptables_firewall_state(proof=None):
               code, output, error = run(["iptables", "-S"])
               evidence = command_evidence("iptables_ipv4", output, error)
-              if code != 0:
+              if code != 0 or error:
                   return ("missing" if command_is_missing(code, error) else "unknown"), "iptables", evidence
               try:
                   lines = [shlex.split(line) for line in output.splitlines() if line.strip()]
+                  if any(not line or line[0] not in {"-P", "-N", "-A"}
+                         or line[0] == "-P" and (len(line) != 3 or line[2] not in {"ACCEPT", "DROP"})
+                         or line[0] == "-N" and len(line) != 2 or line[0] == "-A" and len(line) < 3 for line in lines):
+                      raise ValueError("incomplete or unrecognized iptables output")
                   chains = {line[1]: ([], {"DROP": "deny", "ACCEPT": "accept"}.get(line[2], "unknown") if line[0] == "-P" else "return")
                             for line in lines if len(line) >= 2 and line[0] in {"-P", "-N"}}
+                  if len(chains) != sum(line[0] in {"-P", "-N"} for line in lines):
+                      raise ValueError("duplicate iptables chain")
                   for line in lines:
                       if len(line) < 2 or line[0] != "-A":
                           continue
@@ -513,12 +938,40 @@
                           if token in {"-g", "--goto"}:
                               action = "unknown"
                               break
-                          if token in {"-p", "--protocol", "--dport", "--destination-port", "--dports", "--ctstate", "--state", "-i", "--in-interface", "-s", "--source", "-d", "--destination", "-m", "--match", "--comment"}:
+                          if token == "--log-prefix" and target in {"LOG", "NFLOG"} and index + 1 < len(line):
+                              index += 2
+                              continue
+                          if token in {"--limit", "--limit-burst", "--dst-type", "--sport", "--source-port"}:
+                              value = line[index + 1]
+                              valid = (bool(re.match(r"^[1-9][0-9]*/(?:sec|second|min|minute|hour|day)$", value)) if token == "--limit"
+                                       else value.isdigit() and 0 < int(value) <= 0xffffffff if token == "--limit-burst"
+                                       else value in {"LOCAL", "MULTICAST", "BROADCAST"} if token == "--dst-type"
+                                       else value.isdigit() and 0 <= int(value) <= 65535)
+                              if not valid:
+                                  action = "unknown"
+                                  break
+                              guards.append((None, "==", None))
+                              negate, index = False, index + 2
+                              continue
+                          if token in {"-p", "--protocol", "--dport", "--destination-port", "--dports", "--ctstate", "--state", "-i", "--in-interface", "-o", "--out-interface", "-s", "--source", "-d", "--destination", "-m", "--match", "--comment"}:
                               value = line[index + 1]
                               field = {"-p": "protocol", "--protocol": "protocol", "--dport": "dport", "--destination-port": "dport", "--dports": "dport", "--ctstate": "state", "--state": "state", "-i": "iif", "--in-interface": "iif"}.get(token)
-                              if token in {"-m", "--match"} and value in {"tcp", "udp", "conntrack", "state", "comment", "multiport"} or token == "--comment":
+                              if token in {"-m", "--match"} and value in {"limit", "addrtype"}:
+                                  # Native -S can omit default limit parameters.
+                                  # The module still has an unobserved predicate.
+                                  guards.append((None, "==", None))
+                                  negate, index = False, index + 2
+                                  continue
+                              if token in {"-m", "--match"} and value in {"tcp", "udp", "conntrack", "state", "comment", "multiport", "limit", "addrtype"} or token == "--comment":
                                   index += 2
                                   continue
+                              if token in {"-m", "--match"}:
+                                  # An extension can hotdrop or alter a packet;
+                                  # it is not necessarily a boolean predicate.
+                                  # Stop before later guards or verdicts can hide
+                                  # a reachable unsupported match (e.g. hashlimit).
+                                  action = "unknown"
+                                  break
                               if field == "protocol":
                                   value = {"6": "tcp", "17": "udp"}.get(value, value)
                                   if value in {"all", "0"}: field = "all"
@@ -531,8 +984,8 @@
                               guards.append((field, "!=" if negate else "==", value))
                               negate, index = False, index + 2
                           else:
-                              guards.append((None, "==", None))
-                              index += 1
+                              action = "unknown"
+                              break
                       chains[line[1]][0].append((guards, action, target))
                   return input_filter_state(chains, ["INPUT"], proof) if "INPUT" in chains else "unknown", "iptables", evidence
               except (ValueError, KeyError, IndexError):
@@ -1126,7 +1579,7 @@
               "scanner": {"source": "agentless", "partial": bool(incomplete_checks), "incompleteChecks": sorted(set(incomplete_checks))},
               "agentless": {
                   "version": rules.get("audit_rules_version", "0.2.0"),
-                  "evaluatorVersion": "1.2.0",
+                  "evaluatorVersion": "1.3.0",
                   "control": "ansible",
                   "persistentAgent": False,
                   "rulesFile": os.environ.get("AUDIT_RULES_FILE", "ansible/audit-rules/basic-linux.yml"),

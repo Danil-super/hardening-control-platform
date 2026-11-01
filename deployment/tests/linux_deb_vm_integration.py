@@ -798,7 +798,7 @@ def boot_and_verify(distribution, work, artifacts, protocol, private_context):
         run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(work / name)])
     expected_fingerprint = run(["ssh-keygen", "-lf", str(work / "server.pub"), "-E", "sha256"]).stdout.split()[1]
     config = {"hostname": HOST, "ssh_pwauth": False, "disable_root": True, "ssh_deletekeys": True,
-              "ssh_genkeytypes": [], "users": [{"name": "hcp-ci", "groups": ["sudo"], "shell": "/bin/bash",
+              "users": [{"name": "hcp-ci", "groups": ["sudo"], "shell": "/bin/bash",
                  "sudo": "ALL=(ALL) NOPASSWD:ALL", "lock_passwd": True,
                  "ssh_authorized_keys": [(work / "client.pub").read_text().strip()]}],
               "ssh_keys": {"ed25519_private": (work / "server").read_text(), "ed25519_public": (work / "server.pub").read_text()},
