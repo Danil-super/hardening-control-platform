@@ -13,6 +13,8 @@ HCP развивается как общая система аудита и ко
 [протоколе Linux от 31 октября 2026 года](linux-validation-2026-10-31.md).
 Последующий этап точности firewall и нативного восстановления описан в
 [протоколе от 1 ноября](linux-firewall-validation-2026-11-01.md).
+Нативные Debian 12 / Ubuntu 24.04, отчёты, пакетные контроли и полный цикл UFW —
+в [отдельном протоколе Debian/Ubuntu](linux-debian-ubuntu-validation-2026-11-01.md).
 
 ## Как выбирается адаптер
 
@@ -172,12 +174,14 @@ APK-инвентарь не означают разрешение автомат
 | --- | --- | --- |
 | Поведенческие регрессии | Неизвестные состояния, ошибки, метаданные, источники, архивы, аварийное восстановление | Нативную поддержку каждого дистрибутива |
 | Python 3.5/3.7 acceptance | Реальное исполнение target-кода на старом интерпретаторе | Службы и средства защиты конкретной ОС |
+| Debian 12 / Ubuntu 24.04 VM workflow | x86_64, systemd, независимый dpkg inventory, native Trivy, контрольные нарушения, шесть опубликованных отчётов на гостя и полный цикл UFW с SIGKILL rollback | Все Debian/Ubuntu, архитектуры, полную CVE-применимость, весь firewall и browser onboarding; supplier uncertainty остаётся partial |
 | Alpine VM workflow | Настоящий OpenRC, APK, native source metadata, положительные/отрицательные контроли через SSH | Все Alpine/Wolfi и архитектуры; регистрация актива не проверяется, минимальному образу нужна штатная подготовка machine-id |
 | Alma/Rocky VM workflow | systemd, enforcing SELinux, RPM, настоящий firewalld, закрытие/открытие порта и откат | Все RHEL-производные, политики SELinux, контейнерные/облачные сети |
 | Existing Astra VM workflow | Реальные образы 1.8.1/1.8.6, OVAL и SCAP-контроли | Все выпуски/режимы обязательного контроля Astra |
 
 Актуальные исходники проверок: `.github/workflows/linux-alpine-vm-integration.yml`,
-`.github/workflows/linux-rpm-vm-integration.yml`, `.github/workflows/astra-vm.yml`.
+`.github/workflows/linux-rpm-vm-integration.yml`, `.github/workflows/linux-deb-vm-integration.yml`,
+`.github/workflows/astra-vm.yml`.
 Успех фиксируется только по завершившемуся запуску соответствующего commit SHA.
 Артефакты содержат protocol и сырые результаты; приватные SSH-ключи, seed-диски
 и диски ВМ в артефакты не загружаются. Недоступный образ, инструмент или база
@@ -185,8 +189,9 @@ APK-инвентарь не означают разрешение автомат
 
 ## Следующие этапы
 
-1. Отдельные нативные стенды Debian/Ubuntu, SLES/openSUSE, ALT/РЕД ОС и архитектуры
-   aarch64; новые строки поддержки после проверок, а не по `ID_LIKE`.
+1. Отдельные нативные стенды новых выпусков Debian/Ubuntu, SLES/openSUSE,
+   ALT/РЕД ОС и архитектуры aarch64; новые строки поддержки после проверок,
+   а не по `ID_LIKE`.
 2. Поставщики CVE/OVAL для дистрибутивов без пригодного маршрута, с явной областью
    advisory, пакетным происхождением, модулями и политикой свежести.
 3. Отдельный транзакционный nftables backend с проверкой синтаксиса,
