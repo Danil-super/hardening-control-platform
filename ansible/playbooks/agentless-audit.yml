@@ -36,1051 +36,1111 @@
       run_once: true
 
     - name: Build agentless audit JSON
-      ansible.builtin.shell: |
-        "$HCP_TARGET_PYTHON" - <<'PY'
-        import json
-        import ipaddress
-        import os
-        import re
-        import shlex
-        import shutil
-        import socket
-        import subprocess
-        from datetime import datetime, timezone
+      ansible.builtin.shell:
+        cmd: |
+          "$HCP_TARGET_PYTHON" - <<'PY'
+          import json
+          import ipaddress
+          import os
+          import re
+          import shlex
+          import shutil
+          import socket
+          import subprocess
+          from datetime import datetime, timezone
 
-        profile_id = os.environ.get("AUDIT_PROFILE", "basic_linux")
-        rules = json.loads(os.environ.get("AUDIT_RULES_JSON", "{}"))
-        dangerous_ports = rules.get("dangerous_ports", [])
-        ssh_rules = rules.get("ssh_rules", {})
-        service_rules = rules.get("service_rules", [])
-        package_rules = rules.get("package_rules", {})
-        filesystem_rules = rules.get("filesystem_rules", {})
-        profile_checks = rules.get("profile_checks", {})
-        incomplete_checks = []
+          profile_id = os.environ.get("AUDIT_PROFILE", "basic_linux")
+          rules = json.loads(os.environ.get("AUDIT_RULES_JSON", "{}"))
+          dangerous_ports = rules.get("dangerous_ports", [])
+          ssh_rules = rules.get("ssh_rules", {})
+          service_rules = rules.get("service_rules", [])
+          package_rules = rules.get("package_rules", {})
+          filesystem_rules = rules.get("filesystem_rules", {})
+          profile_checks = rules.get("profile_checks", {})
+          incomplete_checks = []
 
-        def run(command):
-            try:
-                completed = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8, env={**os.environ, "LC_ALL": "C"})
-                completed.stdout = completed.stdout.decode("utf-8", "replace") if isinstance(completed.stdout, bytes) else completed.stdout
-                completed.stderr = completed.stderr.decode("utf-8", "replace") if isinstance(completed.stderr, bytes) else completed.stderr
-                return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
-            except Exception as exc:
-                return None, "", str(exc)
+          def run(command):
+              try:
+                  completed = subprocess.run(command, check=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=8, env={**os.environ, "LC_ALL": "C"})
+                  completed.stdout = completed.stdout.decode("utf-8", "replace") if isinstance(completed.stdout, bytes) else completed.stdout
+                  completed.stderr = completed.stderr.decode("utf-8", "replace") if isinstance(completed.stderr, bytes) else completed.stderr
+                  return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
+              except Exception as exc:
+                  return None, "", str(exc)
 
-        def finding(id, title, category, risk, status, description, recommendation, evidence="", remediation_id=None, affected_files=None):
-            return {
-                "id": id,
-                "profileId": profile_id,
-                "title": title,
-                "category": category,
-                "risk": risk,
-                "status": status,
-                "source": "agentless",
-                "description": description,
-                "recommendation": recommendation,
-                "remediationAvailable": bool(remediation_id),
-                "remediationId": remediation_id,
-                "affectedFiles": affected_files or [],
-                "evidence": evidence,
-            }
+          def finding(id, title, category, risk, status, description, recommendation, evidence="", remediation_id=None, affected_files=None):
+              return {
+                  "id": id,
+                  "profileId": profile_id,
+                  "title": title,
+                  "category": category,
+                  "risk": risk,
+                  "status": status,
+                  "source": "agentless",
+                  "description": description,
+                  "recommendation": recommendation,
+                  "remediationAvailable": bool(remediation_id),
+                  "remediationId": remediation_id,
+                  "affectedFiles": affected_files or [],
+                  "evidence": evidence,
+              }
 
-        def bool_text(value):
-            return "yes" if value else "no"
+          def bool_text(value):
+              return "yes" if value else "no"
 
-        def read_small(path, limit=65536):
-            try:
-                with open(path, encoding="utf-8", errors="replace") as handle:
-                    value = handle.read(limit + 1)
-                return value if len(value) <= limit else None
-            except (OSError, ValueError):
-                return None
+          def read_small(path, limit=65536):
+              try:
+                  with open(path, encoding="utf-8", errors="replace") as handle:
+                      value = handle.read(limit + 1)
+                  return value if len(value) <= limit else None
+              except (OSError, ValueError):
+                  return None
 
-        def detect_service_manager():
-            pid_one = (read_small("/proc/1/comm", 256) or "").strip()
-            if pid_one == "systemd":
-                return ("systemd" if shutil.which("systemctl") else "unknown"), "pid1=systemd", False
-            # Installed binaries alone do not prove which init owns services.
-            # OpenRC normally runs under init, rather than as PID 1 itself.
-            softlevel = read_small("/run/openrc/softlevel", 256)
-            if softlevel and softlevel.strip() and shutil.which("rc-service"):
-                return "openrc", "pid1={}; openrc_runtime={}".format(pid_one or "unknown", softlevel.strip()), False
-            if pid_one in {"init", "sysvinit"} and not shutil.which("rc-service") and os.path.isdir("/etc/init.d"):
-                # BusyBox and Upstart can also be named init and retain init.d.
-                # Existing LSB scripts provide a bounded status contract, but
-                # their absence cannot prove an unmanaged service is inactive.
-                known = pid_one == "sysvinit"
-                return ("sysv" if known else "unknown"), "pid1={}; scope=LSB_init_scripts; init_identity={}".format(pid_one, "sysvinit" if known else "unverified"), True
-            return "unknown", "pid1={}; running_service_manager_unverified".format(pid_one or "unknown"), False
+          def detect_service_manager():
+              pid_one = (read_small("/proc/1/comm", 256) or "").strip()
+              if pid_one == "systemd":
+                  return ("systemd" if shutil.which("systemctl") else "unknown"), "pid1=systemd", False
+              # Installed binaries alone do not prove which init owns services.
+              # OpenRC normally runs under init, rather than as PID 1 itself.
+              softlevel = read_small("/run/openrc/softlevel", 256)
+              if softlevel and softlevel.strip() and shutil.which("rc-service"):
+                  return "openrc", "pid1={}; openrc_runtime={}".format(pid_one or "unknown", softlevel.strip()), False
+              if pid_one in {"init", "sysvinit"} and not shutil.which("rc-service") and os.path.isdir("/etc/init.d"):
+                  # BusyBox and Upstart can also be named init and retain init.d.
+                  # Existing LSB scripts provide a bounded status contract, but
+                  # their absence cannot prove an unmanaged service is inactive.
+                  known = pid_one == "sysvinit"
+                  return ("sysv" if known else "unknown"), "pid1={}; scope=LSB_init_scripts; init_identity={}".format(pid_one, "sysvinit" if known else "unverified"), True
+              return "unknown", "pid1={}; running_service_manager_unverified".format(pid_one or "unknown"), False
 
-        service_manager, service_manager_evidence, lsb_status_available = detect_service_manager()
-        service_cache = {}
-        service_aliases = {
-            "ssh": ("ssh", "sshd"), "sshd": ("sshd", "ssh"),
-            "cron": ("cron", "crond"), "crond": ("crond", "cron"),
-            "apache2": ("apache2", "httpd"), "httpd": ("httpd", "apache2"),
-        }
+          service_manager, service_manager_evidence, lsb_status_available = detect_service_manager()
+          service_cache = {}
+          service_aliases = {
+              "ssh": ("ssh", "sshd"), "sshd": ("sshd", "ssh"),
+              "cron": ("cron", "crond"), "crond": ("crond", "cron"),
+              "apache2": ("apache2", "httpd"), "httpd": ("httpd", "apache2"),
+          }
 
-        def query_service(name):
-            if name in service_cache:
-                return service_cache[name]
-            active, detail = None, "service manager unavailable"
-            if service_manager == "systemd":
-                unit = name if name.endswith(".service") else name + ".service"
-                code, output, error = run(["systemctl", "show", "--no-pager", "--property=LoadState", "--property=ActiveState", "--", unit])
-                fields = {}
-                malformed = False
-                for line in output.splitlines():
-                    key, separator, value = line.partition("=")
-                    if not separator or key in fields:
-                        malformed = True
-                    fields[key] = value
-                load, state = fields.get("LoadState"), fields.get("ActiveState")
-                if code == 0 and not error and not malformed:
-                    if load in {"loaded", "masked"} and state == "active":
-                        active = True
-                    elif load in {"loaded", "masked", "not-found"} and state in {"inactive", "failed"}:
-                        active = False
-                # Transient activation/reload, a missing bus, invalid unit data,
-                # or unrecognised states never become a proved inactive service.
-                detail = "exit={}; {}".format(code, output or error or "no state properties")
-            elif service_manager == "openrc":
-                exists, output, error = run(["rc-service", "--exists", name])
-                if exists == 1 and not output and not error:
-                    active, detail = False, "service_missing"
-                elif exists == 0 and not error:
-                    code, output, error = run(["rc-service", "--nocolor", name, "status"])
-                    status = re.search(r"\bstatus:\s*(started|stopped|inactive|crashed|starting|stopping)\b", output + "\n" + error)
-                    observed = status.group(1) if status else None
-                    if code == 0 and observed in (None, "started"):
-                        active = True
-                    elif code in (3, 16, 32) and observed in (None, "stopped", "inactive", "crashed"):
-                        active = False
-                    detail = "exit={}; {}".format(code, output or error or "no status text")
-                else:
-                    detail = "existence_exit={}; {}".format(exists, output or error or "unverified service existence")
-            elif lsb_status_available:
-                script = "/etc/init.d/" + name
-                header = read_small(script)
-                if header is None:
-                    # A permission/read error is different from a missing script.
-                    try:
-                        os.stat(script)
-                    except FileNotFoundError:
-                        active = False if service_manager == "sysv" else None
-                        detail = "init_script_missing" if active is False else "init_script_missing; service_manager_unverified"
-                    except OSError as error:
-                        detail = "init_script_unreadable: " + str(error)
-                    else:
-                        detail = "init_script_unreadable_or_above_64KiB"
-                elif "### BEGIN INIT INFO" not in header or "### END INIT INFO" not in header:
-                    detail = "non_LSB_status_contract_unverified"
-                else:
-                    # LSB status: 0 running; 1/2 dead with pid/lock; 3 stopped;
-                    # 4 unknown. Never invoke start/stop/reload or a shell wrapper.
-                    code, output, error = run([script, "status"])
-                    if code == 0:
-                        active = True
-                    elif code in (1, 2, 3):
-                        active = False
-                    detail = "exit={}; {}".format(code, output or error or "LSB status result")
-            evidence = "manager={}; service={}; {}".format(service_manager, name, detail)
-            service_cache[name] = (active, evidence)
-            return service_cache[name]
+          def query_service(name):
+              if name in service_cache:
+                  return service_cache[name]
+              active, detail = None, "service manager unavailable"
+              if service_manager == "systemd":
+                  unit = name if name.endswith(".service") else name + ".service"
+                  code, output, error = run(["systemctl", "show", "--no-pager", "--property=LoadState", "--property=ActiveState", "--", unit])
+                  fields = {}
+                  malformed = False
+                  for line in output.splitlines():
+                      key, separator, value = line.partition("=")
+                      if not separator or key in fields:
+                          malformed = True
+                      fields[key] = value
+                  load, state = fields.get("LoadState"), fields.get("ActiveState")
+                  if code == 0 and not error and not malformed:
+                      if load in {"loaded", "masked"} and state == "active":
+                          active = True
+                      elif load in {"loaded", "masked", "not-found"} and state in {"inactive", "failed"}:
+                          active = False
+                  # Transient activation/reload, a missing bus, invalid unit data,
+                  # or unrecognised states never become a proved inactive service.
+                  detail = "exit={}; {}".format(code, output or error or "no state properties")
+              elif service_manager == "openrc":
+                  exists, output, error = run(["rc-service", "--exists", name])
+                  if exists == 1 and not output and not error:
+                      active, detail = False, "service_missing"
+                  elif exists == 0 and not error:
+                      code, output, error = run(["rc-service", "--nocolor", name, "status"])
+                      status = re.search(r"\bstatus:\s*(started|stopped|inactive|crashed|starting|stopping)\b", output + "\n" + error)
+                      observed = status.group(1) if status else None
+                      if code == 0 and observed in (None, "started"):
+                          active = True
+                      elif code in (3, 16, 32) and observed in (None, "stopped", "inactive", "crashed"):
+                          active = False
+                      detail = "exit={}; {}".format(code, output or error or "no status text")
+                  else:
+                      detail = "existence_exit={}; {}".format(exists, output or error or "unverified service existence")
+              elif lsb_status_available:
+                  script = "/etc/init.d/" + name
+                  header = read_small(script)
+                  if header is None:
+                      # A permission/read error is different from a missing script.
+                      try:
+                          os.stat(script)
+                      except FileNotFoundError:
+                          active = False if service_manager == "sysv" else None
+                          detail = "init_script_missing" if active is False else "init_script_missing; service_manager_unverified"
+                      except OSError as error:
+                          detail = "init_script_unreadable: " + str(error)
+                      else:
+                          detail = "init_script_unreadable_or_above_64KiB"
+                  elif "### BEGIN INIT INFO" not in header or "### END INIT INFO" not in header:
+                      detail = "non_LSB_status_contract_unverified"
+                  else:
+                      # LSB status: 0 running; 1/2 dead with pid/lock; 3 stopped;
+                      # 4 unknown. Never invoke start/stop/reload or a shell wrapper.
+                      code, output, error = run([script, "status"])
+                      if code == 0:
+                          active = True
+                      elif code in (1, 2, 3):
+                          active = False
+                      detail = "exit={}; {}".format(code, output or error or "LSB status result")
+              evidence = "manager={}; service={}; {}".format(service_manager, name, detail)
+              service_cache[name] = (active, evidence)
+              return service_cache[name]
 
-        def service_active(service, required=True):
-            if not isinstance(service, str) or not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.@+-]{0,79}$", service):
-                if required:
-                    incomplete_checks.append("service_invalid_name")
-                return None, "invalid service name"
-            results = [query_service(name) for name in service_aliases.get(service, (service,))]
-            active = True if any(value[0] is True for value in results) else None if any(value[0] is None for value in results) else False
-            if active is None and required:
-                incomplete_checks.append("service_" + service)
-            return active, "; ".join(value[1] for value in results)
+          def service_active(service, required=True):
+              if not isinstance(service, str) or not re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.@+-]{0,79}$", service):
+                  if required:
+                      incomplete_checks.append("service_invalid_name")
+                  return None, "invalid service name"
+              results = [query_service(name) for name in service_aliases.get(service, (service,))]
+              active = True if any(value[0] is True for value in results) else None if any(value[0] is None for value in results) else False
+              if active is None and required:
+                  incomplete_checks.append("service_" + service)
+              return active, "; ".join(value[1] for value in results)
 
-        def authentication_log_evidence():
-            pattern = re.compile(r"failed password|authentication failure|invalid user", re.I)
-            sources, matches, errors = [], [], []
-            for log_class, paths in (("authentication", ("/var/log/auth.log", "/var/log/secure", "/var/log/authlog")),
-                                     ("mixed_syslog", ("/var/log/messages", "/var/log/syslog"))):
-                for logfile in paths:
-                    if not os.path.exists(logfile):
-                        continue
-                    code, output, error = run(["tail", "-n", "1000", logfile])
-                    if code == 0 and not error:
-                        lines = output.splitlines()[-1000:]
-                        sources.append(logfile)
-                        matches.extend(logfile + ": " + line for line in lines if pattern.search(line))
-                    else:
-                        errors.append(logfile + ": " + (error or output or str(code)))
-                if sources:
-                    detail = "source=files; scope=last_1000_lines_per_file; log_class={}; files={}; matches={}; displayed={}".format(
-                        log_class, ",".join(sources), len(matches), min(100, len(matches)))
-                    if errors:
-                        detail += "; unreadable_sources=" + "; ".join(errors)
-                    if log_class == "mixed_syslog":
-                        # A readable general log does not establish auth/authpriv
-                        # routing. Keep observed events without claiming coverage.
-                        detail += "; authentication_routing=unverified"
-                    return not errors and log_class == "authentication", bool(matches), detail + ("\n" + "\n".join(matches[:100]) if matches else "")
-            if not shutil.which("journalctl"):
-                return False, False, "auth.log/secure/authlog/messages/syslog unavailable; journalctl unavailable; " + "; ".join(errors)
-            # A successful empty filter alone does not prove journal access.
-            # First require an actual readable journal entry; then query a
-            # declared, bounded auth/authpriv window (same-field matches OR).
-            probe_code, probe_output, probe_error = run(["journalctl", "--no-pager", "--output=json", "--lines=1"])
-            try:
-                probe = json.loads(probe_output)
-                readable = (probe_code == 0 and not probe_error and isinstance(probe, dict)
-                            and str(probe.get("__REALTIME_TIMESTAMP", "")).isdigit())
-            except (ValueError, TypeError):
-                readable = False
-            if not readable:
-                return False, False, "source=journald; readable_journal_unverified; " + (probe_error or "no valid journal entry")
-            code, output, error = run(["journalctl", "--no-pager", "--output=json", "--since=-24h", "--lines=1000", "SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10"])
-            known, count = code == 0 and not error, 0
-            for line in output.splitlines():
-                try:
-                    entry = json.loads(line)
-                    message = entry.get("MESSAGE") if isinstance(entry, dict) else None
-                    timestamp = entry.get("__REALTIME_TIMESTAMP") if isinstance(entry, dict) else None
-                    if not isinstance(message, str) or not str(timestamp or "").isdigit():
-                        raise ValueError("unrecognised journal record")
-                    count += 1
-                    if pattern.search(message):
-                        matches.append(message)
-                except (ValueError, TypeError):
-                    known = False
-            detail = "source=journald; scope=auth_authpriv_last_24h_max_1000_entries; retrieved={}; matches={}; displayed={}".format(count, len(matches), min(100, len(matches)))
-            if not known:
-                detail += "; incomplete=" + (error or "invalid journal records or failed query")
-            return known, bool(matches), detail + ("\n" + "\n".join(matches[:100]) if matches else "")
+          def authentication_log_evidence():
+              pattern = re.compile(r"failed password|authentication failure|invalid user", re.I)
+              sources, matches, errors = [], [], []
+              for log_class, paths in (("authentication", ("/var/log/auth.log", "/var/log/secure", "/var/log/authlog")),
+                                       ("mixed_syslog", ("/var/log/messages", "/var/log/syslog"))):
+                  for logfile in paths:
+                      if not os.path.exists(logfile):
+                          continue
+                      code, output, error = run(["tail", "-n", "1000", logfile])
+                      if code == 0 and not error:
+                          lines = output.splitlines()[-1000:]
+                          sources.append(logfile)
+                          matches.extend(logfile + ": " + line for line in lines if pattern.search(line))
+                      else:
+                          errors.append(logfile + ": " + (error or output or str(code)))
+                  if sources:
+                      detail = "source=files; scope=last_1000_lines_per_file; log_class={}; files={}; matches={}; displayed={}".format(
+                          log_class, ",".join(sources), len(matches), min(100, len(matches)))
+                      if errors:
+                          detail += "; unreadable_sources=" + "; ".join(errors)
+                      if log_class == "mixed_syslog":
+                          # A readable general log does not establish auth/authpriv
+                          # routing. Keep observed events without claiming coverage.
+                          detail += "; authentication_routing=unverified"
+                      return not errors and log_class == "authentication", bool(matches), detail + ("\n" + "\n".join(matches[:100]) if matches else "")
+              if not shutil.which("journalctl"):
+                  return False, False, "auth.log/secure/authlog/messages/syslog unavailable; journalctl unavailable; " + "; ".join(errors)
+              # A successful empty filter alone does not prove journal access.
+              # First require an actual readable journal entry; then query a
+              # declared, bounded auth/authpriv window (same-field matches OR).
+              probe_code, probe_output, probe_error = run(["journalctl", "--no-pager", "--output=json", "--lines=1"])
+              try:
+                  probe = json.loads(probe_output)
+                  readable = (probe_code == 0 and not probe_error and isinstance(probe, dict)
+                              and str(probe.get("__REALTIME_TIMESTAMP", "")).isdigit())
+              except (ValueError, TypeError):
+                  readable = False
+              if not readable:
+                  return False, False, "source=journald; readable_journal_unverified; " + (probe_error or "no valid journal entry")
+              code, output, error = run(["journalctl", "--no-pager", "--output=json", "--since=-24h", "--lines=1000", "SYSLOG_FACILITY=4", "SYSLOG_FACILITY=10"])
+              known, count = code == 0 and not error, 0
+              for line in output.splitlines():
+                  try:
+                      entry = json.loads(line)
+                      message = entry.get("MESSAGE") if isinstance(entry, dict) else None
+                      timestamp = entry.get("__REALTIME_TIMESTAMP") if isinstance(entry, dict) else None
+                      if not isinstance(message, str) or not str(timestamp or "").isdigit():
+                          raise ValueError("unrecognised journal record")
+                      count += 1
+                      if pattern.search(message):
+                          matches.append(message)
+                  except (ValueError, TypeError):
+                      known = False
+              detail = "source=journald; scope=auth_authpriv_last_24h_max_1000_entries; retrieved={}; matches={}; displayed={}".format(count, len(matches), min(100, len(matches)))
+              if not known:
+                  detail += "; incomplete=" + (error or "invalid journal records or failed query")
+              return known, bool(matches), detail + ("\n" + "\n".join(matches[:100]) if matches else "")
 
-        def result_available(check_id, code, accepted=(0,)):
-            if code in accepted:
-                return True
-            incomplete_checks.append(check_id)
-            return False
+          def result_available(check_id, code, accepted=(0,)):
+              if code in accepted:
+                  return True
+              incomplete_checks.append(check_id)
+              return False
 
-        def command_is_missing(code, error):
-            return code == 127 or (code is None and ("No such file or directory" in error or "[Errno 2]" in error))
+          def command_is_missing(code, error):
+              return code == 127 or (code is None and ("No such file or directory" in error or "[Errno 2]" in error))
 
-        def command_evidence(label, output, error):
-            return "{}={}".format(label, output or error or "no output")
+          def command_evidence(label, output, error):
+              return "{}={}".format(label, output or error or "no output")
 
-        def ufw_firewall_state():
-            code, output, error = run(["ufw", "status"])
-            if code == 0 and "Status: active" in output:
-                return "active", "ufw", command_evidence("ufw", output, error)
-            if code == 0 and "Status: inactive" in output:
-                return "inactive", "ufw", command_evidence("ufw", output, error)
-            if command_is_missing(code, error):
-                return "missing", "ufw", command_evidence("ufw", output, error)
-            return "unknown", "ufw", command_evidence("ufw", output, error)
+          def ufw_firewall_state():
+              code, output, error = run(["ufw", "status"])
+              if code == 0 and "Status: active" in output:
+                  return "active", "ufw", command_evidence("ufw", output, error)
+              if code == 0 and "Status: inactive" in output:
+                  return "inactive", "ufw", command_evidence("ufw", output, error)
+              if command_is_missing(code, error):
+                  return "missing", "ufw", command_evidence("ufw", output, error)
+              return "unknown", "ufw", command_evidence("ufw", output, error)
 
-        def firewalld_firewall_state():
-            code, output, error = run(["firewall-cmd", "--state"])
-            if code == 0 and output.strip() == "running":
-                return "active", "firewalld", command_evidence("firewalld", output, error)
-            # Different firewalld releases use different non-zero exit codes
-            # for this exact, unambiguous inactive response.
-            if output.strip().lower() == "not running":
-                return "inactive", "firewalld", command_evidence("firewalld", output, error)
-            if command_is_missing(code, error):
-                return "missing", "firewalld", command_evidence("firewalld", output, error)
-            return "unknown", "firewalld", command_evidence("firewalld", output, error)
+          def firewalld_firewall_state():
+              code, output, error = run(["firewall-cmd", "--state"])
+              if code == 0 and output.strip() == "running":
+                  return "active", "firewalld", command_evidence("firewalld", output, error)
+              # Different firewalld releases use different non-zero exit codes
+              # for this exact, unambiguous inactive response.
+              if output.strip().lower() == "not running":
+                  return "inactive", "firewalld", command_evidence("firewalld", output, error)
+              if command_is_missing(code, error):
+                  return "missing", "firewalld", command_evidence("firewalld", output, error)
+              return "unknown", "firewalld", command_evidence("firewalld", output, error)
 
-        def filter_match(field, operation, expected, protocol, port):
-            # Evaluate a NEW incoming TCP/UDP packet on a non-loopback interface.
-            # Unknown predicates branch both ways; they can never prove a deny.
-            actual = {"protocol": protocol, "dport": port, "state": "new"}.get(field)
-            if field == "protocol" and isinstance(expected, (str, int)):
-                expected = {"6": "tcp", "17": "udp"}.get(str(expected), expected)
-            if field == "iif" and expected == "lo":
-                result = False
-            elif field == "all":
-                result = True
-            elif actual is None:
-                return None
-            elif isinstance(expected, dict) and set(expected) == {"range"} and field == "dport":
-                bounds = expected["range"]
-                if not isinstance(bounds, list) or len(bounds) != 2 or not all(isinstance(value, int) for value in bounds):
-                    return None
-                result = bounds[0] <= port <= bounds[1]
-            elif isinstance(expected, dict) and set(expected) == {"set"} and isinstance(expected["set"], list):
-                values = [filter_match(field, "==", value, protocol, port) for value in expected["set"]]
-                result = True if True in values else None if None in values else False
-            elif isinstance(expected, (str, int)):
-                if field == "dport":
-                    if not str(expected).isdigit():
-                        return None
-                    result = port == int(expected)
-                else:
-                    result = str(actual) == str(expected).lower()
-            else:
-                return None
-            return (not result if operation == "!=" else result) if result is not None else None
+          def filter_match(field, operation, expected, protocol, port):
+              # Conditional INPUT model: NEW TCP/UDP, non-loopback, no DNAT.
+              # NEW alone does not imply no DNAT, nor any other ct status bits.
+              # port=None covers every destination port; unknown predicates branch.
+              actual = {"protocol": protocol, "dport": port, "state": "new"}.get(field)
+              # JSON "in" denotes a bitmask test, not generic scalar equality.
+              # Only the explicitly modelled conntrack flags are supported here.
+              if operation == "in" and field not in {"state", "ct_status"}:
+                  return None
+              if field == "state" and isinstance(expected, (str, int)) and str(expected).lower() not in {"new", "established", "related", "invalid", "untracked"}:
+                  return None
+              if field == "protocol" and isinstance(expected, (str, int)):
+                  expected = {"6": "tcp", "17": "udp"}.get(str(expected), expected)
+              if field == "ct_status" and expected == "dnat" and operation in {"in", "==", "!="}:
+                  # Only this literal flag is known absent in the chosen model.
+                  # Other flags, mixed masks and numeric/bitwise forms stay unknown.
+                  result = False
+              elif field == "iif" and expected == "lo":
+                  result = False
+              elif field == "all":
+                  result = True
+              elif actual is None:
+                  return None
+              elif isinstance(expected, dict) and set(expected) == {"range"} and field == "dport":
+                  bounds = expected["range"]
+                  if not isinstance(bounds, list) or len(bounds) != 2 or not all(isinstance(value, int) for value in bounds):
+                      return None
+                  result = bounds[0] <= port <= bounds[1]
+              elif isinstance(expected, dict) and set(expected) == {"set"} and isinstance(expected["set"], list):
+                  values = [filter_match(field, "==", value, protocol, port) for value in expected["set"]]
+                  result = True if True in values else None if None in values else False
+              elif isinstance(expected, (str, int)):
+                  if field == "dport":
+                      if not str(expected).isdigit():
+                          return None
+                      result = port == int(expected)
+                  else:
+                      result = str(actual) == str(expected).lower()
+              else:
+                  return None
+              return (not result if operation == "!=" else result) if result is not None else None
 
-        def input_filter_state(chains, inputs):
-            if not inputs:
-                return "inactive"
+          def input_filter_state(chains, inputs, proof=None):
+              if not inputs:
+                  return "inactive"
 
-            remaining = [10000]
-            def walk(name, offset, protocol, port, stack):
-                remaining[0] -= 1
-                if remaining[0] < 0 or (name, offset) in stack or len(stack) > 128 or name not in chains:
-                    return {"unknown"}
-                ruleset, policy = chains[name]
-                if offset >= len(ruleset):
-                    return {policy}
-                guards, action, target = ruleset[offset]
-                matches = [filter_match(field, operation, value, protocol, port) for field, operation, value in guards]
-                next_stack = stack | {(name, offset)}
-                if False in matches:
-                    return walk(name, offset + 1, protocol, port, next_stack)
-                if action == "jump":
-                    outcomes = walk(target, 0, protocol, port, next_stack)
-                    if "return" in outcomes:
-                        outcomes = (outcomes - {"return"}) | walk(name, offset + 1, protocol, port, next_stack)
-                elif action == "continue":
-                    return walk(name, offset + 1, protocol, port, next_stack)
-                else:
-                    outcomes = {action}
-                if None in matches:
-                    outcomes |= walk(name, offset + 1, protocol, port, next_stack)
-                return outcomes
+              remaining = [10000]
+              def walk(name, offset, protocol, port, stack):
+                  remaining[0] -= 1
+                  if remaining[0] < 0 or (name, offset) in stack or len(stack) > 128 or name not in chains:
+                      return {"unknown"}
+                  ruleset, policy = chains[name]
+                  if offset >= len(ruleset):
+                      return {policy}
+                  guards, action, target = ruleset[offset]
+                  matches = [filter_match(field, operation, value, protocol, port) for field, operation, value in guards]
+                  next_stack = stack | {(name, offset)}
+                  if False in matches:
+                      return walk(name, offset + 1, protocol, port, next_stack)
+                  if action in {"jump", "goto"}:
+                      outcomes = walk(target, 0, protocol, port, next_stack)
+                      # goto does not push a return position. Its return must
+                      # reach the last jump caller, or the original base policy.
+                      if action == "jump" and "return" in outcomes:
+                          outcomes = (outcomes - {"return"}) | walk(name, offset + 1, protocol, port, next_stack)
+                  elif action == "continue":
+                      return walk(name, offset + 1, protocol, port, next_stack)
+                  else:
+                      outcomes = {action}
+                  if None in matches:
+                      outcomes |= walk(name, offset + 1, protocol, port, next_stack)
+                  return outcomes
 
-            for name in inputs:
-                for protocol in ("tcp", "udp"):
-                    for port in (1, 22, 23, 80, 443, 65535):
-                        # This proves a restrictive INPUT path, not whole-host
-                        # protection or reachability of any listening service.
-                        if walk(name, 0, protocol, port, set()) == {"deny"}:
-                            return "active"
-            # Only trivially unrestricted chains are classified as inactive.
-            # Unproven complex conditions/maps/jumps stay manual, not passed.
-            def accepts_all(name):
-                ruleset, policy = chains[name]
-                for guards, action, _ in ruleset:
-                    if action == "continue" and not guards:
-                        continue
-                    return not guards and action == "accept"
-                return policy == "accept"
-            return "inactive" if all(accepts_all(name) for name in inputs) else "unknown"
+              def evaluate(name, protocol, port):
+                  outcomes = walk(name, 0, protocol, port, set())
+                  return (outcomes - {"return"}) | ({chains[name][1]} if "return" in outcomes else set())
 
-        def nftables_firewall_state():
-            code, output, error = run(["nft", "-j", "list", "ruleset"])
-            evidence = command_evidence("nftables", output, error)
-            if code != 0:
-                return ("missing" if command_is_missing(code, error) else "unknown"), "nftables", evidence
-            try:
-                entries = json.loads(output)["nftables"]
-                if not isinstance(entries, list):
-                    raise ValueError("invalid nftables JSON")
-                chains, inputs = {}, []
-                dormant_tables = set()
-                for entry in entries:
-                    table = entry.get("table")
-                    if not table:
-                        continue
-                    flags = table.get("flags", [])
-                    if not isinstance(flags, list) or any(flag not in {"dormant", "owner", "persist"} for flag in flags):
-                        raise ValueError("unsupported nftables table flags")
-                    if "dormant" in flags:
-                        # Dormant tables remain listed, but their base chains
-                        # are unregistered and cannot filter incoming packets.
-                        dormant_tables.add((table["family"], table["name"]))
-                for entry in entries:
-                    chain = entry.get("chain")
-                    if not chain or chain.get("family") not in {"ip", "ip6", "inet"}:
-                        continue
-                    if (chain["family"], chain["table"]) in dormant_tables:
-                        continue
-                    key = (chain["family"], chain["table"], chain["name"])
-                    chains[key] = ([], "deny" if chain.get("policy") == "drop" else "accept" if chain.get("policy") == "accept" else "return")
-                    if chain.get("hook") == "input" and chain.get("type") == "filter":
-                        inputs.append(key)
-                for entry in entries:
-                    rule = entry.get("rule")
-                    if not rule:
-                        continue
-                    key = (rule["family"], rule["table"], rule["chain"])
-                    if key not in chains:
-                        continue
-                    guards, action, target = [], "continue", None
-                    for expression in rule["expr"]:
-                        if "match" in expression:
-                            match = expression["match"]
-                            left = match.get("left", {})
-                            field = ({"l4proto": "protocol", "iifname": "iif"}.get(left.get("meta", {}).get("key"))
-                                     or ("state" if left.get("ct", {}).get("key") == "state" else None)
-                                     or ("dport" if left.get("payload", {}).get("field") == "dport" and left["payload"].get("protocol") in {"tcp", "udp"} else None)) if isinstance(left, dict) else None
-                            if match.get("op") not in {"==", "!=", "in"}:
-                                field = None
-                            guards.append((field, match.get("op"), match.get("right")))
-                            if field == "dport":
-                                guards.append(("protocol", "==", left["payload"]["protocol"]))
-                        elif "drop" in expression or "reject" in expression:
-                            action = "deny"
-                        elif "accept" in expression or "return" in expression:
-                            action = "accept" if "accept" in expression else "return"
-                        elif "jump" in expression:
-                            action, target = "jump", (key[0], key[1], expression["jump"]["target"])
-                        elif not set(expression).issubset({"counter", "log", "comment"}):
-                            # Verdict maps, goto, NAT, marks and extensions need
-                            # a full evaluator; later tokens cannot hide them.
-                            guards.append((None, "==", None))
-                            action = "unknown"
-                            break
-                    chains[key][0].append((guards, action, target))
-                state = input_filter_state(chains, inputs)
-                return state, "nftables", evidence
-            except (KeyError, ValueError, TypeError, AttributeError):
-                return "unknown", "nftables", evidence
+              def chain_name(name):
+                  return "/".join(name) if isinstance(name, tuple) else name
 
-        def iptables_firewall_state():
-            code, output, error = run(["iptables", "-S"])
-            evidence = command_evidence("iptables_ipv4", output, error)
-            if code != 0:
-                return ("missing" if command_is_missing(code, error) else "unknown"), "iptables", evidence
-            try:
-                lines = [shlex.split(line) for line in output.splitlines() if line.strip()]
-                chains = {line[1]: ([], {"DROP": "deny", "ACCEPT": "accept"}.get(line[2], "unknown") if line[0] == "-P" else "return")
-                          for line in lines if len(line) >= 2 and line[0] in {"-P", "-N"}}
-                for line in lines:
-                    if len(line) < 2 or line[0] != "-A":
-                        continue
-                    guards, action, target, index, negate = [], "continue", None, 2, False
-                    while index < len(line):
-                        token = line[index]
-                        if token == "!":
-                            negate, index = True, index + 1
-                            continue
-                        if token in {"-j", "--jump"}:
-                            target = line[index + 1]
-                            action = {"DROP": "deny", "REJECT": "deny", "ACCEPT": "accept", "RETURN": "return", "LOG": "continue", "NFLOG": "continue"}.get(target, "jump" if target in chains else "unknown")
-                            index += 2
-                            continue
-                        if token in {"-g", "--goto"}:
-                            action = "unknown"
-                            break
-                        if token in {"-p", "--protocol", "--dport", "--destination-port", "--dports", "--ctstate", "--state", "-i", "--in-interface", "-s", "--source", "-d", "--destination", "-m", "--match", "--comment"}:
-                            value = line[index + 1]
-                            field = {"-p": "protocol", "--protocol": "protocol", "--dport": "dport", "--destination-port": "dport", "--dports": "dport", "--ctstate": "state", "--state": "state", "-i": "iif", "--in-interface": "iif"}.get(token)
-                            if token in {"-m", "--match"} and value in {"tcp", "udp", "conntrack", "state", "comment", "multiport"} or token == "--comment":
-                                index += 2
-                                continue
-                            if field == "protocol":
-                                value = {"6": "tcp", "17": "udp"}.get(value, value)
-                                if value in {"all", "0"}: field = "all"
-                            if value in {"0.0.0.0/0", "::/0"} and token in {"-s", "--source", "-d", "--destination"}: field = "all"
-                            if field in {"state", "dport"} and "," in value:
-                                value = {"set": value.lower().split(",")}
-                            elif field == "dport" and ":" in value:
-                                lower, upper = value.split(":", 1)
-                                value = {"range": [int(lower or 0), int(upper or 65535)]}
-                            guards.append((field, "!=" if negate else "==", value))
-                            negate, index = False, index + 2
-                        else:
-                            guards.append((None, "==", None))
-                            index += 1
-                    chains[line[1]][0].append((guards, action, target))
-                return input_filter_state(chains, ["INPUT"]) if "INPUT" in chains else "unknown", "iptables", evidence
-            except (ValueError, KeyError, IndexError):
-                return "unknown", "iptables", evidence
+              # An opaque action may rewrite a packet used as a witness by a
+              # different frontend. Check its reachability over every port before
+              # choosing any probe. Pure unknown predicates only union known
+              # verdicts; they do not become an opaque action by themselves.
+              symbolic = []
+              for name in inputs:
+                  for protocol in ("tcp", "udp"):
+                      outcomes = evaluate(name, protocol, None)
+                      symbolic.append(outcomes)
+                      if "unknown" in outcomes:
+                          if proof is not None:
+                              proof.update({"incomplete_reason": "unresolved_input_path", "chain": chain_name(name),
+                                            "protocol": protocol, "destination_port": None})
+                          return "unknown"
 
-        def detect_firewall():
-            managers = [ufw_firewall_state(), firewalld_firewall_state()]
-            filters = [nftables_firewall_state(), iptables_firewall_state()]
-            states = managers + filters
-            evidence = "; ".join(item[2] for item in states)
-            active = next((item for item in filters if item[0] == "active"), None)
-            if active:
-                manager = [item for item in managers if item[0] == "active"]
-                if len(manager) > 1:
-                    return False, False, "multiple_active_managers; " + evidence
-                return True, True, "backend={}; scope=local_input; external_reachability=unverified; {}".format(manager[0][1] if manager else active[1], evidence)
-            # Never turn an inaccessible firewall manager into an "inactive"
-            # result. It is safer to leave the audit partial than to make a
-            # positive claim about a protected host.
-            if any(item[0] == "unknown" for item in states) or all(item[0] == "missing" for item in filters):
-                return False, False, evidence
-            return False, True, evidence
+              groups = []
+              for family in ("ip", "ip6"):
+                  group = [name for name in inputs if (name[0] in {family, "inet"} if isinstance(name, tuple) else family == "ip")]
+                  if group:
+                      groups.append((family, group))
+              for family, group in groups:
+                  for protocol in ("tcp", "udp"):
+                      for port in (1, 22, 23, 80, 443, 65535):
+                          # This proves a restrictive INPUT path, not whole-host
+                          # protection or reachability of any listening service.
+                          # An opaque action in another applicable base chain can
+                          # rewrite the packet before this deny. Do not OR away
+                          # that uncertainty, irrespective of hook priority.
+                          outcomes = [evaluate(name, protocol, port) for name in group]
+                          if {"deny"} in outcomes and not any("unknown" in values for values in outcomes):
+                              if proof is not None:
+                                  proof.update({"kind": "deny_witness", "family": family, "protocol": protocol, "destination_port": port,
+                                                "deny_chains": [chain_name(name) for name, values in zip(group, outcomes) if values == {"deny"}],
+                                                "evaluated_input_chains": [chain_name(name) for name in group]})
+                              return "active"
+              # Finite probes cannot prove that every port is allowed. A separate
+              # symbolic-port pass must accept every possible branch in every base
+              # chain. Unsupported actions, cycles and exhausted budget stay unknown.
+              return "inactive" if all(values == {"accept"} for values in symbolic) else "unknown"
 
-        def package_installed(names):
-            installed = []
-            missing = []
-            for name in names:
-                if shutil.which("dpkg-query"):
-                    code, output, _ = run(["dpkg-query", "-W", "-f=${Status}", name])
-                    present = code == 0 and output == "install ok installed"
-                elif shutil.which("rpm"):
-                    code, output, _ = run(["rpm", "-q", name])
-                    present = code == 0 and bool(output)
-                else:
-                    code, present = None, False
-                if code not in (0, 1):
-                    incomplete_checks.append("security_auto_updates")
-                if present:
-                    installed.append(name)
-                else:
-                    missing.append(name)
-            return installed, missing
+          def nftables_firewall_state(proof=None):
+              code, output, error = run(["nft", "-j", "list", "ruleset"])
+              evidence = command_evidence("nftables", output, error)
+              if code != 0:
+                  return ("missing" if command_is_missing(code, error) else "unknown"), "nftables", evidence
+              try:
+                  entries = json.loads(output)["nftables"]
+                  if not isinstance(entries, list):
+                      raise ValueError("invalid nftables JSON")
+                  chains, inputs = {}, []
+                  dormant_tables = set()
+                  for entry in entries:
+                      table = entry.get("table")
+                      if not table:
+                          continue
+                      flags = table.get("flags", [])
+                      if not isinstance(flags, list) or any(flag not in {"dormant", "owner", "persist"} for flag in flags):
+                          raise ValueError("unsupported nftables table flags")
+                      if "dormant" in flags:
+                          # Dormant tables remain listed, but their base chains
+                          # are unregistered and cannot filter incoming packets.
+                          dormant_tables.add((table["family"], table["name"]))
+                  for entry in entries:
+                      chain = entry.get("chain")
+                      if not chain or chain.get("family") not in {"ip", "ip6", "inet"}:
+                          continue
+                      if (chain["family"], chain["table"]) in dormant_tables:
+                          continue
+                      key = (chain["family"], chain["table"], chain["name"])
+                      chains[key] = ([], "deny" if chain.get("policy") == "drop" else "accept" if chain.get("policy") == "accept" else "return")
+                      if chain.get("hook") == "input" and chain.get("type") == "filter":
+                          inputs.append(key)
+                  for entry in entries:
+                      rule = entry.get("rule")
+                      if not rule:
+                          continue
+                      key = (rule["family"], rule["table"], rule["chain"])
+                      if key not in chains:
+                          continue
+                      guards, action, target = [], "continue", None
+                      for expression in rule["expr"]:
+                          if "match" in expression:
+                              match = expression["match"]
+                              left = match.get("left", {})
+                              field = ({"l4proto": "protocol", "iifname": "iif"}.get(left.get("meta", {}).get("key"))
+                                       or {"state": "state", "status": "ct_status"}.get(left.get("ct", {}).get("key"))
+                                       or ("dport" if left.get("payload", {}).get("field") == "dport" and left["payload"].get("protocol") in {"tcp", "udp"} else None)) if isinstance(left, dict) else None
+                              if match.get("op") not in {"==", "!=", "in"}:
+                                  field = None
+                              guards.append((field, match.get("op"), match.get("right")))
+                              # Typed transport headers imply their protocol even
+                              # when their particular field is not evaluated. An
+                              # ICMPv6 type clause cannot accept a TCP/UDP probe.
+                              payload = left.get("payload", {}) if isinstance(left, dict) else {}
+                              dependency = {"tcp": "tcp", "udp": "udp", "icmp": "icmp", "icmpv6": "ipv6-icmp"}.get(payload.get("protocol"))
+                              if dependency:
+                                  guards.append(("protocol", "==", dependency))
+                          elif "drop" in expression or "reject" in expression:
+                              action = "deny"
+                          elif "accept" in expression or "return" in expression:
+                              action = "accept" if "accept" in expression else "return"
+                          elif "jump" in expression or "goto" in expression:
+                              action = "jump" if "jump" in expression else "goto"
+                              target = (key[0], key[1], expression[action]["target"])
+                          elif not set(expression).issubset({"counter", "log", "comment"}):
+                              # Verdict maps, NAT, marks and extensions need
+                              # a full evaluator; later tokens cannot hide them.
+                              guards.append((None, "==", None))
+                              action = "unknown"
+                              break
+                      chains[key][0].append((guards, action, target))
+                  state = input_filter_state(chains, inputs, proof)
+                  return state, "nftables", evidence
+              except (KeyError, ValueError, TypeError, AttributeError):
+                  return "unknown", "nftables", evidence
 
-        findings = []
-        code, ss_output, ss_error = run(["ss", "-tuln"])
-        ports_available = result_available("open_ports", code)
-        open_ports = set()
-        open_sockets = []
-        if code == 0:
-            for line in ss_output.splitlines():
-                parts = line.split()
-                if len(parts) < 5 or parts[0] not in {"tcp", "udp"}:
-                    continue
-                address = parts[4]
-                if ":" not in address:
-                    continue
-                try:
-                    port = int(address.rsplit(":", 1)[1])
-                    open_ports.add(port)
-                    bind_address = address.rsplit(":", 1)[0].strip("[]")
-                    try:
-                        parsed_address = ipaddress.ip_address(bind_address.split("%", 1)[0])
-                        mapped = getattr(parsed_address, "ipv4_mapped", None)
-                        scope = "loopback" if parsed_address.is_loopback or mapped and mapped.is_loopback else "wildcard" if bind_address in {"0.0.0.0", "::"} else "specific_address"
-                    except ValueError:
-                        scope = "wildcard" if bind_address == "*" else "unknown"
-                    open_sockets.append({"protocol": parts[0], "address": address, "port": port, "bindingScope": scope})
-                except ValueError:
-                    continue
-        else:
-            findings.append(finding(
-                "agentless_ports_unavailable",
-                "Не удалось получить список открытых портов",
-                "Сеть",
-                "info",
-                "manual",
-                "Команда ss недоступна или завершилась с ошибкой.",
-                "Установите iproute2 или проверьте открытые порты вручную.",
-                ss_error,
-            ))
+          def iptables_firewall_state(proof=None):
+              code, output, error = run(["iptables", "-S"])
+              evidence = command_evidence("iptables_ipv4", output, error)
+              if code != 0:
+                  return ("missing" if command_is_missing(code, error) else "unknown"), "iptables", evidence
+              try:
+                  lines = [shlex.split(line) for line in output.splitlines() if line.strip()]
+                  chains = {line[1]: ([], {"DROP": "deny", "ACCEPT": "accept"}.get(line[2], "unknown") if line[0] == "-P" else "return")
+                            for line in lines if len(line) >= 2 and line[0] in {"-P", "-N"}}
+                  for line in lines:
+                      if len(line) < 2 or line[0] != "-A":
+                          continue
+                      guards, action, target, index, negate = [], "continue", None, 2, False
+                      while index < len(line):
+                          token = line[index]
+                          if token == "!":
+                              negate, index = True, index + 1
+                              continue
+                          if token in {"-j", "--jump"}:
+                              target = line[index + 1]
+                              action = {"DROP": "deny", "REJECT": "deny", "ACCEPT": "accept", "RETURN": "return", "LOG": "continue", "NFLOG": "continue"}.get(target, "jump" if target in chains else "unknown")
+                              index += 2
+                              continue
+                          if token in {"-g", "--goto"}:
+                              action = "unknown"
+                              break
+                          if token in {"-p", "--protocol", "--dport", "--destination-port", "--dports", "--ctstate", "--state", "-i", "--in-interface", "-s", "--source", "-d", "--destination", "-m", "--match", "--comment"}:
+                              value = line[index + 1]
+                              field = {"-p": "protocol", "--protocol": "protocol", "--dport": "dport", "--destination-port": "dport", "--dports": "dport", "--ctstate": "state", "--state": "state", "-i": "iif", "--in-interface": "iif"}.get(token)
+                              if token in {"-m", "--match"} and value in {"tcp", "udp", "conntrack", "state", "comment", "multiport"} or token == "--comment":
+                                  index += 2
+                                  continue
+                              if field == "protocol":
+                                  value = {"6": "tcp", "17": "udp"}.get(value, value)
+                                  if value in {"all", "0"}: field = "all"
+                              if value in {"0.0.0.0/0", "::/0"} and token in {"-s", "--source", "-d", "--destination"}: field = "all"
+                              if field in {"state", "dport"} and "," in value:
+                                  value = {"set": value.lower().split(",")}
+                              elif field == "dport" and ":" in value:
+                                  lower, upper = value.split(":", 1)
+                                  value = {"range": [int(lower or 0), int(upper or 65535)]}
+                              guards.append((field, "!=" if negate else "==", value))
+                              negate, index = False, index + 2
+                          else:
+                              guards.append((None, "==", None))
+                              index += 1
+                      chains[line[1]][0].append((guards, action, target))
+                  return input_filter_state(chains, ["INPUT"], proof) if "INPUT" in chains else "unknown", "iptables", evidence
+              except (ValueError, KeyError, IndexError):
+                  return "unknown", "iptables", evidence
 
-        for rule in dangerous_ports:
-            port = int(rule["port"])
-            protocol = rule.get("protocol", "tcp").lower()
-            matches = [item for item in open_sockets if item["protocol"] == protocol and item["port"] == port]
-            if matches:
-                loopback_only = all(item["bindingScope"] == "loopback" for item in matches)
-                findings.append(finding(
-                    'dangerous_port_{}_{}'.format(protocol, port),
-                    'Прослушивается {}{}/{}'.format("локальный " if loopback_only else "", protocol, port),
-                    "Сеть",
-                    rule.get("risk", "medium"),
-                    "manual" if loopback_only else "failed",
-                    'Правило профиля «{}»: найден сокет {}/{}. Привязка: {}. Номер порта не подтверждает вид сервиса или доступность извне.{}'.format(rule["title"], protocol, port, ", ".join(sorted({item["address"] for item in matches})), " Сокет доступен только через loopback; проверьте необходимость локального сервиса." if loopback_only else ""),
-                    rule["recommendation"],
-                    'port={}/{}; bindings={}; bindingScopes={}; service=unverified; externalReachability=unverified'.format(protocol, port, ",".join(sorted({item["address"] for item in matches})), ",".join(sorted({item["bindingScope"] for item in matches}))),
-                    None if loopback_only else "close_port",
-            ))
+          def detect_firewall():
+              managers = [ufw_firewall_state(), firewalld_firewall_state()]
+              proofs = {"nftables": {}, "iptables": {}}
+              filters = [nftables_firewall_state(proofs["nftables"]), iptables_firewall_state(proofs["iptables"])]
+              states = managers + filters
+              evidence = "scope=local_input; packet_model=new_non_loopback_non_dnat_tcp_udp; evaluation=conditional_ruleset_path; external_reachability=unverified; "
+              evidence += "filter_coverage={}; ".format(",".join("{}:{}".format(item[1], item[0]) for item in filters))
+              evidence += "filter_proofs={}; ".format(json.dumps(proofs, sort_keys=True, separators=(",", ":")))
+              evidence += "; ".join(item[2] for item in states)
+              # nft and iptables can overlap or rewrite each other's INPUT traffic.
+              # Neither an unreadable filter nor opaque rules may be bypassed by
+              # a positive observation from the other frontend. Missing tools are
+              # distinct and still permit the bounded, explicitly scoped fallback.
+              if any(item[0] == "unknown" for item in filters):
+                  return False, False, "incomplete_reason=unresolved_or_unreadable_packet_filter; " + evidence
+              active = next((item for item in filters if item[0] == "active"), None)
+              if active:
+                  manager = [item for item in managers if item[0] == "active"]
+                  if len(manager) > 1:
+                      return False, False, "multiple_active_managers; " + evidence
+                  return True, True, "backend={}; {}".format(manager[0][1] if manager else active[1], evidence)
+              # Never turn an inaccessible firewall manager into an "inactive"
+              # result. It is safer to leave the audit partial than to make a
+              # positive claim about a protected host.
+              if any(item[0] == "unknown" for item in states) or all(item[0] == "missing" for item in filters):
+                  return False, False, evidence
+              return False, True, evidence
 
-        effective_ssh_values = {}
-        sshd_code, sshd_output, sshd_error = run(["sshd", "-T"])
-        if sshd_code == 0:
-            for raw_line in sshd_output.splitlines():
-                parts = raw_line.split(None, 1)
-                if len(parts) == 2:
-                    effective_ssh_values[parts[0].lower()] = parts[1].strip().lower()
-        ssh_available = result_available("ssh_effective_config", sshd_code) and all(
-            key in effective_ssh_values for key in ("permitrootlogin", "passwordauthentication", "permitemptypasswords", "maxauthtries")
-        )
-        if not ssh_available:
-            incomplete_checks.append("ssh_effective_config")
-            findings.append(finding(
-                "sshd_config_unavailable",
-                "Эффективная конфигурация SSH не получена",
-                "SSH",
-                "info",
-                "manual",
-                "sshd -T не вернул проверяемую конфигурацию. Разбор одного файла не учитывает Include, значения по умолчанию и блоки Match.",
-                "Проверьте sshd -t и sshd -T, затем повторите аудит. Условия Match проверяются отдельно для нужного пользователя и адреса.",
-                sshd_error or sshd_output or str(sshd_code),
-            ))
+          def package_installed(names):
+              installed = []
+              missing = []
+              for name in names:
+                  if shutil.which("dpkg-query"):
+                      code, output, _ = run(["dpkg-query", "-W", "-f=${Status}", name])
+                      present = code == 0 and output == "install ok installed"
+                  elif shutil.which("rpm"):
+                      code, output, _ = run(["rpm", "-q", name])
+                      present = code == 0 and bool(output)
+                  else:
+                      code, present = None, False
+                  if code not in (0, 1):
+                      incomplete_checks.append("security_auto_updates")
+                  if present:
+                      installed.append(name)
+                  else:
+                      missing.append(name)
+              return installed, missing
 
-        def ssh_value(name):
-            return effective_ssh_values.get(name.lower())
+          findings = []
+          code, ss_output, ss_error = run(["ss", "-tuln"])
+          ports_available = result_available("open_ports", code)
+          open_ports = set()
+          open_sockets = []
+          if code == 0:
+              for line in ss_output.splitlines():
+                  parts = line.split()
+                  if len(parts) < 5 or parts[0] not in {"tcp", "udp"}:
+                      continue
+                  address = parts[4]
+                  if ":" not in address:
+                      continue
+                  try:
+                      port = int(address.rsplit(":", 1)[1])
+                      open_ports.add(port)
+                      bind_address = address.rsplit(":", 1)[0].strip("[]")
+                      try:
+                          parsed_address = ipaddress.ip_address(bind_address.split("%", 1)[0])
+                          mapped = getattr(parsed_address, "ipv4_mapped", None)
+                          scope = "loopback" if parsed_address.is_loopback or mapped and mapped.is_loopback else "wildcard" if bind_address in {"0.0.0.0", "::"} else "specific_address"
+                      except ValueError:
+                          scope = "wildcard" if bind_address == "*" else "unknown"
+                      open_sockets.append({"protocol": parts[0], "address": address, "port": port, "bindingScope": scope})
+                  except ValueError:
+                      continue
+          else:
+              findings.append(finding(
+                  "agentless_ports_unavailable",
+                  "Не удалось получить список открытых портов",
+                  "Сеть",
+                  "info",
+                  "manual",
+                  "Команда ss недоступна или завершилась с ошибкой.",
+                  "Установите iproute2 или проверьте открытые порты вручную.",
+                  ss_error,
+              ))
 
-        if ssh_available:
-            permit_root = ssh_value("PermitRootLogin")
-            root_failed = permit_root in {None, "yes", "prohibit-password", "without-password", "forced-commands-only"}
-            findings.append(finding(
-                "ssh_root_login",
-                "Вход root по SSH допускается" if root_failed else "Вход root по SSH отключен",
-                "SSH",
-                "high",
-                "failed" if root_failed else "passed",
-                "Проверяется глобальное значение PermitRootLogin из sshd -T; условные блоки Match требуют отдельной проверки.",
-                ssh_rules.get("permit_root_login", {}).get("recommendation", "Установите PermitRootLogin no."),
-                "PermitRootLogin=" + (permit_root or "default"),
-                None,
-                ["/etc/ssh/sshd_config"],
-            ))
+          for rule in dangerous_ports:
+              port = int(rule["port"])
+              protocol = rule.get("protocol", "tcp").lower()
+              matches = [item for item in open_sockets if item["protocol"] == protocol and item["port"] == port]
+              if matches:
+                  loopback_only = all(item["bindingScope"] == "loopback" for item in matches)
+                  findings.append(finding(
+                      'dangerous_port_{}_{}'.format(protocol, port),
+                      'Прослушивается {}{}/{}'.format("локальный " if loopback_only else "", protocol, port),
+                      "Сеть",
+                      rule.get("risk", "medium"),
+                      "manual" if loopback_only else "failed",
+                      'Правило профиля «{}»: найден сокет {}/{}. Привязка: {}. Номер порта не подтверждает вид сервиса или доступность извне.{}'.format(rule["title"], protocol, port, ", ".join(sorted({item["address"] for item in matches})), " Сокет доступен только через loopback; проверьте необходимость локального сервиса." if loopback_only else ""),
+                      rule["recommendation"],
+                      'port={}/{}; bindings={}; bindingScopes={}; service=unverified; externalReachability=unverified'.format(protocol, port, ",".join(sorted({item["address"] for item in matches})), ",".join(sorted({item["bindingScope"] for item in matches}))),
+                      None if loopback_only else "close_port",
+              ))
 
-            password_auth = ssh_value("PasswordAuthentication")
-            password_failed = password_auth in {None, "yes"}
-            findings.append(finding(
-                "ssh_password_auth",
-                "Парольная SSH-аутентификация разрешена" if password_failed else "Парольная SSH-аутентификация отключена",
-                "SSH",
-                "high",
-                "failed" if password_failed else "passed",
-                "Проверяется глобальное значение PasswordAuthentication; условные блоки Match и keyboard-interactive требуют отдельной проверки.",
-                ssh_rules.get("password_authentication", {}).get("recommendation", "Отключите парольный SSH-вход."),
-                "PasswordAuthentication=" + (password_auth or "default"),
-                None,
-                ["/etc/ssh/sshd_config"],
-            ))
+          effective_ssh_values = {}
+          sshd_code, sshd_output, sshd_error = run(["sshd", "-T"])
+          if sshd_code == 0:
+              for raw_line in sshd_output.splitlines():
+                  parts = raw_line.split(None, 1)
+                  if len(parts) == 2:
+                      effective_ssh_values[parts[0].lower()] = parts[1].strip().lower()
+          ssh_available = result_available("ssh_effective_config", sshd_code) and all(
+              key in effective_ssh_values for key in ("permitrootlogin", "passwordauthentication", "permitemptypasswords", "maxauthtries")
+          )
+          if not ssh_available:
+              incomplete_checks.append("ssh_effective_config")
+              findings.append(finding(
+                  "sshd_config_unavailable",
+                  "Эффективная конфигурация SSH не получена",
+                  "SSH",
+                  "info",
+                  "manual",
+                  "sshd -T не вернул проверяемую конфигурацию. Разбор одного файла не учитывает Include, значения по умолчанию и блоки Match.",
+                  "Проверьте sshd -t и sshd -T, затем повторите аудит. Условия Match проверяются отдельно для нужного пользователя и адреса.",
+                  sshd_error or sshd_output or str(sshd_code),
+              ))
 
-            empty_passwords = ssh_value("PermitEmptyPasswords")
-            empty_failed = empty_passwords in {None, "yes"}
-            findings.append(finding(
-                "ssh_empty_passwords",
-                "SSH допускает пустые пароли" if empty_failed else "SSH запрещает пустые пароли",
-                "SSH",
-                ssh_rules.get("empty_passwords", {}).get("risk", "high"),
-                "failed" if empty_failed else "passed",
-                "Проверяется глобальное значение PermitEmptyPasswords из sshd -T.",
-                ssh_rules.get("empty_passwords", {}).get("recommendation", "Установите PermitEmptyPasswords no."),
-                "PermitEmptyPasswords=" + (empty_passwords or "default"),
-                None,
-                ["/etc/ssh/sshd_config"],
-            ))
+          def ssh_value(name):
+              return effective_ssh_values.get(name.lower())
 
-            max_auth_tries_raw = ssh_value("MaxAuthTries")
-            try:
-                max_auth_tries = int(max_auth_tries_raw) if max_auth_tries_raw else 6
-            except ValueError:
-                max_auth_tries = 6
-            max_auth_limit = int(ssh_rules.get("max_auth_tries", {}).get("max", 4))
-            max_auth_failed = max_auth_tries > max_auth_limit
-            findings.append(finding(
-                "ssh_max_auth_tries",
-                "SSH допускает слишком много попыток входа" if max_auth_failed else "SSH ограничивает попытки входа",
-                "SSH",
-                ssh_rules.get("max_auth_tries", {}).get("risk", "medium"),
-                "failed" if max_auth_failed else "passed",
-                "Проверяется глобальное значение MaxAuthTries из sshd -T.",
-                ssh_rules.get("max_auth_tries", {}).get("recommendation", "Установите MaxAuthTries 4 или меньше."),
-                'MaxAuthTries={}; expected<={}'.format(max_auth_tries_raw or 'default(6)', max_auth_limit),
-                None,
-                ["/etc/ssh/sshd_config"],
-            ))
+          if ssh_available:
+              permit_root = ssh_value("PermitRootLogin")
+              root_failed = permit_root in {None, "yes", "prohibit-password", "without-password", "forced-commands-only"}
+              findings.append(finding(
+                  "ssh_root_login",
+                  "Вход root по SSH допускается" if root_failed else "Вход root по SSH отключен",
+                  "SSH",
+                  "high",
+                  "failed" if root_failed else "passed",
+                  "Проверяется глобальное значение PermitRootLogin из sshd -T; условные блоки Match требуют отдельной проверки.",
+                  ssh_rules.get("permit_root_login", {}).get("recommendation", "Установите PermitRootLogin no."),
+                  "PermitRootLogin=" + (permit_root or "default"),
+                  None,
+                  ["/etc/ssh/sshd_config"],
+              ))
 
-        if ports_available and not any(item["id"].startswith("dangerous_port_") for item in findings):
-            findings.append(finding(
-                "dangerous_ports_absent",
-                "Сокеты проверенных протоколов и портов не обнаружены",
-                "Сеть",
-                "info",
-                "passed",
-                "Слушающие сокеты сопоставлены с парами протокол/порт из выбранного профиля; другие протоколы и порты этим результатом не оцениваются.",
-                "Продолжайте регулярный сетевой аудит.",
-                "checked_ports=" + ",".join("{}/{}".format(rule.get("protocol", "tcp"), rule["port"]) for rule in dangerous_ports),
-            ))
+              password_auth = ssh_value("PasswordAuthentication")
+              password_failed = password_auth in {None, "yes"}
+              findings.append(finding(
+                  "ssh_password_auth",
+                  "Парольная SSH-аутентификация разрешена" if password_failed else "Парольная SSH-аутентификация отключена",
+                  "SSH",
+                  "high",
+                  "failed" if password_failed else "passed",
+                  "Проверяется глобальное значение PasswordAuthentication; условные блоки Match и keyboard-interactive требуют отдельной проверки.",
+                  ssh_rules.get("password_authentication", {}).get("recommendation", "Отключите парольный SSH-вход."),
+                  "PasswordAuthentication=" + (password_auth or "default"),
+                  None,
+                  ["/etc/ssh/sshd_config"],
+              ))
 
-        firewall_active, firewall_known, firewall_evidence = detect_firewall()
-        if not firewall_known:
-            incomplete_checks.append("firewall_active")
-        findings.append(finding(
-            "firewall_active",
-            "Обнаружена фильтрация входящего трафика INPUT" if firewall_active else "Фильтрация входящего трафика INPUT не подтверждена",
-            "Сеть",
-            "medium",
-            "passed" if firewall_active else "failed" if firewall_known else "manual",
-            "Проверяются правила локального INPUT, включая порядок правил и переходы по цепочкам. Работа UFW/firewalld сама по себе не доказывает фильтрацию. Сложные неподдержанные условия требуют ручной оценки. Проверка не подтверждает внешнюю доступность портов, FORWARD, контейнерные сети или полноту защиты всех адресов и протоколов.",
-            "Настройте применяемый в вашей ОС firewall по утверждённой политике и сверяйте доступные порты внешним Nmap.",
-            firewall_evidence,
-        ))
+              empty_passwords = ssh_value("PermitEmptyPasswords")
+              empty_failed = empty_passwords in {None, "yes"}
+              findings.append(finding(
+                  "ssh_empty_passwords",
+                  "SSH допускает пустые пароли" if empty_failed else "SSH запрещает пустые пароли",
+                  "SSH",
+                  ssh_rules.get("empty_passwords", {}).get("risk", "high"),
+                  "failed" if empty_failed else "passed",
+                  "Проверяется глобальное значение PermitEmptyPasswords из sshd -T.",
+                  ssh_rules.get("empty_passwords", {}).get("recommendation", "Установите PermitEmptyPasswords no."),
+                  "PermitEmptyPasswords=" + (empty_passwords or "default"),
+                  None,
+                  ["/etc/ssh/sshd_config"],
+              ))
 
-        for rule in service_rules:
-            service = rule["service"]
-            active, evidence = service_active(service)
-            findings.append(finding(
-                'service_{}_active'.format(service),
-                rule["title"] if active else '{} не подтвержден'.format(rule['title']),
-                "Сервисы",
-                rule.get("risk", "medium"),
-                "passed" if active else "manual" if active is None else "failed",
-                'Проверяется активность сервиса {} через обнаруженный менеджер служб; учитываются известные имена-алиасы.'.format(service),
-                rule["recommendation"],
-                '{}={}'.format(service, evidence),
-            ))
+              max_auth_tries_raw = ssh_value("MaxAuthTries")
+              try:
+                  max_auth_tries = int(max_auth_tries_raw) if max_auth_tries_raw else 6
+              except ValueError:
+                  max_auth_tries = 6
+              max_auth_limit = int(ssh_rules.get("max_auth_tries", {}).get("max", 4))
+              max_auth_failed = max_auth_tries > max_auth_limit
+              findings.append(finding(
+                  "ssh_max_auth_tries",
+                  "SSH допускает слишком много попыток входа" if max_auth_failed else "SSH ограничивает попытки входа",
+                  "SSH",
+                  ssh_rules.get("max_auth_tries", {}).get("risk", "medium"),
+                  "failed" if max_auth_failed else "passed",
+                  "Проверяется глобальное значение MaxAuthTries из sshd -T.",
+                  ssh_rules.get("max_auth_tries", {}).get("recommendation", "Установите MaxAuthTries 4 или меньше."),
+                  'MaxAuthTries={}; expected<={}'.format(max_auth_tries_raw or 'default(6)', max_auth_limit),
+                  None,
+                  ["/etc/ssh/sshd_config"],
+              ))
 
-        unattended = package_rules.get("unattended_upgrades", {})
-        package_names = unattended.get("packages", [])
-        installed_auto_update, _ = package_installed(package_names)
-        findings.append(finding(
-            "security_auto_updates",
-            "Механизм security-обновлений найден" if installed_auto_update else "Механизм security-обновлений не найден",
-            "Обновления",
-            unattended.get("risk", "low"),
-            "passed" if installed_auto_update else "manual" if "security_auto_updates" in incomplete_checks else "failed",
-            "Проверяется наличие unattended-upgrades, dnf-automatic или yum-cron.",
-            unattended.get("recommendation", "Настройте автоматическую установку security-обновлений."),
-            "installed=" + (",".join(installed_auto_update) if installed_auto_update else "none"),
-        ))
+          if ports_available and not any(item["id"].startswith("dangerous_port_") for item in findings):
+              findings.append(finding(
+                  "dangerous_ports_absent",
+                  "Сокеты проверенных протоколов и портов не обнаружены",
+                  "Сеть",
+                  "info",
+                  "passed",
+                  "Слушающие сокеты сопоставлены с парами протокол/порт из выбранного профиля; другие протоколы и порты этим результатом не оцениваются.",
+                  "Продолжайте регулярный сетевой аудит.",
+                  "checked_ports=" + ",".join("{}/{}".format(rule.get("protocol", "tcp"), rule["port"]) for rule in dangerous_ports),
+              ))
 
-        if shutil.which("apt"):
-            updates_code, updates_output, updates_error = run(["apt", "list", "--upgradable"])
-            update_success_codes = (0,)
-            updates_output = "\n".join(line for line in updates_output.splitlines() if "/" in line and "[upgradable from:" in line)
-        elif shutil.which("dnf"):
-            updates_code, updates_output, updates_error = run(["dnf", "-C", "check-update", "--security"])
-            update_success_codes = (0, 100)
-        elif shutil.which("yum"):
-            updates_code, updates_output, updates_error = run(["yum", "-C", "check-update", "--security"])
-            update_success_codes = (0, 100)
-        else:
-            updates_code, updates_output, updates_error = None, "", "Пакетный менеджер не найден"
-            update_success_codes = (0,)
-        updates_known = result_available("package_updates_available", updates_code, update_success_codes)
-        updates_available = bool(updates_output.strip())
-        findings.append(finding(
-            "package_updates_available",
-            "Есть доступные обновления пакетов" if updates_available else "В локальном кэше обновления не найдены" if updates_known else "Наличие обновлений не проверено",
-            "Обновления",
-            "medium" if updates_available else "info",
-            "manual",
-            "Используется локальный кэш пакетного менеджера без обращения к внешним репозиториям. Отсутствие обновлений в кэше не подтверждает его актуальность или отсутствие CVE.",
-            "Просмотрите список обновлений и установите security-обновления в окно обслуживания.",
-            updates_output or updates_error or "no upgradable packages detected",
-        ))
+          firewall_active, firewall_known, firewall_evidence = detect_firewall()
+          if not firewall_known:
+              incomplete_checks.append("firewall_active")
+          findings.append(finding(
+              "firewall_active",
+              "Найден ограничивающий путь INPUT для новых TCP/UDP-пакетов вне loopback без DNAT" if firewall_active else "INPUT разрешает новые TCP/UDP-пакеты вне loopback без DNAT" if firewall_known else "Оценка INPUT для новых TCP/UDP-пакетов вне loopback без DNAT неполна",
+              "Сеть",
+              "medium",
+              "passed" if firewall_active else "failed" if firewall_known else "manual",
+              "Оценивается условный путь нового TCP/UDP-пакета через локальный INPUT, вне loopback и без DNAT. passed требует доказанного запрета; failed означает разрешение всех портов в этой модели. Учитываются порядок правил, jump/goto/return и возможные ветви условий. Неподдержанные действия, непрочитанные packet filters или предел обхода сохраняют manual. Работа UFW/firewalld сама по себе не доказывает фильтрацию. Проверка не доказывает существование или внешнюю достижимость такого пакета, фильтрацию INVALID/ESTABLISHED, DNAT, ICMP, FORWARD, контейнерных сетей или полноту защиты хоста.",
+              "Настройте применяемый в вашей ОС firewall по утверждённой политике и сверяйте доступные порты внешним Nmap.",
+              firewall_evidence,
+          ))
 
-        sudo_code, sudo_output, sudo_error = run(["getent", "group", "sudo", "wheel", "adm"])
-        sudo_evidence = sudo_output or sudo_error or "groups unavailable"
-        sudo_users = []
-        for line in sudo_output.splitlines():
-            parts = line.split(":")
-            if len(parts) >= 4 and parts[3].strip():
-                sudo_users.extend(user for user in parts[3].split(",") if user)
-        findings.append(finding(
-            "sudo_users_review",
-            "Проверить пользователей с повышенными правами",
-            "Учетные записи",
-            "medium" if len(sudo_users) > 3 else "info",
-            "manual",
-            "Собран список пользователей в административных группах sudo/wheel/adm.",
-            "Проверьте, что каждый пользователь с sudo-доступом действительно нужен.",
-            sudo_evidence,
-        ))
+          for rule in service_rules:
+              service = rule["service"]
+              active, evidence = service_active(service)
+              findings.append(finding(
+                  'service_{}_active'.format(service),
+                  rule["title"] if active else '{} не подтвержден'.format(rule['title']),
+                  "Сервисы",
+                  rule.get("risk", "medium"),
+                  "passed" if active else "manual" if active is None else "failed",
+                  'Проверяется активность сервиса {} через обнаруженный менеджер служб; учитываются известные имена-алиасы.'.format(service),
+                  rule["recommendation"],
+                  '{}={}'.format(service, evidence),
+              ))
 
-        sudo_paths = [value for value in ("/etc/sudoers", "/etc/sudoers.d") if os.path.exists(value)]
-        nopasswd_code, nopasswd_output, nopasswd_error = run(["grep", "-R", "-n", "NOPASSWD", *sudo_paths]) if sudo_paths else (None, "", "sudoers недоступен")
-        nopasswd_output = "\n".join(line for line in nopasswd_output.splitlines() if "NOPASSWD" in line.split(":", 2)[-1].split("#", 1)[0])
-        nopasswd_known = result_available("sudo_nopasswd", nopasswd_code, (0, 1))
-        nopasswd_found = bool(nopasswd_output.strip())
-        findings.append(finding(
-            "sudo_nopasswd",
-            "Найден sudo без пароля" if nopasswd_found else "sudo без пароля не найден" if nopasswd_known else "Правила sudo без пароля не проверены",
-            "Учетные записи",
-            "medium",
-            "manual",
-            "Проверяются доступные правила sudoers с NOPASSWD; право может быть необходимо учётной записи Ansible.",
-            "Проверьте обоснование NOPASSWD, разрешённые команды и дополнительные Include-пути sudoers.",
-            nopasswd_output or nopasswd_error or "no NOPASSWD entries",
-            None,
-            ["/etc/sudoers", "/etc/sudoers.d"],
-        ))
+          unattended = package_rules.get("unattended_upgrades", {})
+          package_names = unattended.get("packages", [])
+          installed_auto_update, _ = package_installed(package_names)
+          findings.append(finding(
+              "security_auto_updates",
+              "Механизм security-обновлений найден" if installed_auto_update else "Механизм security-обновлений не найден",
+              "Обновления",
+              unattended.get("risk", "low"),
+              "passed" if installed_auto_update else "manual" if "security_auto_updates" in incomplete_checks else "failed",
+              "Проверяется наличие unattended-upgrades, dnf-automatic или yum-cron.",
+              unattended.get("recommendation", "Настройте автоматическую установку security-обновлений."),
+              "installed=" + (",".join(installed_auto_update) if installed_auto_update else "none"),
+          ))
 
-        empty_pass_code, empty_pass_output, empty_pass_error = run(["awk", "-F:", '($2 == "") {print $1}', "/etc/shadow"])
-        empty_pass_known = result_available("empty_password_accounts", empty_pass_code)
-        empty_pass_found = bool(empty_pass_output.strip())
-        findings.append(finding(
-            "empty_password_accounts",
-            "Найдены учетные записи без пароля" if empty_pass_found else "Учетные записи без пароля не найдены" if empty_pass_known else "Учетные записи без пароля не проверены",
-            "Учетные записи",
-            "high",
-            "failed" if empty_pass_found else "passed" if empty_pass_known else "manual",
-            "Проверяется /etc/shadow на пустой хеш пароля.",
-            "Заблокируйте такие учетные записи или задайте надежный пароль.",
-            empty_pass_output or empty_pass_error or "no empty password accounts",
-            None,
-            ["/etc/shadow"],
-        ))
+          if shutil.which("apt"):
+              updates_code, updates_output, updates_error = run(["apt", "list", "--upgradable"])
+              update_success_codes = (0,)
+              updates_output = "\n".join(line for line in updates_output.splitlines() if "/" in line and "[upgradable from:" in line)
+          elif shutil.which("dnf"):
+              updates_code, updates_output, updates_error = run(["dnf", "-C", "check-update", "--security"])
+              update_success_codes = (0, 100)
+          elif shutil.which("yum"):
+              updates_code, updates_output, updates_error = run(["yum", "-C", "check-update", "--security"])
+              update_success_codes = (0, 100)
+          else:
+              updates_code, updates_output, updates_error = None, "", "Пакетный менеджер не найден"
+              update_success_codes = (0,)
+          updates_known = result_available("package_updates_available", updates_code, update_success_codes)
+          updates_available = bool(updates_output.strip())
+          findings.append(finding(
+              "package_updates_available",
+              "Есть доступные обновления пакетов" if updates_available else "В локальном кэше обновления не найдены" if updates_known else "Наличие обновлений не проверено",
+              "Обновления",
+              "medium" if updates_available else "info",
+              "manual",
+              "Используется локальный кэш пакетного менеджера без обращения к внешним репозиториям. Отсутствие обновлений в кэше не подтверждает его актуальность или отсутствие CVE.",
+              "Просмотрите список обновлений и установите security-обновления в окно обслуживания.",
+              updates_output or updates_error or "no upgradable packages detected",
+          ))
 
-        failed_log_known, failed_login_detected, failed_log_evidence = authentication_log_evidence()
-        if not failed_log_known:
-            incomplete_checks.append("failed_logins")
-        findings.append(finding(
-            "failed_logins",
-            "Обнаружены неудачные попытки входа" if failed_login_detected else "Неудачные попытки входа не найдены в доступных логах" if failed_log_known else "Журналы аутентификации не проверены",
-            "Аутентификация",
-            "medium",
-            "manual",
-            "Проверяются последние 1000 строк каждого доступного auth.log/secure/authlog; запасной источник — последние 1000 строк messages/syslog с неподтверждённой маршрутизацией аутентификации. При отсутствии читаемых файлов проверяется до 1000 записей auth/authpriv из journald за последние 24 часа. Это ограниченная выборка. Неудачная попытка входа сама по себе не подтверждает уязвимость или компрометацию.",
-            "При множественных попытках включите блокировку источника, fail2ban или правила firewall.",
-            failed_log_evidence,
-        ))
+          sudo_code, sudo_output, sudo_error = run(["getent", "group", "sudo", "wheel", "adm"])
+          sudo_evidence = sudo_output or sudo_error or "groups unavailable"
+          sudo_users = []
+          for line in sudo_output.splitlines():
+              parts = line.split(":")
+              if len(parts) >= 4 and parts[3].strip():
+                  sudo_users.extend(user for user in parts[3].split(",") if user)
+          findings.append(finding(
+              "sudo_users_review",
+              "Проверить пользователей с повышенными правами",
+              "Учетные записи",
+              "medium" if len(sudo_users) > 3 else "info",
+              "manual",
+              "Собран список пользователей в административных группах sudo/wheel/adm.",
+              "Проверьте, что каждый пользователь с sudo-доступом действительно нужен.",
+              sudo_evidence,
+          ))
 
-        critical_services = ["ssh", "cron", "nginx", "apache2", "docker"]
-        service_lines = []
-        for service in critical_services:
-            active, evidence = service_active(service, required=False)
-            service_lines.append('{}={}; {}'.format(service, "active" if active is True else "inactive" if active is False else "unknown", evidence))
-        findings.append(finding(
-            "critical_services_review",
-            "Проверить состояние критичных сервисов",
-            "Сервисы",
-            "info",
-            "manual",
-            "Собрано состояние распространенных сервисов: SSH, cron, web и Docker с учётом менеджера служб и имён-алиасов. Неизвестное состояние не означает, что служба остановлена.",
-            "Проверьте, что каждый активный сервис нужен хосту и защищен.",
-            "; ".join(service_lines),
-        ))
+          sudo_paths = [value for value in ("/etc/sudoers", "/etc/sudoers.d") if os.path.exists(value)]
+          nopasswd_code, nopasswd_output, nopasswd_error = run(["grep", "-R", "-n", "NOPASSWD", *sudo_paths]) if sudo_paths else (None, "", "sudoers недоступен")
+          nopasswd_output = "\n".join(line for line in nopasswd_output.splitlines() if "NOPASSWD" in line.split(":", 2)[-1].split("#", 1)[0])
+          nopasswd_known = result_available("sudo_nopasswd", nopasswd_code, (0, 1))
+          nopasswd_found = bool(nopasswd_output.strip())
+          findings.append(finding(
+              "sudo_nopasswd",
+              "Найден sudo без пароля" if nopasswd_found else "sudo без пароля не найден" if nopasswd_known else "Правила sudo без пароля не проверены",
+              "Учетные записи",
+              "medium",
+              "manual",
+              "Проверяются доступные правила sudoers с NOPASSWD; право может быть необходимо учётной записи Ansible.",
+              "Проверьте обоснование NOPASSWD, разрешённые команды и дополнительные Include-пути sudoers.",
+              nopasswd_output or nopasswd_error or "no NOPASSWD entries",
+              None,
+              ["/etc/sudoers", "/etc/sudoers.d"],
+          ))
 
-        if profile_id == "web_server":
-            web_services = profile_checks.get("services", ["nginx", "apache2"])
-            active_web_services = []
-            for service in web_services:
-                active, evidence = service_active(service)
-                if active:
-                    active_web_services.append(service)
-                findings.append(finding(
-                    'web_service_{}'.format(service),
-                    'Web-сервис {} активен'.format(service) if active else 'Web-сервис {} не активен'.format(service) if active is False else 'Состояние web-сервиса {} неизвестно'.format(service),
-                    "Web-сервер",
-                    "info" if active else "low",
-                    "passed" if active else "manual",
-                    'Проверяется состояние сервиса {} через обнаруженный менеджер служб и известные имена-алиасы.'.format(service),
-                    "Отключите неиспользуемый web-сервис или проверьте его конфигурацию.",
-                    '{}={}'.format(service, evidence),
-                ))
+          empty_pass_code, empty_pass_output, empty_pass_error = run(["awk", "-F:", '($2 == "") {print $1}', "/etc/shadow"])
+          empty_pass_known = result_available("empty_password_accounts", empty_pass_code)
+          empty_pass_found = bool(empty_pass_output.strip())
+          findings.append(finding(
+              "empty_password_accounts",
+              "Найдены учетные записи без пароля" if empty_pass_found else "Учетные записи без пароля не найдены" if empty_pass_known else "Учетные записи без пароля не проверены",
+              "Учетные записи",
+              "high",
+              "failed" if empty_pass_found else "passed" if empty_pass_known else "manual",
+              "Проверяется /etc/shadow на пустой хеш пароля.",
+              "Заблокируйте такие учетные записи или задайте надежный пароль.",
+              empty_pass_output or empty_pass_error or "no empty password accounts",
+              None,
+              ["/etc/shadow"],
+          ))
 
-            nginx_code, nginx_output, nginx_error = run(["nginx", "-T"])
-            if nginx_code == 0:
-                nginx_output = "\n".join(value for value in (nginx_output, nginx_error) if value)
-                active_nginx_lines = [line.split("#", 1)[0].strip().lower() for line in nginx_output.splitlines()]
-                server_tokens_off = any(line.startswith("server_tokens off;") for line in active_nginx_lines)
-                findings.append(finding(
-                    "nginx_server_tokens",
-                    "Nginx: найдено server_tokens off" if server_tokens_off else "Nginx: ограничение версии не подтверждено",
-                    "Web-сервер",
-                    "low",
-                    "manual",
-                    "Проверяется наличие директивы в nginx -T. Наследование и переопределения server/location требуют проверки каждого виртуального хоста.",
-                    "Добавьте server_tokens off; в HTTP-контекст nginx и примените конфигурацию после nginx -t.",
-                    "server_tokens=" + ("off" if server_tokens_off else "not found"),
-                    None,
-                    ["/etc/nginx"],
-                ))
-            elif "nginx" in active_web_services:
-                incomplete_checks.append("nginx_configuration")
-                findings.append(finding("nginx_config_unavailable", "Конфигурация активного Nginx не проверена", "Web-сервер", "info", "manual",
-                    "nginx -T завершился с ошибкой.", "Проверьте nginx -t и доступ к конфигурации.", nginx_error or nginx_output))
+          failed_log_known, failed_login_detected, failed_log_evidence = authentication_log_evidence()
+          if not failed_log_known:
+              incomplete_checks.append("failed_logins")
+          findings.append(finding(
+              "failed_logins",
+              "Обнаружены неудачные попытки входа" if failed_login_detected else "Неудачные попытки входа не найдены в доступных логах" if failed_log_known else "Журналы аутентификации не проверены",
+              "Аутентификация",
+              "medium",
+              "manual",
+              "Проверяются последние 1000 строк каждого доступного auth.log/secure/authlog; запасной источник — последние 1000 строк messages/syslog с неподтверждённой маршрутизацией аутентификации. При отсутствии читаемых файлов проверяется до 1000 записей auth/authpriv из journald за последние 24 часа. Это ограниченная выборка. Неудачная попытка входа сама по себе не подтверждает уязвимость или компрометацию.",
+              "При множественных попытках включите блокировку источника, fail2ban или правила firewall.",
+              failed_log_evidence,
+          ))
 
-            apache_command = next((name for name in ("apache2ctl", "apachectl", "httpd") if shutil.which(name)), None)
-            apache_code, apache_output, apache_error = run([apache_command, "-t", "-D", "DUMP_RUN_CFG"]) if apache_command else (None, "", "Apache configuration tool unavailable")
-            if apache_code == 0:
-                apache_output = "\n".join(value for value in (apache_output, apache_error) if value)
-                apache_hardened = "servertokens: prod" in apache_output.lower() and "serversignature: off" in apache_output.lower()
-                findings.append(finding(
-                    "apache_banner_hardening",
-                    "Apache ограничивает раскрытие версии" if apache_hardened else "Apache banner hardening не подтвержден",
-                    "Web-сервер",
-                    "low",
-                    "manual",
-                    "DUMP_RUN_CFG не гарантирует вывод ServerTokens/ServerSignature. Проверьте конфигурацию виртуальных хостов и реальные HTTP-заголовки.",
-                    "Установите ServerTokens Prod и ServerSignature Off, затем проверьте apachectl -t.",
-                    apache_output[-500:] or apache_error,
-                    None,
-                    ["/etc/apache2", "/etc/httpd"],
-                ))
-            elif any(service in active_web_services for service in ("apache2", "httpd")):
-                incomplete_checks.append("apache_configuration")
-                findings.append(finding("apache_config_unavailable", "Конфигурация активного Apache не проверена", "Web-сервер", "info", "manual",
-                    "Не получен DUMP_RUN_CFG Apache.", "Проверьте конфигурацию Apache вручную.", apache_error or apache_output))
+          critical_services = ["ssh", "cron", "nginx", "apache2", "docker"]
+          service_lines = []
+          for service in critical_services:
+              active, evidence = service_active(service, required=False)
+              service_lines.append('{}={}; {}'.format(service, "active" if active is True else "inactive" if active is False else "unknown", evidence))
+          findings.append(finding(
+              "critical_services_review",
+              "Проверить состояние критичных сервисов",
+              "Сервисы",
+              "info",
+              "manual",
+              "Собрано состояние распространенных сервисов: SSH, cron, web и Docker с учётом менеджера служб и имён-алиасов. Неизвестное состояние не означает, что служба остановлена.",
+              "Проверьте, что каждый активный сервис нужен хосту и защищен.",
+              "; ".join(service_lines),
+          ))
 
-            if not active_web_services:
-                findings.append(finding(
-                    "web_profile_not_applicable",
-                    "Web-профиль требует ручной оценки",
-                    "Web-сервер",
-                    "info",
-                    "manual",
-                    "Nginx и Apache не подтверждены как активные сервисы выбранного менеджера служб; неизвестное состояние не является доказательством отсутствия web-сервера.",
-                    "Выберите другой профиль или укажите реальный web-сервис на хосте.",
-                    "active_services=none",
-                ))
+          if profile_id == "web_server":
+              web_services = profile_checks.get("services", ["nginx", "apache2"])
+              active_web_services = []
+              for service in web_services:
+                  active, evidence = service_active(service)
+                  if active:
+                      active_web_services.append(service)
+                  findings.append(finding(
+                      'web_service_{}'.format(service),
+                      'Web-сервис {} активен'.format(service) if active else 'Web-сервис {} не активен'.format(service) if active is False else 'Состояние web-сервиса {} неизвестно'.format(service),
+                      "Web-сервер",
+                      "info" if active else "low",
+                      "passed" if active else "manual",
+                      'Проверяется состояние сервиса {} через обнаруженный менеджер служб и известные имена-алиасы.'.format(service),
+                      "Отключите неиспользуемый web-сервис или проверьте его конфигурацию.",
+                      '{}={}'.format(service, evidence),
+                  ))
 
-        if profile_id == "docker_host":
-            docker_code, docker_output, docker_error = run(["docker", "info"])
-            docker_available = docker_code == 0
-            findings.append(finding(
-                "docker_engine_available",
-                "Docker Engine доступен" if docker_available else "Docker Engine недоступен",
-                "Docker",
-                "info" if docker_available else "medium",
-                "passed" if docker_available else "manual",
-                "Проверяется доступность Docker Engine от имени пользователя аудита.",
-                "Установите Docker только если он действительно нужен этому хосту; иначе используйте базовый профиль.",
-                docker_output or docker_error or str(docker_code),
-            ))
-            if not docker_available:
-                incomplete_checks.append("docker_engine_available")
-            if docker_available:
-                security_code, security_output, security_error = run(["docker", "info", "--format", "{" + "{json .SecurityOptions}" + "}"])
-                rootless_known = result_available("docker_rootless", security_code)
-                try:
-                    security_options = json.loads(security_output) if rootless_known else None
-                    if not isinstance(security_options, list):
-                        raise ValueError("Docker SecurityOptions unavailable")
-                    rootless = "name=rootless" in security_options
-                except (ValueError, TypeError):
-                    rootless_known, rootless = False, False
-                    incomplete_checks.append("docker_rootless")
-                findings.append(finding(
-                    "docker_rootless",
-                    "Docker rootless mode включен" if rootless else "Docker работает в rootful-режиме" if rootless_known else "Режим Docker rootless не определён",
-                    "Docker",
-                    "medium",
-                    "passed" if rootless_known and rootless else "manual",
-                    "Проверяются Docker SecurityOptions на наличие rootless mode.",
-                    "Оцените возможность rootless Docker или ограничьте доступ к docker.sock.",
-                    security_output or security_error or "SecurityOptions unavailable",
-                ))
-                socket_code, socket_output, socket_error = run(["stat", "-c", "%a %U:%G", "/var/run/docker.sock"])
-                socket_known = result_available("docker_socket_permissions", socket_code)
-                socket_safe = socket_known and socket_output in {"660 root:docker", "600 root:root", "600 root:docker"}
-                findings.append(finding(
-                    "docker_socket_permissions",
-                    "Права docker.sock ограничены" if socket_safe else "Права docker.sock требуют проверки",
-                    "Docker",
-                    "high",
-                    "passed" if socket_safe else "manual" if not socket_known else "failed",
-                    "Проверяются режим и владелец /var/run/docker.sock.",
-                    "Ограничьте членство в группе docker: доступ к сокету фактически равен root-доступу.",
-                    socket_output or socket_error or "socket not found",
-                    None,
-                    ["/var/run/docker.sock"],
-                ))
-                privileged_code, containers_output, privileged_error = run(["docker", "ps", "-q"])
-                privileged_known = result_available("docker_privileged_containers", privileged_code)
-                privileged_ids = []
-                container_ids = containers_output.split() if privileged_known else []
-                if container_ids:
-                    inspect_code, inspect_output, inspect_error = run(["docker", "inspect", *container_ids])
-                    privileged_known = result_available("docker_privileged_containers", inspect_code)
-                    try:
-                        containers = json.loads(inspect_output) if privileged_known else None
-                        if not isinstance(containers, list) or len(containers) != len(container_ids):
-                            raise ValueError("Неполный результат docker inspect")
-                        for container in containers:
-                            config = container.get("HostConfig", {})
-                            if not isinstance(config.get("Privileged"), bool):
-                                raise ValueError("Нет HostConfig.Privileged")
-                            if config["Privileged"]:
-                                privileged_ids.append(container.get("Id", "unknown"))
-                    except (ValueError, TypeError, AttributeError) as error:
-                        privileged_known = False
-                        incomplete_checks.append("docker_privileged_containers")
-                        privileged_error = inspect_error or str(error)
-                privileged = bool(privileged_ids)
-                privileged_output = ", ".join(privileged_ids)
-                findings.append(finding(
-                    "docker_privileged_containers",
-                    "Обнаружены privileged-контейнеры" if privileged else "Privileged-контейнеры не обнаружены" if privileged_known else "Privileged-контейнеры не проверены",
-                    "Docker",
-                    "high",
-                    "failed" if privileged else "passed" if privileged_known else "manual",
-                    "Проверяются запущенные контейнеры Docker на HostConfig.Privileged.",
-                    "Уберите privileged: true либо оформите отдельное обоснование и компенсирующие меры.",
-                    privileged_output or privileged_error or "no privileged running containers",
-                ))
+              nginx_code, nginx_output, nginx_error = run(["nginx", "-T"])
+              if nginx_code == 0:
+                  nginx_output = "\n".join(value for value in (nginx_output, nginx_error) if value)
+                  active_nginx_lines = [line.split("#", 1)[0].strip().lower() for line in nginx_output.splitlines()]
+                  server_tokens_off = any(line.startswith("server_tokens off;") for line in active_nginx_lines)
+                  findings.append(finding(
+                      "nginx_server_tokens",
+                      "Nginx: найдено server_tokens off" if server_tokens_off else "Nginx: ограничение версии не подтверждено",
+                      "Web-сервер",
+                      "low",
+                      "manual",
+                      "Проверяется наличие директивы в nginx -T. Наследование и переопределения server/location требуют проверки каждого виртуального хоста.",
+                      "Добавьте server_tokens off; в HTTP-контекст nginx и примените конфигурацию после nginx -t.",
+                      "server_tokens=" + ("off" if server_tokens_off else "not found"),
+                      None,
+                      ["/etc/nginx"],
+                  ))
+              elif "nginx" in active_web_services:
+                  incomplete_checks.append("nginx_configuration")
+                  findings.append(finding("nginx_config_unavailable", "Конфигурация активного Nginx не проверена", "Web-сервер", "info", "manual",
+                      "nginx -T завершился с ошибкой.", "Проверьте nginx -t и доступ к конфигурации.", nginx_error or nginx_output))
 
-        writable_paths = filesystem_rules.get("world_writable_paths", {}).get("paths", ["/tmp", "/var/tmp"])
-        writable_code, writable_output, writable_error = run([
-            "find", *writable_paths, "-xdev", "-type", "d", "-perm", "-0002", "!", "-perm", "-1000", "-print",
-        ])
-        writable_known = result_available("world_writable_dirs", writable_code)
-        writable_failed = bool(writable_output.strip())
-        findings.append(finding(
-            "world_writable_dirs",
-            "Найдены world-writable директории без sticky bit" if writable_failed else "World-writable директории без sticky bit не найдены" if writable_known else "Права временных директорий не проверены",
-            "Файловая система",
-            filesystem_rules.get("world_writable_paths", {}).get("risk", "medium"),
-            "failed" if writable_failed else "passed" if writable_known else "manual",
-            "Проверяются временные директории на небезопасные права.",
-            filesystem_rules.get("world_writable_paths", {}).get("recommendation", "Добавьте sticky bit или исправьте права директорий."),
-            writable_output or writable_error or "no unsafe directories",
-        ))
+              apache_command = next((name for name in ("apache2ctl", "apachectl", "httpd") if shutil.which(name)), None)
+              apache_code, apache_output, apache_error = run([apache_command, "-t", "-D", "DUMP_RUN_CFG"]) if apache_command else (None, "", "Apache configuration tool unavailable")
+              if apache_code == 0:
+                  apache_output = "\n".join(value for value in (apache_output, apache_error) if value)
+                  apache_hardened = "servertokens: prod" in apache_output.lower() and "serversignature: off" in apache_output.lower()
+                  findings.append(finding(
+                      "apache_banner_hardening",
+                      "Apache ограничивает раскрытие версии" if apache_hardened else "Apache banner hardening не подтвержден",
+                      "Web-сервер",
+                      "low",
+                      "manual",
+                      "DUMP_RUN_CFG не гарантирует вывод ServerTokens/ServerSignature. Проверьте конфигурацию виртуальных хостов и реальные HTTP-заголовки.",
+                      "Установите ServerTokens Prod и ServerSignature Off, затем проверьте apachectl -t.",
+                      apache_output[-500:] or apache_error,
+                      None,
+                      ["/etc/apache2", "/etc/httpd"],
+                  ))
+              elif any(service in active_web_services for service in ("apache2", "httpd")):
+                  incomplete_checks.append("apache_configuration")
+                  findings.append(finding("apache_config_unavailable", "Конфигурация активного Apache не проверена", "Web-сервер", "info", "manual",
+                      "Не получен DUMP_RUN_CFG Apache.", "Проверьте конфигурацию Apache вручную.", apache_error or apache_output))
 
-        root_code, root_output, _ = run(["getent", "passwd", "root"])
-        findings.append(finding(
-            "root_account_present",
-            "Учетная запись root найдена",
-            "Учетные записи",
-            "info",
-            "manual",
-            "Проверяется наличие root-записи и необходимость ручной проверки SSH-доступа.",
-            "Проверьте, запрещен ли вход root по SSH и настроен ли sudo для администраторов.",
-            root_output if root_code == 0 else "root entry unavailable",
-        ))
+              if not active_web_services:
+                  findings.append(finding(
+                      "web_profile_not_applicable",
+                      "Web-профиль требует ручной оценки",
+                      "Web-сервер",
+                      "info",
+                      "manual",
+                      "Nginx и Apache не подтверждены как активные сервисы выбранного менеджера служб; неизвестное состояние не является доказательством отсутствия web-сервера.",
+                      "Выберите другой профиль или укажите реальный web-сервис на хосте.",
+                      "active_services=none",
+                  ))
 
-        weights = {"high": 20, "medium": 10, "low": 4, "info": 1}
-        summary = {"high": 0, "medium": 0, "low": 0, "info": 0}
-        penalty = 0
-        for item in findings:
-            if item["status"] in {"passed", "fixed"}:
-                continue
-            summary[item["risk"]] += 1
+          if profile_id == "docker_host":
+              docker_code, docker_output, docker_error = run(["docker", "info"])
+              docker_available = docker_code == 0
+              findings.append(finding(
+                  "docker_engine_available",
+                  "Docker Engine доступен" if docker_available else "Docker Engine недоступен",
+                  "Docker",
+                  "info" if docker_available else "medium",
+                  "passed" if docker_available else "manual",
+                  "Проверяется доступность Docker Engine от имени пользователя аудита.",
+                  "Установите Docker только если он действительно нужен этому хосту; иначе используйте базовый профиль.",
+                  docker_output or docker_error or str(docker_code),
+              ))
+              if not docker_available:
+                  incomplete_checks.append("docker_engine_available")
+              if docker_available:
+                  security_code, security_output, security_error = run(["docker", "info", "--format", "{" + "{json .SecurityOptions}" + "}"])
+                  rootless_known = result_available("docker_rootless", security_code)
+                  try:
+                      security_options = json.loads(security_output) if rootless_known else None
+                      if not isinstance(security_options, list):
+                          raise ValueError("Docker SecurityOptions unavailable")
+                      rootless = "name=rootless" in security_options
+                  except (ValueError, TypeError):
+                      rootless_known, rootless = False, False
+                      incomplete_checks.append("docker_rootless")
+                  findings.append(finding(
+                      "docker_rootless",
+                      "Docker rootless mode включен" if rootless else "Docker работает в rootful-режиме" if rootless_known else "Режим Docker rootless не определён",
+                      "Docker",
+                      "medium",
+                      "passed" if rootless_known and rootless else "manual",
+                      "Проверяются Docker SecurityOptions на наличие rootless mode.",
+                      "Оцените возможность rootless Docker или ограничьте доступ к docker.sock.",
+                      security_output or security_error or "SecurityOptions unavailable",
+                  ))
+                  socket_code, socket_output, socket_error = run(["stat", "-c", "%a %U:%G", "/var/run/docker.sock"])
+                  socket_known = result_available("docker_socket_permissions", socket_code)
+                  socket_safe = socket_known and socket_output in {"660 root:docker", "600 root:root", "600 root:docker"}
+                  findings.append(finding(
+                      "docker_socket_permissions",
+                      "Права docker.sock ограничены" if socket_safe else "Права docker.sock требуют проверки",
+                      "Docker",
+                      "high",
+                      "passed" if socket_safe else "manual" if not socket_known else "failed",
+                      "Проверяются режим и владелец /var/run/docker.sock.",
+                      "Ограничьте членство в группе docker: доступ к сокету фактически равен root-доступу.",
+                      socket_output or socket_error or "socket not found",
+                      None,
+                      ["/var/run/docker.sock"],
+                  ))
+                  privileged_code, containers_output, privileged_error = run(["docker", "ps", "-q"])
+                  privileged_known = result_available("docker_privileged_containers", privileged_code)
+                  privileged_ids = []
+                  container_ids = containers_output.split() if privileged_known else []
+                  if container_ids:
+                      inspect_code, inspect_output, inspect_error = run(["docker", "inspect", *container_ids])
+                      privileged_known = result_available("docker_privileged_containers", inspect_code)
+                      try:
+                          containers = json.loads(inspect_output) if privileged_known else None
+                          if not isinstance(containers, list) or len(containers) != len(container_ids):
+                              raise ValueError("Неполный результат docker inspect")
+                          for container in containers:
+                              config = container.get("HostConfig", {})
+                              if not isinstance(config.get("Privileged"), bool):
+                                  raise ValueError("Нет HostConfig.Privileged")
+                              if config["Privileged"]:
+                                  privileged_ids.append(container.get("Id", "unknown"))
+                      except (ValueError, TypeError, AttributeError) as error:
+                          privileged_known = False
+                          incomplete_checks.append("docker_privileged_containers")
+                          privileged_error = inspect_error or str(error)
+                  privileged = bool(privileged_ids)
+                  privileged_output = ", ".join(privileged_ids)
+                  findings.append(finding(
+                      "docker_privileged_containers",
+                      "Обнаружены privileged-контейнеры" if privileged else "Privileged-контейнеры не обнаружены" if privileged_known else "Privileged-контейнеры не проверены",
+                      "Docker",
+                      "high",
+                      "failed" if privileged else "passed" if privileged_known else "manual",
+                      "Проверяются запущенные контейнеры Docker на HostConfig.Privileged.",
+                      "Уберите privileged: true либо оформите отдельное обоснование и компенсирующие меры.",
+                      privileged_output or privileged_error or "no privileged running containers",
+                  ))
 
-        scoreable_findings = [
-            item for item in findings
-            if item["status"] != "manual" and item["risk"] != "info"
-        ]
-        maximum_penalty = sum(weights[item["risk"]] for item in scoreable_findings)
-        penalty = sum(weights[item["risk"]] for item in scoreable_findings if item["status"] == "failed")
-        summary["score"] = None if incomplete_checks or maximum_penalty == 0 else round(100 * (1 - penalty / maximum_penalty))
-        summary["total"] = len(findings)
+          writable_paths = filesystem_rules.get("world_writable_paths", {}).get("paths", ["/tmp", "/var/tmp"])
+          writable_code, writable_output, writable_error = run([
+              "find", *writable_paths, "-xdev", "-type", "d", "-perm", "-0002", "!", "-perm", "-1000", "-print",
+          ])
+          writable_known = result_available("world_writable_dirs", writable_code)
+          writable_failed = bool(writable_output.strip())
+          findings.append(finding(
+              "world_writable_dirs",
+              "Найдены world-writable директории без sticky bit" if writable_failed else "World-writable директории без sticky bit не найдены" if writable_known else "Права временных директорий не проверены",
+              "Файловая система",
+              filesystem_rules.get("world_writable_paths", {}).get("risk", "medium"),
+              "failed" if writable_failed else "passed" if writable_known else "manual",
+              "Проверяются временные директории на небезопасные права.",
+              filesystem_rules.get("world_writable_paths", {}).get("recommendation", "Добавьте sticky bit или исправьте права директорий."),
+              writable_output or writable_error or "no unsafe directories",
+          ))
 
-        os_name = "Unknown Linux"
-        try:
-            with open("/etc/os-release", encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    if line.startswith("PRETTY_NAME="):
-                        os_name = line.split("=", 1)[1].strip().strip('"')
-                        break
-        except OSError:
-            pass
+          root_code, root_output, _ = run(["getent", "passwd", "root"])
+          findings.append(finding(
+              "root_account_present",
+              "Учетная запись root найдена",
+              "Учетные записи",
+              "info",
+              "manual",
+              "Проверяется наличие root-записи и необходимость ручной проверки SSH-доступа.",
+              "Проверьте, запрещен ли вход root по SSH и настроен ли sudo для администраторов.",
+              root_output if root_code == 0 else "root entry unavailable",
+          ))
 
-        created_at = datetime.now(timezone.utc).isoformat()
-        print(json.dumps({
-            "schemaVersion": 1,
-            "action": "agentlessAudit",
-            "runId": os.environ.get("REPORT_RUN_ID"),
-            "inventoryHost": os.environ.get("INVENTORY_HOST"),
-            "auditId": "agentless_" + profile_id + "_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
-            "createdAt": created_at,
-            "hostname": socket.gethostname(),
-            "os": os_name,
-            "profileId": profile_id,
-            "mode": "agentless",
-            "scanner": {"source": "agentless", "partial": bool(incomplete_checks), "incompleteChecks": sorted(set(incomplete_checks))},
-            "agentless": {
-                "version": rules.get("audit_rules_version", "0.2.0"),
-                "control": "ansible",
-                "persistentAgent": False,
-                "rulesFile": os.environ.get("AUDIT_RULES_FILE", "ansible/audit-rules/basic-linux.yml"),
-                "openPorts": sorted(open_ports),
-                "openSockets": open_sockets,
-                "serviceManager": service_manager,
-                "serviceManagerEvidence": service_manager_evidence,
-                "serviceObservations": [{"service": name, "state": "active" if value[0] is True else "inactive" if value[0] is False else "unknown", "evidence": value[1]}
-                                        for name, value in sorted(service_cache.items())],
-            },
-            "summary": summary,
-            "findings": findings,
-        }, ensure_ascii=True))
-        PY
+          weights = {"high": 20, "medium": 10, "low": 4, "info": 1}
+          summary = {"high": 0, "medium": 0, "low": 0, "info": 0}
+          penalty = 0
+          for item in findings:
+              if item["status"] in {"passed", "fixed"}:
+                  continue
+              summary[item["risk"]] += 1
+
+          scoreable_findings = [
+              item for item in findings
+              if item["status"] != "manual" and item["risk"] != "info"
+          ]
+          maximum_penalty = sum(weights[item["risk"]] for item in scoreable_findings)
+          penalty = sum(weights[item["risk"]] for item in scoreable_findings if item["status"] == "failed")
+          summary["score"] = None if incomplete_checks or maximum_penalty == 0 else round(100 * (1 - penalty / maximum_penalty))
+          summary["total"] = len(findings)
+
+          os_name = "Unknown Linux"
+          try:
+              with open("/etc/os-release", encoding="utf-8", errors="replace") as handle:
+                  for line in handle:
+                      if line.startswith("PRETTY_NAME="):
+                          os_name = line.split("=", 1)[1].strip().strip('"')
+                          break
+          except OSError:
+              pass
+
+          created_at = datetime.now(timezone.utc).isoformat()
+          print(json.dumps({
+              "schemaVersion": 1,
+              "action": "agentlessAudit",
+              "runId": os.environ.get("REPORT_RUN_ID"),
+              "inventoryHost": os.environ.get("INVENTORY_HOST"),
+              "auditId": "agentless_" + profile_id + "_" + datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"),
+              "createdAt": created_at,
+              "hostname": socket.gethostname(),
+              "os": os_name,
+              "profileId": profile_id,
+              "mode": "agentless",
+              "scanner": {"source": "agentless", "partial": bool(incomplete_checks), "incompleteChecks": sorted(set(incomplete_checks))},
+              "agentless": {
+                  "version": rules.get("audit_rules_version", "0.2.0"),
+                  "evaluatorVersion": "1.2.0",
+                  "control": "ansible",
+                  "persistentAgent": False,
+                  "rulesFile": os.environ.get("AUDIT_RULES_FILE", "ansible/audit-rules/basic-linux.yml"),
+                  "openPorts": sorted(open_ports),
+                  "openSockets": open_sockets,
+                  "serviceManager": service_manager,
+                  "serviceManagerEvidence": service_manager_evidence,
+                  "serviceObservations": [{"service": name, "state": "active" if value[0] is True else "inactive" if value[0] is False else "unknown", "evidence": value[1]}
+                                          for name, value in sorted(service_cache.items())],
+              },
+              "summary": summary,
+              "findings": findings,
+          }, ensure_ascii=True))
+          PY
       args:
         executable: /bin/sh
       environment:

@@ -11,6 +11,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -160,7 +161,7 @@ class TargetPythonTests(unittest.TestCase):
         for name in ("agentless-audit.yml",):
             with self.subTest(playbook=name):
                 text = (ROOT / "ansible/playbooks" / name).read_text(encoding="utf-8")
-                source = textwrap.dedent(text.split("<<'PY'\n", 1)[1].split("\n        PY", 1)[0])
+                source = textwrap.dedent(re.split(r"(?m)^[ \t]*PY[ \t]*$", text.split("<<'PY'\n", 1)[1], maxsplit=1)[0])
                 output = io.StringIO()
                 namespace = {}
                 def unavailable(argv, **kwargs):
