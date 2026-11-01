@@ -29,6 +29,76 @@ def nft_input(policy="drop", expressions=(), output_policy="accept"):
     ]})
 
 
+def nft_graph(input_policies, rules, family="inet"):
+    """Build a real nft JSON chain graph, including empty regular chains."""
+    names = list(input_policies) + [name for name in rules if name not in input_policies]
+    entries = []
+    for priority, name in enumerate(names):
+        chain = {"family": family, "table": "filter", "name": name}
+        if name in input_policies:
+            chain.update({"type": "filter", "hook": "input", "prio": priority, "policy": input_policies[name]})
+        entries.append({"chain": chain})
+    for name, expressions in rules.items():
+        entries.extend({"rule": {"family": family, "table": "filter", "chain": name, "expr": expression}} for expression in expressions)
+    return json.dumps({"nftables": entries})
+
+
+def nft_match(left, right, operation="=="):
+    return {"match": {"left": left, "op": operation, "right": right}}
+
+
+def firewalld_input_graph(allow_all=False):
+    """Relevant INPUT clauses from the native Alma firewalld ruleset.
+
+    Keep DNAT, both zone goto branches, ICMPv6 header dependencies and the
+    early runtime rich-rule chain, which a shallow jump-only fixture misses.
+    """
+    jump = lambda target: [{"jump": {"target": target}}]
+    rules = {
+        "filter_INPUT": [
+            [nft_match({"ct": {"key": "state"}}, {"set": ["established", "related"]}), {"accept": None}],
+            [nft_match({"ct": {"key": "status"}}, "dnat", "in"), {"accept": None}],
+            [nft_match({"meta": {"key": "iifname"}}, "lo"), {"accept": None}],
+            [nft_match({"ct": {"key": "state"}}, "invalid", "in"), {"drop": None}],
+            jump("filter_INPUT_ZONES"),
+            [{"reject": {"type": "icmpx", "expr": "admin-prohibited"}}],
+        ],
+        "filter_INPUT_ZONES": [
+            [nft_match({"meta": {"key": "iifname"}}, "eth0"), {"goto": {"target": "filter_IN_public"}}],
+            [{"goto": {"target": "filter_IN_public"}}],
+        ],
+        "filter_IN_public": [jump(name) for name in [
+            "filter_INPUT_POLICIES_pre", "filter_IN_public_pre", "filter_IN_public_log",
+            "filter_IN_public_deny", "filter_IN_public_allow", "filter_IN_public_post", "filter_INPUT_POLICIES_post",
+        ]] + [
+            [nft_match({"meta": {"key": "l4proto"}}, {"set": ["icmp", "ipv6-icmp"]}), {"accept": None}],
+            [{"reject": {"type": "icmpx", "expr": "admin-prohibited"}}],
+        ],
+        "filter_INPUT_POLICIES_pre": [jump("filter_IN_policy_allow-host-ipv6")],
+        "filter_IN_policy_allow-host-ipv6": [jump("filter_IN_policy_allow-host-ipv6_" + part) for part in ("pre", "log", "deny", "allow", "post")],
+        "filter_IN_policy_allow-host-ipv6_allow": [
+            [nft_match({"payload": {"protocol": "icmpv6", "field": "type"}}, kind), {"accept": None}]
+            for kind in ("nd-neighbor-advert", "nd-neighbor-solicit", "nd-router-advert", "nd-redirect",
+                         "mld-listener-done", "mld-listener-query", "mld-listener-report", "mld2-listener-report")
+        ],
+        "filter_IN_public_pre": [[{"accept": None}]] if allow_all else [],
+        "filter_IN_public_allow": [
+            [nft_match({"payload": {"protocol": "tcp", "field": "dport"}}, 22), {"accept": None}],
+            [nft_match({"payload": {"protocol": "ip6", "field": "daddr"}}, {"prefix": {"addr": "fe80::", "len": 64}}),
+             nft_match({"payload": {"protocol": "udp", "field": "dport"}}, 546), {"accept": None}],
+            [nft_match({"payload": {"protocol": "tcp", "field": "dport"}}, 9090), {"accept": None}],
+            [nft_match({"payload": {"protocol": "tcp", "field": "dport"}}, 8088), {"accept": None}],
+        ],
+    }
+    for name in ("filter_IN_public_log", "filter_IN_public_deny", "filter_IN_public_post", "filter_INPUT_POLICIES_post"):
+        rules[name] = []
+    for part in ("pre", "log", "deny", "post"):
+        rules["filter_IN_policy_allow-host-ipv6_" + part] = []
+    data = json.loads(nft_graph({"filter_INPUT": "accept"}, rules))
+    data["nftables"].insert(0, {"table": {"family": "inet", "name": "filter", "flags": ["owner", "persist"]}})
+    return json.dumps(data)
+
+
 def systemd_show(service):
     return ("systemctl", "show", "--no-pager", "--property=LoadState", "--property=ActiveState", "--", service + ".service")
 
@@ -228,6 +298,205 @@ class AgentlessAuditTest(unittest.TestCase):
             })
             self.assertEqual(findings["firewall_active"]["status"], "manual")
             self.assertIsNone(report["summary"]["score"])
+
+    def check_nft_input(self, data, expected, iptables=(0, "-P INPUT ACCEPT", ""), overrides=None):
+        commands = {
+            ("ufw", "status"): (0, "Status: inactive", ""),
+            ("firewall-cmd", "--state"): (0, "running", ""),
+            ("nft", "-j", "list", "ruleset"): (0, data, ""),
+            ("iptables", "-S"): iptables,
+        }
+        commands.update(overrides or {})
+        report, findings = self.execute_audit(commands)
+        result = findings["firewall_active"]
+        self.assertEqual(result["status"], expected, result["evidence"])
+        self.assertEqual("firewall_active" in report["scanner"]["incompleteChecks"], expected == "manual")
+        for marker in ("scope=local_input", "packet_model=new_non_loopback_non_dnat_tcp_udp",
+                       "evaluation=conditional_ruleset_path", "external_reachability=unverified", "filter_coverage="):
+            self.assertIn(marker, result["evidence"])
+        self.assertIn("nftables=" + data, result["evidence"])
+        return report, result
+
+    def test_native_firewalld_input_clauses_and_runtime_allow_all_restore(self):
+        for phase, allow_all, expected in (("baseline", False, "passed"), ("allow_all", True, "failed"), ("restored", False, "passed")):
+            with self.subTest(phase=phase):
+                _, result = self.check_nft_input(firewalld_input_graph(allow_all), expected)
+                if expected == "passed":
+                    self.assertTrue(result["evidence"].startswith("backend=firewalld;"))
+                self.assertIn("без DNAT", result["title"])
+                self.assertIn("условный путь", result["description"])
+
+    def test_exact_captured_alma_ruleset_baseline_single_accept_and_restored(self):
+        snapshot = (Path(__file__).parent / "fixtures" / "firewalld-almalinux9-main-2026-11-01.nft.json").read_text()
+        changed = json.loads(snapshot)
+        self.assertTrue(any(entry.get("chain", {}).get("name") == "filter_IN_public_pre" for entry in changed["nftables"]))
+        self.assertFalse(any(entry.get("rule", {}).get("chain") == "filter_IN_public_pre" for entry in changed["nftables"]))
+        changed["nftables"].append({"rule": {"family": "inet", "table": "firewalld", "chain": "filter_IN_public_pre", "expr": [{"accept": None}]}})
+        for phase, data, expected in (("baseline", snapshot, "passed"), ("single_accept", json.dumps(changed), "failed"), ("restored", snapshot, "passed")):
+            with self.subTest(phase=phase):
+                _, result = self.check_nft_input(data, expected)
+                proofs = json.loads(result["evidence"].split("filter_proofs=", 1)[1].split("; ", 1)[0])
+                if expected == "passed":
+                    self.assertEqual(proofs["nftables"], {"kind": "deny_witness", "family": "ip", "protocol": "tcp", "destination_port": 1,
+                                                          "deny_chains": ["inet/firewalld/filter_INPUT"], "evaluated_input_chains": ["inet/firewalld/filter_INPUT"]})
+                    self.assertIn("filter_coverage=nftables:active,iptables:inactive", result["evidence"])
+                else:
+                    self.assertEqual(proofs["nftables"], {})
+                    self.assertIn("filter_coverage=nftables:inactive,iptables:inactive", result["evidence"])
+
+    def test_deny_witness_records_the_actual_ip_family_protocol_port_and_chains(self):
+        for family in ("ip", "ip6", "inet"):
+            with self.subTest(family=family):
+                _, result = self.check_nft_input(nft_graph({"input": "drop"}, {}, family), "passed")
+                proof = json.loads(result["evidence"].split("filter_proofs=", 1)[1].split("; ", 1)[0])["nftables"]
+                self.assertEqual(proof, {"kind": "deny_witness", "family": "ip" if family == "inet" else family,
+                                         "protocol": "tcp", "destination_port": 1,
+                                         "deny_chains": [family + "/filter/input"], "evaluated_input_chains": [family + "/filter/input"]})
+        entries = json.loads(nft_graph({"input": "accept"}, {}, "ip"))["nftables"]
+        entries.extend(json.loads(nft_graph({"input": "drop"}, {}, "ip6"))["nftables"])
+        _, result = self.check_nft_input(json.dumps({"nftables": entries}), "passed")
+        proof = json.loads(result["evidence"].split("filter_proofs=", 1)[1].split("; ", 1)[0])["nftables"]
+        self.assertEqual(proof["family"], "ip6")
+        self.assertEqual(proof["evaluated_input_chains"], ["ip6/filter/input"])
+        _, findings = self.execute_audit()
+        proof = json.loads(findings["firewall_active"]["evidence"].split("filter_proofs=", 1)[1].split("; ", 1)[0])["iptables"]
+        self.assertEqual(proof["family"], "ip")
+        self.assertEqual(proof["deny_chains"], ["INPUT"])
+
+    def test_nft_goto_does_not_push_a_jump_return_position(self):
+        examples = [
+            ("goto_skips_later_drop", "accept", {"input": [[{"goto": {"target": "empty"}}], [{"drop": None}]], "empty": []}, "failed"),
+            ("goto_resumes_last_jump", "drop", {"input": [[{"jump": {"target": "a"}}], [{"accept": None}]],
+                                               "a": [[{"goto": {"target": "empty"}}], [{"drop": None}]], "empty": []}, "failed"),
+            ("goto_uses_original_base_policy", "drop", {"input": [[{"goto": {"target": "empty"}}], [{"accept": None}]], "empty": []}, "passed"),
+            ("base_return_uses_policy", "drop", {"input": [[{"return": None}]]}, "passed"),
+            ("jump_resumes_after_empty_chain", "accept", {"input": [[{"jump": {"target": "empty"}}], [{"drop": None}]], "empty": []}, "passed"),
+            ("explicit_return_skips_goto_caller", "drop", {"input": [[{"jump": {"target": "a"}}], [{"accept": None}]],
+                                                         "a": [[{"goto": {"target": "b"}}], [{"drop": None}]], "b": [[{"return": None}]]}, "failed"),
+        ]
+        for name, policy, rules, expected in examples:
+            with self.subTest(name=name):
+                self.check_nft_input(nft_graph({"input": policy}, rules), expected)
+
+    def test_nft_ct_status_model_knows_only_absence_of_literal_dnat(self):
+        for right, operation, expected in [
+            ("dnat", "in", "passed"), ("dnat", "==", "passed"), ("dnat", "!=", "failed"),
+            ("confirmed", "in", "manual"), ("assured", "in", "manual"), ("snat", "in", "manual"),
+            ({"set": ["dnat", "confirmed"]}, "in", "manual"), (32, "in", "manual"),
+        ]:
+            with self.subTest(right=right, operation=operation):
+                rules = [[nft_match({"ct": {"key": "status"}}, right, operation), {"accept": None}]]
+                self.check_nft_input(nft_input(expressions=rules), expected)
+        bitwise = nft_match({"&": [{"ct": {"key": "status"}}, 32]}, 0, "==")
+        self.check_nft_input(nft_input(expressions=[[bitwise, {"accept": None}]]), "manual")
+
+    def test_unmodelled_bitmask_operands_are_not_scalar_no_match(self):
+        # libnftables-json defines "in" as LHS & RHS != 0. Do not assume
+        # scalar equality or a native lookup form that has not been evaluated.
+        for left, right in (({"meta": {"key": "l4proto"}}, 6),
+                            ({"ct": {"key": "state"}}, 8),
+                            ({"ct": {"key": "state"}}, {"set": [8, "established"]}),
+                            ({"ct": {"key": "state"}}, "future-state")):
+            with self.subTest(left=left, right=right):
+                self.check_nft_input(nft_input(expressions=[[nft_match(left, right, "in"), {"accept": None}]]), "manual")
+        for right in (65535, {"set": [1, 22]}, {"range": [1, 65535]}):
+            with self.subTest(dport=right):
+                rules = [
+                    [nft_match({"payload": {"protocol": "tcp", "field": "dport"}}, right, "in"), {"accept": None}],
+                    [nft_match({"payload": {"protocol": "tcp", "field": "dport"}}, 0), {"accept": None}],
+                    [nft_match({"meta": {"key": "l4proto"}}, "udp"), {"accept": None}],
+                ]
+                self.check_nft_input(nft_input(expressions=rules), "manual")
+
+    def test_nft_typed_icmp_conditions_are_unreachable_but_ip_address_is_not_l4(self):
+        rules = [[nft_match({"payload": {"protocol": protocol, "field": "type"}}, kind), {"accept": None}]
+                 for protocol, kind in (("icmp", "echo-request"), ("icmpv6", "nd-neighbor-solicit"))]
+        self.check_nft_input(nft_input(expressions=rules), "passed")
+        for protocol in ("ip", "ip6"):
+            with self.subTest(protocol=protocol):
+                condition = nft_match({"payload": {"protocol": protocol, "field": "daddr"}}, "192.0.2.1" if protocol == "ip" else "2001:db8::1")
+                self.check_nft_input(nft_input(expressions=[[condition, {"accept": None}]]), "manual")
+
+    def test_unknown_pure_predicate_branches_and_unreachable_action_does_not_poison(self):
+        condition = nft_match({"fib": {"result": "type", "flags": ["daddr", "iif"]}}, "local")
+        self.check_nft_input(nft_input(expressions=[[condition, {"accept": None}]]), "manual")
+        self.check_nft_input(nft_input(expressions=[[condition, {"reject": None}]]), "passed")
+        # An unknown match is not an unknown mutation: both branches deny.
+        self.check_nft_input(nft_input(expressions=[[condition, {"drop": None}], [{"drop": None}]]), "passed")
+        self.check_nft_input(nft_input(expressions=[[{"accept": None}], [{"vmap": {"key": {}, "data": "@opaque"}}], [{"drop": None}]]), "failed")
+        unreachable = [nft_match({"payload": {"protocol": "icmpv6", "field": "type"}}, "nd-neighbor-solicit"), {"vmap": {"key": {}, "data": "@opaque"}}]
+        self.check_nft_input(nft_input(expressions=[unreachable]), "passed")
+
+    def test_symbolic_port_pass_cannot_infer_allow_all_from_finite_probes(self):
+        clauses = [nft_match({"payload": {"protocol": protocol, "field": "dport"}}, {"set": [1, 22, 23, 80, 443, 65535]})
+                   for protocol in ("tcp", "udp")]
+        self.check_nft_input(nft_input(expressions=[[condition, {"accept": None}] for condition in clauses]), "manual")
+        self.check_nft_input(nft_input(policy="accept", expressions=[[condition, {"accept": None}] for condition in clauses]), "failed")
+
+    def test_opaque_packet_mutation_in_another_input_chain_blocks_a_deny_witness(self):
+        rewrite = [nft_match({"meta": {"key": "l4proto"}}, "tcp"),
+                   {"mangle": {"key": {"payload": {"protocol": "tcp", "field": "dport"}}, "value": 80}}]
+        deny = [nft_match({"payload": {"protocol": "tcp", "field": "dport"}}, 1), {"drop": None}]
+        data = nft_graph({"rewrite": "accept", "later": "accept"}, {"rewrite": [rewrite], "later": [deny, [{"accept": None}]]})
+        self.check_nft_input(data, "manual")
+        # A mutation after a terminal accept is unreachable and cannot alter a
+        # witness evaluated by another base chain.
+        data = nft_graph({"rewrite": "accept", "later": "accept"}, {"rewrite": [[{"accept": None}], rewrite], "later": [deny, [{"accept": None}]]})
+        self.check_nft_input(data, "passed")
+
+    def test_unknown_packet_filter_cannot_be_overridden_by_another_backend(self):
+        restrictive_iptables = (0, "-P INPUT ACCEPT\n-A INPUT -p tcp --dport 1 -j DROP", "")
+        opaque = nft_input(policy="accept", expressions=[[nft_match({"meta": {"key": "l4proto"}}, "tcp"),
+            {"mangle": {"key": {"payload": {"protocol": "tcp", "field": "dport"}}, "value": 80}}]])
+        self.check_nft_input(opaque, "manual", restrictive_iptables)
+        for code, output, error in ((1, "", "Operation not permitted"), (0, "{\"nftables\":[", "")):
+            with self.subTest(nft_error=error or "truncated"):
+                report, findings = self.execute_audit({("nft", "-j", "list", "ruleset"): (code, output, error), ("iptables", "-S"): restrictive_iptables})
+                self.assertEqual(findings["firewall_active"]["status"], "manual")
+                self.assertIn("nftables:unknown", findings["firewall_active"]["evidence"])
+                self.assertIn("incomplete_reason=", findings["firewall_active"]["evidence"])
+                self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+        for iptables in ((1, "", "Permission denied"), (0, "-P INPUT DROP\n-A INPUT -j QUEUE", "")):
+            with self.subTest(iptables=iptables):
+                _, result = self.check_nft_input(nft_input(), "manual", iptables)
+                self.assertIn("iptables:unknown", result["evidence"])
+
+    def test_safe_probe_in_each_backend_cannot_hide_mutation_of_the_other_witness(self):
+        rewrite = [nft_match({"meta": {"key": "l4proto"}}, "tcp"),
+                   {"mangle": {"key": {"payload": {"protocol": "tcp", "field": "dport"}}, "value": 80}}]
+        deny_udp = [nft_match({"payload": {"protocol": "udp", "field": "dport"}}, 1), {"drop": None}]
+        data = json.loads(nft_graph({"early": "accept", "late": "accept"}, {"early": [rewrite], "late": [deny_udp]}))
+        for entry in data["nftables"]:
+            if "chain" in entry:
+                entry["chain"]["prio"] = -10 if entry["chain"]["name"] == "early" else 10
+        # The queue consumer may change UDP before the later nft chain. The
+        # earlier nft mutation already bypassed the iptables TCP deny. Neither
+        # frontend's otherwise safe probe can stand in for the combined path.
+        iptables = (0, "-P INPUT ACCEPT\n-A INPUT -p tcp --dport 1 -j DROP\n-A INPUT -p udp -j NFQUEUE", "")
+        _, result = self.check_nft_input(json.dumps(data), "manual", iptables)
+        self.assertIn("filter_coverage=nftables:unknown,iptables:unknown", result["evidence"])
+        proofs = json.loads(result["evidence"].split("filter_proofs=", 1)[1].split("; ", 1)[0])
+        self.assertEqual(proofs["nftables"]["incomplete_reason"], "unresolved_input_path")
+        self.assertEqual(proofs["iptables"]["incomplete_reason"], "unresolved_input_path")
+
+    def test_packet_filter_cycle_missing_target_and_work_bounds_stay_unknown(self):
+        fixtures = {
+            "cycle": nft_graph({"input": "drop"}, {"input": [[{"jump": {"target": "loop"}}]], "loop": [[{"goto": {"target": "loop"}}]]}),
+            "missing_target": nft_graph({"input": "drop"}, {"input": [[{"goto": {"target": "absent"}}]]}),
+            "depth_bound": nft_input(expressions=[[{"counter": {"packets": 0, "bytes": 0}}] for _ in range(140)]),
+        }
+        unknown = nft_match({"meta": {"key": "mark"}}, 123)
+        # Short chains with a branching graph exhaust the total work budget,
+        # independently of the depth limit, and must not produce a deny proof.
+        branching = {"input": [[{"jump": {"target": "level0"}}]]}
+        for level in range(14):
+            target = "level" + str(level + 1)
+            branching["level" + str(level)] = [[unknown, {"jump": {"target": target}}], [{"jump": {"target": target}}]]
+        branching["level14"] = [[{"drop": None}]]
+        fixtures["work_bound"] = nft_graph({"input": "drop"}, branching)
+        for name, data in fixtures.items():
+            with self.subTest(name=name):
+                self.check_nft_input(data, "manual")
 
     def test_tcp_policy_does_not_report_a_udp_listener_as_telnet(self):
         report, findings = self.execute_audit({("ss", "-tuln"): (0, "udp UNCONN 0 0 0.0.0.0:23 0.0.0.0:*", "")})
@@ -479,6 +748,15 @@ class AgentlessAuditTest(unittest.TestCase):
 
     def test_target_program_preserves_python35_syntax(self):
         ast.parse(SOURCE, feature_version=(3, 5))
+
+    def test_evaluator_version_is_independent_of_profile_rules_provenance(self):
+        for version in ("1.1.0", "custom-policy-42"):
+            with self.subTest(rules_version=version):
+                report, findings = self.execute_audit(rules=dict(RULES, audit_rules_version=version, evaluatorVersion="custom-override"))
+                self.assertEqual(report["schemaVersion"], 1)
+                self.assertEqual(report["agentless"]["version"], version)
+                self.assertEqual(report["agentless"]["evaluatorVersion"], "1.2.0")
+                self.assertIn("filter_proofs=", findings["firewall_active"]["evidence"])
 
 
 if __name__ == "__main__":

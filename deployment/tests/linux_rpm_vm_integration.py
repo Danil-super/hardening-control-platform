@@ -43,6 +43,200 @@ SOURCES = {
     },
 }
 
+FIREWALL_PACKET_MODEL = "new_non_loopback_non_dnat_tcp_udp"
+FIREWALL_RICH_RULE = 'rule priority="-32768" accept'
+FIREWALL_CONTROL_CHAIN = ("inet", "firewalld", "filter_IN_public_pre")
+
+# These programs are sent only through remote_python to the owned QEMU guest.
+# No controller subprocess receives a firewall-changing command.
+FIREWALL_AUDIT_SNAPSHOT = r'''
+import importlib.util, json, os, subprocess, sys
+from pathlib import Path
+def observed(argv):
+    result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True, timeout=30)
+    if result.returncode or len(result.stdout.encode("utf-8")) > 4 * 1024 * 1024:
+        raise RuntimeError("Snapshot command failed or exceeded its output limit: " + repr(argv) + ": " + result.stderr[-2000:])
+    return result.stdout
+spec = importlib.util.spec_from_file_location("native_firewall_audit_snapshot", sys.argv[1])
+fw = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fw)
+tree = Path("/etc/firewalld")
+labels = {str(path.relative_to(tree)): os.getxattr(str(path), "security.selinux", follow_symlinks=False).hex()
+          for path in [tree] + sorted(tree.rglob("*"))}
+runtime = {name: observed(["firewall-cmd"] + args)
+           for name, args in (("zones", ["--list-all-zones"]), ("policies", ["--list-all-policies"]),
+                              ("direct", ["--direct", "--get-all-rules"]))}
+print(json.dumps({"nftables": observed(["nft", "--json", "list", "ruleset"]),
+    "state": {"manifest": fw.tree_digest(tree), "labels": labels, "runtime": runtime,
+              "selinux": observed(["getenforce"]).strip(),
+              "firewalld": observed(["firewall-cmd", "--state"]).strip(),
+              "pid1": Path("/proc/1/comm").read_text().strip()}}))
+'''
+
+FIREWALL_AUDIT_CONTROL = r'''
+import json, os, re, stat, subprocess, sys
+from pathlib import Path
+action, marker_path, rule = sys.argv[1:]
+if action not in ("add", "remove") or not re.fullmatch(r"/run/hcp-rpm-firewall-audit-[a-f0-9]{32}", marker_path):
+    raise RuntimeError("Unexpected native control action or ownership path")
+if os.geteuid() != 0 or rule != 'rule priority="-32768" accept':
+    raise RuntimeError("Unexpected native control identity or rule")
+marker, plan = Path(marker_path), {"zone": "public", "rule": rule}
+def command(args, accepted=(0,)):
+    result = subprocess.run(["firewall-cmd", "--zone=public"] + args,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            universal_newlines=True, timeout=30)
+    if result.returncode not in accepted:
+        raise RuntimeError("firewall-cmd failed: " + result.stderr[-2000:] + result.stdout[-2000:])
+    return result
+def present():
+    return command(["--query-rich-rule=" + rule], accepted=(0, 1)).returncode == 0
+if action == "add":
+    if (subprocess.check_output(["getenforce"], universal_newlines=True).strip() != "Enforcing"
+            or subprocess.check_output(["firewall-cmd", "--state"], universal_newlines=True).strip() != "running"
+            or Path("/proc/1/comm").read_text().strip() != "systemd"):
+        raise RuntimeError("Native control requires enforcing SELinux and running systemd/firewalld")
+    # Validate with this guest's actual firewalld parser, not a local grammar.
+    from firewall.core.rich import Rich_Rule
+    Rich_Rule(rule_str=rule).check()
+    if present():
+        raise RuntimeError("Exact runtime control rule already exists; refusing to claim or remove it")
+    if command(["--permanent", "--query-rich-rule=" + rule], accepted=(0, 1)).returncode == 0:
+        raise RuntimeError("Exact control rule already exists in permanent configuration")
+    marker.mkdir(mode=0o700)
+    # Durable ownership intent covers a successful add with a lost SSH reply.
+    with (marker / "plan.json").open("x") as stream:
+        os.fchmod(stream.fileno(), 0o600)
+        json.dump(plan, stream, sort_keys=True)
+        stream.flush()
+        os.fsync(stream.fileno())
+    command(["--add-rich-rule=" + rule])
+    if not present():
+        raise RuntimeError("Runtime control rule was not observed after add")
+    print(json.dumps({"owned": True, "present": True, "rule": rule, "permanent": False}))
+else:
+    if not marker.exists():
+        print(json.dumps({"owned": False, "removed": False, "reason": "add-not-started"}))
+    else:
+        info, plan_info = marker.lstat(), (marker / "plan.json").lstat()
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or stat.S_IMODE(info.st_mode) != 0o700
+                or not stat.S_ISREG(plan_info.st_mode) or plan_info.st_uid != 0
+                or stat.S_IMODE(plan_info.st_mode) != 0o600
+                or json.loads((marker / "plan.json").read_text()) != plan):
+            raise RuntimeError("Runtime control ownership could not be verified")
+        was_present = present()
+        if was_present:
+            command(["--remove-rich-rule=" + rule])
+        if present():
+            raise RuntimeError("Owned runtime control rule remains after removal")
+        (marker / "plan.json").unlink()
+        marker.rmdir()
+        print(json.dumps({"owned": True, "removed": was_present, "present": False, "rule": rule}))
+'''
+
+
+def semantic_nftables(ruleset):
+    """Keep all rule order/expressions/flags; ignore only kernel IDs and counters.
+
+    Managed insertion/deletion changes handles, and observing live guest traffic
+    advances counters. Neither changes a rule's decision. Counter statements are
+    retained, as are every policy, predicate, table flag and metainfo field.
+    """
+    result = json.loads(json.dumps(ruleset))
+    for entry in result["nftables"]:
+        for kind, value in entry.items():
+            if kind in ("table", "chain", "rule"):
+                value.pop("handle", None)
+            if kind == "rule":
+                for expression in value["expr"]:
+                    counter = expression.get("counter")
+                    if isinstance(counter, dict):
+                        for field in ("packets", "bytes"):
+                            if field in counter:
+                                if type(counter[field]) is not int or counter[field] < 0:
+                                    raise RuntimeError("Unexpected nft counter value")
+                                counter[field] = 0
+    return result
+
+
+def inspect_firewall_audit_ruleset(ruleset):
+    """Fail closed on layouts outside this pinned firewalld acceptance fixture."""
+    if not isinstance(ruleset, dict) or set(ruleset) != {"nftables"} or not isinstance(ruleset["nftables"], list):
+        raise RuntimeError("Invalid native nft ruleset envelope")
+    tables, chains, rules = {}, {}, []
+    for entry in ruleset["nftables"]:
+        if not isinstance(entry, dict) or len(entry) != 1:
+            raise RuntimeError("Unexpected native nft object")
+        kind, value = next(iter(entry.items()))
+        if kind not in ("metainfo", "table", "chain", "rule") or not isinstance(value, dict):
+            raise RuntimeError("Unaccounted native nft object: " + kind)
+        if kind == "table":
+            flags = value.get("flags", [])
+            key = (value.get("family"), value.get("name"))
+            if (key in tables or not all(isinstance(part, str) and part for part in key)
+                    or not isinstance(flags, list) or any(flag not in ("dormant", "owner", "persist") for flag in flags)
+                    or len(flags) != len(set(flags))):
+                raise RuntimeError("Unknown or duplicate native nft table/flags")
+            tables[key] = value
+        elif kind == "chain":
+            key = (value.get("family"), value.get("table"), value.get("name"))
+            if key in chains or not all(isinstance(part, str) and part for part in key) or value.get("flags"):
+                raise RuntimeError("Unknown or duplicate native nft chain/flags")
+            chains[key] = value
+        elif kind == "rule":
+            if not isinstance(value.get("expr"), list) or not all(isinstance(item, dict) for item in value["expr"]):
+                raise RuntimeError("Invalid native nft rule expressions")
+            rules.append(value)
+    for rule in rules:
+        if (rule.get("family"), rule.get("table"), rule.get("chain")) not in chains:
+            raise RuntimeError("Native nft rule has no observed chain")
+    inputs = []
+    for key, chain in chains.items():
+        table = tables.get(key[:2])
+        if table is None:
+            raise RuntimeError("Native nft chain has no observed table")
+        if chain.get("hook") != "input":
+            continue
+        if (key[0] not in ("ip", "ip6", "inet") or chain.get("type") != "filter"
+                or chain.get("policy") not in ("accept", "drop") or type(chain.get("prio")) is not int):
+            raise RuntimeError("Unknown native INPUT hook/type/priority/policy")
+        if "dormant" in table.get("flags", []):
+            continue
+        own_rules = [item for item in rules if (item["family"], item["table"], item["chain"]) == key]
+        if key != ("inet", "firewalld", "filter_INPUT") and (own_rules or chain["policy"] != "accept"):
+            raise RuntimeError("Another active INPUT chain could invalidate the owned allow-all control")
+        inputs.append({"family": key[0], "table": key[1], "chain": key[2], "type": chain["type"],
+                       "priority": chain["prio"], "policy": chain["policy"], "tableFlags": table.get("flags", [])})
+    target = chains.get(("inet", "firewalld", "filter_INPUT"))
+    table = tables.get(("inet", "firewalld"), {})
+    if (not target or target.get("hook") != "input" or target.get("policy") != "accept"
+            or set(table.get("flags", [])) != {"owner", "persist"} or FIREWALL_CONTROL_CHAIN not in chains):
+        raise RuntimeError("Pinned native firewalld INPUT/public_pre ownership or policy was not established")
+    if any(key[:2] == ("inet", "firewalld") and chain.get("hook") == "input"
+           and key != ("inet", "firewalld", "filter_INPUT") for key, chain in chains.items()):
+        raise RuntimeError("Unexpected additional native firewalld INPUT base chain")
+    return inputs
+
+
+def verify_firewall_control_delta(baseline, allowed):
+    """The owned rich rule must add exactly one unconditional public_pre accept."""
+    before, after = semantic_nftables(baseline), semantic_nftables(allowed)
+
+    def controlled(entry):
+        rule = entry.get("rule", {})
+        return (rule.get("family"), rule.get("table"), rule.get("chain")) == FIREWALL_CONTROL_CHAIN
+
+    if any(controlled(entry) for entry in before["nftables"]):
+        raise RuntimeError("Native public_pre is not empty before the owned runtime control")
+    inserted = [entry["rule"] for entry in after["nftables"] if controlled(entry)]
+    expected = {"family": "inet", "table": "firewalld", "chain": "filter_IN_public_pre", "expr": [{"accept": None}]}
+    if inserted != [expected]:
+        raise RuntimeError("Runtime rich rule did not create exactly the expected unconditional public_pre accept")
+    after["nftables"] = [entry for entry in after["nftables"] if not controlled(entry)]
+    if before != after:
+        raise RuntimeError("Runtime rich rule changed additional native kernel semantics")
+
 
 def write_json(path, value):
     path.write_text(json.dumps(value, ensure_ascii=True, indent=2) + "\n")
@@ -278,6 +472,7 @@ test "$(getenforce)" = Enforcing
             finally:
                 remote("sudo chmod 1777 " + shlex.quote(control) + " && sudo rmdir " + shlex.quote(control))
             checkpoint("Native agentless pass/fail/restored rule and honest coverage", states)
+            verify_firewall_audit(remote_python, playbook, checkpoint, artifacts, guest_source)
             native_labels = json.loads(remote("sudo python3 /home/hcp-ci/hcp-source/ansible/tests/native_selinux_firewall_acceptance.py",
                                               output=artifacts / "native-selinux-metadata.json", timeout=240).stdout)
             if not native_labels.get("ok") or native_labels.get("selinux") != "Enforcing" or not native_labels.get("realSecuritySelinuxXattrs"):
@@ -309,6 +504,136 @@ test "$(getenforce)" = Enforcing
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=10)
+
+
+def verify_firewall_audit(remote_python, playbook, checkpoint, artifacts, guest_source):
+    """Prove conditional kernel decisions and report fidelity in the owned guest.
+
+    This is separate from the real HTTP apply/rollback test below. A ruleset
+    proof for NEW/non-loopback/non-DNAT TCP/UDP does not attest external IPv6
+    reachability, every connection state, or filtering of ICMP/INVALID packets.
+    """
+    reports = artifacts / "reports"
+    proof = {"status": "running", "packetModel": FIREWALL_PACKET_MODEL,
+             "evaluation": "conditional_ruleset_path", "externalReachability": "unverified",
+             "runtimeRule": FIREWALL_RICH_RULE, "zone": "public", "permanent": False,
+             "semanticComparisonIgnores": ["nft table/chain/rule handles", "counter packet/byte values"],
+             "snapshots": [], "reports": []}
+    marker = "/run/hcp-rpm-firewall-audit-" + uuid.uuid4().hex
+
+    def save():
+        write_json(artifacts / "firewall-audit-protocol.json", proof)
+
+    def snapshot(phase):
+        observed = json.loads(remote_python(FIREWALL_AUDIT_SNAPSHOT, (guest_source,)).stdout)
+        raw = observed["nftables"]
+        ruleset, state = json.loads(raw), observed["state"]
+        nft_path = artifacts / ("firewall-audit-" + phase + ".nft.json")
+        nft_path.write_text(raw)
+        nft_path.chmod(0o600)
+        write_json(artifacts / ("firewall-audit-" + phase + ".state.json"), state)
+        # Save raw command observations even if the subsequent layout or state
+        # gate fails; unknown evidence must never disappear into a PASS.
+        inputs = inspect_firewall_audit_ruleset(ruleset)
+        if state.get("selinux") != "Enforcing" or state.get("firewalld") != "running" or state.get("pid1") != "systemd":
+            raise RuntimeError("Native audit control lost enforcing SELinux or running firewalld/systemd")
+        proof["snapshots"].append({"phase": phase, "nftFile": nft_path.name,
+            "nftSha256": hashlib.sha256(raw.encode("utf-8")).hexdigest(),
+            "nftSemanticSha256": hashlib.sha256(json.dumps(semantic_nftables(ruleset), sort_keys=True,
+                                                           separators=(",", ":")).encode("utf-8")).hexdigest(),
+            "activeInputChains": inputs, "selinux": state["selinux"], "firewalld": state["firewalld"]})
+        save()
+        return ruleset, state
+
+    def audit(phase, expected, ruleset):
+        report_phase = "firewall-audit-" + phase
+        playbook("agentless-audit", report_phase, {"audit_profile": "basic_linux"})
+        report_path = reports / (HOST + "-basic_linux-" + report_phase + ".json")
+        raw = report_path.read_bytes()
+        report = json.loads(raw)
+        findings = [item for item in report["findings"] if item.get("id") == "firewall_active"]
+        if len(findings) != 1 or findings[0].get("status") != expected:
+            raise RuntimeError("Native firewall_active audit did not produce {} in {}".format(expected, phase))
+        scanner = report.get("scanner", {})
+        if (type(scanner.get("partial")) is not bool or not isinstance(scanner.get("incompleteChecks"), list)
+                or "firewall_active" in scanner["incompleteChecks"]
+                or (scanner["incompleteChecks"] and not scanner["partial"])):
+            raise RuntimeError("Proven firewall decision retained incomplete or inconsistent native coverage")
+        if scanner["partial"] and report.get("summary", {}).get("score") is not None:
+            raise RuntimeError("Partial native firewall audit produced an unqualified score")
+        evidence = findings[0].get("evidence", "")
+        for marker_value in ("packet_model=" + FIREWALL_PACKET_MODEL, "evaluation=conditional_ruleset_path",
+                             "external_reachability=unverified"):
+            if marker_value not in evidence:
+                raise RuntimeError("Native firewall evidence omitted its conditional packet scope: " + marker_value)
+        if evidence.count("filter_proofs=") != 1:
+            raise RuntimeError("Native firewall evidence omitted or duplicated its decision proof")
+        filter_proofs, _ = json.JSONDecoder().raw_decode(evidence.split("filter_proofs=", 1)[1].lstrip())
+        if not isinstance(filter_proofs, dict) or not isinstance(filter_proofs.get("nftables"), dict):
+            raise RuntimeError("Invalid native nft decision proof")
+        if expected == "passed":
+            witness = filter_proofs["nftables"]
+            if (witness.get("kind") != "deny_witness" or witness.get("family") not in ("ip", "ip6")
+                    or witness.get("protocol") not in ("tcp", "udp")
+                    or type(witness.get("destination_port")) is not int or not 1 <= witness["destination_port"] <= 65535
+                    or not isinstance(witness.get("deny_chains"), list) or not witness["deny_chains"]
+                    or not isinstance(witness.get("evaluated_input_chains"), list) or not witness["evaluated_input_chains"]
+                    or not all(isinstance(chain, str) for chain in witness["deny_chains"] + witness["evaluated_input_chains"])
+                    or any(chain not in witness["evaluated_input_chains"] for chain in witness["deny_chains"])):
+                raise RuntimeError("Native passed decision omitted its bounded family/protocol/port/chain witness")
+            observed_inputs = ["/".join((item["family"], item["table"], item["chain"]))
+                               for item in inspect_firewall_audit_ruleset(ruleset)
+                               if item["family"] in ("inet", witness["family"])]
+            if sorted(witness["evaluated_input_chains"]) != sorted(observed_inputs):
+                raise RuntimeError("Native deny witness did not account for every observed INPUT chain in its family")
+        if evidence.count("nftables=") != 1:
+            raise RuntimeError("Native firewall evidence omitted or duplicated the observed nft ruleset")
+        observed, _ = json.JSONDecoder().raw_decode(evidence.split("nftables=", 1)[1].lstrip())
+        if semantic_nftables(observed) != semantic_nftables(ruleset):
+            raise RuntimeError("Native audit evidence differs from its contemporaneous kernel snapshot")
+        proof["reports"].append({"phase": phase, "file": str(report_path.relative_to(artifacts)),
+                                 "sha256": hashlib.sha256(raw).hexdigest(), "firewallStatus": findings[0]["status"],
+                                 "findingCount": len(report["findings"]), "partial": scanner["partial"],
+                                 "incompleteChecks": scanner["incompleteChecks"], "filterProofs": filter_proofs})
+        save()
+
+    save()
+    try:
+        baseline, baseline_state = snapshot("baseline")
+        audit("baseline", "passed", baseline)
+        try:
+            # The guest records exclusive ownership after checking exact rule
+            # absence and before adding it. Cleanup also handles a lost reply.
+            remote_python(FIREWALL_AUDIT_CONTROL, ("add", marker, FIREWALL_RICH_RULE),
+                          output=artifacts / "firewall-audit-control-add.json")
+            allowed, allowed_state = snapshot("allow-all")
+            verify_firewall_control_delta(baseline, allowed)
+            if any(allowed_state.get(key) != baseline_state.get(key) for key in ("manifest", "labels")):
+                raise RuntimeError("Runtime control changed permanent firewall configuration or SELinux labels")
+            audit("allow-all", "failed", allowed)
+        finally:
+            remote_python(FIREWALL_AUDIT_CONTROL, ("remove", marker, FIREWALL_RICH_RULE),
+                          output=artifacts / "firewall-audit-control-remove.json")
+            restored, restored_state = snapshot("restored")
+            if semantic_nftables(restored) != semantic_nftables(baseline) or restored_state != baseline_state:
+                raise RuntimeError("Owned runtime control did not restore exact kernel semantics, runtime, config and labels")
+            proof["exactRestoration"] = True
+            save()
+        audit("restored", "passed", restored)
+        run(["node", str(ROOT / "deployment/tests/verify_firewall_audit_normalization.mjs"), str(artifacts)],
+            output=artifacts / "firewall-audit-normalization.log", timeout=120)
+        normalization = json.loads((artifacts / "firewall-audit-normalized/protocol.json").read_text())
+        if normalization.get("status") != "passed":
+            raise RuntimeError("Native firewall report normalization did not establish success")
+        proof["normalization"] = normalization
+        proof["status"] = "passed"
+        save()
+        checkpoint("Native firewall_active passed/failed/restored with kernel evidence and production normalization", proof)
+    except BaseException as error:
+        proof["status"] = "failed"
+        proof["error"] = {"type": type(error).__name__, "message": str(error)[-4000:]}
+        save()
+        raise
 
 
 def verify_firewall(remote, remote_python, playbook, checkpoint, artifacts, guest_source, transaction, http_port):
@@ -435,6 +760,7 @@ def main():
                 "acceleration": "kvm", "syntheticOsIdentity": False,
                 "limitations": ["Pinned x86_64 RPM base images only; other releases require native acceptance",
                                 "Incoming traffic control is IPv4 over QEMU forwarding; no IPv6 coverage claim",
+                                "firewall_active proves conditional NEW/non-loopback/non-DNAT TCP/UDP kernel paths, not external reachability or all packet classes",
                                 "Native SELinux validation uses the image's policy; no claim about every custom MLS/MCS policy",
                                 "Labelled controls establish specific behavior, not overall vulnerability recall"], "checks": []}
     write_json(artifacts / "protocol.json", protocol)

@@ -291,12 +291,23 @@
             return "unknown", "firewalld", command_evidence("firewalld", output, error)
 
         def filter_match(field, operation, expected, protocol, port):
-            # Evaluate a NEW incoming TCP/UDP packet on a non-loopback interface.
-            # Unknown predicates branch both ways; they can never prove a deny.
+            # Conditional INPUT model: NEW TCP/UDP, non-loopback, no DNAT.
+            # NEW alone does not imply no DNAT, nor any other ct status bits.
+            # port=None covers every destination port; unknown predicates branch.
             actual = {"protocol": protocol, "dport": port, "state": "new"}.get(field)
+            # JSON "in" denotes a bitmask test, not generic scalar equality.
+            # Only the explicitly modelled conntrack flags are supported here.
+            if operation == "in" and field not in {"state", "ct_status"}:
+                return None
+            if field == "state" and isinstance(expected, (str, int)) and str(expected).lower() not in {"new", "established", "related", "invalid", "untracked"}:
+                return None
             if field == "protocol" and isinstance(expected, (str, int)):
                 expected = {"6": "tcp", "17": "udp"}.get(str(expected), expected)
-            if field == "iif" and expected == "lo":
+            if field == "ct_status" and expected == "dnat" and operation in {"in", "==", "!="}:
+                # Only this literal flag is known absent in the chosen model.
+                # Other flags, mixed masks and numeric/bitwise forms stay unknown.
+                result = False
+            elif field == "iif" and expected == "lo":
                 result = False
             elif field == "all":
                 result = True
@@ -321,7 +332,7 @@
                 return None
             return (not result if operation == "!=" else result) if result is not None else None
 
-        def input_filter_state(chains, inputs):
+        def input_filter_state(chains, inputs, proof=None):
             if not inputs:
                 return "inactive"
 
@@ -338,9 +349,11 @@
                 next_stack = stack | {(name, offset)}
                 if False in matches:
                     return walk(name, offset + 1, protocol, port, next_stack)
-                if action == "jump":
+                if action in {"jump", "goto"}:
                     outcomes = walk(target, 0, protocol, port, next_stack)
-                    if "return" in outcomes:
+                    # goto does not push a return position. Its return must
+                    # reach the last jump caller, or the original base policy.
+                    if action == "jump" and "return" in outcomes:
                         outcomes = (outcomes - {"return"}) | walk(name, offset + 1, protocol, port, next_stack)
                 elif action == "continue":
                     return walk(name, offset + 1, protocol, port, next_stack)
@@ -350,25 +363,54 @@
                     outcomes |= walk(name, offset + 1, protocol, port, next_stack)
                 return outcomes
 
+            def evaluate(name, protocol, port):
+                outcomes = walk(name, 0, protocol, port, set())
+                return (outcomes - {"return"}) | ({chains[name][1]} if "return" in outcomes else set())
+
+            def chain_name(name):
+                return "/".join(name) if isinstance(name, tuple) else name
+
+            # An opaque action may rewrite a packet used as a witness by a
+            # different frontend. Check its reachability over every port before
+            # choosing any probe. Pure unknown predicates only union known
+            # verdicts; they do not become an opaque action by themselves.
+            symbolic = []
             for name in inputs:
+                for protocol in ("tcp", "udp"):
+                    outcomes = evaluate(name, protocol, None)
+                    symbolic.append(outcomes)
+                    if "unknown" in outcomes:
+                        if proof is not None:
+                            proof.update({"incomplete_reason": "unresolved_input_path", "chain": chain_name(name),
+                                          "protocol": protocol, "destination_port": None})
+                        return "unknown"
+
+            groups = []
+            for family in ("ip", "ip6"):
+                group = [name for name in inputs if (name[0] in {family, "inet"} if isinstance(name, tuple) else family == "ip")]
+                if group:
+                    groups.append((family, group))
+            for family, group in groups:
                 for protocol in ("tcp", "udp"):
                     for port in (1, 22, 23, 80, 443, 65535):
                         # This proves a restrictive INPUT path, not whole-host
                         # protection or reachability of any listening service.
-                        if walk(name, 0, protocol, port, set()) == {"deny"}:
+                        # An opaque action in another applicable base chain can
+                        # rewrite the packet before this deny. Do not OR away
+                        # that uncertainty, irrespective of hook priority.
+                        outcomes = [evaluate(name, protocol, port) for name in group]
+                        if {"deny"} in outcomes and not any("unknown" in values for values in outcomes):
+                            if proof is not None:
+                                proof.update({"kind": "deny_witness", "family": family, "protocol": protocol, "destination_port": port,
+                                              "deny_chains": [chain_name(name) for name, values in zip(group, outcomes) if values == {"deny"}],
+                                              "evaluated_input_chains": [chain_name(name) for name in group]})
                             return "active"
-            # Only trivially unrestricted chains are classified as inactive.
-            # Unproven complex conditions/maps/jumps stay manual, not passed.
-            def accepts_all(name):
-                ruleset, policy = chains[name]
-                for guards, action, _ in ruleset:
-                    if action == "continue" and not guards:
-                        continue
-                    return not guards and action == "accept"
-                return policy == "accept"
-            return "inactive" if all(accepts_all(name) for name in inputs) else "unknown"
+            # Finite probes cannot prove that every port is allowed. A separate
+            # symbolic-port pass must accept every possible branch in every base
+            # chain. Unsupported actions, cycles and exhausted budget stay unknown.
+            return "inactive" if all(values == {"accept"} for values in symbolic) else "unknown"
 
-        def nftables_firewall_state():
+        def nftables_firewall_state(proof=None):
             code, output, error = run(["nft", "-j", "list", "ruleset"])
             evidence = command_evidence("nftables", output, error)
             if code != 0:
@@ -413,32 +455,38 @@
                             match = expression["match"]
                             left = match.get("left", {})
                             field = ({"l4proto": "protocol", "iifname": "iif"}.get(left.get("meta", {}).get("key"))
-                                     or ("state" if left.get("ct", {}).get("key") == "state" else None)
+                                     or {"state": "state", "status": "ct_status"}.get(left.get("ct", {}).get("key"))
                                      or ("dport" if left.get("payload", {}).get("field") == "dport" and left["payload"].get("protocol") in {"tcp", "udp"} else None)) if isinstance(left, dict) else None
                             if match.get("op") not in {"==", "!=", "in"}:
                                 field = None
                             guards.append((field, match.get("op"), match.get("right")))
-                            if field == "dport":
-                                guards.append(("protocol", "==", left["payload"]["protocol"]))
+                            # Typed transport headers imply their protocol even
+                            # when their particular field is not evaluated. An
+                            # ICMPv6 type clause cannot accept a TCP/UDP probe.
+                            payload = left.get("payload", {}) if isinstance(left, dict) else {}
+                            dependency = {"tcp": "tcp", "udp": "udp", "icmp": "icmp", "icmpv6": "ipv6-icmp"}.get(payload.get("protocol"))
+                            if dependency:
+                                guards.append(("protocol", "==", dependency))
                         elif "drop" in expression or "reject" in expression:
                             action = "deny"
                         elif "accept" in expression or "return" in expression:
                             action = "accept" if "accept" in expression else "return"
-                        elif "jump" in expression:
-                            action, target = "jump", (key[0], key[1], expression["jump"]["target"])
+                        elif "jump" in expression or "goto" in expression:
+                            action = "jump" if "jump" in expression else "goto"
+                            target = (key[0], key[1], expression[action]["target"])
                         elif not set(expression).issubset({"counter", "log", "comment"}):
-                            # Verdict maps, goto, NAT, marks and extensions need
+                            # Verdict maps, NAT, marks and extensions need
                             # a full evaluator; later tokens cannot hide them.
                             guards.append((None, "==", None))
                             action = "unknown"
                             break
                     chains[key][0].append((guards, action, target))
-                state = input_filter_state(chains, inputs)
+                state = input_filter_state(chains, inputs, proof)
                 return state, "nftables", evidence
             except (KeyError, ValueError, TypeError, AttributeError):
                 return "unknown", "nftables", evidence
 
-        def iptables_firewall_state():
+        def iptables_firewall_state(proof=None):
             code, output, error = run(["iptables", "-S"])
             evidence = command_evidence("iptables_ipv4", output, error)
             if code != 0:
@@ -485,21 +533,31 @@
                             guards.append((None, "==", None))
                             index += 1
                     chains[line[1]][0].append((guards, action, target))
-                return input_filter_state(chains, ["INPUT"]) if "INPUT" in chains else "unknown", "iptables", evidence
+                return input_filter_state(chains, ["INPUT"], proof) if "INPUT" in chains else "unknown", "iptables", evidence
             except (ValueError, KeyError, IndexError):
                 return "unknown", "iptables", evidence
 
         def detect_firewall():
             managers = [ufw_firewall_state(), firewalld_firewall_state()]
-            filters = [nftables_firewall_state(), iptables_firewall_state()]
+            proofs = {"nftables": {}, "iptables": {}}
+            filters = [nftables_firewall_state(proofs["nftables"]), iptables_firewall_state(proofs["iptables"])]
             states = managers + filters
-            evidence = "; ".join(item[2] for item in states)
+            evidence = "scope=local_input; packet_model=new_non_loopback_non_dnat_tcp_udp; evaluation=conditional_ruleset_path; external_reachability=unverified; "
+            evidence += "filter_coverage={}; ".format(",".join("{}:{}".format(item[1], item[0]) for item in filters))
+            evidence += "filter_proofs={}; ".format(json.dumps(proofs, sort_keys=True, separators=(",", ":")))
+            evidence += "; ".join(item[2] for item in states)
+            # nft and iptables can overlap or rewrite each other's INPUT traffic.
+            # Neither an unreadable filter nor opaque rules may be bypassed by
+            # a positive observation from the other frontend. Missing tools are
+            # distinct and still permit the bounded, explicitly scoped fallback.
+            if any(item[0] == "unknown" for item in filters):
+                return False, False, "incomplete_reason=unresolved_or_unreadable_packet_filter; " + evidence
             active = next((item for item in filters if item[0] == "active"), None)
             if active:
                 manager = [item for item in managers if item[0] == "active"]
                 if len(manager) > 1:
                     return False, False, "multiple_active_managers; " + evidence
-                return True, True, "backend={}; scope=local_input; external_reachability=unverified; {}".format(manager[0][1] if manager else active[1], evidence)
+                return True, True, "backend={}; {}".format(manager[0][1] if manager else active[1], evidence)
             # Never turn an inaccessible firewall manager into an "inactive"
             # result. It is safer to leave the audit partial than to make a
             # positive claim about a protected host.
@@ -692,11 +750,11 @@
             incomplete_checks.append("firewall_active")
         findings.append(finding(
             "firewall_active",
-            "Обнаружена фильтрация входящего трафика INPUT" if firewall_active else "Фильтрация входящего трафика INPUT не подтверждена",
+            "Найден ограничивающий путь INPUT для новых TCP/UDP-пакетов вне loopback без DNAT" if firewall_active else "INPUT разрешает новые TCP/UDP-пакеты вне loopback без DNAT" if firewall_known else "Оценка INPUT для новых TCP/UDP-пакетов вне loopback без DNAT неполна",
             "Сеть",
             "medium",
             "passed" if firewall_active else "failed" if firewall_known else "manual",
-            "Проверяются правила локального INPUT, включая порядок правил и переходы по цепочкам. Работа UFW/firewalld сама по себе не доказывает фильтрацию. Сложные неподдержанные условия требуют ручной оценки. Проверка не подтверждает внешнюю доступность портов, FORWARD, контейнерные сети или полноту защиты всех адресов и протоколов.",
+            "Оценивается условный путь нового TCP/UDP-пакета через локальный INPUT, вне loopback и без DNAT. passed требует доказанного запрета; failed означает разрешение всех портов в этой модели. Учитываются порядок правил, jump/goto/return и возможные ветви условий. Неподдержанные действия, непрочитанные packet filters или предел обхода сохраняют manual. Работа UFW/firewalld сама по себе не доказывает фильтрацию. Проверка не доказывает существование или внешнюю достижимость такого пакета, фильтрацию INVALID/ESTABLISHED, DNAT, ICMP, FORWARD, контейнерных сетей или полноту защиты хоста.",
             "Настройте применяемый в вашей ОС firewall по утверждённой политике и сверяйте доступные порты внешним Nmap.",
             firewall_evidence,
         ))
@@ -1067,6 +1125,7 @@
             "scanner": {"source": "agentless", "partial": bool(incomplete_checks), "incompleteChecks": sorted(set(incomplete_checks))},
             "agentless": {
                 "version": rules.get("audit_rules_version", "0.2.0"),
+                "evaluatorVersion": "1.2.0",
                 "control": "ansible",
                 "persistentAgent": False,
                 "rulesFile": os.environ.get("AUDIT_RULES_FILE", "ansible/audit-rules/basic-linux.yml"),

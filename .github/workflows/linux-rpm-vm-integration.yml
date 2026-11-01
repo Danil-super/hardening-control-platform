@@ -7,6 +7,9 @@ on:
       - .github/workflows/linux-rpm-vm-integration.yml
       - deployment/tests/linux_rpm_vm_integration.*
       - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/verify_firewall_audit_normalization.mjs
+      - deployment/tests/test_firewall_audit_control.py
+      - deployment/tests/firewall_audit_normalization.test.mjs
       - deployment/tests/fixtures/linux-package-controls.json
       - ansible/scripts/**
       - ansible/playbooks/**
@@ -25,6 +28,9 @@ on:
       - .github/workflows/linux-rpm-vm-integration.yml
       - deployment/tests/linux_rpm_vm_integration.*
       - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/verify_firewall_audit_normalization.mjs
+      - deployment/tests/test_firewall_audit_control.py
+      - deployment/tests/firewall_audit_normalization.test.mjs
       - deployment/tests/fixtures/linux-package-controls.json
       - ansible/scripts/**
       - ansible/playbooks/**
@@ -59,6 +65,10 @@ jobs:
       - name: Install production SBOM dependencies
         working-directory: web
         run: npm ci --ignore-scripts
+      - name: Verify native firewall acceptance guards without host mutations
+        run: |
+          python3 -m unittest discover -s deployment/tests -p 'test_firewall_audit_control.py'
+          node --test deployment/tests/firewall_audit_normalization.test.mjs
       - name: Install disposable VM and SSH controller tools
         run: |
           set -euo pipefail
