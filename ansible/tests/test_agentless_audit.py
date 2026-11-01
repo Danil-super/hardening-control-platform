@@ -5,7 +5,9 @@ import ast
 import io
 import json
 import os
+import re
 import subprocess
+import tempfile
 import textwrap
 import unittest
 from pathlib import Path
@@ -13,7 +15,7 @@ from unittest.mock import patch
 
 
 PLAYBOOK = Path(__file__).resolve().parents[1] / "playbooks" / "agentless-audit.yml"
-SOURCE = textwrap.dedent(PLAYBOOK.read_text().split("<<'PY'\n", 1)[1].split("        PY\n", 1)[0])
+SOURCE = textwrap.dedent(re.split(r"(?m)^[ \t]*PY[ \t]*$", PLAYBOOK.read_text().split("<<'PY'\n", 1)[1], maxsplit=1)[0])
 RULES = {
     "dangerous_ports": [{"port": 23, "protocol": "tcp", "risk": "high", "title": "Telnet", "recommendation": "Disable telnet"}],
     "ssh_rules": {}, "service_rules": [{"service": "auditd", "title": "Audit logging", "recommendation": "Enable auditd"}],
@@ -748,6 +750,31 @@ class AgentlessAuditTest(unittest.TestCase):
 
     def test_target_program_preserves_python35_syntax(self):
         ast.parse(SOURCE, feature_version=(3, 5))
+
+    def test_ansible_parses_the_entire_heredoc_without_splitting_python_comments(self):
+        with tempfile.TemporaryDirectory(prefix="hcp-agentless-parser-") as temporary, patch.dict(os.environ, {"ANSIBLE_LOCAL_TEMP": temporary}):
+            try:
+                import yaml
+                from ansible.parsing.mod_args import ModuleArgsParser
+                from ansible.errors import AnsibleParserError
+            except ImportError:
+                self.skipTest("Ansible controller dependencies unavailable")
+            tasks = yaml.safe_load(PLAYBOOK.read_text())[0]["tasks"]
+            task = next(item for item in tasks if item.get("name") == "Build agentless audit JSON")
+            action, arguments, _ = ModuleArgsParser(task).parse(skip_action_validation=True)
+            self.assertEqual(action, "ansible.builtin.shell")
+            self.assertEqual(arguments["executable"], "/bin/sh")
+            command = arguments["cmd"]
+            self.assertEqual(command, task["ansible.builtin.shell"]["cmd"])
+            self.assertEqual(command.split("<<'PY'\n", 1)[1].rsplit("\nPY\n", 1)[0].rstrip(), SOURCE.rstrip())
+            # A negative control executes the actual Ansible argument parser:
+            # free-form comments are tokenized as arguments, despite Python
+            # correctly treating their apostrophes as inert comment text.
+            probe = "\"$HCP_TARGET_PYTHON\" - <<'PY'\n# unmatched comment apostrophe: '\nprint('ok')\nPY\n"
+            with self.assertRaises(AnsibleParserError):
+                ModuleArgsParser({"ansible.builtin.shell": probe}).parse(skip_action_validation=True)
+            _, preserved, _ = ModuleArgsParser({"ansible.builtin.shell": {"cmd": probe}}).parse(skip_action_validation=True)
+            self.assertEqual(preserved["cmd"], probe)
 
     def test_evaluator_version_is_independent_of_profile_rules_provenance(self):
         for version in ("1.1.0", "custom-policy-42"):
