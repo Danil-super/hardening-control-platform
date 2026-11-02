@@ -59,6 +59,21 @@ export type Finding = {
   };
   status: FindingStatus;
   cveApplicability?: CveApplicabilityAssessment;
+  /** Operator-pinned OSV candidate only; never vendor-attested. */
+  ubuntuOsvPreview?: {
+    schemaVersion: 1;
+    status: "provisional" | "unavailable";
+    reason: string;
+    candidateVerdict: "affected" | "fixed_or_not_affected" | "needs_review" | "unknown";
+    trustedVerdict: "unknown";
+    snapshotSha256: string;
+    sourceRevision: string | null;
+    sourcePackage: string;
+    sourceVersion: string;
+    conflictingWithTrivy: boolean;
+    publisherAuthenticated: false;
+    remediationAuthorized: false;
+  };
   source: FindingSource;
   description: string;
   recommendation: string;

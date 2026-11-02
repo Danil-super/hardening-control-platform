@@ -14,6 +14,10 @@ import { compileServerModules } from "./_typescript-loader.mjs";
 const compiledOutputGuard = compileServerModules(["trivy-output"]);
 const outputGuard = await import(compiledOutputGuard.url("trivy-output"));
 test.after(() => rmSync(compiledOutputGuard.directory, { recursive: true, force: true }));
+const compiledPreview = compileServerModules(["ubuntu-osv-preview"]);
+const previewModule = await import(compiledPreview.url("ubuntu-osv-preview"));
+const { importPinnedUbuntuOsvSnapshot, canonicalUbuntuOsvReference } = await import(compiledPreview.url("vendor-advisory-snapshot"));
+test.after(() => rmSync(compiledPreview.directory, { recursive: true, force: true }));
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -42,6 +46,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
   const mocks = {
     "@/lib/linux-platform": platform,
     "@/lib/trivy-output": outputGuard,
+    "@/lib/ubuntu-osv-preview": previewModule,
     "@/lib/ansible-control": { getStateDir: () => dir, getRepoRoot: () => path.resolve(webDir, "..") },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
     "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), appendAuditEvent: () => {} },
@@ -51,7 +56,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
   const report = { mode: "packages", profileId: "packages", inventoryHost: "lab-host", hostname: "different-hostname", createdAt: new Date().toISOString(), packageInventory: { packageCount: 1, manager: "dpkg", osRelease: { ID: "ubuntu", VERSION_ID: "22.04" }, error: "" }, packages: [{ name: "libssl3:amd64", version: "3.0.2-0ubuntu1", arch: "amd64", manager: "dpkg", sourceName: "openssl", sourceVersion: "3.0.2-0ubuntu1", maintainer: "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>", origin: "Ubuntu" }] };
   const save = () => writeFileSync(path.join(reports, "lab-host-packages-run1.json"), JSON.stringify(report));
   save();
-  return { ...exports, dir, reports, cache, report, save, scan: () => exports.scanPackageInventory({ hostAlias: "lab-host", reportId: "lab-host-packages-run1" }), refresh: () => exports.refreshTrivyDatabase() };
+  return { ...exports, dir, reports, cache, report, save, setPins: (value) => { env.HCP_UBUNTU_OSV_PREVIEW_PINS_JSON = value; }, scan: () => exports.scanPackageInventory({ hostAlias: "lab-host", reportId: "lab-host-packages-run1" }), refresh: () => exports.refreshTrivyDatabase() };
 }
 
 test("Trivy fixed means a vulnerable installation with a patch available", (t) => {
@@ -850,4 +855,72 @@ test("v2 foreign advisory stays visible but cannot create a complete or confirme
   assert.ok(result.report.findings.some(item => item.id === "trivy_incomplete_coverage"));
   const saved = JSON.parse(readFileSync(result.reportPath, "utf8"));
   assert.equal(saved.findings.find(item => item.id === finding.id).cveApplicability.advisory.dataSourceId, "debian");
+});
+
+
+function addPinnedOsvFixture(h, { signedOrigin = true, fixedVersion = "3.0.2-0ubuntu1" } = {}) {
+  const recordId = "UBUNTU-CVE-2023-0286";
+  const osv = {
+    schema_version: "1.7.0", id: recordId, upstream: ["CVE-2023-0286"],
+    affected: [{
+      package: { name: "openssl", ecosystem: "Ubuntu:22.04:LTS" },
+      ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: fixedVersion }] }],
+      versions: ["3.0.2-0ubuntu1"],
+    }],
+  };
+  const rawJson = JSON.stringify(osv);
+  const sha = createHash("sha256").update(rawJson).digest("hex");
+  const args = { root: h.dir, recordId, rawJson, expectedSha256: sha };
+  if (signedOrigin) args.sourceReference = canonicalUbuntuOsvReference(recordId, "a".repeat(40));
+  importPinnedUbuntuOsvSnapshot(args);
+  h.setPins(JSON.stringify({ "CVE-2023-0286": sha }));
+  return sha;
+}
+
+test("opt-in Canonical preview preserves original Trivy status, finding IDs and report coverage", async (t) => {
+  const h = harness(t, "vulnerable");
+  const sha = addPinnedOsvFixture(h);
+  const result = await h.scan();
+  const finding = result.report.findings.find(item => item.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.equal(result.partial, false);
+  assert.equal(finding.status, "failed", "Unsigned preview cannot erase a scanner failure");
+  assert.equal(finding.risk, "high");
+  assert.equal(finding.cveApplicability.verdict, "affected");
+  assert.equal(finding.ubuntuOsvPreview.status, "provisional");
+  assert.equal(finding.ubuntuOsvPreview.candidateVerdict, "fixed_or_not_affected");
+  assert.equal(finding.ubuntuOsvPreview.conflictingWithTrivy, true);
+  assert.equal(finding.ubuntuOsvPreview.trustedVerdict, "unknown");
+  assert.equal(finding.ubuntuOsvPreview.remediationAuthorized, false);
+  assert.equal(finding.ubuntuOsvPreview.snapshotSha256, sha);
+  assert.equal(finding.ubuntuOsvPreview.sourceRevision, "a".repeat(40));
+  const stats = result.report.vulnerabilityScan.ubuntuOsvPreview;
+  assert.equal(stats.annotatedFindings, 1);
+  assert.equal(stats.candidateFixed, 1);
+  assert.equal(stats.conflictingWithTrivy, 1);
+  const saved = JSON.parse(readFileSync(result.reportPath, "utf8"));
+  assert.equal(saved.findings.find(item => item.id === finding.id).ubuntuOsvPreview.candidateVerdict, "fixed_or_not_affected");
+  assert.equal(saved.vulnerabilityScan.coverage.complete, true, "Provisional evidence must not silently rewrite scanner scope");
+});
+
+test("OSV preview disabled, untrusted local origins and malformed catalog cannot invent confirmed status", async (t) => {
+  const disabled = harness(t, "vulnerable");
+  const before = await disabled.scan();
+  assert.equal(before.report.vulnerabilityScan.ubuntuOsvPreview, undefined);
+  assert.equal(before.report.findings[0].ubuntuOsvPreview, undefined);
+
+  const local = harness(t, "vulnerable");
+  addPinnedOsvFixture(local, { signedOrigin: false });
+  const unverified = await local.scan();
+  const flagged = unverified.report.findings.find(item => item.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.equal(flagged.ubuntuOsvPreview.status, "unavailable");
+  assert.equal(flagged.ubuntuOsvPreview.candidateVerdict, "unknown");
+  assert.equal(flagged.status, "failed");
+  assert.equal(unverified.report.vulnerabilityScan.ubuntuOsvPreview.unavailable, 1);
+
+  const broken = harness(t, "vulnerable");
+  broken.setPins('{"CVE-2023-0286":"../../secret"}');
+  const rejected = await broken.scan();
+  assert.equal(rejected.report.vulnerabilityScan.ubuntuOsvPreview.state, "invalid_catalog");
+  assert.equal(rejected.report.vulnerabilityScan.ubuntuOsvPreview.annotatedFindings, 0);
+  assert.equal(rejected.report.findings.find(item => item.id.startsWith("trivy_CVE-2023-0286_")).status, "failed");
 });
