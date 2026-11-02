@@ -56,7 +56,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
   const report = { mode: "packages", profileId: "packages", inventoryHost: "lab-host", hostname: "different-hostname", createdAt: new Date().toISOString(), packageInventory: { packageCount: 1, manager: "dpkg", osRelease: { ID: "ubuntu", VERSION_ID: "22.04" }, error: "" }, packages: [{ name: "libssl3:amd64", version: "3.0.2-0ubuntu1", arch: "amd64", manager: "dpkg", sourceName: "openssl", sourceVersion: "3.0.2-0ubuntu1", maintainer: "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>", origin: "Ubuntu" }] };
   const save = () => writeFileSync(path.join(reports, "lab-host-packages-run1.json"), JSON.stringify(report));
   save();
-  return { ...exports, dir, reports, cache, report, save, setPins: (value) => { env.HCP_UBUNTU_OSV_PREVIEW_PINS_JSON = value; }, scan: () => exports.scanPackageInventory({ hostAlias: "lab-host", reportId: "lab-host-packages-run1" }), refresh: () => exports.refreshTrivyDatabase() };
+  return { ...exports, dir, reports, cache, report, save, setPins: (value) => { env.HCP_UBUNTU_OSV_PREVIEW_PINS_JSON = value; }, setImportAgeHours: (value) => { env.HCP_UBUNTU_OSV_MAX_IMPORT_AGE_HOURS = value; }, scan: () => exports.scanPackageInventory({ hostAlias: "lab-host", reportId: "lab-host-packages-run1" }), refresh: () => exports.refreshTrivyDatabase() };
 }
 
 test("Trivy fixed means a vulnerable installation with a patch available", (t) => {
@@ -858,10 +858,12 @@ test("v2 foreign advisory stays visible but cannot create a complete or confirme
 });
 
 
-function addPinnedOsvFixture(h, { signedOrigin = true, fixedVersion = "3.0.2-0ubuntu1" } = {}) {
+function addPinnedOsvFixture(h, { signedOrigin = true, fixedVersion = "3.0.2-0ubuntu1", modified = new Date().toISOString(), withdrawn } = {}) {
   const recordId = "UBUNTU-CVE-2023-0286";
   const osv = {
     schema_version: "1.7.0", id: recordId, upstream: ["CVE-2023-0286"],
+    published: "2023-02-01T00:00:00Z", modified,
+    ...(withdrawn ? { withdrawn } : {}),
     affected: [{
       package: { name: "openssl", ecosystem: "Ubuntu:22.04:LTS" },
       ranges: [{ type: "ECOSYSTEM", events: [{ introduced: "0" }, { fixed: fixedVersion }] }],
@@ -893,6 +895,8 @@ test("opt-in Canonical preview preserves original Trivy status, finding IDs and 
   assert.equal(finding.ubuntuOsvPreview.remediationAuthorized, false);
   assert.equal(finding.ubuntuOsvPreview.snapshotSha256, sha);
   assert.equal(finding.ubuntuOsvPreview.sourceRevision, "a".repeat(40));
+  assert.equal(finding.ubuntuOsvPreview.lifecycle.state, "import_window_ok");
+  assert.equal(finding.ubuntuOsvPreview.lifecycle.publisherFreshnessVerified, false);
   const stats = result.report.vulnerabilityScan.ubuntuOsvPreview;
   assert.equal(stats.annotatedFindings, 1);
   assert.equal(stats.candidateFixed, 1);
@@ -923,4 +927,51 @@ test("OSV preview disabled, untrusted local origins and malformed catalog cannot
   assert.equal(rejected.report.vulnerabilityScan.ubuntuOsvPreview.state, "invalid_catalog");
   assert.equal(rejected.report.vulnerabilityScan.ubuntuOsvPreview.annotatedFindings, 0);
   assert.equal(rejected.report.findings.find(item => item.id.startsWith("trivy_CVE-2023-0286_")).status, "failed");
+});
+
+
+
+test("withdrawn and temporally inconsistent Ubuntu OSV snapshots do not produce a fixed candidate", async (t) => {
+  const revoked = harness(t, "vulnerable");
+  addPinnedOsvFixture(revoked, { withdrawn: "2026-10-30T00:00:00Z" });
+  const withdrawnFinding = (await revoked.scan()).report.findings.find(item => item.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.equal(withdrawnFinding.status, "failed");
+  assert.equal(withdrawnFinding.ubuntuOsvPreview.status, "unavailable");
+  assert.equal(withdrawnFinding.ubuntuOsvPreview.candidateVerdict, "unknown");
+  assert.equal(withdrawnFinding.ubuntuOsvPreview.lifecycle.state, "withdrawn_record");
+
+  const future = harness(t, "vulnerable");
+  addPinnedOsvFixture(future, { modified: "2099-12-31T00:00:00Z" });
+  const futureReport = await future.scan();
+  const futureFinding = futureReport.report.findings.find(item => item.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.equal(futureFinding.ubuntuOsvPreview.lifecycle.state, "future_timestamps");
+  assert.equal(futureFinding.ubuntuOsvPreview.candidateVerdict, "unknown");
+  assert.equal(futureFinding.cveApplicability.verdict, "affected");
+  assert.equal(futureReport.report.vulnerabilityScan.ubuntuOsvPreview.invalidTimestamps, 1);
+
+  const stale = harness(t, "vulnerable");
+  const sha = addPinnedOsvFixture(stale);
+  const pathname = path.join(stale.dir, "vendor-advisory-snapshots", "v1", sha + ".manifest.json");
+  const manifest = JSON.parse(readFileSync(pathname, "utf8"));
+  manifest.importedAt = "2026-01-01T00:00:00Z";
+  writeFileSync(pathname, JSON.stringify(manifest));
+  const staleReport = await stale.scan();
+  const staleFinding = staleReport.report.findings.find(item => item.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.equal(staleFinding.ubuntuOsvPreview.lifecycle.state, "stale_import");
+  assert.equal(staleFinding.ubuntuOsvPreview.candidateVerdict, "unknown");
+  assert.equal(staleReport.report.vulnerabilityScan.ubuntuOsvPreview.staleImport, 1);
+  assert.equal(staleFinding.status, "failed");
+});
+
+
+test("invalid configurable OSV age policy fails closed but never fails the native Trivy scan", async (t) => {
+  const h = harness(t, "vulnerable");
+  addPinnedOsvFixture(h);
+  h.setImportAgeHours("-1");
+  const result = await h.scan();
+  const finding = result.report.findings.find(item => item.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.equal(finding.status, "failed");
+  assert.equal(finding.ubuntuOsvPreview, undefined);
+  assert.equal(result.report.vulnerabilityScan.ubuntuOsvPreview.state, "invalid_policy");
+  assert.equal(result.partial, false);
 });

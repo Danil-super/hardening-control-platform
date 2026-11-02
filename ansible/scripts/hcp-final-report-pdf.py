@@ -329,6 +329,13 @@ def render(snapshot):
                  esc(candidates.get(entry.get('candidateVerdict'), 'неизвестно'), 140),
                  esc(entry.get('candidateStatus'), 32), esc(entry.get('candidateReason'), 120),
                  'РАСХОЖДЕНИЕ С TRIVY.' if entry.get('conflictingWithTrivy') else ''), small))
+            if entry.get('lifecycleState'):
+                story.append(Paragraph(
+                    'Состояние OSV: %s; основание: %s; изменён: %s; локальный импорт: %s ч; '
+                    'актуальность у издателя НЕ подтверждена.' %
+                    (esc(entry.get('lifecycleState'), 80), esc(entry.get('lifecycleReason'), 120),
+                     esc(entry.get('recordModifiedAt'), 70),
+                     esc(entry.get('lifecycleImportAgeHours'), 30)), small))
             story.append(Paragraph(
                 'Исходный JSON: %s · находка: %s · SHA-256 JSON: %s. '
                 'SHA-256 OSV: %s · ревизия Git: %s.' %

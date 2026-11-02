@@ -73,6 +73,7 @@ export type Finding = {
     conflictingWithTrivy: boolean;
     publisherAuthenticated: false;
     remediationAuthorized: false;
+    lifecycle?: import("@/lib/ubuntu-osv-lifecycle").UbuntuOsvLifecycle;
   };
   source: FindingSource;
   description: string;
