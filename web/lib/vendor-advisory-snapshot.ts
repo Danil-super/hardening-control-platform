@@ -30,7 +30,11 @@ function rootDirectory(root: string): string {
   // Final path components must be directories, not symlinks.
   const directory = path.join(root, "vendor-advisory-snapshots", "v1");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  for (const name of [root, path.join(root, "vendor-advisory-snapshots"), directory]) {
+  // HCP state root may be 0755 on an existing installation; the new
+  // child directories must be private regardless of the root mode.
+  const rootInfo = lstatSync(root);
+  if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) throw new Error("Invalid HCP state root");
+  for (const name of [path.join(root, "vendor-advisory-snapshots"), directory]) {
     const st = lstatSync(name);
     if (!st.isDirectory() || st.isSymbolicLink() || (st.mode & 0o077) !== 0) {
       throw new Error("Advisory state directory is not private or is a symbolic link");
@@ -74,13 +78,13 @@ function readPrivateFile(filename: string, limit: number): Buffer {
 
 function atomicCreate(directory: string, finalPath: string, content: Buffer): void {
   const temporary = path.join(directory, `.advisory-${randomUUID()}.tmp`);
-  const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | O_NOFOLLOW, 0o600);
   try {
-    fchmodSync(fd, 0o600);
-    writeFileSync(fd, content);
-    fsyncSync(fd);
-  } finally { closeSync(fd); }
-  try {
+    const fd = openSync(temporary, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | O_NOFOLLOW, 0o600);
+    try {
+      fchmodSync(fd, 0o600);
+      writeFileSync(fd, content);
+      fsyncSync(fd);
+    } finally { closeSync(fd); }
     // Hard link publishes atomically and refuses replacement of an existing
     // immutable snapshot. The matching SHA is checked again by the reader.
     try { linkSync(temporary, finalPath); }
