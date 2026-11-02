@@ -707,6 +707,8 @@ test("CVE applicability v1 retains vendor source, installed package, distro, dat
   assert.equal(finding.cveApplicability.schemaVersion, 1);
   assert.equal(finding.cveApplicability.verdict, "affected");
   assert.equal(finding.cveApplicability.confidence, "metadata-consistent");
+  assert.equal(result.report.vulnerabilityScan.vendorAssessment.verified, false, "metadata cannot authenticate the vendor");
+  assert.equal(result.report.vulnerabilityScan.vendorAssessment.metadataConsistent, true);
   assert.equal(finding.cveApplicability.reason, "scanner_affected");
   assert.equal(finding.cveApplicability.distribution.id, "ubuntu");
   assert.equal(finding.cveApplicability.package.architecture, "amd64");
