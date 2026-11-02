@@ -18,7 +18,7 @@ test.after(() => rmSync(compiledOutputGuard.directory, { recursive: true, force:
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const source = readFileSync(path.join(webDir, "lib/vulnerability-scan.ts"), "utf8");
-const compiled = ts.transpileModule(source + "\nexport const testing = { trivyFinding, packagePurl, writePackageSbom, scanCoverage, packageProvenance, findingProvenance };", { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+const compiled = ts.transpileModule(source + "\nexport const testing = { trivyFinding, packagePurl, writePackageSbom, scanCoverage, packageProvenance, findingProvenance, assessCveApplicability };", { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
 const platform = {};
 vm.runInNewContext(ts.transpileModule(readFileSync(path.join(webDir, "lib/linux-platform.ts"), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -695,4 +695,78 @@ test("native manager mismatch and malformed ecosystem metadata cannot bypass com
     await assert.rejects(fixture.scan(), /сведения о полноте/);
     assert.equal(existsSync(path.join(fixture.dir, "args.json")), false);
   }
+});
+
+
+test("CVE applicability v1 retains vendor source, installed package, distro, database and original finding ID", async (t) => {
+  const h = harness(t, "vulnerable");
+  const result = await h.scan();
+  const finding = result.report.findings.find((item) => item.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.ok(finding);
+  assert.equal(finding.status, "failed");
+  assert.equal(finding.cveApplicability.schemaVersion, 1);
+  assert.equal(finding.cveApplicability.verdict, "affected");
+  assert.equal(finding.cveApplicability.confidence, "metadata-consistent");
+  assert.equal(finding.cveApplicability.reason, "scanner_affected");
+  assert.equal(finding.cveApplicability.distribution.id, "ubuntu");
+  assert.equal(finding.cveApplicability.package.architecture, "amd64");
+  assert.equal(finding.cveApplicability.package.sourceName, "openssl");
+  assert.equal(finding.cveApplicability.advisory.scannerStatus, "fixed");
+  assert.equal(finding.cveApplicability.advisory.dataSourceId, "ubuntu");
+  assert.equal(finding.cveApplicability.database.sha256, result.report.vulnerabilityScan.sourceEvidence.before.database.sha256);
+  assert.equal(finding.cveApplicability.database.freshness, "fresh");
+  const saved = JSON.parse(readFileSync(result.reportPath, "utf8"));
+  assert.deepEqual(saved.findings[0].cveApplicability, finding.cveApplicability);
+  assert.equal(saved.findings[0].id, finding.id);
+});
+
+test("CVE applicability v1 never promotes third-party or unknown-origin packages", async (t) => {
+  for (const origin of ["Unrelated repository", ""]) {
+    const h = harness(t, "vulnerable");
+    h.report.packages[0].origin = origin;
+    h.report.packages[0].maintainer = "Independent Builder <builder@example.org>";
+    h.save();
+    const result = await h.scan();
+    const finding = result.report.findings.find((item) => item.id.startsWith("trivy_CVE-2023-0286_"));
+    assert.equal(finding.status, "manual");
+    assert.equal(finding.cveApplicability.verdict, "unknown");
+    assert.equal(finding.cveApplicability.reason, "package_origin_unverified");
+    assert.equal(finding.cveApplicability.confidence, "unverified");
+    assert.equal(result.partial, true);
+  }
+});
+
+test("CVE applicability v1 distinguishes unsupported OS, ambiguous package, missing advisory and EOL", (t) => {
+  const h = harness(t);
+  const v = { VulnerabilityID: "CVE-2026-9999", PkgName: "libssl3", InstalledVersion: "3.0.2-0ubuntu1",
+    PkgIdentifier: { BOMRef: h.testing.packagePurl(h.report.packages[0], h.report) }, Status: "fixed",
+    DataSource: { ID: "ubuntu" } };
+  const sourceEvidence = { status: "unchanged", before: { database: { sha256: "a".repeat(64) } } };
+  const fresh = { status: "fresh" };
+  const assess = () => h.testing.assessCveApplicability(v, h.report, sourceEvidence, fresh, "2026-11-02T00:00:00Z");
+  assert.equal(assess().verdict, "affected");
+  v.Status = "not_affected";
+  assert.equal(assess().verdict, "not_affected");
+  v.Status = "end_of_life";
+  assert.equal(assess().verdict, "under_investigation");
+  v.Status = "fixed";
+  delete v.DataSource;
+  assert.equal(assess().reason, "advisory_source_missing");
+  v.DataSource = { ID: "ubuntu" };
+  h.report.packages.push({ ...h.report.packages[0] });
+  assert.equal(assess().reason, "package_identity_ambiguous");
+  h.report.packages.pop();
+  h.report.packageInventory.osRelease.ID = "astra";
+  assert.equal(assess().reason, "unsupported_os_advisory");
+});
+
+test("CVE applicability v1 records uncertain scanner source rather than a verified verdict", (t) => {
+  const h = harness(t);
+  const v = { VulnerabilityID: "CVE-2026-9999", PkgName: "libssl3", InstalledVersion: "3.0.2-0ubuntu1",
+    PkgIdentifier: { BOMRef: h.testing.packagePurl(h.report.packages[0], h.report) },
+    Status: "affected", DataSource: { ID: "ubuntu" } };
+  const result = h.testing.assessCveApplicability(v, h.report, { status: "changed" }, { status: "stale" }, "2026-11-02T00:00:00Z");
+  assert.equal(result.verdict, "unknown");
+  assert.equal(result.confidence, "unverified");
+  assert.equal(result.reason, "database_not_fresh_or_verified");
 });
