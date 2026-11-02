@@ -291,6 +291,52 @@ def render(snapshot):
                 story.append(Paragraph('• ' + esc(item.get('id'), 180) + ' · ' + esc(item.get('mode'), 80) + ' · ' + esc(item.get('createdAt'), 100) + ' · SHA-256 ' + esc(item.get('sha256'), 90)
                     + '<br/>' + esc(asset_binding_label(item.get('assetBinding')), 300), small))
 
+    vendor_evidence = snapshot.get('vendorAdvisoryEvidence', [])
+    if not isinstance(vendor_evidence, list):
+        raise ValueError('Недопустимый состав OSV-доказательств.')
+    if vendor_evidence:
+        story.append(Paragraph('6. Предварительная сверка CVE с Ubuntu OSV', heading))
+        story.append(Paragraph(
+            'Ниже приведены все предварительные наблюдения CVE×пакет из исходных JSON-отчётов. '
+            'OSV-снимок выбран оператором по SHA-256 и Git-ревизии; его подлинность и актуальность '
+            'как бюллетеня Canonical не подтверждены. Предварительное совпадение с исправленной версией '
+            'не отменяет срабатывание Trivy и не разрешает автоматическое исправление.', body))
+        story.append(Paragraph(
+            'Количество записей: %d. Контрольная сумма проекции: SHA-256 %s. '
+            'Каждая запись привязана к исходному отчёту и точному идентификатору находки. '
+            'Полный машинный состав сохранён в защищённом снимке итогового отчёта.' %
+            (len(vendor_evidence), clean(snapshot.get('vendorAdvisoryEvidenceSha256'), 64)), small))
+        candidates = {
+            'affected': 'затронут по сохранённому снимку',
+            'fixed_or_not_affected': 'исправлен по версии в снимке (не подтверждено)',
+            'needs_review': 'требует проверки',
+            'unknown': 'неизвестно',
+        }
+        for index, entry in enumerate(vendor_evidence, 1):
+            if not isinstance(entry, dict) or entry.get('trustedVerdict') != 'unknown' \
+                    or entry.get('publisherAuthenticated') is not False \
+                    or entry.get('remediationAuthorized') is not False:
+                raise ValueError('OSV-доказательство не соответствует ограничениям доверия.')
+            story.append(Paragraph(
+                '%d. <b>%s</b> · бинарный пакет %s %s · исходный пакет %s %s' %
+                (index, esc(entry.get('cveId'), 40), esc(entry.get('packageName'), 180),
+                 esc(entry.get('installedVersion'), 256), esc(entry.get('sourcePackage'), 180),
+                 esc(entry.get('sourceVersion'), 256)), small))
+            story.append(Paragraph(
+                'Trivy: статус %s; применимость %s. Ubuntu OSV: %s; состояние %s; основание %s. '
+                '%s Доверенный вывод: неизвестно.' %
+                (esc(entry.get('scannerStatus'), 32), esc(entry.get('trivyApplicability'), 80),
+                 esc(candidates.get(entry.get('candidateVerdict'), 'неизвестно'), 140),
+                 esc(entry.get('candidateStatus'), 32), esc(entry.get('candidateReason'), 120),
+                 'РАСХОЖДЕНИЕ С TRIVY.' if entry.get('conflictingWithTrivy') else ''), small))
+            story.append(Paragraph(
+                'Исходный JSON: %s · находка: %s · SHA-256 JSON: %s. '
+                'SHA-256 OSV: %s · ревизия Git: %s.' %
+                (esc(entry.get('sourceReportId'), 180), esc(entry.get('findingId'), 256),
+                 esc(entry.get('sourceReportSha256'), 64),
+                 esc(entry.get('snapshotSha256'), 64),
+                 esc(entry.get('sourceRevision'), 40)), small))
+
     def footer(canvas, document):
         canvas.saveState()
         canvas.setFont('HCPDejaVu', 7)

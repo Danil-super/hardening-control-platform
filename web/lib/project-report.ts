@@ -3,7 +3,8 @@ import { spawn } from "node:child_process";
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { buildHostCorrelation } from "@/lib/audit-correlation";
-import { hashAnsibleReport, listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
+import { hashAnsibleReport, listAnsibleReports, readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
+import { projectVendorAdvisoryEvidence } from "@/lib/vendor-crosscheck-report";
 import { resolvePlanSeverity } from "@/lib/remediation-plan-evidence";
 import type { AssetBinding } from "@/lib/asset-binding";
 import { hasActivePlanDecision, planObservationState } from "@/lib/remediation-plan-observations";
@@ -163,6 +164,23 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
     scanScope: report.scanScope ?? null, portCoverage: report.portCoverage ?? null, coverageComplete: report.coverageComplete ?? null,
   })).sort((left, right) => left.id.localeCompare(right.id));
   const sourceManifestSha256 = sha256(canonical({ version: 1, hostAlias, sourceManifest }));
+  // Only original CVE report JSON is authoritative for the paired Trivy/OSV
+  // evidence. The correlation layer may collapse repeated observations.
+  const vendorAdvisorySources = sourceManifest.filter((source) => source.mode === "vulnerabilities").map((source) => {
+    const original = readAnsibleReport(source.id);
+    if (!original) {
+      throw new Error("Исходный CVE-отчёт недоступен для сохранения OSV-доказательств.");
+    }
+    // Historical SBOM-only CVE reports may have no findings property at all.
+    // An explicitly present but malformed findings value must still fail closed.
+    const rawFindings = (original.raw as { findings?: unknown }).findings;
+    if (rawFindings !== undefined && !Array.isArray(rawFindings)) {
+      throw new Error("Исходные CVE-находки имеют недопустимый формат.");
+    }
+    return { reportId: source.id, reportSha256: source.sha256 ?? "", findings: rawFindings ?? [] };
+  });
+  const vendorAdvisoryEvidence = projectVendorAdvisoryEvidence(vendorAdvisorySources);
+  const vendorAdvisoryEvidenceSha256 = sha256(canonical({ version: 1, hostAlias, vendorAdvisoryEvidence }));
   const correlation = buildHostCorrelation(hostAlias);
   const now = Date.parse(createdAt);
   const current = new Map(correlation?.findings.map((finding) => [finding.id, finding]));
@@ -195,6 +213,7 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   const snapshot: Record<string, unknown> = {
     version: 1, id, createdAt, hostAlias, subject, scope: { auditModes: Array.from(new Set(reports.map((report) => report.mode))).sort() },
     coverage, lostCoverage: correlation?.lostCoverage ?? [], findings, unplannedFindings, transactions, integrity: verifyAuditChain(), sourceManifest, sourceManifestSha256,
+    vendorAdvisoryEvidence, vendorAdvisoryEvidenceSha256,
   };
   const pdf = await runPdfRenderer(snapshot);
   const pdfSha256 = sha256(pdf);
