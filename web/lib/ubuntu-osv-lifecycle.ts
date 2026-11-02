@@ -30,7 +30,10 @@ const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 function utcTime(raw: unknown): { valid: boolean; ms: number | null; iso: string | null } {
   if (typeof raw !== "string" || !RFC3339_UTC.test(raw)) return { valid: false, ms: null, iso: null };
   const ms = Date.parse(raw);
-  return Number.isFinite(ms) ? { valid: true, ms, iso: raw } : { valid: false, ms: null, iso: null };
+  // Date.parse normalizes impossible dates (for example February 30) on
+  // some runtimes; require the UTC calendar components to round-trip.
+  return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 19) === raw.slice(0, 19)
+    ? { valid: true, ms, iso: raw } : { valid: false, ms: null, iso: null };
 }
 
 export function evaluateUbuntuOsvLifecycle(input: {
