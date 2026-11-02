@@ -27,7 +27,7 @@ export function canonicalUbuntuOsvReference(recordId: string, revision: string):
   if (!CVE.test(recordId) || !/^[a-f0-9]{40}$/.test(revision)) {
     throw new Error("Invalid Canonical Ubuntu record ID or pinned commit");
   }
-  const year = recordId.match(/^UBUNTU-CVE-(\\d{4})-/)?.[1];
+  const year = recordId.match(/^UBUNTU-CVE-(\d{4})-/)?.[1];
   if (!year) throw new Error("Invalid Ubuntu CVE year");
   const resourcePath = `osv/cve/${year}/${recordId}.json`;
   return {
