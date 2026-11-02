@@ -18,7 +18,7 @@ test.after(() => rmSync(compiledOutputGuard.directory, { recursive: true, force:
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const source = readFileSync(path.join(webDir, "lib/vulnerability-scan.ts"), "utf8");
-const compiled = ts.transpileModule(source + "\nexport const testing = { trivyFinding, packagePurl, writePackageSbom, scanCoverage, packageProvenance, findingProvenance, assessCveApplicability };", { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+const compiled = ts.transpileModule(source + "\nexport const testing = { trivyFinding, packagePurl, writePackageSbom, scanCoverage, packageProvenance, findingProvenance, assessCveApplicability, advisorySourceMatch };", { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
 const platform = {};
 vm.runInNewContext(ts.transpileModule(readFileSync(path.join(webDir, "lib/linux-platform.ts"), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -772,4 +772,63 @@ test("CVE applicability v1 records uncertain scanner source rather than a verifi
   assert.equal(result.verdict, "unknown");
   assert.equal(result.confidence, "unverified");
   assert.equal(result.reason, "database_not_fresh_or_verified");
+});
+
+test("v2 source ownership rejects foreign, generic and spoofed advisory IDs", (t) => {
+  const h = harness(t);
+  const pkg = h.report.packages[0];
+  const v = { VulnerabilityID: "CVE-2026-12345", PkgName: "libssl3", InstalledVersion: pkg.version,
+    PkgIdentifier: { BOMRef: h.testing.packagePurl(pkg, h.report) }, Status: "fixed", DataSource: { ID: "ubuntu" } };
+  const source = { status: "unchanged", before: { database: { sha256: "f".repeat(64) } } };
+  const assess = () => h.testing.assessCveApplicability(v, h.report, source, { status: "fresh" }, "2026-11-02T14:00:00Z");
+  assert.equal(assess().advisory.sourceMatch, "matched");
+  assert.equal(assess().verdict, "affected");
+  for (const id of ["debian", "redhat", "nvd", "ghsa", "ubuntu-oval", "Ubuntu", "ubuntu.attacker"]) {
+    v.DataSource.ID = id;
+    assert.equal(assess().verdict, "unknown", id);
+    assert.equal(assess().reason, "advisory_source_mismatch", id);
+    assert.equal(assess().confidence, "unverified", id);
+    assert.equal(assess().advisory.sourceMatch, "mismatch", id);
+  }
+  delete v.DataSource;
+  assert.equal(assess().advisory.sourceMatch, "missing");
+  assert.equal(assess().reason, "advisory_source_missing");
+  v.DataSource = { ID: "ubuntu" };
+  v.InstalledVersion = "wrong-version";
+  assert.equal(assess().reason, "package_identity_mismatch");
+  assert.equal(assess().verdict, "unknown");
+  v.InstalledVersion = pkg.version;
+  h.report.packageInventory.osRelease = { ID: "astra", VERSION_ID: "1.8", ID_LIKE: "debian" };
+  assert.equal(assess().reason, "unsupported_os_advisory");
+});
+
+test("v2 explicit vendor datasource maps never inherit other distributions", (t) => {
+  const h = harness(t);
+  const supported = [
+    ["debian", "debian"], ["ubuntu", "ubuntu"], ["rocky", "rocky"], ["almalinux", "alma"],
+    ["rhel", "redhat-oval"], ["ol", "oracle-oval"], ["amzn", "amazon"],
+    ["alpine", "alpine"], ["wolfi", "wolfi"], ["sles", "suse-cvrf"],
+  ];
+  for (const [os, sourceId] of supported) {
+    h.report.packageInventory.osRelease = { ID: os, VERSION_ID: "9" };
+    assert.equal(h.testing.advisorySourceMatch(sourceId, h.report), "matched", os);
+    assert.equal(h.testing.advisorySourceMatch("nvd", h.report), "mismatch", os);
+  }
+  h.report.packageInventory.osRelease = { ID: "centos", NAME: "CentOS Stream 9", VERSION_ID: "9" };
+  assert.equal(h.testing.advisorySourceMatch("centos", h.report), "unsupported");
+});
+
+test("v2 source ownership and applicability tallies persist in stored Trivy report", async (t) => {
+  const h = harness(t, "vulnerable");
+  const result = await h.scan();
+  const tally = result.report.vulnerabilityScan.applicabilitySummary;
+  assert.equal(tally.schemaVersion, 1);
+  assert.equal(tally.assessed, 1);
+  assert.equal(tally.affected, 1);
+  assert.equal(tally.notAffected, 0);
+  assert.equal(tally.unknown, 0);
+  assert.equal(tally.sourceMismatch, 0);
+  const stored = JSON.parse(readFileSync(result.reportPath, "utf8"));
+  assert.equal(JSON.stringify(stored.vulnerabilityScan.applicabilitySummary), JSON.stringify(tally));
+  assert.equal(stored.findings[0].cveApplicability.advisory.sourceMatch, "matched");
 });
