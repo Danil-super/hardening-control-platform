@@ -101,6 +101,7 @@ export default async function AgentlessReportDetailPage({
   const ovalDefinitions = Array.isArray(scanner.definitionResults) ? scanner.definitionResults.map(asRecord) : [];
   const vendorAssessment = asRecord(vulnerabilityScan.vendorAssessment);
   const applicabilitySummary = asRecord(vulnerabilityScan.applicabilitySummary);
+  const osvPreview = asRecord(vulnerabilityScan.ubuntuOsvPreview);
   const vendorStatuses = Object.entries(asRecord(vendorAssessment.statuses))
     .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
     .map(([status, count]) => `${status}: ${count}`);
@@ -299,6 +300,25 @@ export default async function AgentlessReportDetailPage({
                 ))}
               </dl>
               <p className="mt-3 text-sm text-slate-400">Несовпадающих источников: {textValue(applicabilitySummary.sourceMismatch)}; записей без идентификатора источника: {textValue(applicabilitySummary.sourceMissing)}. Эти записи нельзя считать доказанными CVE конкретного дистрибутива.</p>
+            </div>
+          ) : null}
+          {typeof osvPreview.annotatedFindings === "number" || osvPreview.state === "invalid_catalog" ? (
+            <div className="mt-5 border-t border-slate-800 pt-4">
+              <h3 className="font-semibold text-white">Предварительная сверка с Ubuntu OSV</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-400">Сопоставление с явно выбранными снимками по SHA-256. Это не подтверждение подлинности бюллетеней Canonical и не основание считать уязвимость исправленной. Исходные находки Trivy, их статусы и возможность исправления не изменяются.</p>
+              {osvPreview.state === "invalid_catalog" ? (
+                <p className="mt-2 text-sm text-amber-200">Конфигурация списка CVE/SHA-256 недействительна. Сверка не проводилась.</p>
+              ) : (
+                <p className="mt-2 text-sm text-slate-200">
+                  Проверено записей CVE×пакет: {textValue(osvPreview.annotatedFindings)} ·
+                  предварительно затронуты: {textValue(osvPreview.candidateAffected)} ·
+                  предварительно исправлены: {textValue(osvPreview.candidateFixed)} ·
+                  требуют уточнения: {textValue(osvPreview.candidateNeedsReview)} ·
+                  расхождения с Trivy: {textValue(osvPreview.conflictingWithTrivy)} ·
+                  недоступные снимки: {textValue(osvPreview.unavailable)}.
+                  {osvPreview.budgetExhausted === true ? " Достигнут лимит предварительных сравнений; остальные не выполнялись." : ""}
+                </p>
+              )}
             </div>
           ) : null}
           {Object.keys(packageCoverage).length ? <div className="mt-5 border-t border-slate-800 pt-4">
