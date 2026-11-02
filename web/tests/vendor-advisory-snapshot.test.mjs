@@ -21,6 +21,7 @@ function fixture(t) {
 
 test("pinned Ubuntu snapshots persist immutably, read only with matching bytes, and are idempotent", t => {
   const f = fixture(t);
+  chmodSync(f.root, 0o755); // existing HCP root can be public; child vault remains private
   const first = f.importSnapshot();
   assert.equal(first.recordId, f.recordId);
   assert.equal(first.sha256, f.sha256);
