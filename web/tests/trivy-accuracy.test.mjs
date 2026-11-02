@@ -716,7 +716,7 @@ test("CVE applicability v1 retains vendor source, installed package, distro, dat
   assert.equal(finding.cveApplicability.database.sha256, result.report.vulnerabilityScan.sourceEvidence.before.database.sha256);
   assert.equal(finding.cveApplicability.database.freshness, "fresh");
   const saved = JSON.parse(readFileSync(result.reportPath, "utf8"));
-  assert.deepEqual(saved.findings[0].cveApplicability, finding.cveApplicability);
+  assert.equal(JSON.stringify(saved.findings[0].cveApplicability), JSON.stringify(finding.cveApplicability));
   assert.equal(saved.findings[0].id, finding.id);
 });
 
