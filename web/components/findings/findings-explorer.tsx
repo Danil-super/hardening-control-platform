@@ -144,6 +144,14 @@ export function FindingsExplorer({
                 <p className="mt-1">Вывод по снимку: {finding.ubuntuOsvPreview.status === "unavailable" ? "данные недоступны" : finding.ubuntuOsvPreview.candidateVerdict === "affected" ? "пакет затронут" : finding.ubuntuOsvPreview.candidateVerdict === "fixed_or_not_affected" ? "исправлен по указанной версии" : finding.ubuntuOsvPreview.candidateVerdict === "needs_review" ? "нужна ручная проверка" : "нет достаточных данных"} · источник: {finding.ubuntuOsvPreview.sourcePackage} {finding.ubuntuOsvPreview.sourceVersion}</p>
                 <p className="mt-1">SHA-256: <span className="break-all">{finding.ubuntuOsvPreview.snapshotSha256}</span></p>
                 {finding.ubuntuOsvPreview.conflictingWithTrivy ? <p className="mt-1 font-semibold text-amber-200">Обнаружено расхождение с Trivy: сохраните оба результата и проверьте бюллетень вручную.</p> : null}
+                {finding.ubuntuOsvPreview.lifecycle ? (
+                  <p className="mt-1 text-slate-400">
+                    Жизненный цикл OSV: {finding.ubuntuOsvPreview.lifecycle.state === "import_window_ok" ? "локальный срок импорта не превышен, актуальность у Canonical не подтверждена" : finding.ubuntuOsvPreview.lifecycle.state === "stale_import" ? "локальный снимок просрочен" : finding.ubuntuOsvPreview.lifecycle.state === "withdrawn_record" ? "бюллетень отозван" : "даты или происхождение не подтверждены"} ·
+                    изменён у издателя: {finding.ubuntuOsvPreview.lifecycle.modifiedAt ?? "нет данных"} ·
+                    импортирован: {finding.ubuntuOsvPreview.lifecycle.importedAt ?? "нет данных"} ·
+                    предел локального хранения: {finding.ubuntuOsvPreview.lifecycle.maxImportAgeHours} ч.
+                  </p>
+                ) : null}
                 <p className="mt-1 text-slate-400">Без подтверждения подписи издателя. Автоматическое исправление по этой сверке запрещено.</p>
               </div>
             ) : null}
