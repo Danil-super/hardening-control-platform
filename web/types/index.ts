@@ -13,6 +13,38 @@ export type FindingSource =
   | "greenbone"
   | "dependency_track";
 
+
+/**
+ * HCP's evidence-backed interpretation of an OS-package advisory. A Trivy
+ * match is not equivalent to cryptographic proof of package origin.
+ * Keep this independent of the generic check status (failed/passed/manual).
+ */
+export type CveApplicabilityAssessment = {
+  schemaVersion: 1;
+  verdict: "affected" | "not_affected" | "under_investigation" | "unknown";
+  confidence: "metadata-consistent" | "unverified";
+  reason: "scanner_affected" | "scanner_not_affected" | "vendor_review_required"
+    | "unsupported_os_advisory" | "package_identity_ambiguous" | "package_not_in_inventory"
+    | "package_origin_unverified" | "advisory_source_missing" | "scanner_status_unknown"
+    | "database_not_fresh_or_verified";
+  distribution: { id: string; versionId: string };
+  package: {
+    name: string; installedVersion: string; purl: string | null;
+    manager: string | null; architecture: string | null;
+    sourceName: string | null; sourceVersion: string | null;
+    provenance: "distribution-maintainer" | "third-party" | "unknown";
+  };
+  advisory: {
+    id: string; scannerStatus: string | null; dataSourceId: string | null;
+    dataSourceName: string | null; primaryUrl: string | null; fixedVersion: string | null;
+  };
+  database: {
+    sha256: string | null; updatedAt: string | null; registration: string | null;
+    freshness: "fresh" | "stale" | "missing" | "unknown";
+  };
+  assessedAt: string;
+};
+
 export type Finding = {
   id: string;
   profileId: string;
@@ -25,6 +57,7 @@ export type Finding = {
     source: "oval_metadata" | "chromium_description" | "scanner_metadata";
   };
   status: FindingStatus;
+  cveApplicability?: CveApplicabilityAssessment;
   source: FindingSource;
   description: string;
   recommendation: string;
