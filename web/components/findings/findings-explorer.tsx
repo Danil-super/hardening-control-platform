@@ -19,6 +19,15 @@ const riskFilterLabels: Record<RiskFilter, string> = {
   unknown: "Риск не оценён",
 };
 
+function cveAssessmentLabel(finding: Finding) {
+  const assessment = finding.cveApplicability;
+  if (!assessment) return null;
+  if (assessment.verdict === "unknown") return "Применимость CVE не подтверждена";
+  if (assessment.verdict === "under_investigation") return "Требуется проверка бюллетеня";
+  if (assessment.verdict === "not_affected") return "Не затронут по данным базы Trivy";
+  return "Затронут по данным базы Trivy";
+}
+
 const sourceLabels: Record<Finding["source"], string> = {
   agentless: "Ansible по SSH",
   custom: "Ansible по SSH",
@@ -122,6 +131,13 @@ export function FindingsExplorer({
               </div>
               <div className="flex shrink-0 flex-wrap gap-2"><RiskBadge risk={finding.risk} unknown={finding.severityUnknown} /><StatusBadge status={finding.status} /></div>
             </div>
+            {finding.cveApplicability ? (
+              <div className="mt-3 rounded-md border border-sky-400/20 bg-slate-900/60 px-3 py-2 text-sm text-slate-200">
+                <p className="font-medium">{cveAssessmentLabel(finding)}</p>
+                <p className="mt-1 text-xs text-slate-400">Источник advisory: {finding.cveApplicability.advisory.dataSourceId ?? "не указан"} · проверка источника: {finding.cveApplicability.advisory.sourceMatch === "matched" ? "совпадает с дистрибутивом" : finding.cveApplicability.advisory.sourceMatch === "mismatch" ? "не соответствует дистрибутиву" : "не подтверждена"} · происхождение пакета: {finding.cveApplicability.package.provenance === "distribution-maintainer" ? "согласуется с метаданными ОС" : "не подтверждено"}</p>
+                <p className="mt-1 text-xs text-slate-400">ID: {finding.cveApplicability.advisory.id} · пакет: {finding.cveApplicability.package.name} {finding.cveApplicability.package.installedVersion} · причина: {finding.cveApplicability.reason}. Проверка цифровой подписи производителя не выполнялась.</p>
+              </div>
+            ) : null}
             <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
               <div><dt className="text-slate-500">Категория</dt><dd className="mt-1 text-slate-200">{categoryLabel(finding.category)}</dd></div>
               <div><dt className="text-slate-500">Источник</dt><dd className="mt-1 text-slate-200">{sourceLabels[finding.source]}</dd></div>
