@@ -91,8 +91,11 @@ export function evaluateUbuntuOsv(
     || snapshot.record.id !== `UBUNTU-${input.cveId}`) {
     return { ...base, reason: "snapshot_identity_mismatch" };
   }
+  if (snapshot.record.withdrawn !== undefined) return { ...base, reason: "withdrawn_advisory_requires_review" };
   const affected = snapshot.record.affected;
-  if (!Array.isArray(affected) || affected.length > 3000) return { ...base, reason: "snapshot_schema_unsupported" };
+  if (!Array.isArray(affected) || affected.length > 3000 || affected.some((item) => !isRecord(item) || !isRecord(item.package))) {
+    return { ...base, reason: "snapshot_schema_unsupported" };
+  }
   const matches = affected.filter((item) => {
     if (!isRecord(item) || !isRecord(item.package)) return false;
     return item.package.name === input.sourcePackage
@@ -124,13 +127,13 @@ export function evaluateUbuntuOsv(
       fixedVersion,
     };
   }
-  // Canonical lists affected source package versions separately. With no
-  // fixed event, a known affected *exact* version is evidence of affectedness,
-  // but another version must remain unknown (not presumed fixed).
+  // Canonical maps both "needs-triage" and "needed" to entries without a
+  // fixed event. Version membership alone does not distinguish them: never
+  // claim an unequivocally affected package without a status-bearing source.
   if (!Array.isArray(entry.versions) || entry.versions.length > 50000 || !entry.versions.every(packageVersion)) {
     return { ...base, reason: "no_fixed_version_and_affected_versions_unusable" };
   }
   return entry.versions.includes(input.sourceVersion)
-    ? { ...base, verdict: "affected", reason: "exact_affected_source_version_in_ubuntu_osv" }
+    ? { ...base, verdict: "needs_review", reason: "no_fixed_event_may_include_needs_triage" }
     : { ...base, verdict: "unknown", reason: "no_fixed_version_or_exact_affected_version" };
 }
