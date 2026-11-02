@@ -138,6 +138,15 @@ export function FindingsExplorer({
                 <p className="mt-1 text-xs text-slate-400">ID: {finding.cveApplicability.advisory.id} · пакет: {finding.cveApplicability.package.name} {finding.cveApplicability.package.installedVersion} · причина: {finding.cveApplicability.reason}. Проверка цифровой подписи производителя не выполнялась.</p>
               </div>
             ) : null}
+            {finding.ubuntuOsvPreview ? (
+              <div className="mt-3 rounded-md border border-amber-300/30 bg-slate-900/60 px-3 py-2 text-xs text-slate-200">
+                <p className="font-medium text-amber-200">Предварительная сверка с Ubuntu OSV (не подтверждена производителем)</p>
+                <p className="mt-1">Вывод по снимку: {finding.ubuntuOsvPreview.status === "unavailable" ? "данные недоступны" : finding.ubuntuOsvPreview.candidateVerdict === "affected" ? "пакет затронут" : finding.ubuntuOsvPreview.candidateVerdict === "fixed_or_not_affected" ? "исправлен по указанной версии" : finding.ubuntuOsvPreview.candidateVerdict === "needs_review" ? "нужна ручная проверка" : "нет достаточных данных"} · источник: {finding.ubuntuOsvPreview.sourcePackage} {finding.ubuntuOsvPreview.sourceVersion}</p>
+                <p className="mt-1">SHA-256: <span className="break-all">{finding.ubuntuOsvPreview.snapshotSha256}</span></p>
+                {finding.ubuntuOsvPreview.conflictingWithTrivy ? <p className="mt-1 font-semibold text-amber-200">Обнаружено расхождение с Trivy: сохраните оба результата и проверьте бюллетень вручную.</p> : null}
+                <p className="mt-1 text-slate-400">Без подтверждения подписи издателя. Автоматическое исправление по этой сверке запрещено.</p>
+              </div>
+            ) : null}
             <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
               <div><dt className="text-slate-500">Категория</dt><dd className="mt-1 text-slate-200">{categoryLabel(finding.category)}</dd></div>
               <div><dt className="text-slate-500">Источник</dt><dd className="mt-1 text-slate-200">{sourceLabels[finding.source]}</dd></div>
