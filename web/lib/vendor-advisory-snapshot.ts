@@ -52,8 +52,8 @@ function readPrivateFile(filename: string, limit: number): Buffer {
   const fd = openSync(filename, constants.O_RDONLY | O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const before = fstatSync(fd, { bigint: true });
-    if (!before.isFile() || before.nlink !== 1n || (before.mode & 0o077n) !== 0n
-      || before.size <= 0n || before.size > BigInt(limit)) {
+    if (!before.isFile() || before.nlink !== BigInt(1) || (before.mode & BigInt(0o077)) !== BigInt(0)
+      || before.size <= BigInt(0) || before.size > BigInt(limit)) {
       throw new Error("Advisory snapshot file has invalid type, permissions or size");
     }
     const bytes = Number(before.size);
