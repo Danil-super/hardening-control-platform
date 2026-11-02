@@ -22,7 +22,7 @@ export type UbuntuOsvPreview = {
 
 export type UbuntuOsvPreviewSummary = {
   schemaVersion: 1;
-  state: "disabled" | "invalid_catalog" | "enabled";
+  state: "disabled" | "invalid_catalog" | "invalid_policy" | "enabled";
   configuredCves: number;
   annotatedFindings: number;
   candidateAffected: number;
@@ -84,8 +84,13 @@ export function annotateUbuntuOsvPreview(input: {
   release: string;
   inventoryComplete: boolean;
   catalogJson?: string;
+  maxImportAgeHours?: number;
 }): { findings: Finding[]; summary: UbuntuOsvPreviewSummary | null } {
   if (!input.catalogJson) return { findings: input.findings, summary: null };
+  if (input.maxImportAgeHours !== undefined && (!Number.isInteger(input.maxImportAgeHours)
+    || input.maxImportAgeHours < 1 || input.maxImportAgeHours > 8760)) {
+    return { findings: input.findings, summary: summary("invalid_policy", 0) };
+  }
   let catalog: Map<string, string>;
   try { catalog = catalogEntries(input.catalogJson); }
   catch {
@@ -130,6 +135,7 @@ export function annotateUbuntuOsvPreview(input: {
             importedAt: snapshot.manifest.importedAt,
             record: record && typeof record === "object" && !Array.isArray(record) ? record as Record<string, unknown> : {},
             revision: sourceRevision,
+            maxImportAgeHours: input.maxImportAgeHours,
           });
           if (lifecycle.candidateAllowed) result = evaluatePinnedUbuntuCrossCheck({
             stateRoot: input.stateRoot, snapshotSha256: sha,
