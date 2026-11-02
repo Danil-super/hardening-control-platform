@@ -278,7 +278,7 @@ export default async function AgentlessReportDetailPage({
           <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
             <div><p className="text-slate-500">Провайдер</p><p className="mt-1 text-slate-200">{textValue(vulnerabilityScan.provider)}</p></div>
             <div><p className="text-slate-500">Метод оценки</p><p className="mt-1 text-slate-200">{textValue(vendorAssessment.method)}</p></div>
-            <div><p className="text-slate-500">Статус в базе</p><p className="mt-1 text-slate-200">{vendorAssessment.verified === true ? "получен" : "не получен — требуется advisory поставщика"}</p></div>
+            <div><p className="text-slate-500">Подлинность бюллетеня</p><p className="mt-1 text-slate-200">{vendorAssessment.verified === true ? "подтверждена" : "не подтверждена — есть только метаданные сканера"}</p></div>
             <div><p className="text-slate-500">Состояния</p><p className="mt-1 break-words text-slate-200">{vendorStatuses.length ? vendorStatuses.join(", ") : "нет CVE или статусов"}</p></div>
           </div>
           {typeof applicabilitySummary.assessed === "number" ? (
@@ -287,8 +287,8 @@ export default async function AgentlessReportDetailPage({
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Это отдельное заключение по источнику advisory и установленному пакету, а не подтверждение эксплуатируемости CVE или подлинности пакета. Статусы проверок «ошибка» и «требует проверки» не заменяют оценку применимости.</p>
               <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
                 {[
-                  ["Уязвимы по базе", applicabilitySummary.affected],
-                  ["Не затронуты по базе", applicabilitySummary.notAffected],
+                  ["Уязвимые CVE×пакет (по базе)", applicabilitySummary.affected],
+                  ["Не затронуты CVE×пакет", applicabilitySummary.notAffected],
                   ["Требуют анализа", applicabilitySummary.underInvestigation],
                   ["Не подтверждены", applicabilitySummary.unknown],
                 ].map(([label, value]) => (
