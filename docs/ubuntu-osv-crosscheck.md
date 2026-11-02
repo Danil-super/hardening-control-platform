@@ -26,8 +26,10 @@ the binary package name that Trivy reports.
   `introduced: "0"` range, the evaluator calls **native dpkg** version
   comparison on the controller (`/usr/bin/dpkg --compare-versions`) with
   argv, no shell. This handles epoch, tilde, and Ubuntu backport revisions.
-- If Canonical supplies no `fixed` event, an exact listed affected source
-  version yields `affected`; an unlisted version remains `unknown`.
+- If Canonical supplies no `fixed` event, an exact listed version yields
+  `needs_review` (the feed also represents `needs-triage` this way);
+  an unlisted version remains `unknown`. A withdrawn record also gives
+  `unknown`, never `affected` or `fixed_or_not_affected`.
 - Malformed or unsupported ranges, duplicate suite/source entries, missing
   native comparator and version ambiguity fail closed (`unknown` or
   `needs_review`), not `fixed`.
