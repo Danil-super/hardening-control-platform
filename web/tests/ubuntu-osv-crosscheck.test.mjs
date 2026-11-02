@@ -55,10 +55,10 @@ test("Ubuntu OSV v1 matches exact source package and Ubuntu release, not binary 
   assert.equal(check(parse(osv()), { cveId: "CVE-2024-99999" }).reason, "snapshot_identity_mismatch");
 });
 
-test("Ubuntu OSV v1 no-fixed records do not make up an unaffected verdict", () => {
+test("Ubuntu OSV v1 no-fixed entries may include needs-triage and require review", () => {
   const snapshot = parse(osv({ fixed: null, versions: ["3.0.13-0ubuntu3", "3.0.13-0ubuntu3.1"] }));
-  assert.equal(check(snapshot).verdict, "affected");
-  assert.equal(check(snapshot).reason, "exact_affected_source_version_in_ubuntu_osv");
+  assert.equal(check(snapshot).verdict, "needs_review");
+  assert.equal(check(snapshot).reason, "no_fixed_event_may_include_needs_triage");
   assert.equal(check(snapshot, { sourceVersion: "3.0.13-0ubuntu3.9" }).verdict, "unknown");
   assert.equal(check(parse(osv({ fixed: null, versions: [] }))).verdict, "unknown");
 });
@@ -91,4 +91,14 @@ test("Ubuntu OSV v1 parser checks independent content digest and exact CVE schem
   const malicious = osv();
   malicious.id = "UBUNTU-CVE-2024-6119.other";
   assert.throws(() => parse(malicious), /unsupported CVE schema/);
+});
+
+
+test("Ubuntu OSV v1 rejects withdrawn and internally malformed records before conclusions", () => {
+  const withdrawn = osv();
+  withdrawn.withdrawn = "2026-10-01T00:00:00Z";
+  assert.equal(check(parse(withdrawn)).reason, "withdrawn_advisory_requires_review");
+  const malformed = osv();
+  malformed.affected.push(null);
+  assert.equal(check(parse(malformed)).reason, "snapshot_schema_unsupported");
 });
