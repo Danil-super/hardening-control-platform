@@ -168,10 +168,16 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   // evidence. The correlation layer may collapse repeated observations.
   const vendorAdvisorySources = sourceManifest.filter((source) => source.mode === "vulnerabilities").map((source) => {
     const original = readAnsibleReport(source.id);
-    if (!original || !Array.isArray((original.raw as { findings?: unknown }).findings)) {
+    if (!original) {
       throw new Error("Исходный CVE-отчёт недоступен для сохранения OSV-доказательств.");
     }
-    return { reportId: source.id, reportSha256: source.sha256 ?? "", findings: (original.raw as { findings: unknown }).findings };
+    // Historical SBOM-only CVE reports may have no findings property at all.
+    // An explicitly present but malformed findings value must still fail closed.
+    const rawFindings = (original.raw as { findings?: unknown }).findings;
+    if (rawFindings !== undefined && !Array.isArray(rawFindings)) {
+      throw new Error("Исходные CVE-находки имеют недопустимый формат.");
+    }
+    return { reportId: source.id, reportSha256: source.sha256 ?? "", findings: rawFindings ?? [] };
   });
   const vendorAdvisoryEvidence = projectVendorAdvisoryEvidence(vendorAdvisorySources);
   const vendorAdvisoryEvidenceSha256 = sha256(canonical({ version: 1, hostAlias, vendorAdvisoryEvidence }));
