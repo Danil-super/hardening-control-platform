@@ -315,7 +315,10 @@ export default async function AgentlessReportDetailPage({
                   предварительно исправлены: {textValue(osvPreview.candidateFixed)} ·
                   требуют уточнения: {textValue(osvPreview.candidateNeedsReview)} ·
                   расхождения с Trivy: {textValue(osvPreview.conflictingWithTrivy)} ·
-                  недоступные снимки: {textValue(osvPreview.unavailable)}.
+                  недоступные снимки: {textValue(osvPreview.unavailable)} ·
+                  отозванные записи: {textValue(osvPreview.withdrawn)} ·
+                  просроченный локальный импорт: {textValue(osvPreview.staleImport)} ·
+                  некорректные даты: {textValue(osvPreview.invalidTimestamps)}.
                   {osvPreview.budgetExhausted === true ? " Достигнут лимит предварительных сравнений; остальные не выполнялись." : ""}
                 </p>
               )}
