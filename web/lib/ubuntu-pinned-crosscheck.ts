@@ -63,6 +63,7 @@ export function evaluatePinnedUbuntuCrossCheck(input: PinnedUbuntuCrossCheckInpu
     const expectedRecord = `UBUNTU-${input.cveId}`;
     if (source.manifest.recordId !== expectedRecord) return unavailable("advisory_identity_mismatch");
     if (source.manifest.publisherAuthenticated !== false) return unavailable("publisher_trust_claim_unsupported");
+    if (Date.parse(source.manifest.importedAt) > Date.now() + 5 * 60_000) return unavailable("invalid_import_timestamp");
     // Parse again rather than trusting the vault's minimal JSON identifier check.
     const snapshot = parseUbuntuOsvSnapshot(source.rawJson, source.manifest.sha256);
     const evaluation = evaluateUbuntuOsv(snapshot, {
