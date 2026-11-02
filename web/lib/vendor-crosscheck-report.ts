@@ -19,6 +19,13 @@ export type VendorAdvisoryExportRecord = {
   candidateReason: string;
   snapshotSha256: string;
   sourceRevision: string | null;
+  lifecycleState: string | null;
+  lifecycleReason: string | null;
+  lifecycleAssessedAt: string | null;
+  lifecycleImportAgeHours: number | null;
+  recordModifiedAt: string | null;
+  recordWithdrawnAt: string | null;
+  publisherFreshnessVerified: false;
   conflictingWithTrivy: boolean;
   trustedVerdict: "unknown";
   publisherAuthenticated: false;
@@ -60,6 +67,7 @@ export function projectVendorAdvisoryEvidence(sources: Array<{
       const applicability = record(finding.cveApplicability);
       const advisory = record(applicability?.advisory);
       const pkg = record(applicability?.package);
+      const lifecycle = preview ? record(preview.lifecycle) : null;
       if (!preview || !applicability || !advisory || !pkg
         || finding.source !== "trivy"
         || !bounded(finding.id, 256)
@@ -76,6 +84,9 @@ export function projectVendorAdvisoryEvidence(sources: Array<{
         || preview.trustedVerdict !== "unknown"
         || preview.publisherAuthenticated !== false
         || preview.remediationAuthorized !== false
+        || (lifecycle && (lifecycle.publisherFreshnessVerified !== false || lifecycle.publisherAuthenticated !== false
+          || typeof lifecycle.state !== "string" || typeof lifecycle.reason !== "string"
+          || lifecycle.candidateAllowed === true && lifecycle.state !== "import_window_ok"))
         || typeof preview.conflictingWithTrivy !== "boolean"
         || !bounded(applicability.verdict, 80)) {
         throw new Error("Невозможно безопасно включить некорректное OSV-доказательство в итоговый отчёт.");
@@ -102,6 +113,13 @@ export function projectVendorAdvisoryEvidence(sources: Array<{
         candidateReason: preview.reason as string,
         snapshotSha256: preview.snapshotSha256 as string,
         sourceRevision: preview.sourceRevision as string | null,
+        lifecycleState: lifecycle?.state as string | null ?? null,
+        lifecycleReason: lifecycle?.reason as string | null ?? null,
+        lifecycleAssessedAt: lifecycle?.assessedAt as string | null ?? null,
+        lifecycleImportAgeHours: typeof lifecycle?.importAgeHours === "number" ? lifecycle.importAgeHours : null,
+        recordModifiedAt: lifecycle?.modifiedAt as string | null ?? null,
+        recordWithdrawnAt: lifecycle?.withdrawnAt as string | null ?? null,
+        publisherFreshnessVerified: false,
         conflictingWithTrivy: preview.conflictingWithTrivy as boolean,
         trustedVerdict: "unknown",
         publisherAuthenticated: false,
