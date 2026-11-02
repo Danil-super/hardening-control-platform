@@ -100,6 +100,7 @@ export default async function AgentlessReportDetailPage({
   const ovalValidation = asRecord(scanner.sourceValidation);
   const ovalDefinitions = Array.isArray(scanner.definitionResults) ? scanner.definitionResults.map(asRecord) : [];
   const vendorAssessment = asRecord(vulnerabilityScan.vendorAssessment);
+  const applicabilitySummary = asRecord(vulnerabilityScan.applicabilitySummary);
   const vendorStatuses = Object.entries(asRecord(vendorAssessment.statuses))
     .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
     .map(([status, count]) => `${status}: ${count}`);
@@ -277,9 +278,29 @@ export default async function AgentlessReportDetailPage({
           <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
             <div><p className="text-slate-500">Провайдер</p><p className="mt-1 text-slate-200">{textValue(vulnerabilityScan.provider)}</p></div>
             <div><p className="text-slate-500">Метод оценки</p><p className="mt-1 text-slate-200">{textValue(vendorAssessment.method)}</p></div>
-            <div><p className="text-slate-500">Статус в базе</p><p className="mt-1 text-slate-200">{vendorAssessment.verified === true ? "получен" : "не получен — требуется advisory поставщика"}</p></div>
+            <div><p className="text-slate-500">Подлинность бюллетеня</p><p className="mt-1 text-slate-200">{vendorAssessment.verified === true ? "подтверждена" : "не подтверждена — есть только метаданные сканера"}</p></div>
             <div><p className="text-slate-500">Состояния</p><p className="mt-1 break-words text-slate-200">{vendorStatuses.length ? vendorStatuses.join(", ") : "нет CVE или статусов"}</p></div>
           </div>
+          {typeof applicabilitySummary.assessed === "number" ? (
+            <div className="mt-5 border-t border-slate-800 pt-4">
+              <h3 className="font-semibold text-white">Применимость пакетных CVE по данным Trivy</h3>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Это отдельное заключение по источнику advisory и установленному пакету, а не подтверждение эксплуатируемости CVE или подлинности пакета. Статусы проверок «ошибка» и «требует проверки» не заменяют оценку применимости.</p>
+              <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+                {[
+                  ["Уязвимые CVE×пакет (по базе)", applicabilitySummary.affected],
+                  ["Не затронуты CVE×пакет", applicabilitySummary.notAffected],
+                  ["Требуют анализа", applicabilitySummary.underInvestigation],
+                  ["Не подтверждены", applicabilitySummary.unknown],
+                ].map(([label, value]) => (
+                  <div key={String(label)} className="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+                    <dt className="text-xs text-slate-400">{String(label)}</dt>
+                    <dd className="mt-1 text-xl font-semibold text-white">{textValue(value)}</dd>
+                  </div>
+                ))}
+              </dl>
+              <p className="mt-3 text-sm text-slate-400">Несовпадающих источников: {textValue(applicabilitySummary.sourceMismatch)}; записей без идентификатора источника: {textValue(applicabilitySummary.sourceMissing)}. Эти записи нельзя считать доказанными CVE конкретного дистрибутива.</p>
+            </div>
+          ) : null}
           {Object.keys(packageCoverage).length ? <div className="mt-5 border-t border-slate-800 pt-4">
             <h3 className="font-semibold text-white">Покрытие пакетной проверки</h3>
             <dl className="mt-3 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">

@@ -18,7 +18,7 @@ test.after(() => rmSync(compiledOutputGuard.directory, { recursive: true, force:
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 const source = readFileSync(path.join(webDir, "lib/vulnerability-scan.ts"), "utf8");
-const compiled = ts.transpileModule(source + "\nexport const testing = { trivyFinding, packagePurl, writePackageSbom, scanCoverage, packageProvenance, findingProvenance, assessCveApplicability };", { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
+const compiled = ts.transpileModule(source + "\nexport const testing = { trivyFinding, packagePurl, writePackageSbom, scanCoverage, packageProvenance, findingProvenance, assessCveApplicability, advisorySourceMatch };", { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } }).outputText;
 const platform = {};
 vm.runInNewContext(ts.transpileModule(readFileSync(path.join(webDir, "lib/linux-platform.ts"), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
@@ -35,7 +35,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
   writeFileSync(path.join(cache, "db/metadata.json"), JSON.stringify({ Version: 2, UpdatedAt: new Date().toISOString() }));
   // This executable is a contract fixture. These tests do not claim a live Trivy scan.
   const binary = path.join(dir, "trivy-fixture");
-  writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst response = ${JSON.stringify(response)};\nfs.writeFileSync(${JSON.stringify(path.join(dir, "args.json"))}, JSON.stringify({args, env: Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith('TRIVY_')))}));\nif(args.includes('--download-db-only')) fs.appendFileSync(${JSON.stringify(path.join(dir, "downloads.jsonl"))}, JSON.stringify(args) + '\\n');\nif(args.includes('--download-db-only') && response.startsWith('fallback-') && args[args.indexOf('--db-repository') + 1] !== 'ghcr.io/aquasecurity/trivy-db') { console.error(response === 'fallback-network' ? 'context deadline exceeded' : 'manifest unknown: 404'); process.exit(1); }\nif(args.includes('--download-db-only') && response === 'download-dns') { console.error('lookup ghcr.io: no such host'); process.exit(1); }\nif(args.includes('--download-db-only')) {\n  const activeCache = args[args.indexOf('--cache-dir') + 1];\n  fs.mkdirSync(activeCache + '/db', {recursive: true});\n  fs.writeFileSync(activeCache + '/db/trivy.db', 'downloaded fixture');\n  fs.writeFileSync(activeCache + '/db/metadata.json', JSON.stringify({Version: 2, UpdatedAt: new Date().toISOString()}));\n  process.exit(0);\n}\nif(args.includes('--version')) { console.log('Version: 0.74.0-contract-fixture'); process.exit(0); }\nconst sbom = JSON.parse(fs.readFileSync(args.at(-1), 'utf8'));\nlet output = {SchemaVersion: 2, Metadata: {OS: {Family: sbom.metadata.component.name, Name: sbom.metadata.component.version}}, Results: [{Class: 'os-pkgs', Type: sbom.metadata.component.name, Packages: sbom.components.map(p => ({Name: p.name, Version: p.version, Identifier: {BOMRef: p['bom-ref'], PURL: p.purl}})), Vulnerabilities: []}]};\nif(response === 'mutate-db') fs.appendFileSync(process.env.TRIVY_CACHE_DIR + '/db/trivy.db', 'changed');\nif(response === 'mutate-sbom') fs.appendFileSync(args.at(-1), ' ');\nif(response === 'vulnerable') output.Results[0].Vulnerabilities = [{VulnerabilityID:'CVE-2023-0286', PkgName:sbom.components[0].name, InstalledVersion:sbom.components[0].version, PkgIdentifier:{BOMRef:sbom.components[0]['bom-ref']}, FixedVersion:'3.0.2-0ubuntu1.8', Status:'fixed', Severity:'HIGH', DataSource:{ID:sbom.metadata.component.name}}];\nif(response === 'empty') output = {};\nif(response === 'missing-package') output.Results[0].Packages = [];\nif(response === 'wrong-os') output.Metadata.OS.Family = 'alpine';\nif(response === 'eosl') output.Metadata.OS.EOSL = true;\nif(response === 'many') output.Results[0].Vulnerabilities = Array.from({length: 1005}, (_,i) => ({VulnerabilityID:'CVE-2026-' + i, PkgName:'libssl3', InstalledVersion:'3.0.2-0ubuntu1', FixedVersion:'3.0.2-0ubuntu2', Status:'fixed', Severity:'HIGH'}));\nconsole.log(JSON.stringify(output));\n`);
+  writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs');\nconst args = process.argv.slice(2);\nconst response = ${JSON.stringify(response)};\nfs.writeFileSync(${JSON.stringify(path.join(dir, "args.json"))}, JSON.stringify({args, env: Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith('TRIVY_')))}));\nif(args.includes('--download-db-only')) fs.appendFileSync(${JSON.stringify(path.join(dir, "downloads.jsonl"))}, JSON.stringify(args) + '\\n');\nif(args.includes('--download-db-only') && response.startsWith('fallback-') && args[args.indexOf('--db-repository') + 1] !== 'ghcr.io/aquasecurity/trivy-db') { console.error(response === 'fallback-network' ? 'context deadline exceeded' : 'manifest unknown: 404'); process.exit(1); }\nif(args.includes('--download-db-only') && response === 'download-dns') { console.error('lookup ghcr.io: no such host'); process.exit(1); }\nif(args.includes('--download-db-only')) {\n  const activeCache = args[args.indexOf('--cache-dir') + 1];\n  fs.mkdirSync(activeCache + '/db', {recursive: true});\n  fs.writeFileSync(activeCache + '/db/trivy.db', 'downloaded fixture');\n  fs.writeFileSync(activeCache + '/db/metadata.json', JSON.stringify({Version: 2, UpdatedAt: new Date().toISOString()}));\n  process.exit(0);\n}\nif(args.includes('--version')) { console.log('Version: 0.74.0-contract-fixture'); process.exit(0); }\nconst sbom = JSON.parse(fs.readFileSync(args.at(-1), 'utf8'));\nlet output = {SchemaVersion: 2, Metadata: {OS: {Family: sbom.metadata.component.name, Name: sbom.metadata.component.version}}, Results: [{Class: 'os-pkgs', Type: sbom.metadata.component.name, Packages: sbom.components.map(p => ({Name: p.name, Version: p.version, Identifier: {BOMRef: p['bom-ref'], PURL: p.purl}})), Vulnerabilities: []}]};\nif(response === 'mutate-db') fs.appendFileSync(process.env.TRIVY_CACHE_DIR + '/db/trivy.db', 'changed');\nif(response === 'mutate-sbom') fs.appendFileSync(args.at(-1), ' ');\nif(response === 'vulnerable' || response === 'foreign-advisory') output.Results[0].Vulnerabilities = [{VulnerabilityID:'CVE-2023-0286', PkgName:sbom.components[0].name, InstalledVersion:sbom.components[0].version, PkgIdentifier:{BOMRef:sbom.components[0]['bom-ref']}, FixedVersion:'3.0.2-0ubuntu1.8', Status:'fixed', Severity:'HIGH', DataSource:{ID:response === 'foreign-advisory' ? 'debian' : sbom.metadata.component.name}}];\nif(response === 'empty') output = {};\nif(response === 'missing-package') output.Results[0].Packages = [];\nif(response === 'wrong-os') output.Metadata.OS.Family = 'alpine';\nif(response === 'eosl') output.Metadata.OS.EOSL = true;\nif(response === 'many') output.Results[0].Vulnerabilities = Array.from({length: 1005}, (_,i) => ({VulnerabilityID:'CVE-2026-' + i, PkgName:'libssl3', InstalledVersion:'3.0.2-0ubuntu1', FixedVersion:'3.0.2-0ubuntu2', Status:'fixed', Severity:'HIGH'}));\nconsole.log(JSON.stringify(output));\n`);
   chmodSync(binary, 0o700);
   const env = { ...process.env, HCP_TRIVY_BIN: binary, HCP_TRIVY_CACHE_DIR: cache, HCP_TRIVY_MAX_DB_AGE_HOURS: "168", HCP_TRIVY_DB_REPOSITORY: repositories, TRIVY_SERVER: "https://must-not-be-used.invalid", TRIVY_SEVERITY: "LOW", TRIVY_IGNORE_UNFIXED: "true" };
   const exports = {};
@@ -772,4 +772,82 @@ test("CVE applicability v1 records uncertain scanner source rather than a verifi
   assert.equal(result.verdict, "unknown");
   assert.equal(result.confidence, "unverified");
   assert.equal(result.reason, "database_not_fresh_or_verified");
+});
+
+test("v2 source ownership rejects foreign, generic and spoofed advisory IDs", (t) => {
+  const h = harness(t);
+  const pkg = h.report.packages[0];
+  const v = { VulnerabilityID: "CVE-2026-12345", PkgName: "libssl3", InstalledVersion: pkg.version,
+    PkgIdentifier: { BOMRef: h.testing.packagePurl(pkg, h.report) }, Status: "fixed", DataSource: { ID: "ubuntu" } };
+  const source = { status: "unchanged", before: { database: { sha256: "f".repeat(64) } } };
+  const assess = () => h.testing.assessCveApplicability(v, h.report, source, { status: "fresh" }, "2026-11-02T14:00:00Z");
+  assert.equal(assess().advisory.sourceMatch, "matched");
+  assert.equal(assess().verdict, "affected");
+  for (const id of ["debian", "redhat", "nvd", "ghsa", "ubuntu-oval", "Ubuntu", "ubuntu.attacker"]) {
+    v.DataSource.ID = id;
+    assert.equal(assess().verdict, "unknown", id);
+    assert.equal(assess().reason, "advisory_source_mismatch", id);
+    assert.equal(assess().confidence, "unverified", id);
+    assert.equal(assess().advisory.sourceMatch, "mismatch", id);
+  }
+  delete v.DataSource;
+  assert.equal(assess().advisory.sourceMatch, "missing");
+  v.DataSource = { ID: 42 };
+  assert.equal(assess().advisory.sourceMatch, "missing", "Malformed scanner metadata must fail closed without crashing");
+  assert.equal(assess().reason, "advisory_source_missing");
+  v.DataSource = { ID: "ubuntu" };
+  v.InstalledVersion = "wrong-version";
+  assert.equal(assess().reason, "package_identity_mismatch");
+  assert.equal(assess().verdict, "unknown");
+  v.InstalledVersion = pkg.version;
+  h.report.packageInventory.osRelease = { ID: "astra", VERSION_ID: "1.8", ID_LIKE: "debian" };
+  assert.equal(assess().reason, "unsupported_os_advisory");
+});
+
+test("v2 explicit vendor datasource maps never inherit other distributions", (t) => {
+  const h = harness(t);
+  const supported = [
+    ["debian", "debian"], ["ubuntu", "ubuntu"], ["rocky", "rocky"], ["almalinux", "alma"],
+    ["rhel", "redhat-oval"], ["ol", "oracle-oval"], ["amzn", "amazon"],
+    ["alpine", "alpine"], ["wolfi", "wolfi"], ["sles", "suse-cvrf"],
+  ];
+  for (const [os, sourceId] of supported) {
+    h.report.packageInventory.osRelease = { ID: os, VERSION_ID: "9" };
+    assert.equal(h.testing.advisorySourceMatch(sourceId, h.report), "matched", os);
+    assert.equal(h.testing.advisorySourceMatch("nvd", h.report), "mismatch", os);
+  }
+  h.report.packageInventory.osRelease = { ID: "centos", NAME: "CentOS Stream 9", VERSION_ID: "9" };
+  assert.equal(h.testing.advisorySourceMatch("centos", h.report), "unsupported");
+});
+
+test("v2 source ownership and applicability tallies persist in stored Trivy report", async (t) => {
+  const h = harness(t, "vulnerable");
+  const result = await h.scan();
+  const tally = result.report.vulnerabilityScan.applicabilitySummary;
+  assert.equal(tally.schemaVersion, 1);
+  assert.equal(tally.assessed, 1);
+  assert.equal(tally.affected, 1);
+  assert.equal(tally.notAffected, 0);
+  assert.equal(tally.unknown, 0);
+  assert.equal(tally.sourceMismatch, 0);
+  const stored = JSON.parse(readFileSync(result.reportPath, "utf8"));
+  assert.equal(JSON.stringify(stored.vulnerabilityScan.applicabilitySummary), JSON.stringify(tally));
+  assert.equal(stored.findings[0].cveApplicability.advisory.sourceMatch, "matched");
+});
+
+test("v2 foreign advisory stays visible but cannot create a complete or confirmed CVE report", async (t) => {
+  const h = harness(t, "foreign-advisory");
+  const result = await h.scan();
+  const finding = result.report.findings.find((item) => item.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.ok(finding, "Scanner observation cannot silently disappear");
+  assert.equal(finding.status, "manual");
+  assert.equal(finding.cveApplicability.verdict, "unknown");
+  assert.equal(finding.cveApplicability.reason, "advisory_source_mismatch");
+  assert.equal(result.report.vulnerabilityScan.applicabilitySummary.sourceMismatch, 1);
+  assert.equal(result.report.vulnerabilityScan.coverage.complete, false);
+  assert.equal(result.partial, true);
+  assert.match(result.report.vulnerabilityScan.coverage.reasons.join(" "), /Источник advisory/);
+  assert.ok(result.report.findings.some(item => item.id === "trivy_incomplete_coverage"));
+  const saved = JSON.parse(readFileSync(result.reportPath, "utf8"));
+  assert.equal(saved.findings.find(item => item.id === finding.id).cveApplicability.advisory.dataSourceId, "debian");
 });
