@@ -14,6 +14,31 @@ const SHA = /^[a-f0-9]{64}$/;
 const CVE = /^UBUNTU-CVE-\d{4}-\d{4,}$/;
 const O_NOFOLLOW = constants.O_NOFOLLOW ?? 0;
 
+/** GitHub revision is a byte-location pin, not a publisher signature. */
+export type CanonicalUbuntuOsvReference = {
+  kind: "canonical-github-pinned-revision";
+  repository: "canonical/ubuntu-security-notices";
+  revision: string;
+  path: string;
+  url: string;
+};
+
+export function canonicalUbuntuOsvReference(recordId: string, revision: string): CanonicalUbuntuOsvReference {
+  if (!CVE.test(recordId) || !/^[a-f0-9]{40}$/.test(revision)) {
+    throw new Error("Invalid Canonical Ubuntu record ID or pinned commit");
+  }
+  const year = recordId.match(/^UBUNTU-CVE-(\\d{4})-/)?.[1];
+  if (!year) throw new Error("Invalid Ubuntu CVE year");
+  const resourcePath = `osv/cve/${year}/${recordId}.json`;
+  return {
+    kind: "canonical-github-pinned-revision",
+    repository: "canonical/ubuntu-security-notices",
+    revision,
+    path: resourcePath,
+    url: `https://raw.githubusercontent.com/canonical/ubuntu-security-notices/${revision}/${resourcePath}`,
+  };
+}
+
 export type AdvisorySnapshotManifest = {
   schemaVersion: 1;
   source: "ubuntu-osv-cve";
@@ -23,6 +48,7 @@ export type AdvisorySnapshotManifest = {
   importedAt: string;
   importMethod: "operator-pinned-local-sha256";
   publisherAuthenticated: false;
+  sourceReference?: CanonicalUbuntuOsvReference;
 };
 
 function rootDirectory(root: string): string {
@@ -121,6 +147,19 @@ export function readPinnedAdvisorySnapshot(root: string, sha256: string): {
     || typeof manifest.importedAt !== "string" || !Number.isFinite(Date.parse(manifest.importedAt))) {
     throw new Error("Invalid or inconsistent advisory manifest");
   }
+  if (manifest.sourceReference !== undefined) {
+    const reference = manifest.sourceReference;
+    if (!reference || typeof reference !== "object" || typeof reference.revision !== "string") {
+      throw new Error("Invalid advisory source reference");
+    }
+    let expected: CanonicalUbuntuOsvReference;
+    try { expected = canonicalUbuntuOsvReference(manifest.recordId, reference.revision); }
+    catch { throw new Error("Invalid advisory source reference"); }
+    if (Object.keys(reference).length !== Object.keys(expected).length
+      || Object.entries(expected).some(([key, value]) => reference[key as keyof CanonicalUbuntuOsvReference] !== value)) {
+      throw new Error("Advisory source reference does not match the pinned Canonical GitHub path");
+    }
+  }
   const bytes = readPrivateFile(file.data, ADVISORY_SNAPSHOT_MAX_BYTES);
   if (bytes.length !== manifest.bytes || createHash("sha256").update(bytes).digest("hex") !== sha256) {
     throw new Error("Advisory snapshot checksum differs from pinned import");
@@ -139,6 +178,7 @@ export function importPinnedUbuntuOsvSnapshot(input: {
   rawJson: string;
   expectedSha256: string;
   recordId: string;
+  sourceReference?: CanonicalUbuntuOsvReference;
 }): AdvisorySnapshotManifest {
   if (!CVE.test(input.recordId) || !SHA.test(input.expectedSha256)) {
     throw new Error("Invalid Ubuntu CVE record or digest");
@@ -153,15 +193,25 @@ export function importPinnedUbuntuOsvSnapshot(input: {
     || (parsed as Record<string, unknown>).id !== input.recordId) {
     throw new Error("Local advisory CVE identifier does not match expected record");
   }
+  if (input.sourceReference !== undefined) {
+    const expected = canonicalUbuntuOsvReference(input.recordId, input.sourceReference.revision);
+    if (JSON.stringify(expected) !== JSON.stringify(input.sourceReference)) {
+      throw new Error("Canonical source reference does not match pinned identity");
+    }
+  }
   const file = pathsFor(input.root, input.expectedSha256);
   atomicCreate(file.dir, file.data, bytes);
   const manifest: AdvisorySnapshotManifest = {
     schemaVersion: 1, source: "ubuntu-osv-cve", recordId: input.recordId,
     sha256: input.expectedSha256, bytes: bytes.length, importedAt: new Date().toISOString(),
     importMethod: "operator-pinned-local-sha256", publisherAuthenticated: false,
+    ...(input.sourceReference ? { sourceReference: input.sourceReference } : {}),
   };
   atomicCreate(file.dir, file.manifest, Buffer.from(JSON.stringify(manifest), "utf8"));
   const observed = readPinnedAdvisorySnapshot(input.root, input.expectedSha256);
+  if (JSON.stringify(observed.manifest.sourceReference ?? null) !== JSON.stringify(input.sourceReference ?? null)) {
+    throw new Error("Existing immutable advisory origin differs from this import");
+  }
   if (observed.manifest.recordId !== input.recordId || observed.rawJson !== input.rawJson) {
     throw new Error("Existing immutable advisory snapshot does not match this import");
   }
