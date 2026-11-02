@@ -56,7 +56,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
   const report = { mode: "packages", profileId: "packages", inventoryHost: "lab-host", hostname: "different-hostname", createdAt: new Date().toISOString(), packageInventory: { packageCount: 1, manager: "dpkg", osRelease: { ID: "ubuntu", VERSION_ID: "22.04" }, error: "" }, packages: [{ name: "libssl3:amd64", version: "3.0.2-0ubuntu1", arch: "amd64", manager: "dpkg", sourceName: "openssl", sourceVersion: "3.0.2-0ubuntu1", maintainer: "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>", origin: "Ubuntu" }] };
   const save = () => writeFileSync(path.join(reports, "lab-host-packages-run1.json"), JSON.stringify(report));
   save();
-  return { ...exports, dir, reports, cache, report, save, setPins: (value) => { env.HCP_UBUNTU_OSV_PREVIEW_PINS_JSON = value; }, scan: () => exports.scanPackageInventory({ hostAlias: "lab-host", reportId: "lab-host-packages-run1" }), refresh: () => exports.refreshTrivyDatabase() };
+  return { ...exports, dir, reports, cache, report, save, setPins: (value) => { env.HCP_UBUNTU_OSV_PREVIEW_PINS_JSON = value; }, setImportAgeHours: (value) => { env.HCP_UBUNTU_OSV_MAX_IMPORT_AGE_HOURS = value; }, scan: () => exports.scanPackageInventory({ hostAlias: "lab-host", reportId: "lab-host-packages-run1" }), refresh: () => exports.refreshTrivyDatabase() };
 }
 
 test("Trivy fixed means a vulnerable installation with a patch available", (t) => {
@@ -961,4 +961,17 @@ test("withdrawn and temporally inconsistent Ubuntu OSV snapshots do not produce 
   assert.equal(staleFinding.ubuntuOsvPreview.candidateVerdict, "unknown");
   assert.equal(staleReport.report.vulnerabilityScan.ubuntuOsvPreview.staleImport, 1);
   assert.equal(staleFinding.status, "failed");
+});
+
+
+test("invalid configurable OSV age policy fails closed but never fails the native Trivy scan", async (t) => {
+  const h = harness(t, "vulnerable");
+  addPinnedOsvFixture(h);
+  h.setImportAgeHours("-1");
+  const result = await h.scan();
+  const finding = result.report.findings.find(item => item.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.equal(finding.status, "failed");
+  assert.equal(finding.ubuntuOsvPreview, undefined);
+  assert.equal(result.report.vulnerabilityScan.ubuntuOsvPreview.state, "invalid_policy");
+  assert.equal(result.partial, false);
 });
