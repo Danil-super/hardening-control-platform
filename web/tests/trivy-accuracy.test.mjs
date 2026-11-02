@@ -792,6 +792,8 @@ test("v2 source ownership rejects foreign, generic and spoofed advisory IDs", (t
   }
   delete v.DataSource;
   assert.equal(assess().advisory.sourceMatch, "missing");
+  v.DataSource = { ID: 42 };
+  assert.equal(assess().advisory.sourceMatch, "missing", "Malformed scanner metadata must fail closed without crashing");
   assert.equal(assess().reason, "advisory_source_missing");
   v.DataSource = { ID: "ubuntu" };
   v.InstalledVersion = "wrong-version";
