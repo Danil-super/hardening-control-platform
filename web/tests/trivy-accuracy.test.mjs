@@ -673,7 +673,8 @@ test("CentOS vendor metadata cannot confirm CVE applicability for CentOS Stream"
     const observation = result.report.findings.find((finding) => finding.id.startsWith("trivy_CVE-2023-0286_"));
     assert.ok(observation, "Potential matches must remain visible");
     assert.equal(observation.status, stream ? "manual" : "failed");
-    assert.equal(result.report.vulnerabilityScan.vendorAssessment.verified, !stream);
+    assert.equal(result.report.vulnerabilityScan.vendorAssessment.verified, false, "unverified vendor metadata cannot be attested");
+    assert.equal(result.report.vulnerabilityScan.vendorAssessment.metadataConsistent, !stream, "CentOS Stream cannot inherit CentOS vendor applicability");
     assert.equal(result.report.vulnerabilityScan.packageProvenance["distribution-maintainer"], 1, "The observed vendor metadata remains preserved separately");
     if (stream) {
       assert.equal(result.partial, true);
