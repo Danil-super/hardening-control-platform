@@ -24,9 +24,9 @@ export type CveApplicabilityAssessment = {
   verdict: "affected" | "not_affected" | "under_investigation" | "unknown";
   confidence: "metadata-consistent" | "unverified";
   reason: "scanner_affected" | "scanner_not_affected" | "vendor_review_required"
-    | "unsupported_os_advisory" | "package_identity_ambiguous" | "package_not_in_inventory"
-    | "package_origin_unverified" | "advisory_source_missing" | "scanner_status_unknown"
-    | "database_not_fresh_or_verified";
+    | "unsupported_os_advisory" | "package_identity_ambiguous" | "package_identity_mismatch" | "package_not_in_inventory"
+    | "package_origin_unverified" | "advisory_source_missing" | "advisory_source_mismatch"
+    | "advisory_source_unsupported" | "scanner_status_unknown" | "database_not_fresh_or_verified";
   distribution: { id: string; versionId: string };
   package: {
     name: string; installedVersion: string; purl: string | null;
@@ -36,6 +36,7 @@ export type CveApplicabilityAssessment = {
   };
   advisory: {
     id: string; scannerStatus: string | null; dataSourceId: string | null;
+    sourceMatch?: "matched" | "mismatch" | "missing" | "unsupported";
     dataSourceName: string | null; primaryUrl: string | null; fixedVersion: string | null;
   };
   database: {
