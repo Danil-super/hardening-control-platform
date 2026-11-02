@@ -169,7 +169,14 @@ test("CVE checking has an explicit Trivy-only isolated-network mode", () => {
   assert.match(stateStore, /HCP_TRIVY_MODE/);
   assert.match(stateStore, /runtime_settings/);
   assert.match(scan, /--offline-scan/);
-  assert.doesNotMatch(scan, /OSV/);
+  // The optional Canonical OSV preview is strictly offline during an audit:
+  // it reads only already pinned snapshots and cannot fetch or install fixes.
+  const preview = read(path.join("web", "lib", "ubuntu-osv-preview.ts"));
+  assert.match(scan, /HCP_UBUNTU_OSV_PREVIEW_PINS_JSON/);
+  assert.match(preview, /readPinnedAdvisorySnapshot/);
+  assert.match(preview, /remediationAuthorized: false/);
+  assert.doesNotMatch(scan, /fetchPinnedCanonicalUbuntuOsv|canonical-ubuntu-osv-fetch/);
+  assert.doesNotMatch(preview, /fetchPinnedCanonicalUbuntuOsv|https:\/\//);
   assert.doesNotMatch(compose, /HCP_OSV/);
 });
 
