@@ -70,3 +70,73 @@ print(json.dumps({'count':len(re.findall(rb'CVE-2026-\\d{5}',text)),'last':b'CVE
   assert.deepEqual(JSON.parse(contents), { count: 4000, last: true });
   assert.equal(store.verifyAuditChain().valid, true);
 });
+
+
+test("final project snapshot and actual PDF retain Trivy and provisional Ubuntu OSV evidence", async () => {
+  const id = "osv-host-vulnerabilities-run";
+  const cve = "CVE-2024-6119";
+  const findingId = "trivy_CVE-2024-6119_abcdef";
+  const digest = "c".repeat(64);
+  const revision = "d".repeat(40);
+  const rawFinding = {
+    id: findingId, profileId: "cve_packages", title: cve + ": libssl3t64",
+    description: "Potential vulnerable OpenSSL binary", recommendation: "Verify the vendor advisory",
+    category: "CVE пакеты", risk: "high", status: "failed", source: "trivy", remediationAvailable: false,
+    cveApplicability: {
+      schemaVersion: 1, verdict: "affected", confidence: "metadata-consistent",
+      advisory: { id: cve },
+      package: { name: "libssl3t64", installedVersion: "3.0.13-0ubuntu3", sourceName: "openssl", sourceVersion: "3.0.13-0ubuntu3" },
+    },
+    ubuntuOsvPreview: {
+      schemaVersion: 1, status: "provisional", reason: "native_source_version_at_or_after_fixed",
+      candidateVerdict: "fixed_or_not_affected", trustedVerdict: "unknown",
+      sourcePackage: "openssl", sourceVersion: "3.0.13-0ubuntu3",
+      snapshotSha256: digest, sourceRevision: revision, conflictingWithTrivy: true,
+      publisherAuthenticated: false, remediationAuthorized: false,
+    },
+  };
+  writeFileSync(path.join(reports, id + ".json"), JSON.stringify({
+    schemaVersion: 1, inventoryHost: "osv-host", hostname: "osv-host",
+    createdAt: new Date().toISOString(), mode: "vulnerabilities", profileId: "cve_packages",
+    scanner: { available: true, partial: false },
+    findings: [rawFinding], events: [],
+  }));
+  const record = await projectReports.createProjectReport({
+    hostAlias: "osv-host",
+    subject: { clientName: "Тестовый заказчик", projectName: "Проверка OSV", period: "02.11.2026", specialist: "Специалист HCP" },
+  });
+  const saved = JSON.parse(readFileSync(path.join(state, "project-reports", record.fileName.replace(/\.pdf$/, ".json")), "utf8"));
+  assert.equal(saved.vendorAdvisoryEvidence.length, 1);
+  const evidence = saved.vendorAdvisoryEvidence[0];
+  assert.equal(evidence.findingId, findingId);
+  assert.equal(evidence.cveId, cve);
+  assert.equal(evidence.sourceReportId, id);
+  assert.match(evidence.sourceReportSha256, /^[a-f0-9]{64}$/);
+  assert.equal(evidence.snapshotSha256, digest);
+  assert.equal(evidence.sourceRevision, revision);
+  assert.equal(evidence.scannerStatus, "failed");
+  assert.equal(evidence.trivyApplicability, "affected");
+  assert.equal(evidence.candidateVerdict, "fixed_or_not_affected");
+  assert.equal(evidence.conflictingWithTrivy, true);
+  assert.equal(evidence.publisherAuthenticated, false);
+  assert.equal(evidence.trustedVerdict, "unknown");
+  assert.equal(evidence.remediationAuthorized, false);
+  assert.match(saved.vendorAdvisoryEvidenceSha256, /^[a-f0-9]{64}$/);
+  const pdf = projectReports.readProjectReportPdf(record.id).pdf;
+  const python = [
+    "import base64,re,sys,zlib",
+    "pdf=sys.stdin.buffer.read()",
+    "out=[]",
+    "for raw in re.findall(rb'stream\\r?\\n(.*?)endstream',pdf,re.S):",
+    "    try:",
+    "        raw=raw.strip()",
+    "        if raw.endswith(b'~>'): raw=base64.a85decode(raw,adobe=True)",
+    "        out.append(zlib.decompress(raw))",
+    "    except (ValueError,zlib.error): pass",
+    "sys.stdout.write(b'\\n'.join(out).decode('latin1'))",
+  ].join("\n");
+  const rendered = execFileSync("/usr/bin/python3", ["-c", python], { input: pdf, encoding: "utf8", maxBuffer: 12 * 1024 * 1024 });
+  assert.ok(rendered.includes(cve), "Actual PDF output omitted the CVE ID");
+  assert.ok(rendered.includes(findingId), "Actual PDF output omitted the original finding ID");
+  assert.equal(store.verifyAuditChain().valid, true);
+});
