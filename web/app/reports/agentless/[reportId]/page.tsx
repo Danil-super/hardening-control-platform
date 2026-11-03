@@ -12,6 +12,7 @@ import { readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports"
 import { describeAstraOvalNextStep } from "@/lib/astra-oval-policy";
 import { auditReportLimitations } from "@/lib/audit-result";
 import { summarizeDebianAptRepositoryEvidence } from "@/lib/debian-apt-provenance";
+import { summarizeDebianSignedReleases } from "@/lib/debian-signed-release";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -108,6 +109,12 @@ export default async function AgentlessReportDetailPage({
     ? summarizeDebianAptRepositoryEvidence(packageInventory.aptRepositories, asRecord(packageInventory.osRelease))
     : report.mode === "vulnerabilities" && Object.keys(asRecord(vulnerabilityScan.aptRepositoryEvidence)).length
       ? asRecord(vulnerabilityScan.aptRepositoryEvidence) : null;
+  const signedReleases = report.mode === "packages"
+    ? summarizeDebianSignedReleases(packageInventory.debianSignedReleases, asRecord(packageInventory.osRelease))
+    : report.mode === "vulnerabilities"
+      ? summarizeDebianSignedReleases(vulnerabilityScan.debianSignedReleaseEvidence,
+          asRecord(asRecord(raw.packageInventory).osRelease))
+      : null;
   const aptSuites = Array.isArray(aptRepositoryEvidence?.suites)
     ? aptRepositoryEvidence.suites.filter((entry): entry is string => typeof entry === "string" && /^[a-z][a-z0-9-]{1,31}$/.test(entry)).slice(0, 32)
     : [];
@@ -270,6 +277,29 @@ export default async function AgentlessReportDetailPage({
             <p className="mt-2 break-all text-xs text-slate-400">SHA-256 наблюдения apt-cache policy: {aptRepositoryEvidence.policySha256}</p>
           ) : null}
           <p className="mt-3 text-sm text-amber-100">Подпись репозитория: не проверена. Происхождение установленных .deb: не подтверждено. Даже метка Debian в APT-индексе не является криптографическим доказательством.</p>
+        </section>
+      ) : null}
+
+      {signedReleases ? (
+        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <h2 className="text-xl font-semibold text-white">Debian: локальная проверка подписи InRelease</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            Выполнена проверка gpgv с набором ключей Debian, установленным на целевой системе.
+            Набор ключей не удостоверен независимо; это не подтверждение подлинности ранее установленного пакета,
+            списка Packages либо актуальности данных издателя.
+          </p>
+          <div className="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+            <div><p className="text-slate-500">Результат</p><p className="mt-1 text-slate-100">{signedReleases.status === "verified_with_local_keyring" ? "Подписи локально проверены" : signedReleases.status === "partial" ? "Частично / есть ошибки" : signedReleases.status === "not_collected" ? "Ранее не собирались" : signedReleases.status === "invalid" ? "Некорректное доказательство" : "Недоступно"}</p></div>
+            <div><p className="text-slate-500">Файлов InRelease</p><p className="mt-1 text-slate-100">{signedReleases.candidateFiles}</p></div>
+            <div><p className="text-slate-500">Проверено gpgv</p><p className="mt-1 text-slate-100">{signedReleases.validLocalSignatures}</p></div>
+            <div><p className="text-slate-500">Неподтверждённых</p><p className="mt-1 text-slate-100">{signedReleases.invalidOrUnverifiable}</p></div>
+          </div>
+          {signedReleases.signedReleases.length ? <p className="mt-3 text-sm text-slate-300">Подписанные выпуски: {signedReleases.signedReleases.join(", ")}.</p> : null}
+          {signedReleases.localKeyringSha256 ? <p className="mt-2 break-all text-xs text-slate-400">SHA-256 локального набора ключей: {signedReleases.localKeyringSha256}</p> : null}
+          <p className="mt-3 text-sm text-amber-100">
+            Подлинность ключей из независимого доверенного источника не проверена. Подпись пакета, связь с
+            установленным файлом и хеши Packages не проверены; права на исправление не предоставлены.
+          </p>
         </section>
       ) : null}
 
