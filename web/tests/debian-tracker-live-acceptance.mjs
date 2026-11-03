@@ -20,7 +20,21 @@ try {
     DEBIAN_TRACKER_URL, importDebianTrackerFullSnapshot,
     readPinnedDebianTrackerFullSnapshot, evaluatePinnedDebianTrackerFullSnapshot,
   } = await import(compiled.url("debian-tracker-snapshot"));
-  const manifest = await importDebianTrackerFullSnapshot({ stateRoot });
+  const manifest = await importDebianTrackerFullSnapshot({
+    stateRoot,
+    // Observe headers through the very same real GET the importer consumes;
+    // do not download the entire upstream feed twice.
+    fetchImpl: async (url, init) => {
+      const response = await fetch(url, init);
+      log("upstream-transfer-headers", {
+        status: response.status,
+        contentType: response.headers.get("content-type"),
+        declaredWireBytes: response.headers.get("content-length"),
+        contentEncoding: response.headers.get("content-encoding"),
+      });
+      return response;
+    },
+  });
   assert.equal(manifest.sourceUrl, DEBIAN_TRACKER_URL);
   assert.match(manifest.sha256, /^[a-f0-9]{64}$/);
   assert.equal(manifest.pinMode, "observed-at-capture");
@@ -77,6 +91,10 @@ try {
     "Unexpected Debian source version applicability: review live tracker status/threshold");
   assert.equal(fixed.candidateVerdict, "fixed_or_not_affected",
     "Expected historical Debian fixed source version must pass");
+  log("process-resource-usage", {
+    maxResidentBytes: process.resourceUsage().maxRSS * 1024,
+    heapUsedBytes: process.memoryUsage().heapUsed,
+  });
   log("native-source-backport-crosscheck", {
     before: before.candidateVerdict, after: fixed.candidateVerdict,
     observedFixedVersion: fixed.fixedVersion,
