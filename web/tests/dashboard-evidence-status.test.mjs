@@ -144,3 +144,19 @@ test("malformed severity fields cannot inflate a critical count", () => {
   assert.equal(assessed.criticalHigh, 0);
   assert.deepEqual(assessed.severity, { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 });
 });
+
+
+test("asset identity-excluded history is review work, not a never-audited host", () => {
+  const state = describeHostAuditEvidence({
+    alias: "replaced-host",
+    riskSummary: risk({ auditCount: 0, freshCount: 0, identityExcludedCount: 1 }),
+  });
+  assert.equal(state.state, "needs_review");
+  assert.match(state.detail, /идентичности/);
+  const overview = summarizeDashboardEvidence([{
+    alias: "replaced-host",
+    riskSummary: risk({ auditCount: 0, freshCount: 0, identityExcludedCount: 1 }),
+  }]);
+  assert.equal(overview.needsReviewHosts, 1);
+  assert.equal(overview.noFreshEvidenceHosts, 0);
+});
