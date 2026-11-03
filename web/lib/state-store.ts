@@ -586,6 +586,64 @@ export function setVulnerabilityDatabaseMode(mode: VulnerabilityDatabaseMode) {
   });
 }
 
+const DEBIAN_PIN = /^[a-f0-9]{64}$/;
+const DEBIAN_SELECTED_KEY = "debian_tracker_selected_sha256";
+const DEBIAN_LATEST_KEY = "debian_tracker_latest_sha256";
+type DebianSettingRow = { setting_value: string; updated_at: string };
+
+/** An explicit empty interface selection disables even an .env fallback. */
+export function getDebianTrackerSelection(): { sha256: string | null; source: "interface" | "environment"; updatedAt: string | null } {
+  const row = getDatabase().prepare("SELECT setting_value, updated_at FROM runtime_settings WHERE setting_key = ?")
+    .get(DEBIAN_SELECTED_KEY) as DebianSettingRow | undefined;
+  if (row) {
+    if (row.setting_value && !DEBIAN_PIN.test(row.setting_value)) throw new Error("Invalid stored Debian CVE source digest");
+    return { sha256: row.setting_value || null, source: "interface", updatedAt: row.updated_at };
+  }
+  const env = process.env.HCP_DEBIAN_TRACKER_PREVIEW_SHA256?.trim() ?? "";
+  // Do not conceal an invalid pinned environment value by silently disabling.
+  if (env && !DEBIAN_PIN.test(env)) throw new Error("Invalid configured Debian CVE source digest");
+  return { sha256: env || null, source: "environment", updatedAt: null };
+}
+
+/** Only a digest is stored. Never store the 128-MiB export inside SQLite. */
+export function getDebianTrackerLastImportedSha256(): string | null {
+  const row = getDatabase().prepare("SELECT setting_value FROM runtime_settings WHERE setting_key = ?")
+    .get(DEBIAN_LATEST_KEY) as { setting_value: string } | undefined;
+  return row && DEBIAN_PIN.test(row.setting_value) ? row.setting_value : null;
+}
+
+export function recordDebianTrackerImportedSnapshot(sha256: string, unchanged: boolean) {
+  if (!DEBIAN_PIN.test(sha256)) throw new Error("Invalid Debian import digest");
+  return inTransaction(() => {
+    const updatedAt = new Date().toISOString();
+    getDatabase().prepare(`INSERT INTO runtime_settings (setting_key, setting_value, updated_at)
+      VALUES (?, ?, ?) ON CONFLICT(setting_key)
+      DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at`)
+      .run(DEBIAN_LATEST_KEY, sha256, updatedAt);
+    appendAuditEvent("debian_tracker_snapshot_observed", sha256, { sha256, unchanged, publisherAuthenticated: false });
+    return updatedAt;
+  });
+}
+
+export function selectDebianTrackerSnapshot(sha256: string | null, expectedSha256: string | null) {
+  if (sha256 !== null && !DEBIAN_PIN.test(sha256)) throw new Error("Invalid selected Debian digest");
+  if (expectedSha256 !== null && !DEBIAN_PIN.test(expectedSha256)) throw new Error("Invalid expected Debian digest");
+  return inTransaction(() => {
+    const current = getDebianTrackerSelection().sha256;
+    if (current !== expectedSha256) throw new Error("Debian CVE source selection changed; reload before approving");
+    const updatedAt = new Date().toISOString();
+    getDatabase().prepare(`INSERT INTO runtime_settings (setting_key, setting_value, updated_at)
+      VALUES (?, ?, ?) ON CONFLICT(setting_key)
+      DO UPDATE SET setting_value = excluded.setting_value, updated_at = excluded.updated_at`)
+      .run(DEBIAN_SELECTED_KEY, sha256 ?? "", updatedAt);
+    appendAuditEvent("debian_tracker_selection_changed", "debian_tracker", {
+      previousSha256: current, selectedSha256: sha256,
+      trustedVerdict: "unknown", remediationAuthorized: false,
+    });
+    return { sha256, source: "interface" as const, updatedAt };
+  });
+}
+
 function isSafePolicyIdentifier(value: string) {
   return /^[A-Za-z0-9_.:-]{1,120}$/.test(value);
 }
