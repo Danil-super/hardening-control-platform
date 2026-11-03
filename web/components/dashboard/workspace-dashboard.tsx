@@ -128,6 +128,28 @@ export function WorkspaceDashboard() {
           </div>
           <LinkButton href="/hosts" variant="secondary">Открыть хосты</LinkButton>
         </div>
+        {!loading && evidence.totalHosts > 0 ? (
+          <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h3 className="text-sm font-medium text-slate-200">Распределение хостов по состоянию проверок</h3>
+              <p className="text-xs text-slate-400">Всего: {evidence.totalHosts}</p>
+            </div>
+            <div
+              role="img"
+              aria-label={`Хостов со свежими результатами без известных пробелов: ${evidence.freshEvidenceHosts}; требуют уточнения: ${evidence.needsReviewHosts}; без свежего аудита: ${evidence.noFreshEvidenceHosts}`}
+              className="mt-3 flex h-3 w-full overflow-hidden rounded-full bg-slate-700"
+            >
+              {evidence.freshEvidenceHosts > 0 ? <span className="bg-emerald-500" style={{ width: `${100 * evidence.freshEvidenceHosts / evidence.totalHosts}%` }} /> : null}
+              {evidence.needsReviewHosts > 0 ? <span className="bg-amber-500" style={{ width: `${100 * evidence.needsReviewHosts / evidence.totalHosts}%` }} /> : null}
+              {evidence.noFreshEvidenceHosts > 0 ? <span className="bg-slate-500" style={{ width: `${100 * evidence.noFreshEvidenceHosts / evidence.totalHosts}%` }} /> : null}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-300">
+              <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Свежие без известных пробелов: {evidence.freshEvidenceHosts}</span>
+              <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" />Требуют уточнения: {evidence.needsReviewHosts}</span>
+              <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-slate-500" />Нет свежего аудита: {evidence.noFreshEvidenceHosts}</span>
+            </div>
+          </div>
+        ) : null}
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
             <p className="text-sm text-slate-400">Критические и высокие находки в сводках</p>
