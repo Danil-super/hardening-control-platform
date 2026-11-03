@@ -674,8 +674,11 @@ def _debian_stream_archive_sha256(filename, maximum):
     digest = hashlib.sha256()
     try:
         before = os.fstat(descriptor)
-        if (not stat.S_ISREG(before.st_mode) or before.st_dev != original.st_dev
-                or before.st_ino != original.st_ino or before.st_size != original.st_size):
+        identity_fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_nlink")
+        if (not stat.S_ISREG(before.st_mode)
+                or any(getattr(before, field) != getattr(original, field)
+                       for field in identity_fields)
+                or before.st_nlink != 1):
             raise ValueError("Cached Debian archive changed before reading")
         total = 0
         deadline = time.monotonic() + 20
