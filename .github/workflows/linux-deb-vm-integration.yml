@@ -10,7 +10,7 @@ on:
       - deployment/tests/test_deb_vm.py
       - deployment/tests/verify_deb_vm_normalization.*
       - deployment/tests/verify_linux_packages.mjs
-      - deployment/tests/verify_debian_tracker_native_report.mjs
+      - deployment/tests/verify_debian_tracker_native_report.*
       - web/lib/debian-tracker-*.ts
       - web/lib/project-report.ts
       - web/lib/vendor-crosscheck-report.ts
@@ -42,7 +42,7 @@ on:
       - deployment/tests/test_deb_vm.py
       - deployment/tests/verify_deb_vm_normalization.*
       - deployment/tests/verify_linux_packages.mjs
-      - deployment/tests/verify_debian_tracker_native_report.mjs
+      - deployment/tests/verify_debian_tracker_native_report.*
       - web/lib/debian-tracker-*.ts
       - web/lib/project-report.ts
       - web/lib/vendor-crosscheck-report.ts
@@ -98,6 +98,7 @@ jobs:
           python -m unittest discover -s deployment/tests -p 'test_deb_vm.py'
           node --test deployment/tests/verify_deb_vm_normalization.test.mjs
           node --test deployment/tests/test_linux_package_contracts.mjs
+          node --test deployment/tests/verify_debian_tracker_native_report.test.mjs
       - name: Install disposable KVM and authenticated SSH tools
         run: |
           set -euo pipefail
