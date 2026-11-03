@@ -166,6 +166,16 @@ test("invalid pin, missing or altered snapshot, stale age and incomplete invento
   assert.equal(f.check(original).findings, original);
 });
 
+test("no eligible CVE does not claim that a full vendor snapshot was verified", async t => {
+  const f = fixture(t);
+  const original = [finding("third-party-only", undefined, undefined, {
+    package: { ...finding("x").cveApplicability.package, provenance: "third-party" },
+  })];
+  const result = f.check(original);
+  assert.equal(result.summary.state, "no_matching_findings");
+  assert.equal(result.findings, original);
+});
+
 test("over-budget results are wholly unavailable, never truncated or partially annotated", async t => {
   const f = fixture(t);
   await f.imported();
