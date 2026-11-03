@@ -1,0 +1,42 @@
+name: Production dependency security gate
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - web/package.json
+      - web/package-lock.json
+      - .github/workflows/production-dependency-security.yml
+  pull_request:
+    paths:
+      - web/package.json
+      - web/package-lock.json
+      - .github/workflows/production-dependency-security.yml
+  schedule:
+    - cron: '27 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  audit-production-dependencies:
+    name: Reject high or critical production dependency advisories
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Verify exact lockfile install without package scripts
+        run: npm ci --ignore-scripts --no-fund
+      - name: Audit production dependency tree against npm advisories
+        # An advisory service outage is a FAILURE, not a clean vulnerability count.
+        # Keep results unmodified and non-cached; npm audit exits nonzero for high+.
+        run: npm audit --omit=dev --audit-level=high --no-fund
