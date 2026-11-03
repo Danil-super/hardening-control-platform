@@ -54,3 +54,31 @@ test("malformed counters do not yield a false completeness or negative findings"
   assert.equal(result.criticalHighFindings, 0);
   assert.equal(result.unknownSeverityFindings, 0);
 });
+
+
+test("inconsistent counts must never promote a host to fresh evidence", () => {
+  const inconsistent = [
+    { auditCount: 2, freshCount: 3 },
+    { auditCount: 2, staleCount: 3, freshCount: 1 },
+    { auditCount: 2, partialCount: 3, freshCount: 1 },
+    { auditCount: 2, freshCount: 1, partialCount: 0, staleCount: 0 },
+    { auditCount: 2, freshCount: 2, staleCount: 1 },
+  ];
+  for (const fields of inconsistent) {
+    assert.equal(
+      describeHostAuditEvidence({ alias: "inconsistent", riskSummary: risk(fields) }).state,
+      "needs_review",
+      JSON.stringify(fields),
+    );
+  }
+});
+
+test("missing fresh evidence takes priority over remediation when a different host was audited", () => {
+  const result = summarizeDashboardEvidence([
+    { alias: "fresh", riskSummary: risk({}) },
+    { alias: "stale", riskSummary: risk({ freshCount: 0, staleCount: 2 }) },
+  ]);
+  assert.equal(result.freshEvidenceHosts, 1);
+  assert.equal(result.noFreshEvidenceHosts, 1);
+  assert.equal(result.hostsWithAudits, 2);
+});
