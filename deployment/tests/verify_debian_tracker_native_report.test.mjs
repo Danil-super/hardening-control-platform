@@ -27,6 +27,15 @@ const source = () => ({
         publisherAuthenticated: false, installedPackageOriginVerified: false,
         remediationAuthorized: false,
       },
+      cachedArchiveEvidence: {
+        schemaVersion: 1, status: "no_cached_archives",
+        eligibleInstalled: 2, candidateArchives: 0, matchedArchives: 0,
+        mismatchedArchives: 0, missingIndexHashes: 0, ambiguousIndexHashes: 0,
+        verifiedArchiveSha256: [],
+        scope: "cached-deb-sha256-locally-verified-Packages-record-only-v1",
+        publisherAuthenticated: false, installedPackageOriginVerified: false,
+        remediationAuthorized: false,
+      },
       publisherAuthenticated: false, keyringIndependentlyAuthenticated: false,
       publisherFreshnessVerified: false, installedPackageOriginVerified: false,
       remediationAuthorized: false,
@@ -59,6 +68,10 @@ const protocol = () => ({
       detail: { eligibleInstalled: 2, exactInstalledVersionCandidates: 2,
         matchedIdentitySha256: "f".repeat(64), publisherAuthenticated: false,
         installedPackageOriginVerified: false, remediationAuthorized: false } },
+    { name: "Native optional cached Debian archives preserve conservative local SHA256 evidence",
+      detail: { status: "no_cached_archives", candidateArchives: 0, matchedArchives: 0,
+        verifiedArchiveSha256: [], installedPackageOriginVerified: false,
+        remediationAuthorized: false } },
     { name: "Native Debian cached Packages SHA256 matches locally signed InRelease records",
       detail: { matchedIndexes: 1,
         verifiedIndexes: [{ suite: "bookworm", component: "main", architecture: "amd64",
@@ -87,6 +100,7 @@ test("requires independently checked, actual guest dpkg source versions and neve
   assert.equal(result.localKeyringSha256, "d".repeat(64));
   assert.equal(result.verifiedLocalPackageIndexes, 1);
   assert.equal(result.exactInstalledVersionCandidates, 2);
+  assert.equal(result.locallyMatchedCachedArchives, 0);
 });
 test("never treats an Ubuntu/Astra identity, incomplete inventory or fake VM as native Debian proof", () => {
   for (const changed of [
@@ -149,6 +163,8 @@ test("native signed Packages SHA256 evidence cannot assert installed archive or 
     { remediationAuthorized: true },
     { verifiedAgainstLocallySignedRelease: false },
     { installedVersionCandidates: { ...source().packageInventory.debianPackageIndexes.installedVersionCandidates,
+      installedPackageOriginVerified: true } },
+    { cachedArchiveEvidence: { ...source().packageInventory.debianPackageIndexes.cachedArchiveEvidence,
       installedPackageOriginVerified: true } },
     { indexRecords: [{ ...source().packageInventory.debianPackageIndexes.indexRecords[0], packagesSha256: "f".repeat(64) }] },
   ]) {
