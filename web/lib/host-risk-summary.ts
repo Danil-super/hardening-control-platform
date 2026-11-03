@@ -8,6 +8,7 @@ export type HostRiskSummary = {
   critical: number; high: number; medium: number; low: number; unknown: number; info: number;
   total: number; auditCount: number; freshCount: number; partialCount: number; staleCount: number;
   identityExcludedCount?: number;
+  lastSecurityAuditAt: string | null;
   scope: "latest-per-tool-and-profile";
   maxAgeHours: number;
 };
@@ -30,12 +31,26 @@ export function buildHostRiskSummary(hostAlias: string, reports: AnsibleReportSu
   if (saved?.signature === signature && Date.now() < saved.expiresAt) return saved.summary;
   const correlation = buildHostCorrelation(hostAlias, reports);
   const coverage = correlation?.coverage.filter((item) => item.auditEvidence) ?? [];
+  // Generic lastReport may be facts/package inventory. Only date actual,
+  // current and available security audit evidence; exclude other assets.
+  const reportsById = new Map(sources.map((report) => [report.id, report]));
+  const lastAuditMs = coverage.reduce((latest, item) => {
+    if (!item.current || !item.available || item.coverageIssues.some((issue) =>
+      ["asset_identity_changed", "asset_connection_changed", "asset_binding_invalid",
+       "legacy_identity_unknown"].includes(issue))) return latest;
+    const report = reportsById.get(item.reportId);
+    if (!report?.reportTimeValid) return latest;
+    const observed = reportTimestamp(report);
+    return Number.isFinite(observed) && observed >= 0 && observed < 8.64e15
+      ? Math.max(latest, observed) : latest;
+  }, -1);
   const summary: HostRiskSummary = {
     critical: 0, high: 0, medium: 0, low: 0, unknown: 0, info: 0, total: 0,
     auditCount: coverage.length, freshCount: coverage.filter((item) => item.fresh && item.available).length,
     partialCount: coverage.filter((item) => item.partial || !item.available).length,
     staleCount: coverage.filter((item) => !item.fresh).length,
     identityExcludedCount: correlation?.coverage.filter((item) => item.coverageIssues.some((issue) => ["asset_identity_changed", "asset_connection_changed", "asset_binding_invalid", "legacy_identity_unknown"].includes(issue))).length ?? 0,
+    lastSecurityAuditAt: lastAuditMs >= 0 ? new Date(lastAuditMs).toISOString() : null,
     maxAgeHours: correlation?.maxAgeHours ?? 168, scope: "latest-per-tool-and-profile",
   };
   for (const finding of correlation?.findings ?? []) {

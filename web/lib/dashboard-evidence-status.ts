@@ -10,6 +10,7 @@ export type DashboardHostEvidence = {
     critical: number; high: number; medium: number; low: number; unknown: number;
     auditCount: number; freshCount: number; partialCount: number; staleCount: number;
     identityExcludedCount?: number;
+    lastSecurityAuditAt?: string | null;
     maxAgeHours: number;
   } | null;
 };
@@ -36,7 +37,10 @@ export function describeHostAuditEvidence(host: DashboardHostEvidence): Dashboar
   const identityExcluded = nonnegative(risk?.identityExcludedCount);
   const criticalHigh = nonnegative(risk?.critical) + nonnegative(risk?.high);
   const unknown = nonnegative(risk?.unknown);
-  const lastAuditAt = host.lastReport?.createdAt ?? null;
+  // lastReport may be a facts or package-inventory run, not a security audit.
+  const lastAuditAt = typeof risk?.lastSecurityAuditAt === "string"
+    && Number.isFinite(Date.parse(risk.lastSecurityAuditAt))
+    ? risk.lastSecurityAuditAt : null;
   if (!auditCount) return {
     alias: host.alias, state: "no_audit", stateLabel: "Нет доказательств аудита",
     detail: "Нет сохранённых проверок безопасности; инвентаризация и сбор фактов не считаются аудитом.",
