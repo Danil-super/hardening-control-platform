@@ -4,7 +4,7 @@ import test from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
 
 const compiled = compileServerModules(["dashboard-evidence-status"]);
-const { describeHostAuditEvidence, summarizeDashboardEvidence } = await import(compiled.url("dashboard-evidence-status"));
+const { describeHostAuditEvidence, summarizeDashboardEvidence, filterDashboardAssessments } = await import(compiled.url("dashboard-evidence-status"));
 test.after(() => rmSync(compiled.directory, { recursive: true, force: true }));
 
 const risk = overrides => ({
@@ -94,4 +94,53 @@ test("dashboard never labels the last diagnostic report as last security audit",
     lastSecurityAuditAt: undefined,
   }) };
   assert.equal(describeHostAuditEvidence(olderFactsWithoutEvidence).lastAuditAt, null);
+});
+
+
+test("missing riskSummary is unknown, not proof that no audit ever happened", () => {
+  const assessed = describeHostAuditEvidence({ alias: "older-host", lastReport: null });
+  assert.equal(assessed.state, "unknown_evidence");
+  const summary = summarizeDashboardEvidence([{ alias: "older-host" }]);
+  assert.equal(summary.needsReviewHosts, 1);
+  assert.equal(summary.noFreshEvidenceHosts, 0);
+  assert.equal(summary.freshEvidenceHosts, 0);
+});
+
+test("severity distribution includes only consistent current evidence", () => {
+  const hosts = [
+    { alias: "fresh", riskSummary: risk({ critical: 2, high: 1, medium: 4, low: 3, unknown: 2 }) },
+    { alias: "partly", riskSummary: risk({ freshCount: 1, staleCount: 1, critical: 0, high: 2, medium: 0, low: 0, unknown: 1 }) },
+    { alias: "old", riskSummary: risk({ freshCount: 0, staleCount: 2, critical: 8, high: 9, unknown: 5 }) },
+    { alias: "no-audit", riskSummary: risk({ auditCount: 0, freshCount: 0, critical: 5, high: 6 }) },
+    { alias: "bad", riskSummary: risk({ auditCount: 1, freshCount: 2, critical: 9, high: 9 }) },
+  ];
+  const result = summarizeDashboardEvidence(hosts);
+  assert.deepEqual(result.severity, { critical: 2, high: 3, medium: 4, low: 3, unknown: 3 });
+  assert.equal(result.criticalHighFindings, 5);
+  assert.equal(result.unknownSeverityFindings, 3);
+  assert.equal(result.needsReviewHosts, 2);
+  assert.equal(result.noFreshEvidenceHosts, 2);
+  assert.equal(result.freshEvidenceHosts, 1);
+});
+
+test("host-state filters partition the inventory without double counting", () => {
+  const hosts = [
+    { alias: "fresh", riskSummary: risk({}) },
+    { alias: "review", riskSummary: risk({ partialCount: 1 }) },
+    { alias: "stale", riskSummary: risk({ freshCount: 0, staleCount: 2 }) },
+    { alias: "absent", riskSummary: risk({ auditCount: 0, freshCount: 0 }) },
+    { alias: "unknown" },
+  ];
+  const assessed = summarizeDashboardEvidence(hosts).assessed;
+  assert.equal(filterDashboardAssessments(assessed, "all").length, 5);
+  assert.deepEqual(filterDashboardAssessments(assessed, "fresh").map(x => x.alias), ["fresh"]);
+  assert.deepEqual(filterDashboardAssessments(assessed, "review").map(x => x.alias), ["review", "unknown"]);
+  assert.deepEqual(filterDashboardAssessments(assessed, "no_fresh").map(x => x.alias), ["stale", "absent"]);
+});
+
+test("malformed severity fields cannot inflate a critical count", () => {
+  const assessed = describeHostAuditEvidence({ alias: "bad", riskSummary: risk({ critical: Infinity }) });
+  assert.equal(assessed.state, "unknown_evidence");
+  assert.equal(assessed.criticalHigh, 0);
+  assert.deepEqual(assessed.severity, { critical: 0, high: 0, medium: 0, low: 0, unknown: 0 });
 });
