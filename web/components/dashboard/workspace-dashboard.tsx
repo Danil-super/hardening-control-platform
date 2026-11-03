@@ -233,7 +233,7 @@ export function WorkspaceDashboard() {
                     <td className="px-2 py-3 font-medium text-slate-200"><Link href={`/hosts?host=${encodeURIComponent(host.alias)}#host-audit-flow`} className="text-sky-200 underline-offset-4 hover:underline" aria-label={`Открыть маршрут проверки хоста ${host.alias}`}>{host.alias}</Link></td>
                     <td className="px-2 py-3">
                       <span className={host.state === "has_fresh_evidence" ? "text-emerald-200"
-                        : host.state === "needs_review" ? "text-amber-200" : "text-slate-300"}>
+                        : host.state === "needs_review" || host.state === "unknown_evidence" ? "text-amber-200" : "text-slate-300"}>
                         {host.stateLabel}
                       </span>
                       <p className="mt-1 max-w-sm text-xs leading-5 text-slate-500">{host.detail}</p>
