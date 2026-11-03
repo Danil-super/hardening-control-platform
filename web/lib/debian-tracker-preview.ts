@@ -138,7 +138,7 @@ export function annotateDebianTrackerPreview(input: {
         reason = "cve_not_listed_unknown_not_clean";
         if (Object.hasOwn(pkg, cv.advisory.id)) {
           try {
-            const raw = JSON.stringify({ [sourceName]: { [cv.advisory.id]: pkg[cv.advisory.id] } });
+            const raw = JSON.stringify({ [sourceName]: { [cv.advisory.id]: (pkg as Record<string, unknown>)[cv.advisory.id] } });
             const digest = createHash("sha256").update(raw).digest("hex");
             const excerpt = parseDebianTrackerExcerpt(raw, digest);
             const evaluated = evaluateDebianTrackerExcerpt(excerpt, {
