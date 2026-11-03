@@ -21,6 +21,9 @@ test.after(() => rmSync(compiledPreview.directory, { recursive: true, force: tru
 const compiledDebianPreview = compileServerModules(["debian-tracker-preview"]);
 const debianPreviewModule = await import(compiledDebianPreview.url("debian-tracker-preview"));
 test.after(() => rmSync(compiledDebianPreview.directory, { recursive: true, force: true }));
+const compiledAptEvidence = compileServerModules(["debian-apt-provenance"]);
+const aptEvidenceModule = await import(compiledAptEvidence.url("debian-apt-provenance"));
+test.after(() => rmSync(compiledAptEvidence.directory, { recursive: true, force: true }));
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -51,6 +54,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
     "@/lib/trivy-output": outputGuard,
     "@/lib/ubuntu-osv-preview": previewModule,
     "@/lib/debian-tracker-preview": debianPreviewModule,
+    "@/lib/debian-apt-provenance": aptEvidenceModule,
     "@/lib/ansible-control": { getStateDir: () => dir, getRepoRoot: () => path.resolve(webDir, "..") },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
     "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), getDebianTrackerSelection: () => ({ sha256: null, source: "environment", updatedAt: null }), appendAuditEvent: () => {} },
@@ -62,6 +66,38 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
   save();
   return { ...exports, dir, reports, cache, report, save, setPins: (value) => { env.HCP_UBUNTU_OSV_PREVIEW_PINS_JSON = value; }, setImportAgeHours: (value) => { env.HCP_UBUNTU_OSV_MAX_IMPORT_AGE_HOURS = value; }, scan: () => exports.scanPackageInventory({ hostAlias: "lab-host", reportId: "lab-host-packages-run1" }), refresh: () => exports.refreshTrivyDatabase() };
 }
+
+test("APT index metadata on exact Debian CVE reports remains host-scoped and never verifies installed origins", async t => {
+  const h = harness(t, "vulnerable");
+  h.report.packageInventory.osRelease = { ID: "debian", VERSION_ID: "12", VERSION_CODENAME: "bookworm" };
+  h.report.packages[0].maintainer = "Debian Security Team <team@debian.org>";
+  h.report.packages[0].origin = "Debian";
+  h.report.packageInventory.aptRepositories = {
+    schemaVersion: 1, status: "observed", releaseCodename: "bookworm",
+    indexEntries: 1, debianLabelEntries: 1, otherLabelEntries: 0,
+    unknownLabelEntries: 0, suites: ["bookworm"], releaseLabels: ["Debian"],
+    suiteConsistent: true, policySha256: "a".repeat(64),
+    publisherAuthenticated: false, repositorySignatureVerified: false,
+    installedPackageOriginVerified: false,
+    scope: "apt-cache-policy-index-metadata-only; no-installed-origin-or-signature-attestation",
+  };
+  h.save();
+  const result = await h.scan();
+  const evidence = result.report.vulnerabilityScan.aptRepositoryEvidence;
+  assert.equal(evidence.state, "observed");
+  assert.equal(evidence.publisherAuthenticated, false);
+  assert.equal(evidence.repositorySignatureVerified, false);
+  assert.equal(evidence.installedPackageOriginVerified, false);
+  assert.equal(evidence.suiteConsistent, true);
+  assert.deepEqual(evidence.suites, ["bookworm"]);
+  const cve = result.report.findings.find(x => x.id.startsWith("trivy_CVE-2023-0286_"));
+  assert.ok(cve);
+  assert.equal(cve.remediationAvailable, false);
+  assert.equal(cve.cveApplicability.package.provenance, "distribution-maintainer");
+  assert.equal(cve.cveApplicability.confidence, "metadata-consistent");
+  assert.equal(result.report.vulnerabilityScan.vendorAssessment.verified, false);
+  assert.equal(JSON.parse(readFileSync(result.reportPath, "utf8")).vulnerabilityScan.aptRepositoryEvidence.installedPackageOriginVerified, false);
+});
 
 test("Trivy fixed means a vulnerable installation with a patch available", (t) => {
   const { testing } = harness(t);
