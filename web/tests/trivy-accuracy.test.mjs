@@ -53,7 +53,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
     "@/lib/debian-tracker-preview": debianPreviewModule,
     "@/lib/ansible-control": { getStateDir: () => dir, getRepoRoot: () => path.resolve(webDir, "..") },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
-    "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), appendAuditEvent: () => {} },
+    "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), getDebianTrackerSelection: () => ({ sha256: null, source: "environment", updatedAt: null }), appendAuditEvent: () => {} },
     "@/lib/astra-oval-policy": { describeAstraOvalNextStep: () => ({ ready: true, message: "OVAL-источник группы linux_hosts уже назначен. Запустите CVE Astra — OVAL / OpenSCAP.", href: "/hosts" }) },
   };
   vm.runInNewContext(compiled, { exports, require: (name) => mocks[name] ?? require(name), process: { env }, URLSearchParams, console: { warn: () => {}, log: () => {}, error: () => {} } });

@@ -225,10 +225,11 @@ function decodeUtf8(bytes: Buffer): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-export function readPinnedDebianTrackerFullSnapshot(root: string, digest: string): {
-  manifest: DebianTrackerFullManifest;
-  data: JsonRecord;
-} {
+/**
+ * Lightweight controller-only status: validates private manifest shape but
+ * does NOT read the full archive. Approval and scans must always verify bytes.
+ */
+export function readDebianTrackerSnapshotManifest(root: string, digest: string): DebianTrackerFullManifest {
   const locations = pathsFor(root, digest);
   const parsedManifest: unknown = JSON.parse(decodeUtf8(privateFile(locations.manifest, 4096)));
   if (!record(parsedManifest)) throw new Error("Invalid Debian tracker manifest");
@@ -243,6 +244,15 @@ export function readPinnedDebianTrackerFullSnapshot(root: string, digest: string
     || !Number.isSafeInteger(m.issueCount)) {
     throw new Error("Invalid or unsupported Debian tracker snapshot manifest");
   }
+  return m;
+}
+
+export function readPinnedDebianTrackerFullSnapshot(root: string, digest: string): {
+  manifest: DebianTrackerFullManifest;
+  data: JsonRecord;
+} {
+  const locations = pathsFor(root, digest);
+  const m = readDebianTrackerSnapshotManifest(root, digest);
   const bytes = privateFile(locations.data, DEBIAN_TRACKER_MAX_BYTES);
   if (bytes.length !== m.bytes || sha256(bytes) !== digest) {
     throw new Error("Debian tracker full snapshot integrity mismatch");
@@ -260,6 +270,8 @@ export async function importDebianTrackerFullSnapshot(input: {
   expectedSha256?: string;
   fetchImpl?: typeof fetch;
   now?: string;
+  /** Preserve the original capture timestamp when identical bytes are fetched again. */
+  reuseIdenticalSnapshot?: boolean;
 }): Promise<DebianTrackerFullManifest> {
   if (input.expectedSha256 !== undefined && !SHA.test(input.expectedSha256)) {
     throw new Error("Invalid operator-pinned Debian tracker SHA-256");
@@ -322,6 +334,11 @@ export async function importDebianTrackerFullSnapshot(input: {
   // Re-import of an existing digest is allowed only if its origin and metadata
   // claims are identical; no "freshening" of an old snapshot via a new timestamp.
   if (JSON.stringify(observed.manifest) !== JSON.stringify(manifest)) {
+    // Identical bytes may be observed again, but their ORIGINAL local capture
+    // timestamp cannot be refreshed. Never upgrade from an observed hash to an
+    // independently pinned or publisher-verified source without a new record.
+    if (input.reuseIdenticalSnapshot === true && observed.manifest.pinMode === manifest.pinMode
+      && observed.manifest.sha256 === manifest.sha256) return observed.manifest;
     throw new Error("Existing immutable Debian tracker manifest differs from this import");
   }
   return observed.manifest;
