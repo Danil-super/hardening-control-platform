@@ -30,6 +30,21 @@ export type DebianPackageIndexEvidence = {
     installedPackageOriginVerified: false;
     remediationAuthorized: false;
   };
+  cachedArchiveEvidence?: {
+    schemaVersion: 1;
+    status: "locally_hash_matched" | "partial" | "no_cached_archives" | "budget_exceeded" | "unavailable";
+    eligibleInstalled: number;
+    candidateArchives: number;
+    matchedArchives: number;
+    mismatchedArchives: number;
+    missingIndexHashes: number;
+    ambiguousIndexHashes: number;
+    verifiedArchiveSha256: string[];
+    scope: "cached-deb-sha256-locally-verified-Packages-record-only-v1";
+    publisherAuthenticated: false;
+    installedPackageOriginVerified: false;
+    remediationAuthorized: false;
+  };
   publisherAuthenticated: false;
   keyringIndependentlyAuthenticated: false;
   publisherFreshnessVerified: false;
@@ -46,6 +61,7 @@ const ARCH = /^[a-z0-9]{2,20}$/;
 const SCOPE = "cached-debian-packages-uncompressed-sha256-locally-signed-release-v1";
 const MAX_BYTES = 160 * 1024 * 1024;
 const CANDIDATE_SCOPE = "installed-dpkg-version-in-locally-verified-Packages-record-v1";
+const ARCHIVE_SCOPE = "cached-deb-sha256-locally-verified-Packages-record-only-v1";
 const note = "Сверены SHA-256 распакованных локальных индексов Packages с хешами в локальном InRelease, " +
   "подпись которого проверена по набору ключей самой проверяемой ОС. Набор ключей не аттестован независимо. " +
   "Не удостоверены издатель, полнота всех репозиториев, дата у издателя, архив .deb и происхождение установленных пакетов.";
@@ -143,6 +159,57 @@ export function summarizeDebianPackageIndexes(
     };
   }
 
+  let cachedArchiveEvidence: DebianPackageIndexEvidence["cachedArchiveEvidence"];
+  if (Object.prototype.hasOwnProperty.call(data, "cachedArchiveEvidence")) {
+    const archive = record(data.cachedArchiveEvidence);
+    const archiveStatus = archive?.status;
+    const cntArchive = (field: string, limit: number) => Number.isSafeInteger(archive?.[field])
+      && (archive?.[field] as number) >= 0 && (archive?.[field] as number) <= limit;
+    const hashes = archive?.verifiedArchiveSha256;
+    const ready = status === "locally_hash_matched";
+    if (!archive || !ready || archive.schemaVersion !== 1
+      || !["locally_hash_matched", "partial", "no_cached_archives", "budget_exceeded", "unavailable"]
+        .includes(String(archiveStatus))
+      || archive.scope !== ARCHIVE_SCOPE
+      || archive.publisherAuthenticated !== false || archive.installedPackageOriginVerified !== false
+      || archive.remediationAuthorized !== false
+      || !cntArchive("eligibleInstalled", 250000)
+      || !cntArchive("candidateArchives", 20000) || !cntArchive("matchedArchives", 8)
+      || !cntArchive("mismatchedArchives", 8) || !cntArchive("missingIndexHashes", 8)
+      || !cntArchive("ambiguousIndexHashes", 8)
+      || (archive.matchedArchives as number) + (archive.mismatchedArchives as number)
+        + (archive.missingIndexHashes as number) + (archive.ambiguousIndexHashes as number)
+        > (archive.candidateArchives as number)
+      || !Array.isArray(hashes) || hashes.length !== archive.matchedArchives
+      || hashes.some(x => typeof x !== "string" || !SHA.test(x))
+      || (archiveStatus === "locally_hash_matched" && (
+        archive.candidateArchives === 0 || archive.candidateArchives !== archive.matchedArchives
+        || archive.mismatchedArchives !== 0 || archive.missingIndexHashes !== 0
+        || archive.ambiguousIndexHashes !== 0))
+      || (archiveStatus === "no_cached_archives" && archive.candidateArchives !== 0)
+      || (archiveStatus === "partial" && (
+        archive.candidateArchives === 0 || archive.candidateArchives === archive.matchedArchives))
+      || (["budget_exceeded", "unavailable", "no_cached_archives"].includes(String(archiveStatus))
+        && (archive.matchedArchives !== 0 || hashes.length !== 0))
+      || (installedVersionCandidates && archive.eligibleInstalled !== installedVersionCandidates.eligibleInstalled)
+    ) return empty("invalid", codename);
+    cachedArchiveEvidence = {
+      schemaVersion: 1,
+      status: archiveStatus as NonNullable<DebianPackageIndexEvidence["cachedArchiveEvidence"]>["status"],
+      eligibleInstalled: archive.eligibleInstalled as number,
+      candidateArchives: archive.candidateArchives as number,
+      matchedArchives: archive.matchedArchives as number,
+      mismatchedArchives: archive.mismatchedArchives as number,
+      missingIndexHashes: archive.missingIndexHashes as number,
+      ambiguousIndexHashes: archive.ambiguousIndexHashes as number,
+      verifiedArchiveSha256: hashes as string[],
+      scope: ARCHIVE_SCOPE,
+      publisherAuthenticated: false,
+      installedPackageOriginVerified: false,
+      remediationAuthorized: false,
+    };
+  }
+
   // Recreate without untrusted keys/hidden metadata, preserve every eligible
   // signed index's exact count and SHA identity, including repeated suites.
   return {
@@ -157,5 +224,6 @@ export function summarizeDebianPackageIndexes(
     })),
     verifiedAgainstLocallySignedRelease: data.verifiedAgainstLocallySignedRelease as boolean,
     ...(installedVersionCandidates ? { installedVersionCandidates } : {}),
+    ...(cachedArchiveEvidence ? { cachedArchiveEvidence } : {}),
   };
 }
