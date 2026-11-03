@@ -27,6 +27,8 @@ jobs:
           cache-dependency-path: web/package-lock.json
       - name: Install pinned test dependencies without lifecycle scripts
         run: npm ci --ignore-scripts --prefix web
+      - name: Diagnose compressed versus decoded live feed size (no file publication)
+        run: node web/tests/debian-tracker-response-probe.mjs
       - name: Check actual full Debian JSON import and historical CVE source backport
         run: node web/tests/debian-tracker-live-acceptance.mjs
       # No artifact upload: real feed is mutable and no full third-party data
