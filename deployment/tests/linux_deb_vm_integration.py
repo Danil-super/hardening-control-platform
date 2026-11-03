@@ -959,7 +959,7 @@ sudo -n ufw --force enable
             apt = package_report.get("packageInventory", {}).get("aptRepositories")
             # No repository URL, credential or raw APT output is retained in
             # public CI evidence. Independently compare two read-only views.
-            native_apt = remote("env LC_ALL=C apt-cache policy", timeout=60).stdout.rstrip("\n")
+            native_apt = remote("env LC_ALL=C apt-cache -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= policy", timeout=60).stdout.rstrip("\n")
             expected_policy_sha = hashlib.sha256(native_apt.encode("utf-8")).hexdigest()
             if (not isinstance(apt, dict) or apt.get("schemaVersion") != 1
                     or apt.get("status") != "observed" or apt.get("indexEntries", 0) <= 0
