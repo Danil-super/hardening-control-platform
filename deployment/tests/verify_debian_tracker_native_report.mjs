@@ -71,6 +71,25 @@ export function checkNativeSources(native, vm) {
   assert.deepEqual(signed.inReleaseSha256, signedProof?.inReleaseSha256);
   for (const key of ["publisherAuthenticated", "publisherFreshnessVerified", "packageIndexHashesVerified",
     "installedPackageOriginVerified", "remediationAuthorized"]) assert.equal(signed[key], false);
+  const indexes = native.packageInventory?.debianPackageIndexes;
+  const indexProof = vm.checks?.find(x =>
+    x.name === "Native Debian cached Packages SHA256 matches locally signed InRelease records")?.detail;
+  assert.equal(indexes?.schemaVersion, 1);
+  assert.equal(indexes?.status, "locally_hash_matched");
+  assert.equal(indexes?.verifiedAgainstLocallySignedRelease, true);
+  assert.ok(indexes?.candidateIndexes > 0 && indexes.candidateIndexes === indexes.matchedIndexes);
+  assert.equal(indexes.missingSignedHashes, 0);
+  assert.equal(indexes.mismatchedIndexes, 0);
+  assert.equal(indexes.matchedIndexes, indexes.indexRecords?.length);
+  assert.equal(indexes.matchedIndexes, indexProof?.matchedIndexes);
+  assert.deepEqual(indexes.indexRecords, indexProof?.verifiedIndexes);
+  for (const item of indexes.indexRecords) {
+    assert.match(item.packagesSha256, SHA);
+    assert.ok(signed.inReleaseSha256.includes(item.releaseSha256));
+  }
+  for (const key of ["publisherAuthenticated", "keyringIndependentlyAuthenticated",
+    "publisherFreshnessVerified", "installedPackageOriginVerified", "remediationAuthorized"])
+    assert.equal(indexes[key], false);
   const found = native.packages.filter(pkg => pkg.manager === "dpkg" && pkg.sourceName === SOURCE);
   assert.ok(found.length > 0);
   const versions = [...new Set(found.map(x => x.sourceVersion))];
@@ -85,6 +104,7 @@ export function checkNativeSources(native, vm) {
   return { versions, recordCount: found.length,
     aptIndexEntries: apt.indexEntries, aptPolicySha256: apt.policySha256,
     locallyVerifiedSignatures: signed.validLocalSignatures, localKeyringSha256: signed.localKeyringSha256,
+    verifiedLocalPackageIndexes: indexes.matchedIndexes,
     publisherSignedPackageProvenanceVerified: false };
 }
 
@@ -297,6 +317,7 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
         independentDpkgEightFieldEquality: true, observedSourceRecords: real.recordCount,
         aptIndexEntries: real.aptIndexEntries, independentlyMatchedAptPolicySha256: real.aptPolicySha256,
         locallyVerifiedInReleaseSignatures: real.locallyVerifiedSignatures,
+        verifiedLocalPackageIndexes: real.verifiedLocalPackageIndexes,
         localKeyringSha256: real.localKeyringSha256,
         observedSourceVersions: real.versions.length,
         candidateVerdicts: actual.map(x => x.candidateVerdict),
