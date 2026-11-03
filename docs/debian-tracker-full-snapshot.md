@@ -6,7 +6,7 @@
 
 Debian provides a single complete JSON export at the **fixed** official address
 https://security-tracker.debian.org/tracker/data/json . It is larger than the
-8 MiB Ubuntu per-CVE immutable vault bound; a separate 64 MiB ceiling protects
+8 MiB Ubuntu per-CVE immutable vault bound; a separate 128 MiB ceiling protects
 the controller against an unexpectedly large response. Debian explicitly calls
 the JSON export an **unstable interface**. Its source package, CVE, per-release,
 status and fixed_version semantics require an independently versioned adapter.
@@ -21,7 +21,7 @@ importDebianTrackerFullSnapshot:
 2. Uses GET, credentials omitted, redirects disabled, no cache, and an AbortSignal
    timeout of 60 seconds. Requires HTTP 200, application/json and no Content-Range.
 3. Rejects oversized or invalid Content-Length before reading and bounds the
-   actual streamed body to 64 MiB regardless of headers.
+   actual streamed body to 128 MiB regardless of headers.
 4. Verifies UTF-8, valid JSON, duplicate object keys (including escaped equivalent
    keys), source-package and CVE release-map schema, bounded counts.
 5. Optionally requires an **independently supplied SHA-256**. Without this pin
@@ -76,11 +76,15 @@ epoch/backports, other releases, unmatched source binaries, 404s/redirects,
 wrong MIME, oversized stream, duplicate JSON keys, corrupt immutable data,
 symlink replacement, interrupted import and stale/future capture times.
 
-This stage **does not fetch and validate a real live Debian feed in CI** and
-therefore cannot establish acceptance of every upstream entry. The published
-full export is a moving target and may require further shape compatibility
-work using controlled real-feed fixtures. There is intentionally no
-browser-facing fetch or operational automatic refresh yet.
+A separate disposable, path-filtered **live CI acceptance** now fetches and
+validates Debian's actual full export, then checks the real
+`openssl/CVE-2024-6119` record in bookworm against two native dpkg versions.
+See `.github/workflows/debian-tracker-live.yml` and
+`web/tests/debian-tracker-live-acceptance.mjs`. This is a compatibility check
+at one point in time, not verification of every vulnerability record or of
+upstream publisher authenticity. The published full export is a moving target.
+There is still no browser-facing download, operational automatic refresh,
+or host remediation.
 
 ## Remaining before use in normal CVE reports
 
@@ -101,3 +105,32 @@ browser-facing fetch or operational automatic refresh yet.
 
 Official reference: https://security-team.debian.org/security_tracker.html
 and https://www.debian.org/security/ .
+
+## Real feed size gate (3 November 2026)
+
+The first disposable GitHub Actions live feed check found that HTTP gzip
+`Content-Length` was **14,441,247 bytes**, while Node's transparently decoded
+stream contained **87,754,048 bytes**. The original 64 MiB limit correctly
+rejected the decoded stream before publication. The importer now caps **decoded**
+bytes at **128 MiB** and still validates both the advertised length and
+actual stream count. These measured sizes are one observation, not an
+upstream size guarantee or a publisher signature. If the live source later
+exceeds this bound, the download must fail closed rather than silently
+increasing permitted memory use.
+
+## Successful real-feed compatibility observation
+
+The live CI action captured the exact digest
+`2bdb1ef767c72d6576c3199c481e66e0426a4703585be5b97d251527a4053083`
+from its 3 November 2026 observation. The archive contained 4,153 source
+package keys and 79,097 issue keys. The original gzip transfer length was
+14,441,247 bytes; decoded JSON was 87,754,048 bytes. The live source entry
+for `openssl/CVE-2024-6119/bookworm` was `resolved` with
+`fixed_version=3.0.14-1~deb12u2`; the native `dpkg` comparison returned
+candidate `affected` for `3.0.14-1~deb12u1` and candidate
+`fixed_or_not_affected` at `3.0.14-1~deb12u2`. All publisher authentication,
+publisher freshness and remediation claims remain false/unknown.
+
+This is historical evidence for one observed, mutable upstream feed; it is
+not a pinned Debian signing-key attestation, a reproducible copy of every
+package/version on a target host or evidence of complete CVE coverage.

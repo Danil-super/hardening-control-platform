@@ -1,0 +1,33 @@
+name: Debian Security Tracker live feed acceptance
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/debian-tracker-live.yml
+      - web/lib/debian-tracker-snapshot.ts
+      - web/lib/debian-tracker-crosscheck.ts
+      - web/tests/debian-tracker-live-acceptance.mjs
+      - web/tests/_typescript-loader.mjs
+      - web/package*.json
+
+permissions:
+  contents: read
+
+jobs:
+  live-debian-tracker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install pinned test dependencies without lifecycle scripts
+        run: npm ci --ignore-scripts --prefix web
+      - name: Check actual full Debian JSON import and historical CVE source backport
+        run: node web/tests/debian-tracker-live-acceptance.mjs
+      # No artifact upload: real feed is mutable and no full third-party data
+      # is redistributed. The logs contain only digest/counts and one public CVE.

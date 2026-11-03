@@ -204,7 +204,10 @@ test("actual streaming byte cap rejects oversized HTTP body without publication"
   });
   await assert.rejects(f.imported({
     expectedSha256: undefined,
-    fetchImpl: async () => new Response(stream, { headers: { "content-type": "application/json" } }),
+    fetchImpl: async () => new Response(stream, { headers: {
+      "content-type": "application/json", "content-encoding": "gzip",
+      "content-length": "14000000", // wire size is not decoded size
+    } }),
   }), /streamed size/);
   assert.ok(chunks >= 17);
   assert.equal(existsSync(path.join(f.stateRoot, "debian-tracker-snapshots")), false);
