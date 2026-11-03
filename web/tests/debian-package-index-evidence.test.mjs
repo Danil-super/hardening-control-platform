@@ -97,6 +97,8 @@ test("exact installed-version candidates are projected without package-origin au
   assert.equal(candidate.installedVersionCandidates?.publisherAuthenticated, false);
   assert.equal(candidate.installedVersionCandidates?.installedPackageOriginVerified, false);
   assert.equal(candidate.installedVersionCandidates?.remediationAuthorized, false);
+  // Vulnerability browser revalidates an already projected CVE report value.
+  assert.deepEqual(summarizeDebianPackageIndexes(candidate, os), candidate);
 });
 test("candidate evidence rejects forged trust flags, count inflation and incomplete hash gates", () => {
   const modifications = [
