@@ -5,6 +5,7 @@ import path from "node:path";
 import { buildHostCorrelation } from "@/lib/audit-correlation";
 import { hashAnsibleReport, listAnsibleReports, readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
 import { projectVendorAdvisoryEvidence } from "@/lib/vendor-crosscheck-report";
+import { projectDebianTrackerEvidence } from "@/lib/debian-tracker-export";
 import { resolvePlanSeverity } from "@/lib/remediation-plan-evidence";
 import type { AssetBinding } from "@/lib/asset-binding";
 import { hasActivePlanDecision, planObservationState } from "@/lib/remediation-plan-observations";
@@ -181,6 +182,10 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   });
   const vendorAdvisoryEvidence = projectVendorAdvisoryEvidence(vendorAdvisorySources);
   const vendorAdvisoryEvidenceSha256 = sha256(canonical({ version: 1, hostAlias, vendorAdvisoryEvidence }));
+  // Project independently from the same unnormalized source reports: correlation
+  // may collapse repeated CVE observations or lose source-package metadata.
+  const debianTrackerEvidence = projectDebianTrackerEvidence(vendorAdvisorySources);
+  const debianTrackerEvidenceSha256 = sha256(canonical({ version: 1, hostAlias, debianTrackerEvidence }));
   const correlation = buildHostCorrelation(hostAlias);
   const now = Date.parse(createdAt);
   const current = new Map(correlation?.findings.map((finding) => [finding.id, finding]));
@@ -214,6 +219,7 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
     version: 1, id, createdAt, hostAlias, subject, scope: { auditModes: Array.from(new Set(reports.map((report) => report.mode))).sort() },
     coverage, lostCoverage: correlation?.lostCoverage ?? [], findings, unplannedFindings, transactions, integrity: verifyAuditChain(), sourceManifest, sourceManifestSha256,
     vendorAdvisoryEvidence, vendorAdvisoryEvidenceSha256,
+    debianTrackerEvidence, debianTrackerEvidenceSha256,
   };
   const pdf = await runPdfRenderer(snapshot);
   const pdfSha256 = sha256(pdf);

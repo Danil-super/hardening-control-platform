@@ -130,5 +130,41 @@ class FinalReportIdentityPdfTest(unittest.TestCase):
         self.assertLessEqual(page_count, 3)
 
 
+    def test_debian_pdf_rejects_false_trust_duplicate_finding_and_missing_digest(self):
+        fixture = identity_fixture()
+        base = {
+            'schemaVersion': 1, 'sourceReportId': 'original-debian-report',
+            'findingId': 'trivy_CVE-2024-6119_one',
+            'sourceReportSha256': 'a' * 64, 'fullSnapshotSha256': 'b' * 64,
+            'derivedExcerptSha256': 'c' * 64,
+            'candidateStatus': 'provisional', 'candidateVerdict': 'affected',
+            'trustedVerdict': 'unknown', 'publisherAuthenticated': False,
+            'publisherFreshnessVerified': False, 'remediationAuthorized': False,
+            'conflictingWithTrivy': False,
+        }
+        fixture['debianTrackerEvidence'] = [base]
+        fixture['debianTrackerEvidenceSha256'] = 'd' * 64
+        cases = [
+            dict(base, publisherAuthenticated=True),
+            dict(base, publisherFreshnessVerified=True),
+            dict(base, remediationAuthorized=True),
+            dict(base, trustedVerdict='fixed_or_not_affected'),
+            dict(base, derivedExcerptSha256='unsafe'),
+            dict(base, candidateStatus='unavailable', candidateVerdict='affected'),
+        ]
+        for invalid in cases:
+            with self.subTest(invalid=invalid):
+                fixture['debianTrackerEvidence'] = [invalid]
+                with self.assertRaises(ValueError):
+                    RENDERER.render(fixture)
+        fixture['debianTrackerEvidence'] = [base, base]
+        with self.assertRaisesRegex(ValueError, 'Повторяющийся'):
+            RENDERER.render(fixture)
+        fixture['debianTrackerEvidence'] = [base]
+        fixture['debianTrackerEvidenceSha256'] = 'broken'
+        with self.assertRaisesRegex(ValueError, 'контрольная сумма'):
+            RENDERER.render(fixture)
+
+
 if __name__ == '__main__':
     unittest.main()
