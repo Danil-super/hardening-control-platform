@@ -29,8 +29,13 @@ test("recovery takes priority over controller, running scan and old findings", (
 test("active job does not let previous report masquerade as current result", () => {
   assert.equal(select(host({ activeJob: true })).id, "running");
 });
-test("facts-only and absent summary are not completed security audits", () => {
-  assert.equal(select(host({ riskSummary: undefined })).id, "first_audit");
+test("absent or corrupt summary never asserts a host has never been audited", () => {
+  const unknown = select(host({ riskSummary: undefined }));
+  assert.equal(unknown.id, "unknown");
+  assert.match(unknown.detail, /не означает, что проверок не было/);
+  assert.equal(select(host({ riskSummary: risk({ auditCount: 0, freshCount: 1 }) })).id, "unknown");
+  assert.equal(select(host({ riskSummary: risk({ auditCount: -1 }) })).id, "unknown");
+  assert.equal(select(host({ riskSummary: risk({ critical: NaN }) })).id, "unknown");
   assert.equal(select(host({ riskSummary: risk({ auditCount: 0, freshCount: 0 }) })).id, "first_audit");
 });
 test("old reports excluded after identity change require checking the host again", () => {
