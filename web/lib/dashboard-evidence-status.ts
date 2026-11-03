@@ -72,6 +72,8 @@ export function describeHostAuditEvidence(host: DashboardHostEvidence): Dashboar
     "Сводка отсутствует либо содержит некорректные счётчики. Проверьте исходные отчёты.");
   if (inconsistentCounters) return make("needs_review", "Требует уточнения",
     "Счётчики источников противоречат друг другу. Сохранённая область проверки не подтверждена.");
+  if (identityExcluded && !freshCount) return make("needs_review", "История исключена по идентичности",
+    "Исторические отчёты не соответствуют текущей идентичности хоста. Проверьте привязку актива и выполните новый аудит.");
   if (!auditCount) return make("no_audit", "Нет доказательств аудита",
     "Инвентаризация и сбор фактов не считаются аудитом безопасности.");
   if (!freshCount) return make("stale", "Нет свежей проверки",
