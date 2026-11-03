@@ -596,12 +596,12 @@ export function getDebianTrackerSelection(): { sha256: string | null; source: "i
   const row = getDatabase().prepare("SELECT setting_value, updated_at FROM runtime_settings WHERE setting_key = ?")
     .get(DEBIAN_SELECTED_KEY) as DebianSettingRow | undefined;
   if (row) {
-    if (row.setting_value && !DEBIAN_PIN.test(row.setting_value)) throw new Error("Invalid stored Debian CVE source digest");
+    // Do not throw from normal Trivy scans for a malformed optional setting:
+    // the preview's SHA validator will fail closed to invalid_pin, leaving the
+    // raw scanner findings intact.
     return { sha256: row.setting_value || null, source: "interface", updatedAt: row.updated_at };
   }
   const env = process.env.HCP_DEBIAN_TRACKER_PREVIEW_SHA256?.trim() ?? "";
-  // Do not conceal an invalid pinned environment value by silently disabling.
-  if (env && !DEBIAN_PIN.test(env)) throw new Error("Invalid configured Debian CVE source digest");
   return { sha256: env || null, source: "environment", updatedAt: null };
 }
 
