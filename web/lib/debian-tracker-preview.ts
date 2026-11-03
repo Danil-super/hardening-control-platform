@@ -26,7 +26,7 @@ export type DebianTrackerPreview = {
 export type DebianTrackerPreviewSummary = {
   schemaVersion: 1;
   state: "enabled" | "invalid_pin" | "invalid_policy" | "unsupported_release" |
-    "incomplete_inventory" | "unavailable" | "stale_snapshot" | "budget_exceeded";
+    "incomplete_inventory" | "unavailable" | "stale_snapshot" | "budget_exceeded" | "no_matching_findings";
   snapshotSha256: string | null;
   release: string | null;
   capturedAt: string | null;
@@ -107,7 +107,7 @@ export function annotateDebianTrackerPreview(input: {
   if (distinct.size > MAX_EVALUATIONS) {
     return { findings: input.findings, summary: { ...s, state: "budget_exceeded" } };
   }
-  if (!distinct.size) return { findings: input.findings, summary: s };
+  if (!distinct.size) return { findings: input.findings, summary: { ...s, state: "no_matching_findings" } };
   let snapshot: ReturnType<typeof readPinnedDebianTrackerFullSnapshot>;
   try { snapshot = readPinnedDebianTrackerFullSnapshot(input.stateRoot, pin); }
   catch { return { findings: input.findings, summary: { ...s, state: "unavailable" } }; }
