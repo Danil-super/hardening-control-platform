@@ -175,8 +175,18 @@ def main():
     b, b_sha = read_report(args.after)
     result = measure(a, b, a_sha, b_sha)
     output = Path(args.output)
-    require(not output.exists(), "Output already exists; do not overwrite evidence")
-    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    encoded = (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    descriptor = os.open(str(output), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb", closefd=False) as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(descriptor)
+    except BaseException:
+        os.unlink(str(output))
+        raise
+    finally:
+        os.close(descriptor)
     print("PASS: independently comparable 18-rule Astra observations; digest-bound output saved.")
 
 
