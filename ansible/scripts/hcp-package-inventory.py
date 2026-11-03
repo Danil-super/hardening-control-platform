@@ -264,6 +264,10 @@ def debian_apt_repository_observation(os_release):
         if not active or not re.match(r"^\s+release\s+", line):
             continue
         raw = line.strip()[len("release "):]
+        # /var/lib/dpkg/status appears as "release a=now". It is NOT an
+        # APT repository and must not become a malformed publisher claim.
+        if raw == "a=now":
+            continue
         props = {}
         for piece in raw.split(","):
             key, sep, val = piece.strip().partition("=")
