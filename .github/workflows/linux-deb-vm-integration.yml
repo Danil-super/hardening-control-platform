@@ -10,6 +10,11 @@ on:
       - deployment/tests/test_deb_vm.py
       - deployment/tests/verify_deb_vm_normalization.*
       - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/verify_debian_tracker_native_report.*
+      - web/lib/debian-tracker-*.ts
+      - web/lib/project-report.ts
+      - web/lib/vendor-crosscheck-report.ts
+      - ansible/scripts/hcp-final-report-pdf.py
       - deployment/tests/test_linux_package_contracts.mjs
       - deployment/tests/fixtures/linux-deb-images.json
       - deployment/tests/fixtures/debian12-ufw-owned-input-*.json
@@ -37,6 +42,11 @@ on:
       - deployment/tests/test_deb_vm.py
       - deployment/tests/verify_deb_vm_normalization.*
       - deployment/tests/verify_linux_packages.mjs
+      - deployment/tests/verify_debian_tracker_native_report.*
+      - web/lib/debian-tracker-*.ts
+      - web/lib/project-report.ts
+      - web/lib/vendor-crosscheck-report.ts
+      - ansible/scripts/hcp-final-report-pdf.py
       - deployment/tests/test_linux_package_contracts.mjs
       - deployment/tests/fixtures/linux-deb-images.json
       - deployment/tests/fixtures/debian12-ufw-owned-input-*.json
@@ -88,12 +98,13 @@ jobs:
           python -m unittest discover -s deployment/tests -p 'test_deb_vm.py'
           node --test deployment/tests/verify_deb_vm_normalization.test.mjs
           node --test deployment/tests/test_linux_package_contracts.mjs
+          node --test deployment/tests/verify_debian_tracker_native_report.test.mjs
       - name: Install disposable KVM and authenticated SSH tools
         run: |
           set -euo pipefail
           test "$RUNNER_ENVIRONMENT" = github-hosted
           sudo apt-get update -o Acquire::Retries=2
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils openssh-client
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils openssh-client python3-reportlab fonts-dejavu-core
           test -e /dev/kvm
           sudo chmod 0666 /dev/kvm
           test -r /dev/kvm && test -w /dev/kvm
@@ -116,11 +127,25 @@ jobs:
           bash deployment/tests/linux_deb_vm_integration.sh \
             --distribution '${{ matrix.distribution }}' \
             --work-dir "$RUNNER_TEMP/hcp-deb-${{ matrix.distribution }}"
+      - name: Verify real native Debian source against real Tracker, Trivy and final JSON/PDF
+        if: matrix.distribution == 'debian'
+        env:
+          HCP_TRIVY_BIN: ${{ runner.temp }}/hcp-deb-trivy-debian/trivy
+          HCP_TRIVY_CACHE_DIR: ${{ runner.temp }}/hcp-deb-debian/trivy-cache
+        run: |
+          set -euo pipefail
+          node deployment/tests/verify_debian_tracker_native_report.mjs \
+            "$RUNNER_TEMP/hcp-deb-debian/artifacts/reports/hcp-deb-ci-packages-packages.json" \
+            "$RUNNER_TEMP/hcp-deb-debian/artifacts/package-matching" \
+            "$RUNNER_TEMP/hcp-deb-debian/artifacts/protocol.json" \
+            "$RUNNER_TEMP/hcp-deb-debian/artifacts/debian-vendor-native"
+
       - name: Require the completed privacy gate before artifact publication
         if: always()
         id: public-evidence
         env:
           HCP_NATIVE_PROTOCOL: ${{ runner.temp }}/hcp-deb-${{ matrix.distribution }}/artifacts/protocol.json
+          HCP_DISTRIBUTION: ${{ matrix.distribution }}
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import json, os, stat
@@ -134,6 +159,23 @@ jobs:
                       safe = isinstance(protocol, dict) and protocol.get("publicationPrivacyVerified") is True
           except (OSError, ValueError, TypeError):
               pass
+          if os.environ.get("HCP_DISTRIBUTION") == "debian":
+              evidence = os.path.join(os.environ["RUNNER_TEMP"],
+                                      "hcp-deb-debian/artifacts/debian-vendor-native/protocol.json")
+              try:
+                  fd = os.open(evidence, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+                  with os.fdopen(fd, "rb") as stream:
+                      info = os.fstat(stream.fileno())
+                      passed = stat.S_ISREG(info.st_mode) and info.st_size <= 64 * 1024
+                      proof = json.loads(stream.read(64 * 1024 + 1)) if passed else {}
+                      passed = passed and proof.get("status") == "passed" and \
+                          proof.get("projectReport", {}).get("exactMultisetVerified") is True and \
+                          proof.get("projectReport", {}).get("allPdfTuplesAndHashesVerified") is True and \
+                          proof.get("nativeGuest", {}).get("packagePublisherSignatureVerified") is False and \
+                          proof.get("syntheticTrivyControl", {}).get("installedOnGuest") is False
+                  safe = safe and passed
+              except (OSError, ValueError, TypeError):
+                  safe = False
           print("safe=" + ("true" if safe else "false"))
           PY
       - name: Save public native evidence only
