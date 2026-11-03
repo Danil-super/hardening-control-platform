@@ -130,6 +130,44 @@ class FinalReportIdentityPdfTest(unittest.TestCase):
         self.assertLessEqual(page_count, 3)
 
 
+    def test_signed_release_pdf_rejects_untrusted_keyring_upgrades(self):
+        fixture = identity_fixture()
+        observation = {
+            "schemaVersion": 1,
+            "sourceReportId": "debian-native-packages",
+            "sourceReportSha256": "a" * 64,
+            "status": "verified_with_local_keyring",
+            "candidateFiles": 1, "validLocalSignatures": 1, "invalidOrUnverifiable": 0,
+            "localSignatureVerified": True,
+            "signerFingerprints": ["b" * 40],
+            "inReleaseSha256": ["c" * 64],
+            "localKeyringSha256": "d" * 64,
+            "signedReleases": ["bookworm"],
+            "publisherAuthenticated": False, "publisherFreshnessVerified": False,
+            "packageIndexHashesVerified": False, "installedPackageOriginVerified": False,
+            "remediationAuthorized": False,
+            "provenanceScope": "cached-inrelease-gpgv-installed-archive-keyring-only",
+        }
+        fixture["debianSignedReleaseEvidence"] = [observation]
+        fixture["debianSignedReleaseEvidenceSha256"] = "f" * 64
+        self.assertTrue(RENDERER.render(fixture).startswith(b"%PDF-"))
+        for extra in [
+            {"publisherAuthenticated": True},
+            {"publisherFreshnessVerified": True},
+            {"packageIndexHashesVerified": True},
+            {"installedPackageOriginVerified": True},
+            {"remediationAuthorized": True},
+            {"signerFingerprints": ["../secrets"]},
+            {"localKeyringSha256": "unsigned"},
+        ]:
+            with self.subTest(extra=extra):
+                fixture["debianSignedReleaseEvidence"] = [dict(observation, **extra)]
+                with self.assertRaises(ValueError):
+                    RENDERER.render(fixture)
+        fixture["debianSignedReleaseEvidence"] = [observation, observation]
+        with self.assertRaises(ValueError):
+            RENDERER.render(fixture)
+
     def test_apt_repository_pdf_rejects_signature_claims_and_duplicate_source_ids(self):
         fixture = identity_fixture()
         item = {

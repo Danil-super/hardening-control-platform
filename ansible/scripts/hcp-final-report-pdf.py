@@ -447,6 +447,73 @@ def render(snapshot):
                  'да (только по метаданным)' if item.get('state') == 'observed' and item.get('suiteConsistent') is True else 'не подтверждено',
                  esc(item.get('policySha256'), 64)), small))
 
+    signed_evidence = snapshot.get('debianSignedReleaseEvidence', [])
+    if not isinstance(signed_evidence, list) or len(signed_evidence) > 4096:
+        raise ValueError('Недопустимый состав InRelease-доказательств Debian.')
+    if signed_evidence:
+        digest = snapshot.get('debianSignedReleaseEvidenceSha256')
+        if not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest):
+            raise ValueError('Недействительная сумма InRelease-доказательств.')
+        story.append(Paragraph('9. Проверка локальных подписей InRelease Debian', heading))
+        story.append(Paragraph(
+            'gpgv проверяет подпись сохранённых на хосте InRelease по локальному '
+            'debian-archive-keyring. Это НЕ независимое подтверждение самого '
+            'набора ключей Debian. Не доказаны подписи архивов установленных .deb, '
+            'связь с конкретным бинарным пакетом, проверка хешей Packages '
+            'и актуальность у издателя. Результат не разрешает автоматическое исправление.', body))
+        story.append(Paragraph(
+            'Исходных инвентарей: %d · SHA-256 проекции: %s.' %
+            (len(signed_evidence), esc(digest, 64)), small))
+        seen_signed = set()
+        for item in signed_evidence:
+            if (not isinstance(item, dict) or item.get('schemaVersion') != 1
+                    or item.get('status') not in ('verified_with_local_keyring', 'partial',
+                                                 'unavailable', 'not_collected', 'invalid')
+                    or item.get('provenanceScope') != 'cached-inrelease-gpgv-installed-archive-keyring-only'
+                    or item.get('publisherAuthenticated') is not False
+                    or item.get('publisherFreshnessVerified') is not False
+                    or item.get('packageIndexHashesVerified') is not False
+                    or item.get('installedPackageOriginVerified') is not False
+                    or item.get('remediationAuthorized') is not False
+                    or not isinstance(item.get('sourceReportId'), str) or not item['sourceReportId']
+                    or not isinstance(item.get('sourceReportSha256'), str)
+                    or not re.fullmatch(r'[a-f0-9]{64}', item.get('sourceReportSha256'))
+                    or item['sourceReportId'] in seen_signed
+                    or not isinstance(item.get('candidateFiles'), int) or not 0 <= item['candidateFiles'] <= 12
+                    or not isinstance(item.get('validLocalSignatures'), int)
+                    or not 0 <= item['validLocalSignatures'] <= item['candidateFiles']
+                    or not isinstance(item.get('localSignatureVerified'), bool)
+                    or (item.get('status') == 'verified_with_local_keyring') != item['localSignatureVerified']
+                    or not isinstance(item.get('inReleaseSha256'), list)
+                    or len(item['inReleaseSha256']) != item['validLocalSignatures']
+                    or any(not isinstance(x, str) or not re.fullmatch(r'[a-f0-9]{64}', x)
+                           for x in item['inReleaseSha256'])
+                    or not isinstance(item.get('signerFingerprints'), list)
+                    or len(item['signerFingerprints']) > 16
+                    or any(not isinstance(x, str) or not re.fullmatch(r'(?:[a-f0-9]{40}|[a-f0-9]{64})', x)
+                           for x in item['signerFingerprints'])
+                    or item.get('localKeyringSha256') is not None and (
+                        not isinstance(item.get('localKeyringSha256'), str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', item['localKeyringSha256']))):
+                raise ValueError('Некорректный или привилегированный InRelease-отчёт.')
+            seen_signed.add(item['sourceReportId'])
+            story.append(Paragraph(
+                'Инвентарь: %s · JSON SHA-256: %s · статус: %s · '
+                'проверено локально: %s из %s.' %
+                (esc(item['sourceReportId'], 180), esc(item['sourceReportSha256'], 64),
+                 esc(item['status'], 40), esc(item['validLocalSignatures'], 12),
+                 esc(item['candidateFiles'], 12)), small))
+            story.append(Paragraph(
+                'SHA-256 установленного keyring: %s · выпуски: %s · '
+                'SHA-256 InRelease: %s · signer fingerprints: %s.' %
+                (esc(item.get('localKeyringSha256'), 64),
+                 esc(', '.join(item.get('signedReleases') or []) or 'не подтверждены', 256),
+                 esc(', '.join(item['inReleaseSha256']) or 'нет', 800),
+                 esc(', '.join(item['signerFingerprints']) or 'нет', 1100)), small))
+            story.append(Paragraph(
+                'Независимая подлинность издателя: НЕ подтверждена. '
+                'Связь с установленным пакетом: НЕ подтверждена.', small))
+
     def footer(canvas, document):
         canvas.saveState()
         canvas.setFont('HCPDejaVu', 7)

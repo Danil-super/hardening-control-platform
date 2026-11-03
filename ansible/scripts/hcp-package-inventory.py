@@ -11,6 +11,7 @@ import re
 import shlex
 import shutil
 import socket
+import stat
 import subprocess
 from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit
@@ -311,6 +312,172 @@ def debian_apt_repository_observation(os_release):
                 suiteConsistent=consistent and len(suites) <= 32 and len(labels) <= 32,
                 policySha256=hashlib.sha256(output.encode("utf-8")).hexdigest())
 
+
+# Read-only Debian archive signature verification. This verifies a cached
+# InRelease signature with the guest's installed archive keyring, NOT the
+# external authenticity of that keyring, package-list hashes or installed .deb.
+DEBIAN_INRELEASE_DIR = "/var/lib/apt/lists"
+DEBIAN_ARCHIVE_KEYRING = "/usr/share/keyrings/debian-archive-keyring.gpg"
+DEBIAN_INRELEASE_MAX_BYTES = 4 * 1024 * 1024
+DEBIAN_KEYRING_MAX_BYTES = 4 * 1024 * 1024
+
+
+def _private_cached_regular(path, maximum):
+    """No links/special files, bounded bytes and in-place mutation detection."""
+    original = os.lstat(path)
+    if not stat.S_ISREG(original.st_mode) or original.st_size < 1 or original.st_size > maximum:
+        raise ValueError("Cached Debian release/keyring file is not a bounded regular file")
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    try:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_ino != original.st_ino
+                or before.st_dev != original.st_dev or before.st_size != original.st_size):
+            raise ValueError("Cached Debian file was replaced before opening")
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            value = stream.read(maximum + 1)
+        after = os.fstat(descriptor)
+        current = os.lstat(path)
+        keys = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_nlink")
+        if (len(value) != before.st_size
+                or any(getattr(before, key) != getattr(after, key)
+                       or getattr(after, key) != getattr(current, key) for key in keys)):
+            raise ValueError("Cached Debian file changed during verification")
+        return value
+    finally:
+        os.close(descriptor)
+
+
+def _debian_inrelease_headers(raw, codename):
+    """Parse conservative signed cleartext. No unsigned fields are accepted."""
+    text = raw.decode("utf-8", "strict")
+    if not text.startswith("-----BEGIN PGP SIGNED MESSAGE-----\n"):
+        raise ValueError("Cached release is not PGP cleartext")
+    beginning = text.find("\n\n")
+    ending = text.find("\n-----BEGIN PGP SIGNATURE-----")
+    if beginning < 0 or ending <= beginning:
+        raise ValueError("PGP release markers are incomplete")
+    headers = {}
+    for line in text[beginning + 2:ending].splitlines():
+        if line.startswith("- "):
+            line = line[2:]
+        if not line or line[0] in " \t":
+            continue
+        key, separator, value = line.partition(":")
+        if separator and key in ("Origin", "Label", "Suite", "Codename", "Date", "Valid-Until"):
+            if key in headers or len(value) > 180:
+                raise ValueError("Duplicate or oversized signed Release field")
+            headers[key] = value.strip()
+    allowed = (codename, codename + "-security", codename + "-updates", codename + "-backports")
+    release = headers.get("Codename")
+    if release not in allowed:
+        raise ValueError("Cached signed release does not match exact OS codename")
+    # Debian's official backports suite has the distinct, signed
+    # 'Origin: Debian Backports'. Never accept it for base/security/updates.
+    expected_origin = "Debian Backports" if release == codename + "-backports" else "Debian"
+    if headers.get("Origin") != expected_origin:
+        raise ValueError("Cached signed release Origin differs from its exact suite")
+    if not headers.get("Date"):
+        raise ValueError("Signed release has no publication date")
+    # Do not treat Valid-Until or Date as independently publisher-fresh.
+    return headers["Codename"]
+
+
+def debian_cached_inrelease_signatures(os_release):
+    """Observe local gpgv verification against the installed Debian keyring.
+
+    This is intentionally NOT a publisher trust anchor: the archive keyring is
+    part of the host's own installed software and is not independently pinned.
+    No package-index chain, installed archive or remote URL is authenticated.
+    """
+    base = {
+        "schemaVersion": 1, "status": "unavailable", "releaseCodename": os_release.get("VERSION_CODENAME") or None,
+        "candidateFiles": 0, "validLocalSignatures": 0, "invalidOrUnverifiable": 0,
+        "signedReleases": [], "signerFingerprints": [], "inReleaseSha256": [],
+        "localKeyringSha256": None, "localSignatureVerified": False,
+        "publisherAuthenticated": False, "publisherFreshnessVerified": False,
+        "packageIndexHashesVerified": False, "installedPackageOriginVerified": False,
+        "remediationAuthorized": False,
+        "scope": "cached-inrelease-gpgv-installed-archive-keyring-only",
+    }
+    if os_release.get("ID") != "debian":
+        return base
+    codename = base["releaseCodename"]
+    if not isinstance(codename, str) or not re.match(r"^[a-z][a-z0-9-]{1,31}$", codename):
+        return base
+    if not shutil.which("gpgv"):
+        return base
+    try:
+        directory = os.lstat(DEBIAN_INRELEASE_DIR)
+        if not stat.S_ISDIR(directory.st_mode) or stat.S_ISLNK(directory.st_mode):
+            return base
+        keyring_path = DEBIAN_ARCHIVE_KEYRING
+        # On modern Debian, the .gpg compatibility name is legitimately a
+        # same-directory link to the .pgp binary archive keyring. Accept ONLY
+        # this exact fixed alias; no arbitrary filesystem traversal or URL.
+        if stat.S_ISLNK(os.lstat(keyring_path).st_mode):
+            if (os.path.basename(keyring_path) != "debian-archive-keyring.gpg"
+                    or os.readlink(keyring_path) != "debian-archive-keyring.pgp"):
+                raise ValueError("Unsupported Debian archive keyring symlink")
+            keyring_path = os.path.join(os.path.dirname(keyring_path), "debian-archive-keyring.pgp")
+        keyring = _private_cached_regular(keyring_path, DEBIAN_KEYRING_MAX_BYTES)
+        base["localKeyringSha256"] = hashlib.sha256(keyring).hexdigest()
+        names = os.listdir(DEBIAN_INRELEASE_DIR)
+        if len(names) > 20000:
+            return dict(base, status="ambiguous")
+        allowed = {codename, codename + "-security", codename + "-updates", codename + "-backports"}
+        selected = []
+        for name in names:
+            if len(name) > 360 or not re.match(r"^[A-Za-z0-9._-]+$", name):
+                continue
+            part = re.search(r"_dists_([a-z][a-z0-9-]{1,31})_InRelease$", name)
+            if part and part.group(1) in allowed:
+                selected.append(name)
+        if len(selected) > 12:
+            return dict(base, status="ambiguous", candidateFiles=len(selected))
+        if not selected:
+            return base
+        base["candidateFiles"] = len(selected)
+        for name in sorted(selected):
+            filename = os.path.join(DEBIAN_INRELEASE_DIR, name)
+            before = _private_cached_regular(filename, DEBIAN_INRELEASE_MAX_BYTES)
+            signed_release = _debian_inrelease_headers(before, codename)
+            # No shell and no network. A result is valid only when gpgv actually
+            # checked the *same* bytes later returned by the bounded reader.
+            check = subprocess.run(
+                ["gpgv", "--status-fd", "1", "--keyring", keyring_path, filename],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12, check=False,
+            )
+            after = _private_cached_regular(filename, DEBIAN_INRELEASE_MAX_BYTES)
+            if _private_cached_regular(keyring_path, DEBIAN_KEYRING_MAX_BYTES) != keyring:
+                raise ValueError("Debian archive keyring changed during verification")
+            if before != after:
+                raise ValueError("Cached signed Release changed during gpgv")
+            output = check.stdout[:65536].decode("ascii", "replace")
+            fingerprints = re.findall(r"^\[GNUPG:\] VALIDSIG ([A-Fa-f0-9]{40}|[A-Fa-f0-9]{64})\s", output, re.M)
+            good = "[GNUPG:] GOODSIG " in output
+            if (check.returncode != 0 or not good or not fingerprints
+                    or any("[GNUPG:] " + label in output for label in (
+                        "BADSIG", "ERRSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "NO_PUBKEY"))):
+                base["invalidOrUnverifiable"] += 1
+                continue
+            base["validLocalSignatures"] += 1
+            base["signedReleases"].append(signed_release)
+            base["signerFingerprints"].extend(x.lower() for x in fingerprints)
+            base["inReleaseSha256"].append(hashlib.sha256(before).hexdigest())
+        base["signerFingerprints"] = sorted(set(base["signerFingerprints"]))[:16]
+        base["signedReleases"] = sorted(set(base["signedReleases"]))
+        base["inReleaseSha256"].sort()
+        # Only an observation that every selected cached InRelease was
+        # cryptographically verified with the LOCAL keyring earns this status.
+        base["localSignatureVerified"] = base["validLocalSignatures"] == len(selected)
+        base["status"] = "verified_with_local_keyring" if base["localSignatureVerified"] else "partial"
+    except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired):
+        base["status"] = "unavailable"
+        base["localSignatureVerified"] = False
+    return base
+
+
 def resolve_rpm_database():
     """Resolve only RPM's native directory and three supported backend files.
 
@@ -466,6 +633,7 @@ def collect():
                 extra["apkRepositories"] = apk_repositories(os_release)
             elif manager == "dpkg" and os_release.get("ID") == "debian":
                 extra["aptRepositories"] = debian_apt_repository_observation(os_release)
+                extra["debianSignedReleases"] = debian_cached_inrelease_signatures(os_release)
             same_configuration = rpm_database is None or resolve_rpm_database() == rpm_database
             if not consistency.unchanged() or not same_configuration:
                 error = "The native package database changed during collection; repeat the inventory"

@@ -60,6 +60,17 @@ export function checkNativeSources(native, vm) {
   assert.equal(apt.installedPackageOriginVerified, false);
   assert.equal(aptProof?.repositorySignatureVerified, false);
   assert.equal(aptProof?.installedPackageOriginVerified, false);
+  const signed = native.packageInventory?.debianSignedReleases;
+  const signedProof = vm.checks?.find(x =>
+    x.name === "Cached Debian InRelease signatures verified by native gpgv with local keyring only")?.detail;
+  assert.equal(signed?.status, "verified_with_local_keyring");
+  assert.equal(signed?.localSignatureVerified, true);
+  assert.ok(signed?.candidateFiles > 0 && signed.candidateFiles === signed.validLocalSignatures);
+  assert.match(signed.localKeyringSha256, SHA);
+  assert.equal(signed.localKeyringSha256, signedProof?.localKeyringSha256);
+  assert.deepEqual(signed.inReleaseSha256, signedProof?.inReleaseSha256);
+  for (const key of ["publisherAuthenticated", "publisherFreshnessVerified", "packageIndexHashesVerified",
+    "installedPackageOriginVerified", "remediationAuthorized"]) assert.equal(signed[key], false);
   const found = native.packages.filter(pkg => pkg.manager === "dpkg" && pkg.sourceName === SOURCE);
   assert.ok(found.length > 0);
   const versions = [...new Set(found.map(x => x.sourceVersion))];
@@ -73,6 +84,7 @@ export function checkNativeSources(native, vm) {
   }
   return { versions, recordCount: found.length,
     aptIndexEntries: apt.indexEntries, aptPolicySha256: apt.policySha256,
+    locallyVerifiedSignatures: signed.validLocalSignatures, localKeyringSha256: signed.localKeyringSha256,
     publisherSignedPackageProvenanceVerified: false };
 }
 
@@ -284,6 +296,8 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
       nativeGuest: { distribution: "debian", version: "12", release: "bookworm",
         independentDpkgEightFieldEquality: true, observedSourceRecords: real.recordCount,
         aptIndexEntries: real.aptIndexEntries, independentlyMatchedAptPolicySha256: real.aptPolicySha256,
+        locallyVerifiedInReleaseSignatures: real.locallyVerifiedSignatures,
+        localKeyringSha256: real.localKeyringSha256,
         observedSourceVersions: real.versions.length,
         candidateVerdicts: actual.map(x => x.candidateVerdict),
         packagePublisherSignatureVerified: false },

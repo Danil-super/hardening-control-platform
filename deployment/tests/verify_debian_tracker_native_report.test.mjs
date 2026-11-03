@@ -7,6 +7,12 @@ const source = () => ({
   packageInventory: {
     manager: "dpkg", osRelease: { ID: "debian", VERSION_ID: "12", VERSION_CODENAME: "bookworm" },
     packageCount: 2, partial: false,
+    debianSignedReleases: { schemaVersion: 1, status: "verified_with_local_keyring",
+      candidateFiles: 1, validLocalSignatures: 1, localSignatureVerified: true,
+      localKeyringSha256: "d".repeat(64), inReleaseSha256: ["b".repeat(64)],
+      publisherAuthenticated: false, publisherFreshnessVerified: false,
+      packageIndexHashesVerified: false, installedPackageOriginVerified: false,
+      remediationAuthorized: false },
     aptRepositories: { schemaVersion: 1, status: "observed", releaseCodename: "bookworm",
       indexEntries: 1, policySha256: "a".repeat(64),
       publisherAuthenticated: false, repositorySignatureVerified: false,
@@ -28,7 +34,9 @@ const protocol = () => ({
     detail: { allEightNativeFieldsEqual: true } },
     { name: "Debian APT index metadata SHA equals independent native apt-cache policy",
       detail: { sha256: "a".repeat(64), repositorySignatureVerified: false,
-        installedPackageOriginVerified: false } }],
+        installedPackageOriginVerified: false } },
+    { name: "Cached Debian InRelease signatures verified by native gpgv with local keyring only",
+      detail: { localKeyringSha256: "d".repeat(64), inReleaseSha256: ["b".repeat(64)] } }],
 });
 const labelled = () => ({
   inventoryHost: "acceptance-debian-control-vulnerable",
@@ -49,6 +57,8 @@ test("requires independently checked, actual guest dpkg source versions and neve
   assert.deepEqual(result.versions, ["3.0.14-1~deb12u2"]);
   assert.equal(result.publisherSignedPackageProvenanceVerified, false);
   assert.equal(result.aptPolicySha256, "a".repeat(64));
+  assert.equal(result.locallyVerifiedSignatures, 1);
+  assert.equal(result.localKeyringSha256, "d".repeat(64));
 });
 test("never treats an Ubuntu/Astra identity, incomplete inventory or fake VM as native Debian proof", () => {
   for (const changed of [
@@ -86,6 +96,21 @@ test("APT metadata cannot create signed installed-package provenance in the nati
   assert.throws(() => checkNativeSources(source(), {
     ...protocol(), checks: protocol().checks.slice(0, 1),
   }));
+});
+
+test("native local signatures never authorize issuer authenticity or package origin", () => {
+  for (const change of [{ publisherAuthenticated: true }, { packageIndexHashesVerified: true },
+    { installedPackageOriginVerified: true }, { remediationAuthorized: true },
+    { localKeyringSha256: "a".repeat(64) }, { localSignatureVerified: false }]) {
+    const native = source();
+    native.packageInventory.debianSignedReleases = {
+      ...native.packageInventory.debianSignedReleases, ...change,
+    };
+    assert.throws(() => checkNativeSources(native, protocol()));
+  }
+  const vm = protocol();
+  vm.checks.pop();
+  assert.throws(() => checkNativeSources(source(), vm));
 });
 
 test("synthetic vulnerable metadata remains labelled and cannot pose as an installed VM package", () => {

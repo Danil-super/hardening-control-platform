@@ -274,6 +274,149 @@ class PackageInventoryTest(unittest.TestCase):
                 self.assertEqual(result["status"], "unavailable")
                 run.assert_not_called()
 
+    def test_signed_release_backports_requires_exact_origin_and_codename_pair(self):
+        def release(origin, codename):
+            return ("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+                    "Origin: " + origin + "\nCodename: " + codename + "\n"
+                    "Date: Mon, 02 Nov 2026 10:00:00 UTC\n"
+                    "-----BEGIN PGP SIGNATURE-----\nsynthetic\n-----END PGP SIGNATURE-----\n").encode()
+        self.assertEqual(collector._debian_inrelease_headers(
+            release("Debian Backports", "bookworm-backports"), "bookworm"), "bookworm-backports")
+        self.assertEqual(collector._debian_inrelease_headers(
+            release("Debian", "bookworm-security"), "bookworm"), "bookworm-security")
+        for origin, codename in [
+            ("Debian Backports", "bookworm"),
+            ("Debian", "bookworm-backports"),
+            ("Unrelated Builder", "bookworm"),
+            ("Debian Backports", "trixie-backports"),
+        ]:
+            with self.subTest(origin=origin, codename=codename):
+                with self.assertRaises(ValueError):
+                    collector._debian_inrelease_headers(release(origin, codename), "bookworm")
+
+    def test_cached_signed_debian_release_is_only_locally_verified(self):
+        import hashlib
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory(prefix="hcp-debian-inrelease-") as temp:
+            root = Path(temp)
+            lists = root / "lists"
+            lists.mkdir()
+            keyring = root / "debian-archive-keyring.gpg"
+            keyring.write_bytes(b"synthetic-keyring-NOT-A-TRUST-ANCHOR")
+            release = lists / "deb.debian.org_debian_dists_bookworm_InRelease"
+            release.write_bytes((
+                "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+                "Origin: Debian\nLabel: Debian\nCodename: bookworm\n"
+                "Suite: oldstable\nDate: Mon, 02 Nov 2026 10:00:00 UTC\n"
+                "-----BEGIN PGP SIGNATURE-----\nnot-a-real-signature\n"
+                "-----END PGP SIGNATURE-----\n").encode("utf-8"))
+            fingerprint = "A" * 40
+            gpgv_output = ("[GNUPG:] GOODSIG 01234567890ABCDEF Example\n"
+                           "[GNUPG:] VALIDSIG " + fingerprint + " 2026-11-02 0 4 0 1 8 00 " +
+                           fingerprint + "\n").encode("ascii")
+            with patch.object(collector, "DEBIAN_INRELEASE_DIR", str(lists)), \
+                    patch.object(collector, "DEBIAN_ARCHIVE_KEYRING", str(keyring)), \
+                    patch.object(collector.shutil, "which", return_value="/usr/bin/gpgv"), \
+                    patch.object(collector.subprocess, "run", return_value=Mock(returncode=0, stdout=gpgv_output, stderr=b"")) as run:
+                result = collector.debian_cached_inrelease_signatures(
+                    {"ID": "debian", "VERSION_CODENAME": "bookworm"})
+            self.assertEqual(result["status"], "verified_with_local_keyring")
+            self.assertTrue(result["localSignatureVerified"])
+            self.assertEqual(result["validLocalSignatures"], 1)
+            self.assertEqual(result["signedReleases"], ["bookworm"])
+            self.assertEqual(result["signerFingerprints"], [fingerprint.lower()])
+            self.assertEqual(result["localKeyringSha256"], hashlib.sha256(keyring.read_bytes()).hexdigest())
+            self.assertEqual(result["inReleaseSha256"], [hashlib.sha256(release.read_bytes()).hexdigest()])
+            for field in ("publisherAuthenticated", "publisherFreshnessVerified",
+                          "packageIndexHashesVerified", "installedPackageOriginVerified", "remediationAuthorized"):
+                self.assertIs(result[field], False)
+            self.assertNotIn(str(lists), str(result))
+            self.assertNotIn("not-a-real-signature", str(result))
+            self.assertEqual(run.call_args.args[0][0], "gpgv")
+            self.assertNotIn("sh", run.call_args.args[0][0])
+
+    def test_only_fixed_same_directory_debian_gpg_pgp_alias_is_allowed(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory(prefix="hcp-inrelease-alias-") as temp:
+            directory = Path(temp)
+            apt = directory / "lists"
+            apt.mkdir()
+            key = directory / "debian-archive-keyring.pgp"
+            key.write_bytes(b"synthetic-local-only-keyring")
+            alias = directory / "debian-archive-keyring.gpg"
+            alias.symlink_to("debian-archive-keyring.pgp")
+            release = apt / "mirror_debian_dists_bookworm_InRelease"
+            release.write_bytes((
+                "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+                "Origin: Debian\nCodename: bookworm\nDate: Mon, 02 Nov 2026 10:00:00 UTC\n"
+                "-----BEGIN PGP SIGNATURE-----\nsynthetic\n-----END PGP SIGNATURE-----\n").encode())
+            stdout = ("[GNUPG:] GOODSIG 1234567890 Example\n[GNUPG:] VALIDSIG " +
+                      "A" * 40 + " extra\n").encode()
+            def verify(command, **kwargs):
+                self.assertEqual(command[4], str(key))
+                return Mock(returncode=0, stdout=stdout, stderr=b"")
+            with patch.object(collector, "DEBIAN_INRELEASE_DIR", str(apt)), \
+                    patch.object(collector, "DEBIAN_ARCHIVE_KEYRING", str(alias)), \
+                    patch.object(collector.shutil, "which", return_value="/usr/bin/gpgv"), \
+                    patch.object(collector.subprocess, "run", side_effect=verify):
+                good = collector.debian_cached_inrelease_signatures({
+                    "ID": "debian", "VERSION_CODENAME": "bookworm"})
+            self.assertEqual(good["status"], "verified_with_local_keyring")
+            self.assertTrue(good["localSignatureVerified"])
+            alias.unlink()
+            alias.symlink_to("../untrusted-location")
+            with patch.object(collector, "DEBIAN_INRELEASE_DIR", str(apt)), \
+                    patch.object(collector, "DEBIAN_ARCHIVE_KEYRING", str(alias)), \
+                    patch.object(collector.shutil, "which", return_value="/usr/bin/gpgv"):
+                bad = collector.debian_cached_inrelease_signatures({
+                    "ID": "debian", "VERSION_CODENAME": "bookworm"})
+            self.assertEqual(bad["status"], "unavailable")
+            self.assertFalse(bad["publisherAuthenticated"])
+
+    def test_cached_release_rejects_invalid_local_signature_and_distro_spoof(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory(prefix="hcp-debian-inrelease-") as temp:
+            root = Path(temp)
+            lists = root / "lists"
+            lists.mkdir()
+            keyring = root / "debian-archive-keyring.gpg"
+            keyring.write_bytes(b"synthetic-keyring")
+            release = lists / "mirror_debian_dists_bookworm_InRelease"
+            release.write_bytes((
+                "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+                "Origin: Debian\nCodename: bookworm\nDate: Mon, 02 Nov 2026 10:00:00 UTC\n"
+                "-----BEGIN PGP SIGNATURE-----\nnot-signed\n-----END PGP SIGNATURE-----\n").encode())
+            with patch.object(collector, "DEBIAN_INRELEASE_DIR", str(lists)), \
+                    patch.object(collector, "DEBIAN_ARCHIVE_KEYRING", str(keyring)), \
+                    patch.object(collector.shutil, "which", return_value="/usr/bin/gpgv"), \
+                    patch.object(collector.subprocess, "run", return_value=Mock(
+                        returncode=1, stdout=b"[GNUPG:] BADSIG AAAAAAAAAAAAA Bad\n", stderr=b"bad")):
+                invalid = collector.debian_cached_inrelease_signatures(
+                    {"ID": "debian", "VERSION_CODENAME": "bookworm"})
+                self.assertEqual(invalid["status"], "partial")
+                self.assertEqual(invalid["validLocalSignatures"], 0)
+                self.assertEqual(invalid["invalidOrUnverifiable"], 1)
+                self.assertFalse(invalid["localSignatureVerified"])
+                self.assertFalse(invalid["publisherAuthenticated"])
+            with patch.object(collector, "DEBIAN_INRELEASE_DIR", str(lists)), \
+                    patch.object(collector, "DEBIAN_ARCHIVE_KEYRING", str(keyring)), \
+                    patch.object(collector.shutil, "which", return_value="/usr/bin/gpgv"), \
+                    patch.object(collector.subprocess, "run") as run:
+                self.assertEqual(collector.debian_cached_inrelease_signatures(
+                    {"ID": "astra", "VERSION_CODENAME": "bookworm"})["status"], "unavailable")
+                self.assertEqual(collector.debian_cached_inrelease_signatures(
+                    {"ID": "ubuntu", "VERSION_CODENAME": "bookworm"})["status"], "unavailable")
+                run.assert_not_called()
+            release.unlink()
+            release.symlink_to(keyring)
+            with patch.object(collector, "DEBIAN_INRELEASE_DIR", str(lists)), \
+                    patch.object(collector, "DEBIAN_ARCHIVE_KEYRING", str(keyring)), \
+                    patch.object(collector.shutil, "which", return_value="/usr/bin/gpgv"):
+                bad = collector.debian_cached_inrelease_signatures(
+                    {"ID": "debian", "VERSION_CODENAME": "bookworm"})
+                self.assertEqual(bad["status"], "unavailable")
+                self.assertFalse(bad["localSignatureVerified"])
+
     def test_target_program_keeps_python35_syntax(self):
         ast.parse(COLLECTOR.read_text(), feature_version=(3, 5))
 

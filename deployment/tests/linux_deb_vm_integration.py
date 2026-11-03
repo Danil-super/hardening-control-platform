@@ -975,6 +975,41 @@ sudo -n ufw --force enable
                         "releaseLabels": apt.get("releaseLabels", []),
                         "publisherAuthenticated": False, "repositorySignatureVerified": False,
                         "installedPackageOriginVerified": False})
+            signed = package_report.get("packageInventory", {}).get("debianSignedReleases")
+            if (not isinstance(signed, dict) or signed.get("schemaVersion") != 1
+                    or signed.get("status") != "verified_with_local_keyring"
+                    or signed.get("candidateFiles", 0) <= 0
+                    or signed.get("candidateFiles") != signed.get("validLocalSignatures")
+                    or signed.get("invalidOrUnverifiable") != 0
+                    or signed.get("localSignatureVerified") is not True
+                    or not re.fullmatch(r"[a-f0-9]{64}", signed.get("localKeyringSha256", ""))
+                    or not signed.get("signerFingerprints") or not signed.get("inReleaseSha256")
+                    or signed.get("publisherAuthenticated") is not False
+                    or signed.get("publisherFreshnessVerified") is not False
+                    or signed.get("packageIndexHashesVerified") is not False
+                    or signed.get("installedPackageOriginVerified") is not False
+                    or signed.get("remediationAuthorized") is not False):
+                # Only safe predefined status and integer counters enter CI
+                # logs. No local path, repository URL, GPG data or VM secrets.
+                safe_status = signed.get("status") if isinstance(signed, dict) else "missing"
+                if safe_status not in ("verified_with_local_keyring", "partial", "unavailable", "missing"):
+                    safe_status = "unknown"
+                counters = []
+                for field in ("candidateFiles", "validLocalSignatures", "invalidOrUnverifiable"):
+                    value = signed.get(field) if isinstance(signed, dict) else None
+                    counters.append(str(value) if type(value) is int and 0 <= value <= 100 else "unknown")
+                raise RuntimeError("Native cached Debian InRelease verification unavailable: "
+                                   "state={}, candidate={}, valid={}, invalid={}".format(
+                                       safe_status, counters[0], counters[1], counters[2]))
+            checkpoint("Cached Debian InRelease signatures verified by native gpgv with local keyring only",
+                       {"candidateFiles": signed["candidateFiles"],
+                        "validLocalSignatures": signed["validLocalSignatures"],
+                        "signedReleases": signed["signedReleases"],
+                        "localKeyringSha256": signed["localKeyringSha256"],
+                        "inReleaseSha256": signed["inReleaseSha256"],
+                        "publisherAuthenticated": False,
+                        "packageIndexHashesVerified": False,
+                        "installedPackageOriginVerified": False})
         readiness = json.loads(remote("sudo -n python3 /home/hcp-ci/hcp-source/hcp-host-readiness.py",
                                       output=artifacts / "host-readiness.json").stdout)
         if (readiness.get("osRelease", {}).get("ID") != distribution
