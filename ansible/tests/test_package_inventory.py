@@ -207,7 +207,7 @@ class PackageInventoryTest(unittest.TestCase):
                 patch.object(collector, "run", return_value=(0, raw.rstrip("\n"), "")) as native:
             evidence = collector.debian_apt_repository_observation({
                 "ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm"})
-        native.assert_called_once_with(["apt-cache", "policy"])
+        native.assert_called_once_with(["env", "LC_ALL=C", "apt-cache", "policy"])
         self.assertEqual(evidence["status"], "observed")
         self.assertEqual(evidence["indexEntries"], 2)
         self.assertEqual(evidence["debianLabelEntries"], 2)
