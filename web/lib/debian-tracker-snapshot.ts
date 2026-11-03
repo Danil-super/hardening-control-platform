@@ -15,7 +15,9 @@ import {
  * connected to scan jobs, public HTTP routes, UI or remediation.
  */
 export const DEBIAN_TRACKER_URL = "https://security-tracker.debian.org/tracker/data/json";
-export const DEBIAN_TRACKER_MAX_BYTES = 64 * 1024 * 1024;
+// Bounded DECODED bytes: Node fetch transparently inflates Debian's gzip stream.
+// Verified Nov 3 2026 feed was 87,754,048 decoded bytes (14,441,247 wire bytes).
+export const DEBIAN_TRACKER_MAX_BYTES = 128 * 1024 * 1024;
 export const DEBIAN_TRACKER_FULL_FORMAT = "debian-tracker-full-json-v1";
 const SHA = /^[a-f0-9]{64}$/;
 const CVE = /^CVE-\d{4}-\d{4,}$/;
