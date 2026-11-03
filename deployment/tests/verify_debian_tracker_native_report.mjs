@@ -22,6 +22,7 @@ const SOURCE = "openssl";
 const CONTROL_VERSION = "3.0.14-1~deb12u1";
 const SHA = /^[a-f0-9]{64}$/;
 const PV = /^[A-Za-z0-9.+~:-]{1,256}$/;
+let diagnosticStage = "arguments";
 const sha256 = value => createHash("sha256").update(value).digest("hex");
 
 function readJson(file) {
@@ -102,11 +103,14 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
     path.join(matchingDir, "control-vulnerable.inventory.json"), vmProtocolPath, outDir]) {
     assert.ok(path.resolve(file).startsWith(base + path.sep));
   }
+  diagnosticStage = "native-inputs";
   const native = readJson(nativePath);
   const matching = readJson(path.join(matchingDir, "protocol.json"));
   const control = readJson(path.join(matchingDir, "control-vulnerable.inventory.json"));
   const vm = readJson(vmProtocolPath);
+  diagnosticStage = "guest-provenance-contract";
   const real = checkNativeSources(native, vm);
+  diagnosticStage = "synthetic-control-contract";
   const nativeFixtureCount = checkSyntheticControl(control, matching);
 
   const root = mkdtempSync(path.join(tmpdir(), "hcp-debian-real-vm-final-"));
@@ -138,6 +142,7 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
     const exportTools = await import(compiled.url("debian-tracker-export"));
 
     // One real fixed-origin GET; the snapshot is private and never uploaded.
+    diagnosticStage = "official-debian-full-feed-import";
     const manifest = await vendor.importDebianTrackerFullSnapshot({ stateRoot });
     assert.equal(manifest.sourceUrl, vendor.DEBIAN_TRACKER_URL);
     assert.match(manifest.sha256, SHA);
@@ -148,6 +153,7 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
     assert.equal(store.getDebianTrackerSelection().sha256, manifest.sha256);
 
     // Actual VM-installed openssl, never a fabricated vulnerable CVE finding.
+    diagnosticStage = "real-guest-openssl-source-comparison";
     const actual = real.versions.map(sourceVersion =>
       vendor.evaluatePinnedDebianTrackerFullSnapshot({
         stateRoot, snapshotSha256: manifest.sha256, osId: "debian",
@@ -167,6 +173,7 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
 
     // Native, unmodified Trivy binary scans a LABELLED SYNTHETIC metadata
     // fixture. It runs offline on the already-verified real Trivy DB.
+    diagnosticStage = "production-trivy-control-scan";
     store.setVulnerabilityDatabaseMode("offline");
     const reportId = "acceptance-debian-control-vulnerable-packages-run";
     writeFileSync(path.join(reports, reportId + ".json"), JSON.stringify(control),
@@ -201,16 +208,19 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
       assert.equal(preview.remediationAuthorized, false);
       assert.equal(preview.trustedVerdict, "unknown");
     }
+    diagnosticStage = "native-trivy-report-normalization";
     const normalized = ansible.readAnsibleReport(result.reportId);
     assert.ok(normalized && normalized.reportTimeValid);
     assert.equal(normalized.findings.length, result.report.findings.length);
     assert.deepEqual(normalized.raw, result.report);
 
+    diagnosticStage = "project-pdf-render-and-export";
     const final = await finalReport.createProjectReport({
       hostAlias: control.inventoryHost,
       subject: { clientName: "HCP controlled CI", projectName: "Debian evidence acceptance",
         period: "Native Debian VM", specialist: "HCP CI" },
     });
+    diagnosticStage = "project-final-json-evidence";
     const finalJson = readJson(path.join(stateRoot, "project-reports",
       final.fileName.replace(/\.pdf$/, ".json")));
     assert.equal(finalJson.debianTrackerEvidence.length, hits.length);
@@ -231,6 +241,7 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
       assert.equal(tuple.remediationAuthorized, false);
       assert.equal(tuple.trustedVerdict, "unknown");
     }
+    diagnosticStage = "pdf-content-and-hash-verification";
     const pdf = finalReport.readProjectReportPdf(final.id)?.pdf;
     assert.ok(pdf && pdf.subarray(0, 5).toString("ascii") === "%PDF-");
     assert.equal(sha256(pdf), final.pdfSha256);
@@ -268,6 +279,7 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
         "One Debian release and named CVE cannot prove complete CVE coverage",
       ],
     };
+    diagnosticStage = "privacy-limited-public-protocol";
     mkdirSync(outDir, { recursive: true, mode: 0o700 });
     writeFileSync(path.join(outDir, "protocol.json"), JSON.stringify(proof, null, 2) + "\n",
       { flag: "wx", mode: 0o600 });
@@ -287,9 +299,11 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     assert.equal(process.argv.length, 6);
     await accept(...process.argv.slice(2));
     console.log("PASS native Debian source + real Tracker + real Trivy + final JSON/PDF");
-  } catch {
-    // Never log private guest inventory, filesystem paths or raw advisories.
-    console.error("FAIL Debian CVE end-to-end native acceptance");
+  } catch (error) {
+    // Diagnostics contain only a fixed stage name and an assertion/runtime
+    // class, never raw guest inventory, package names, paths or advisory bytes.
+    const kind = error instanceof Error ? error.name.replace(/[^A-Za-z]/g, "").slice(0, 40) : "Unknown";
+    console.error("FAIL Debian CVE end-to-end native acceptance; stage=" + diagnosticStage + "; kind=" + kind);
     process.exitCode = 1;
   }
 }
