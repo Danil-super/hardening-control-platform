@@ -46,7 +46,7 @@ function base(state: DebianAptRepositoryEvidence["state"], codename: string | nu
  */
 export function summarizeDebianAptRepositoryEvidence(
   value: unknown,
-  osRelease: Record<string, string>,
+  osRelease: Record<string, unknown>,
 ): DebianAptRepositoryEvidence | null {
   if (osRelease.ID !== "debian") return null;
   const codename = typeof osRelease.VERSION_CODENAME === "string" && SUITE.test(osRelease.VERSION_CODENAME)
