@@ -75,6 +75,8 @@ export type Finding = {
     remediationAuthorized: false;
     lifecycle?: import("@/lib/ubuntu-osv-lifecycle").UbuntuOsvLifecycle;
   };
+  /** Operator-pinned, publisher-unverified Debian Tracker preview; not a scanner verdict. */
+  debianTrackerPreview?: import("@/lib/debian-tracker-preview").DebianTrackerPreview;
   source: FindingSource;
   description: string;
   recommendation: string;

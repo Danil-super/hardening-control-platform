@@ -18,6 +18,9 @@ const compiledPreview = compileServerModules(["ubuntu-osv-preview"]);
 const previewModule = await import(compiledPreview.url("ubuntu-osv-preview"));
 const { importPinnedUbuntuOsvSnapshot, canonicalUbuntuOsvReference } = await import(compiledPreview.url("vendor-advisory-snapshot"));
 test.after(() => rmSync(compiledPreview.directory, { recursive: true, force: true }));
+const compiledDebianPreview = compileServerModules(["debian-tracker-preview"]);
+const debianPreviewModule = await import(compiledDebianPreview.url("debian-tracker-preview"));
+test.after(() => rmSync(compiledDebianPreview.directory, { recursive: true, force: true }));
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
@@ -47,6 +50,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
     "@/lib/linux-platform": platform,
     "@/lib/trivy-output": outputGuard,
     "@/lib/ubuntu-osv-preview": previewModule,
+    "@/lib/debian-tracker-preview": debianPreviewModule,
     "@/lib/ansible-control": { getStateDir: () => dir, getRepoRoot: () => path.resolve(webDir, "..") },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
     "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), appendAuditEvent: () => {} },

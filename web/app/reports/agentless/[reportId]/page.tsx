@@ -102,6 +102,7 @@ export default async function AgentlessReportDetailPage({
   const vendorAssessment = asRecord(vulnerabilityScan.vendorAssessment);
   const applicabilitySummary = asRecord(vulnerabilityScan.applicabilitySummary);
   const osvPreview = asRecord(vulnerabilityScan.ubuntuOsvPreview);
+  const debianPreview = asRecord(vulnerabilityScan.debianTrackerPreview);
   const vendorStatuses = Object.entries(asRecord(vendorAssessment.statuses))
     .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
     .map(([status, count]) => `${status}: ${count}`);
@@ -323,6 +324,21 @@ export default async function AgentlessReportDetailPage({
                   некорректные даты: {textValue(osvPreview.invalidTimestamps)}.
                   {osvPreview.budgetExhausted === true ? " Достигнут лимит предварительных сравнений; остальные не выполнялись." : ""}
                 </p>
+              )}
+            </div>
+          ) : null}
+          {Object.keys(debianPreview).length ? (
+            <div className="mt-5 border-t border-slate-800 pt-4">
+              <h3 className="font-semibold text-white">Предварительная сверка CVE с Debian Security Tracker</h3>
+              <p className="mt-2 text-sm leading-6 text-slate-400">Используется только заранее импортированный и закреплённый снимок полной базы. Подлинность и текущая полнота базы не подтверждены; результаты Trivy не изменяются и автоматическое исправление не разрешается.</p>
+              {debianPreview.state !== "enabled" ? (
+                <p className="mt-2 text-sm text-amber-200">Сверка не проводилась: {debianPreview.state === "invalid_pin" ? "некорректная контрольная сумма" : debianPreview.state === "invalid_policy" ? "некорректный предел возраста" : debianPreview.state === "unsupported_release" ? "выпуск Debian не подтверждён" : debianPreview.state === "incomplete_inventory" ? "неполная инвентаризация или CVE-проверка" : debianPreview.state === "stale_snapshot" ? "локальный снимок устарел либо его дата некорректна" : debianPreview.state === "budget_exceeded" ? "превышен лимит сравнений — частичные выводы скрыты" : debianPreview.state === "no_matching_findings" ? "нет подходящих CVE; локальная база не читалась" : "закреплённый снимок недоступен или нарушена целостность"}.</p>
+              ) : (
+                <>
+                  <p className="mt-2 text-sm text-slate-200">Подходящих записей: {textValue(debianPreview.eligibleFindings)} · сопоставлено: {textValue(debianPreview.annotatedFindings)} · предварительно затронуты: {textValue(debianPreview.candidateAffected)} · предварительно исправлены или не затронуты: {textValue(debianPreview.candidateFixed)} · требуют проверки: {textValue(debianPreview.candidateNeedsReview)} · неизвестно: {textValue(debianPreview.candidateUnknown)} · недоступны: {textValue(debianPreview.unavailable)} · расхождения с Trivy: {textValue(debianPreview.conflictingWithTrivy)}.</p>
+                  <p className="mt-2 break-all text-xs text-slate-400">Выпуск: {textValue(debianPreview.release)} · получен локально: {textValue(debianPreview.capturedAt)} · полный SHA-256: {textValue(debianPreview.snapshotSha256)}.</p>
+                  <p className="mt-1 text-xs text-slate-400">{debianPreview.pinMode === "observed-at-capture" ? "Хеш зафиксирован при получении данных; независимого подтверждения нет." : "Хеш задан оператором; цифровую подпись Debian он не подтверждает."}</p>
+                </>
               )}
             </div>
           ) : null}

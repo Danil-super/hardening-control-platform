@@ -155,6 +155,18 @@ export function FindingsExplorer({
                 <p className="mt-1 text-slate-400">Без подтверждения подписи издателя. Автоматическое исправление по этой сверке запрещено.</p>
               </div>
             ) : null}
+            {finding.debianTrackerPreview ? (
+              <div className="mt-3 rounded-md border border-amber-300/30 bg-slate-900/60 px-3 py-2 text-xs text-slate-200">
+                <p className="font-medium text-amber-200">Предварительная сверка с Debian Security Tracker (издатель не аутентифицирован)</p>
+                <p className="mt-1">Вывод по снимку: {finding.debianTrackerPreview.status === "unavailable" ? "нет пригодных данных" : finding.debianTrackerPreview.candidateVerdict === "affected" ? "версия ниже исправленной" : finding.debianTrackerPreview.candidateVerdict === "fixed_or_not_affected" ? "версия исправлена или не затронута по записи" : finding.debianTrackerPreview.candidateVerdict === "needs_review" ? "требуется проверка" : "недостаточно данных"} · выпуск: {finding.debianTrackerPreview.release} · исходный пакет: {finding.debianTrackerPreview.sourcePackage} {finding.debianTrackerPreview.sourceVersion}.</p>
+                <p className="mt-1">Порог исправления: {finding.debianTrackerPreview.fixedVersion ?? "не указан"} · причина: {finding.debianTrackerPreview.reason}.</p>
+                <p className="mt-1 break-all">SHA-256 полной базы: {finding.debianTrackerPreview.fullSnapshotSha256}.</p>
+                <p className="mt-1 break-all">SHA-256 извлечённой записи: {finding.debianTrackerPreview.derivedExcerptSha256 ?? "нет пригодной записи"}.</p>
+                <p className="mt-1 text-slate-400">Дата локального получения: {finding.debianTrackerPreview.capturedAt}. Актуальность и подпись издателя не подтверждены.</p>
+                {finding.debianTrackerPreview.conflictingWithTrivy ? <p className="mt-1 font-semibold text-amber-200">Расхождение с Trivy — требуется ручная проверка обоих источников. Исходная находка сохранена.</p> : null}
+                <p className="mt-1 text-slate-400">Сверка не разрешает автоматическое исправление и не подтверждает безопасность хоста.</p>
+              </div>
+            ) : null}
             <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 lg:grid-cols-3">
               <div><dt className="text-slate-500">Категория</dt><dd className="mt-1 text-slate-200">{categoryLabel(finding.category)}</dd></div>
               <div><dt className="text-slate-500">Источник</dt><dd className="mt-1 text-slate-200">{sourceLabels[finding.source]}</dd></div>
