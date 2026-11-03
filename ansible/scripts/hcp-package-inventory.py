@@ -562,7 +562,7 @@ def _debian_installed_candidate_keys(packages):
             name = name[:-(len(arch) + 1)]
         if (not re.match(r"^[a-z0-9][a-z0-9.+-]{0,254}$", name)
                 or not re.match(r"^[a-z0-9][a-z0-9-]{0,31}$", arch)
-                or len(version) > 256 or not re.match(r"^[0-9][A-Za-z0-9.+:~\\-]*$", version)):
+                or len(version) > 256 or not re.match(r"^[0-9][A-Za-z0-9.+:~\-]*$", version)):
             raise ValueError("Unsupported installed dpkg candidate identity")
         keys.add((name, arch, version))
     return keys
@@ -594,19 +594,19 @@ class _DebianPackageCandidateScanner:
         self.fields = {}
 
     def _line(self, raw):
-        if len(raw) > DEBIAN_CANDIDATE_MAX_LINE or raw.endswith(b"\\r"):
+        if len(raw) > DEBIAN_CANDIDATE_MAX_LINE or raw.endswith(b"\r"):
             raise ValueError("Oversized or malformed Debian package record line")
         if not raw:
             self._finish_record()
             return
-        if raw[:1] in (b" ", b"\\t"):
+        if raw[:1] in (b" ", b"\t"):
             return
         for key in (b"Package", b"Version", b"Architecture"):
             if raw.startswith(key + b":"):
                 if not raw.startswith(key + b": ") or key.decode("ascii") in self.fields:
                     raise ValueError("Ambiguous Debian package record identity")
                 value = raw[len(key) + 2:].decode("utf-8", "strict")
-                if not value or len(value) > 512 or "\\x00" in value:
+                if not value or len(value) > 512 or "\x00" in value:
                     raise ValueError("Invalid Debian package record identity")
                 self.fields[key.decode("ascii")] = value
                 return
@@ -616,7 +616,7 @@ class _DebianPackageCandidateScanner:
         if len(self.buffer) > DEBIAN_CANDIDATE_MAX_LINE + 65536:
             raise ValueError("Debian package record line exceeded memory budget")
         while True:
-            offset = self.buffer.find(b"\\n")
+            offset = self.buffer.find(b"\n")
             if offset < 0:
                 break
             line = self.buffer[:offset]
