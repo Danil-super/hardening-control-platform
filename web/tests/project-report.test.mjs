@@ -140,3 +140,89 @@ test("final project snapshot and actual PDF retain Trivy and provisional Ubuntu 
   assert.ok(rendered.includes(findingId), "Actual PDF output omitted the original finding ID");
   assert.equal(store.verifyAuditChain().valid, true);
 });
+
+
+test("final Debian project JSON and actual PDF preserve every paired CVE×source×version with two SHA-256 provenance levels", async () => {
+  const reportId = "debian-evidence-host-vulnerabilities-original";
+  const capturedAt = "2026-11-03T14:30:00.000Z";
+  const full = "d".repeat(64);
+  const excerpt = "e".repeat(64);
+  const base = {
+    profileId: "cve_packages", category: "CVE пакеты", risk: "high", status: "failed",
+    source: "trivy", remediationAvailable: false,
+    description: "Original Trivy finding", recommendation: "Review the vendor advisory",
+  };
+  const make = (id, cveId, sourceVersion, candidateVerdict, reason, disagree, status = "provisional") => ({
+    ...base, id, title: cveId + ": libssl3",
+    cveApplicability: {
+      schemaVersion: 1, verdict: "affected", distribution: { id: "debian", versionId: "12" },
+      advisory: { id: cveId, sourceMatch: "matched" },
+      package: { name: "libssl3", installedVersion: sourceVersion,
+        sourceName: "openssl", sourceVersion,
+        manager: "dpkg", provenance: "distribution-maintainer" },
+    },
+    debianTrackerPreview: {
+      schemaVersion: 1, status, reason, candidateVerdict, trustedVerdict: "unknown",
+      sourcePackage: "openssl", sourceVersion, release: "bookworm",
+      fixedVersion: status === "unavailable" ? null : "3.0.14-1~deb12u2",
+      fullSnapshotSha256: full, derivedExcerptSha256: status === "unavailable" ? null : excerpt,
+      capturedAt, pinMode: "observed-at-capture", conflictingWithTrivy: disagree,
+      publisherAuthenticated: false, publisherFreshnessVerified: false, remediationAuthorized: false,
+    },
+  });
+  const findings = [
+    make("trivy_CVE-2024-6119_affected", "CVE-2024-6119", "3.0.14-1~deb12u1",
+      "affected", "source_version_before_tracker_fixed", false),
+    make("trivy_CVE-2024-6119_fixed", "CVE-2024-6119", "3.0.14-1~deb12u2",
+      "fixed_or_not_affected", "source_version_at_or_after_tracker_fixed", true),
+    make("trivy_CVE-2024-6120_unknown", "CVE-2024-6120", "3.0.14-1~deb12u1",
+      "unknown", "cve_not_listed_unknown_not_clean", false, "unavailable"),
+  ];
+  writeFileSync(path.join(reports, reportId + ".json"), JSON.stringify({
+    schemaVersion: 1, inventoryHost: "debian-evidence-host", hostname: "debian-evidence-host",
+    mode: "vulnerabilities", profileId: "cve_packages", createdAt: new Date().toISOString(),
+    scanner: { available: true, partial: false }, findings, events: [],
+  }));
+  const record = await projectReports.createProjectReport({
+    hostAlias: "debian-evidence-host", subject: {
+      clientName: "ООО Контроль", projectName: "Debian CVE export",
+      period: "Ноябрь 2026", specialist: "Специалист HCP",
+    },
+  });
+  const snapshot = JSON.parse(readFileSync(path.join(state, "project-reports", record.fileName.replace(/\.pdf$/, ".json")), "utf8"));
+  assert.equal(snapshot.debianTrackerEvidence.length, findings.length);
+  assert.deepEqual(snapshot.debianTrackerEvidence.map(x => x.findingId),
+    ["trivy_CVE-2024-6119_affected", "trivy_CVE-2024-6119_fixed", "trivy_CVE-2024-6120_unknown"]);
+  assert.equal(snapshot.debianTrackerEvidence[0].candidateVerdict, "affected");
+  assert.equal(snapshot.debianTrackerEvidence[1].candidateVerdict, "fixed_or_not_affected");
+  assert.equal(snapshot.debianTrackerEvidence[1].conflictingWithTrivy, true);
+  assert.equal(snapshot.debianTrackerEvidence[2].candidateVerdict, "unknown");
+  assert.equal(snapshot.debianTrackerEvidence[2].derivedExcerptSha256, null);
+  assert.ok(snapshot.debianTrackerEvidence.every(x => x.fullSnapshotSha256 === full &&
+    x.trustedVerdict === "unknown" && x.publisherAuthenticated === false &&
+    x.publisherFreshnessVerified === false && x.remediationAuthorized === false));
+  assert.match(snapshot.debianTrackerEvidenceSha256, /^[a-f0-9]{64}$/);
+  const pdf = projectReports.readProjectReportPdf(record.id).pdf;
+  assert.equal(pdf.subarray(0, 5).toString("ascii"), "%PDF-");
+  const code = [
+    "import base64,re,sys,zlib",
+    "buf=sys.stdin.buffer.read()",
+    "out=[]",
+    "for stream in re.findall(rb'stream\\r?\\n(.*?)endstream',buf,re.S):",
+    "    try:",
+    "        stream=stream.strip()",
+    "        if stream.endswith(b'~>'): stream=base64.a85decode(stream,adobe=True)",
+    "        out.append(zlib.decompress(stream))",
+    "    except (ValueError,zlib.error): pass",
+    "sys.stdout.write(b'\\n'.join(out).decode('latin1'))",
+  ].join("\n");
+  const rendered = execFileSync("/usr/bin/python3", ["-c", code], {
+    input: pdf, encoding: "utf8", maxBuffer: 12 * 1024 * 1024,
+  });
+  for (const item of findings) assert.ok(rendered.includes(item.id), "PDF dropped CVE finding " + item.id);
+  assert.ok(rendered.includes(full), "PDF dropped the full snapshot SHA-256");
+  assert.ok(rendered.includes(excerpt), "PDF dropped the derived excerpt SHA-256");
+  assert.ok(rendered.includes(snapshot.debianTrackerEvidenceSha256), "PDF dropped the projection SHA-256");
+  assert.ok(rendered.includes("CVE-2024-6120"), "PDF dropped an unknown CVE observation");
+  assert.equal(store.verifyAuditChain().valid, true);
+});
