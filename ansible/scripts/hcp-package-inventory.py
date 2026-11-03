@@ -267,7 +267,7 @@ def debian_apt_repository_observation(os_release):
         props = {}
         for piece in raw.split(","):
             key, sep, val = piece.strip().partition("=")
-            if not sep or key in props or key not in ("v", "o", "a", "n", "l", "c", "b")
+            if (not sep or key in props or key not in ("v", "o", "a", "n", "l", "c", "b")
                     or len(val) > 80 or not re.match(r"^[A-Za-z0-9.+_~:/ -]+$", val)):
                 invalid = True
                 break
@@ -276,7 +276,8 @@ def debian_apt_repository_observation(os_release):
             break
         # Only entries with an explicit release label and suite are comparable.
         # This does not assert that APT verified Release signatures.
-        if not props.get("n") or not props.get("o"):
+        if (not props.get("n") or not props.get("o")
+                or not re.match(r"^[a-z][a-z0-9-]{1,31}$", props["n"])):
             invalid = True
             break
         fields.append(props)
@@ -287,7 +288,13 @@ def debian_apt_repository_observation(os_release):
         return dict(base, status="ambiguous", policySha256=hashlib.sha256(output.encode("utf-8")).hexdigest())
 
     suites = sorted(set(item["n"] for item in fields))
-    labels = sorted(set(item["o"] for item in fields))
+    # Never publish arbitrary labels from untrusted indexes: they may contain
+    # infrastructure names or operator-specific data.
+    labels = []
+    if any(item["o"] == "Debian" for item in fields):
+        labels.append("Debian")
+    if any(item["o"] != "Debian" for item in fields):
+        labels.append("other-label-observed")
     allowed = set((codename, codename + "-security", codename + "-updates", codename + "-backports"))
     consistent = bool(fields) and all(item["n"] in allowed for item in fields)
     official = sum(1 for item in fields if item["o"] == "Debian")
