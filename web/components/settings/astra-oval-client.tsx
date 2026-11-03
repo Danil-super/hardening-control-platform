@@ -19,6 +19,8 @@ export function AstraOvalClient() {
   const [config, setConfig] = useState<AstraOvalConfig>(initial);
   const [architectures, setArchitectures] = useState("");
   const [busy, setBusy] = useState(true);
+  const [catalogBusy, setCatalogBusy] = useState(false);
+  const [catalogRelease, setCatalogRelease] = useState<"1.7" | "1.8">("1.7");
   const [message, setMessage] = useFeedbackMessage();
   const update = (values: Partial<AstraOvalConfig>) => setConfig((previous) => ({ ...previous, ...values }));
 
@@ -32,6 +34,38 @@ export function AstraOvalClient() {
       .finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
   }, []);
+
+  async function previewOfficialCatalog() {
+    setCatalogBusy(true);
+    setMessage("");
+    try {
+      const response = await fetch("/api/settings/astra-oval/catalog?release=" + catalogRelease,
+        { cache: "no-store" });
+      const data = await readApiResponse(response) as {
+        ok?: boolean; message?: string; preview?: {
+          url: string; sha256: string; release: "1.7" | "1.8";
+          sourceName: string; sourceReference: string; warning: string;
+        };
+      };
+      if (!response.ok || !data.ok || !data.preview) {
+        throw new Error(data.message ?? "Не удалось получить реквизиты каталога.");
+      }
+      const item = data.preview;
+      setConfig(previous => ({
+        ...previous, mode: "online", url: item.url, sha256: item.sha256,
+        releasePattern: item.release + ".*", architectures: ["x86_64"],
+        sourceName: item.sourceName, sourceReference: item.sourceReference,
+        // A remote checksum observation is NOT an operator security review.
+        sourceReviewedAt: null,
+      }));
+      setArchitectures("x86_64");
+      setMessage("Поля формы заполнены по каталогу. Ничего не сохранено. " + item.warning, "info");
+    } catch (error) {
+      setMessage(errorMessage(error, "Не удалось получить сведения изготовителя."));
+    } finally {
+      setCatalogBusy(false);
+    }
+  }
 
   async function saveOrRemove(method: "POST" | "DELETE", groupName = group) {
     setBusy(true); setMessage("");
@@ -53,7 +87,31 @@ export function AstraOvalClient() {
 
   return <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5" aria-labelledby="astra-oval-title">
     <h2 id="astra-oval-title" className="text-xl font-semibold text-white">CVE Astra по данным производителя <span className="ml-1 text-sm font-medium text-slate-400">· необязательно</span></h2>
-    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Обычный пакетный аудит и общая база Trivy не требуют этой настройки. Добавьте OVAL-источник один раз для группы хостов одного выпуска Astra, если нужно подтверждённое CVE-покрытие от производителя. При сетевом варианте XML скачивает только control node; Astra не нужен интернет.</p>
+    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Обычный пакетный аудит и общая база Trivy не требуют этой настройки. Добавьте отдельный OVAL-источник для группы хостов одного выпуска Astra, если нужна дополнительная проверка CVE по определениям производителя. Это не гарантирует полноту бюллетеней или независимую подлинность источника. При сетевом варианте XML скачивает только control node; Astra не нужен интернет.</p>
+    <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+      <p className="font-semibold text-slate-100">Каталог изготовителя (необязательное заполнение)</p>
+      <p className="mt-1 text-sm leading-6 text-slate-400">
+        Получает SHA-256 и прямой адрес XML из фиксированного каталога Astra на control node.
+        Не выполняет аудит, не сохраняет политику и не подтверждает цифровую подпись изготовителя.
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-3">
+        <label className="text-sm text-slate-300">Ветка Astra
+          <Select className={inputClass} value={catalogRelease}
+            onValueChange={value => setCatalogRelease(value as "1.7" | "1.8")}>
+            <option value="1.7">1.7, x86-64</option>
+            <option value="1.8">1.8, x86-64</option>
+          </Select>
+        </label>
+        <Button type="button" variant="secondary" disabled={busy || catalogBusy}
+          onClick={() => void previewOfficialCatalog()}>
+          {catalogBusy ? "Чтение каталога…" : "Заполнить из каталога"}
+        </Button>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-amber-100">
+        SHA-256 из того же HTTPS-репозитория подтверждает лишь заявленную запись.
+        Перед сохранением проверьте выпуск хоста и бюллетень производителя независимо.
+      </p>
+    </div>
     <form className="mt-5 grid gap-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); void saveOrRemove("POST"); }}>
       <label className="min-w-0 text-sm text-slate-300">Группа хостов
         <Select className={inputClass} value={group} onValueChange={(value) => setGroup(value)} required>
