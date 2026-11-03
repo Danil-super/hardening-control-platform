@@ -239,6 +239,7 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
       actualFinalReport.fileName.replace(/\.pdf$/, ".json")));
     assert.equal(nativeFinalJson.debianPackageIndexEvidence.length, 1);
     assert.match(nativeFinalJson.debianPackageIndexEvidenceSha256, SHA);
+    const indexes = native.packageInventory.debianPackageIndexes;
     const sourceIndexEvidence = nativeFinalJson.debianPackageIndexEvidence[0];
     assert.equal(sourceIndexEvidence.sourceReportId, realInventoryReportId);
     assert.equal(sourceIndexEvidence.sourceReportSha256, ansible.hashAnsibleReport(realInventoryReportId));
