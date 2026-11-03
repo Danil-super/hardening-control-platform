@@ -726,8 +726,8 @@ def _debian_cached_archive_evidence(installed_keys, expectations):
         for name in names:
             if len(name) > 600:
                 continue
-            match = re.match(
-                r"^([a-z0-9][a-z0-9.+-]{0,254})_([0-9][A-Za-z0-9.+:~%-]{0,255})_([a-z0-9][a-z0-9-]{0,31})\.deb$",
+            match = re.fullmatch(
+                r"([a-z0-9][a-z0-9.+-]{0,254})_([0-9][A-Za-z0-9.+:~%-]{0,255})_([a-z0-9][a-z0-9-]{0,31})\.deb",
                 name,
             )
             if not match:
