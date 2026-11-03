@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
 """Compare two real, source-bound HCP Astra OpenSCAP baseline reports.
 
-Only the same verified asset, same 18-rule profile, same datastream SHA and
-complete, strictly comparable passes are accepted. This does not claim a full
+Only the same verified asset, same 18-rule profile, same stable input bundle
+identity and complete, strictly comparable passes are accepted. OpenSCAP
+timestamps may change each compiled datastream SHA without changing the
+underlying profile. Each raw execution digest remains separate evidence.
+This does not claim a full
 CVE audit or that any remediation was caused by HCP.
 """
 import argparse
@@ -18,6 +21,7 @@ import sys
 PROFILE = "xccdf_org.hcp_profile_astra_baseline"
 PREFIX = "openscap_xccdf_org.hcp_rule_"
 SHA = re.compile(r"^sha256:[a-f0-9]{64}$")
+BUNDLE = re.compile(r"^bundle-sha256:[a-f0-9]{64}$")
 ASSET = re.compile(r"^asset-[a-f0-9]{64}$")
 MAX_INPUT = 32 * 1024 * 1024
 EXPECTED_RULES = 18
@@ -74,7 +78,8 @@ def parse_date(value):
 
 def parse_report(report):
     require(report.get("mode") == "openscap", "Only OpenSCAP reports are comparable")
-    require(report.get("partial") is False, "Partial audit cannot prove a baseline transition")
+    require("partial" not in report or report.get("partial") is False,
+            "Partial audit cannot prove a baseline transition")
     scanner = report.get("scanner")
     require(isinstance(scanner, dict), "OpenSCAP scanner evidence missing")
     require(scanner.get("profile") == PROFILE, "Astra 18-rule profile mismatch")
@@ -82,11 +87,14 @@ def parse_report(report):
             "Only the HCP Astra built-in datastream can be compared")
     checksum = scanner.get("datastreamChecksum")
     require(isinstance(checksum, str) and SHA.fullmatch(checksum),
-            "Unverified datastream content identity")
+            "Missing executed datastream SHA-256")
+    bundle = scanner.get("contentIdentity")
+    require(isinstance(bundle, str) and BUNDLE.fullmatch(bundle),
+            "Stable HCP Astra source bundle identity unavailable")
     require(scanner.get("scannerExitCode") in (0, 2)
             and type(scanner.get("scannerExitCode")) is int,
             "Native OpenSCAP execution did not complete")
-    require(scanner.get("partial") is not True, "Scanner declared partial results")
+    require(scanner.get("partial") is False, "Scanner did not prove complete evaluation")
     binding = report.get("assetBinding")
     require(isinstance(binding, dict) and binding.get("version") == 1
             and binding.get("status") == "verified", "Verified asset binding is required")
@@ -120,7 +128,7 @@ def parse_report(report):
             and sum(v for v in counts.values() if type(v) is int) == EXPECTED_RULES,
             "Native rule counters and normalized findings disagree")
     return {"alias": alias, "asset": asset, "generation": generation,
-            "checksum": checksum, "at": at, "statuses": statuses}
+            "checksum": checksum, "bundle": bundle, "at": at, "statuses": statuses}
 
 
 def measure(before, after, before_sha, after_sha):
@@ -128,7 +136,7 @@ def measure(before, after, before_sha, after_sha):
     require((a["alias"], a["asset"], a["generation"]) ==
             (b["alias"], b["asset"], b["generation"]),
             "Different host, asset or binding generation")
-    require(a["checksum"] == b["checksum"], "Different Astra policy content")
+    require(a["bundle"] == b["bundle"], "Different Astra source bundle content")
     require(set(a["statuses"]) == set(b["statuses"]), "Non-identical tested rule identities")
     require(a["at"] < b["at"], "Post-audit must follow the baseline")
     changed_to_pass = sorted(rule for rule in a["statuses"]
@@ -143,7 +151,10 @@ def measure(before, after, before_sha, after_sha):
         "completeComparableRuleCount": EXPECTED_RULES,
         "source": {
             "beforeSha256": before_sha, "afterSha256": after_sha,
-            "contentSha256": a["checksum"], "assetId": a["asset"],
+            "sourceBundleSha256": a["bundle"],
+            "executedDatastreamSha256Before": a["checksum"],
+            "executedDatastreamSha256After": b["checksum"],
+            "assetId": a["asset"],
             "assetGeneration": a["generation"], "hostAlias": a["alias"],
             "beforeAt": a["at"].isoformat(), "afterAt": b["at"].isoformat(),
         },
