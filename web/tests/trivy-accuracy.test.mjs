@@ -89,7 +89,7 @@ test("APT index metadata on exact Debian CVE reports remains host-scoped and nev
   assert.equal(evidence.repositorySignatureVerified, false);
   assert.equal(evidence.installedPackageOriginVerified, false);
   assert.equal(evidence.suiteConsistent, true);
-  assert.deepEqual(evidence.suites, ["bookworm"]);
+  assert.deepEqual(Array.from(evidence.suites), ["bookworm"]);
   const cve = result.report.findings.find(x => x.id.startsWith("trivy_CVE-2023-0286_"));
   assert.ok(cve);
   assert.equal(cve.remediationAvailable, false);
