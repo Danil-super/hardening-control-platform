@@ -538,7 +538,116 @@ def _debian_signed_package_hashes(raw, codename):
     return release, found
 
 
-def _debian_apt_helper_sha256(filename):
+# Compare only exact installed dpkg name/architecture/version tuples with
+# records observed in a locally hash-verified Packages index. This establishes
+# a candidate RECORD in a local cache, not the origin of the installed .deb.
+DEBIAN_CANDIDATE_SCOPE = "installed-dpkg-version-in-locally-verified-Packages-record-v1"
+DEBIAN_CANDIDATE_MAX_LINE = 2 * 1024 * 1024
+DEBIAN_CANDIDATE_MAX_RECORDS = 1000000
+
+
+def _debian_installed_candidate_keys(packages):
+    if not isinstance(packages, list) or len(packages) > MAX_PACKAGES:
+        raise ValueError("Invalid installed dpkg candidate inventory")
+    keys = set()
+    for item in packages:
+        if not isinstance(item, dict):
+            raise ValueError("Invalid installed package metadata")
+        if item.get("manager") != "dpkg" or item.get("dpkgStatus") != "ii ":
+            continue
+        name, arch, version = item.get("name"), item.get("arch"), item.get("version")
+        if not all(isinstance(x, str) for x in (name, arch, version)):
+            raise ValueError("Invalid installed dpkg candidate types")
+        if name.endswith(":" + arch):
+            name = name[:-(len(arch) + 1)]
+        if (not re.match(r"^[a-z0-9][a-z0-9.+-]{0,254}$", name)
+                or not re.match(r"^[a-z0-9][a-z0-9-]{0,31}$", arch)
+                or len(version) > 256 or not re.match(r"^[0-9][A-Za-z0-9.+:~\-]*$", version)):
+            raise ValueError("Unsupported installed dpkg candidate identity")
+        keys.add((name, arch, version))
+    return keys
+
+
+class _DebianPackageCandidateScanner:
+    """Bounded RFC822-like Packages stanza reader; never retains descriptions.
+
+    Only exact package, version and architecture metadata is compared. A
+    matching index record does not attest that the installed .deb came from it.
+    """
+    def __init__(self, installed):
+        self.installed = installed
+        self.buffer = b""
+        self.fields = {}
+        self.record_count = 0
+        self.matched = set()
+
+    def _finish_record(self):
+        if not self.fields:
+            return
+        self.record_count += 1
+        if self.record_count > DEBIAN_CANDIDATE_MAX_RECORDS:
+            raise ValueError("Debian index record budget exceeded")
+        if all(field in self.fields for field in ("Package", "Version", "Architecture")):
+            identity = (self.fields["Package"], self.fields["Architecture"], self.fields["Version"])
+            if identity in self.installed:
+                self.matched.add(identity)
+        self.fields = {}
+
+    def _line(self, raw):
+        if len(raw) > DEBIAN_CANDIDATE_MAX_LINE or raw.endswith(b"\r"):
+            raise ValueError("Oversized or malformed Debian package record line")
+        if not raw:
+            self._finish_record()
+            return
+        if raw[:1] in (b" ", b"\t"):
+            return
+        for key in (b"Package", b"Version", b"Architecture"):
+            if raw.startswith(key + b":"):
+                if not raw.startswith(key + b": ") or key.decode("ascii") in self.fields:
+                    raise ValueError("Ambiguous Debian package record identity")
+                value = raw[len(key) + 2:].decode("utf-8", "strict")
+                if not value or len(value) > 512 or "\x00" in value:
+                    raise ValueError("Invalid Debian package record identity")
+                self.fields[key.decode("ascii")] = value
+                return
+
+    def feed(self, chunk):
+        self.buffer += chunk
+        if len(self.buffer) > DEBIAN_CANDIDATE_MAX_LINE + 65536:
+            raise ValueError("Debian package record line exceeded memory budget")
+        while True:
+            offset = self.buffer.find(b"\n")
+            if offset < 0:
+                break
+            line = self.buffer[:offset]
+            self.buffer = self.buffer[offset + 1:]
+            self._line(line)
+
+    def finish(self):
+        if self.buffer:
+            self._line(self.buffer)
+        self.buffer = b""
+        self._finish_record()
+        return self.matched
+
+
+def _debian_candidate_summary(eligible, matched=None):
+    base = {
+        "schemaVersion": 1, "status": "unavailable", "eligibleInstalled": len(eligible),
+        "exactInstalledVersionCandidates": 0, "matchedIdentitySha256": None,
+        "scope": DEBIAN_CANDIDATE_SCOPE, "publisherAuthenticated": False,
+        "installedPackageOriginVerified": False, "remediationAuthorized": False,
+    }
+    if matched is not None:
+        # Canonical identity digest is a commitment, not a publisher signature.
+        canonical = json.dumps(sorted(matched), ensure_ascii=True, separators=(",", ":")).encode("ascii")
+        base["status"] = "candidate_record_match" if matched else "no_exact_match"
+        base["exactInstalledVersionCandidates"] = len(matched)
+        base["matchedIdentitySha256"] = hashlib.sha256(canonical).hexdigest()
+    return base
+
+
+def _debian_apt_helper_sha256(filename, installed_candidates=None):
     """Bounded decompression and hashing with a hard time and byte budget.
 
     APT helper is fixed at the distribution's local path and invoked without
@@ -552,6 +661,7 @@ def _debian_apt_helper_sha256(filename):
         stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
     )
     digest = hashlib.sha256()
+    matcher = _DebianPackageCandidateScanner(installed_candidates) if installed_candidates is not None else None
     total = 0
     deadline = time.monotonic() + DEBIAN_INDEX_MAX_DURATION
     poller = selectors.DefaultSelector()
@@ -570,9 +680,13 @@ def _debian_apt_helper_sha256(filename):
                 if total > DEBIAN_INDEX_MAX_DECODED_BYTES:
                     raise ValueError("APT decompression exceeded decoded byte budget")
                 digest.update(block)
+                if matcher is not None:
+                    matcher.feed(block)
         process.wait(timeout=max(0.1, deadline - time.monotonic()))
         if process.returncode != 0 or total == 0:
             raise ValueError("APT decompression failed")
+        if matcher is not None:
+            return digest.hexdigest(), total, matcher.finish()
         return digest.hexdigest(), total
     finally:
         poller.close()
@@ -582,7 +696,7 @@ def _debian_apt_helper_sha256(filename):
         process.stdout.close()
 
 
-def debian_cached_package_index_hashes(os_release, signed_summary):
+def debian_cached_package_index_hashes(os_release, signed_summary, installed_packages=None):
     """Verify locally cached *uncompressed* Packages against signed Release.
 
     A local gpgv verification and selected fixed Debian suite are prerequisites.
@@ -609,6 +723,9 @@ def debian_cached_package_index_hashes(os_release, signed_summary):
             or signed_summary.get("installedPackageOriginVerified") is not False):
         return result
     try:
+        installed_keys = _debian_installed_candidate_keys(installed_packages) if installed_packages is not None else None
+        if installed_keys is not None:
+            result["installedVersionCandidates"] = _debian_candidate_summary(installed_keys)
         keyring_path = DEBIAN_ARCHIVE_KEYRING
         if stat.S_ISLNK(os.lstat(keyring_path).st_mode):
             if (os.path.basename(keyring_path) != "debian-archive-keyring.gpg"
@@ -687,6 +804,7 @@ def debian_cached_package_index_hashes(os_release, signed_summary):
         if not observed:
             return result
         result["candidateIndexes"] = len(observed)
+        matched_installed = set()
         for name, release, component, arch, relative, prefix in sorted(observed):
             expected = release_map[prefix][1].get(relative)
             if not expected:
@@ -694,12 +812,18 @@ def debian_cached_package_index_hashes(os_release, signed_summary):
                 continue
             filename = os.path.join(DEBIAN_INRELEASE_DIR, name)
             packed = _private_cached_regular(filename, DEBIAN_INDEX_MAX_ENCODED_BYTES)
-            actual_digest, actual_length = _debian_apt_helper_sha256(filename)
+            if installed_keys is None:
+                actual_digest, actual_length = _debian_apt_helper_sha256(filename)
+                index_candidates = set()
+            else:
+                actual_digest, actual_length, index_candidates = _debian_apt_helper_sha256(
+                    filename, installed_keys)
             if _private_cached_regular(filename, DEBIAN_INDEX_MAX_ENCODED_BYTES) != packed:
                 raise ValueError("Package index changed while decompressing")
             if actual_digest != expected[0] or actual_length != expected[1]:
                 result["mismatchedIndexes"] += 1
                 continue
+            matched_installed.update(index_candidates)
             result["matchedIndexes"] += 1
             result["indexRecords"].append({
                 "suite": release, "component": component, "architecture": arch,
@@ -711,6 +835,8 @@ def debian_cached_package_index_hashes(os_release, signed_summary):
         result["verifiedAgainstLocallySignedRelease"] = (
             result["matchedIndexes"] == result["candidateIndexes"] and result["candidateIndexes"] > 0)
         result["status"] = "locally_hash_matched" if result["verifiedAgainstLocallySignedRelease"] else "partial"
+        if installed_keys is not None and result["verifiedAgainstLocallySignedRelease"]:
+            result["installedVersionCandidates"] = _debian_candidate_summary(installed_keys, matched_installed)
     except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired):
         # Do not publish partial success on a potentially changed/ambiguous input.
         result["status"] = "unavailable"
@@ -876,7 +1002,8 @@ def collect():
             elif manager == "dpkg" and os_release.get("ID") == "debian":
                 extra["aptRepositories"] = debian_apt_repository_observation(os_release)
                 extra["debianSignedReleases"] = debian_cached_inrelease_signatures(os_release)
-                extra["debianPackageIndexes"] = debian_cached_package_index_hashes(os_release, extra["debianSignedReleases"])
+                extra["debianPackageIndexes"] = debian_cached_package_index_hashes(
+                    os_release, extra["debianSignedReleases"], packages if not error else None)
             same_configuration = rpm_database is None or resolve_rpm_database() == rpm_database
             if not consistency.unchanged() or not same_configuration:
                 error = "The native package database changed during collection; repeat the inventory"

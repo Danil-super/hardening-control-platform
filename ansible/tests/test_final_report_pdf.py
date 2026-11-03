@@ -148,6 +148,25 @@ class FinalReportIdentityPdfTest(unittest.TestCase):
         fixture["debianPackageIndexEvidence"] = [evidence]
         fixture["debianPackageIndexEvidenceSha256"] = "d" * 64
         self.assertTrue(RENDERER.render(fixture).startswith(b"%PDF-"))
+        candidate = {
+            "schemaVersion": 1, "status": "candidate_record_match",
+            "eligibleInstalled": 150, "exactInstalledVersionCandidates": 72,
+            "matchedIdentitySha256": "e" * 64,
+            "scope": "installed-dpkg-version-in-locally-verified-Packages-record-v1",
+            "publisherAuthenticated": False, "installedPackageOriginVerified": False,
+            "remediationAuthorized": False,
+        }
+        fixture["debianPackageIndexEvidence"] = [{**evidence, "installedVersionCandidates": candidate}]
+        self.assertTrue(RENDERER.render(fixture).startswith(b"%PDF-"))
+        for invalid in [
+            {"installedPackageOriginVerified": True}, {"publisherAuthenticated": True},
+            {"remediationAuthorized": True}, {"exactInstalledVersionCandidates": 151},
+            {"matchedIdentitySha256": "not-a-sha256"}, {"status": "installed-archive-proven"},
+        ]:
+            fixture["debianPackageIndexEvidence"] = [{
+                **evidence, "installedVersionCandidates": {**candidate, **invalid}}]
+            with self.subTest(invalid_candidate=invalid), self.assertRaises(ValueError):
+                RENDERER.render(fixture)
         for update in [
             {"publisherAuthenticated": True},
             {"keyringIndependentlyAuthenticated": True},

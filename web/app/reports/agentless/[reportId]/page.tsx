@@ -334,6 +334,36 @@ export default async function AgentlessReportDetailPage({
             <div><dt className="text-slate-500">Хеш совпал</dt><dd className="mt-1 text-slate-200">{debianIndexEvidence.matchedIndexes}</dd></div>
             <div><dt className="text-slate-500">Отсутствуют / не совпали</dt><dd className="mt-1 text-slate-200">{debianIndexEvidence.missingSignedHashes} / {debianIndexEvidence.mismatchedIndexes}</dd></div>
           </dl>
+          {debianIndexEvidence.installedVersionCandidates ? (
+            <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/50 p-4">
+              <h3 className="font-semibold text-slate-100">Совпадение установленных версий с записями Packages</h3>
+              <p className="mt-1 text-sm text-slate-400">
+                Сравниваются только точные имя пакета, архитектура и версия из dpkg с записями
+                локально проверенных индексов. Совпадение не доказывает происхождение установленного архива.
+              </p>
+              <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-3">
+                <div><dt className="text-slate-500">Статус</dt><dd className="text-slate-200">{
+                  debianIndexEvidence.installedVersionCandidates.status === "candidate_record_match"
+                    ? "Точные записи найдены"
+                    : debianIndexEvidence.installedVersionCandidates.status === "no_exact_match"
+                    ? "Точных записей не найдено" : "Проверка недоступна"
+                }</dd></div>
+                <div><dt className="text-slate-500">Установленных пакетов для сравнения</dt>
+                  <dd className="text-slate-200">{debianIndexEvidence.installedVersionCandidates.eligibleInstalled}</dd></div>
+                <div><dt className="text-slate-500">Совпавшие версии</dt>
+                  <dd className="text-slate-200">{debianIndexEvidence.installedVersionCandidates.exactInstalledVersionCandidates}</dd></div>
+              </dl>
+              {debianIndexEvidence.installedVersionCandidates.matchedIdentitySha256 ? (
+                <p className="mt-2 break-all font-mono text-xs text-slate-400">
+                  SHA-256 набора совпавших идентификаторов: {debianIndexEvidence.installedVersionCandidates.matchedIdentitySha256}
+                </p>
+              ) : null}
+              <p className="mt-2 text-sm text-amber-100">
+                Не доказаны источник установленного .deb, идентичность его содержимого и право на исправление.
+                Отсутствие записи не означает наличие уязвимости.
+              </p>
+            </div>
+          ) : null}
           {debianIndexEvidence.indexRecords.length ? (
             <div className="mt-4 space-y-3 border-t border-slate-800 pt-4">
               {debianIndexEvidence.indexRecords.map((entry, index) => (

@@ -563,6 +563,41 @@ def render(snapshot):
                 'локально совпало: %d из %d.' %
                 (esc(entry['sourceReportId'], 180), esc(entry['sourceReportSha256'], 64),
                  esc(entry['status'], 40), entry['matchedIndexes'], entry['candidateIndexes']), small))
+            candidates = entry.get('installedVersionCandidates')
+            if candidates is not None:
+                if (not isinstance(candidates, dict)
+                        or candidates.get('schemaVersion') != 1
+                        or candidates.get('status') not in ('candidate_record_match', 'no_exact_match', 'unavailable')
+                        or candidates.get('scope') != 'installed-dpkg-version-in-locally-verified-Packages-record-v1'
+                        or candidates.get('publisherAuthenticated') is not False
+                        or candidates.get('installedPackageOriginVerified') is not False
+                        or candidates.get('remediationAuthorized') is not False
+                        or type(candidates.get('eligibleInstalled')) is not int
+                        or not 0 <= candidates['eligibleInstalled'] <= 250000
+                        or type(candidates.get('exactInstalledVersionCandidates')) is not int
+                        or not 0 <= candidates['exactInstalledVersionCandidates'] <= candidates['eligibleInstalled']
+                        or (candidates['status'] == 'candidate_record_match'
+                            and candidates['exactInstalledVersionCandidates'] == 0)
+                        or (candidates['status'] in ('unavailable', 'no_exact_match')
+                            and candidates['exactInstalledVersionCandidates'] != 0)
+                        or (candidates['status'] == 'unavailable'
+                            and candidates.get('matchedIdentitySha256') is not None)
+                        or (candidates['status'] != 'unavailable'
+                            and (not isinstance(candidates.get('matchedIdentitySha256'), str)
+                                 or not re.fullmatch(r'[a-f0-9]{64}', candidates['matchedIdentitySha256'])))
+                        or (candidates['status'] != 'unavailable'
+                            and entry['status'] != 'locally_hash_matched')):
+                    raise ValueError('Некорректное сопоставление версий Debian Packages.')
+                story.append(Paragraph(
+                    'Установленных dpkg-идентификаторов: %d; точных совпадений '
+                    'имени, архитектуры и версии в локальных Packages: %d; '
+                    'статус: %s. SHA-256 набора совпавших записей: %s.' %
+                    (candidates['eligibleInstalled'], candidates['exactInstalledVersionCandidates'],
+                     esc(candidates['status'], 40),
+                     esc(candidates.get('matchedIdentitySha256') or 'не проверено', 64)), small))
+                story.append(Paragraph(
+                    'Совпадение версии с записью Packages не подтверждает происхождение '
+                    'или содержимое установленного .deb и не разрешает исправление.', small))
             for index in entry['indexRecords']:
                 if (not isinstance(index, dict)
                         or not isinstance(index.get('suite'), str)

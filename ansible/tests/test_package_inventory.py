@@ -535,13 +535,67 @@ class PackageInventoryTest(unittest.TestCase):
         apt_helper = Path("/usr/lib/apt/apt-helper")
         if not apt_helper.is_file():
             self.skipTest("APT helper is not installed on this runner")
-        raw = b"Package: libssl3\nVersion: 1\n\n" * 1024
+        raw = b"Package: libssl3\nVersion: 1\nArchitecture: amd64\n\n" * 1024
         with tempfile.TemporaryDirectory(prefix="hcp-apt-helper-") as directory:
             filename = Path(directory) / "test_Packages.gz"
             filename.write_bytes(gzip.compress(raw))
             sha, size = collector._debian_apt_helper_sha256(str(filename))
             self.assertEqual(size, len(raw))
             self.assertEqual(sha, hashlib.sha256(raw).hexdigest())
+            new_sha, new_size, matched = collector._debian_apt_helper_sha256(
+                str(filename), {("libssl3", "amd64", "1"), ("libssl3", "amd64", "2")})
+            self.assertEqual((new_sha, new_size), (sha, size))
+            self.assertEqual(matched, {("libssl3", "amd64", "1")})
+
+    def test_debian_installed_version_candidate_match_is_exact_and_non_authoritative(self):
+        import hashlib
+        import json
+        installed = [
+            {"name": "libssl3:amd64", "version": "3.0.14-1~deb12u2",
+             "arch": "amd64", "manager": "dpkg", "dpkgStatus": "ii "},
+            {"name": "libssl3:arm64", "version": "3.0.14-1~deb12u2",
+             "arch": "arm64", "manager": "dpkg", "dpkgStatus": "ii "},
+            {"name": "pending", "version": "1.0", "arch": "all",
+             "manager": "dpkg", "dpkgStatus": "iU "},
+        ]
+        keys = collector._debian_installed_candidate_keys(installed)
+        self.assertEqual(len(keys), 2)
+        data = (b"Package: libssl3\nVersion: 3.0.14-1~deb12u1\nArchitecture: amd64\n\n"
+                b"Package: libssl3\nVersion: 3.0.14-1~deb12u2\nArchitecture: amd64\n"
+                b"Description: locally signed metadata, not an installed archive\n\n"
+                b"Package: libssl3\nVersion: 3.0.14-1~deb12u2\nArchitecture: i386\n\n"
+                b"Package: libssl3\nVersion: 3.0.14-1~deb12u2\nArchitecture: arm64\n\n")
+        scanner = collector._DebianPackageCandidateScanner(keys)
+        for position in range(0, len(data), 7):
+            scanner.feed(data[position:position + 7])
+        matched = scanner.finish()
+        self.assertEqual(matched, {
+            ("libssl3", "amd64", "3.0.14-1~deb12u2"),
+            ("libssl3", "arm64", "3.0.14-1~deb12u2")})
+        result = collector._debian_candidate_summary(keys, matched)
+        self.assertEqual(result["status"], "candidate_record_match")
+        self.assertEqual(result["eligibleInstalled"], 2)
+        self.assertEqual(result["exactInstalledVersionCandidates"], 2)
+        self.assertEqual(result["matchedIdentitySha256"], hashlib.sha256(
+            json.dumps(sorted(matched), ensure_ascii=True,
+                       separators=(",", ":")).encode("ascii")).hexdigest())
+        self.assertIs(result["publisherAuthenticated"], False)
+        self.assertIs(result["installedPackageOriginVerified"], False)
+        self.assertIs(result["remediationAuthorized"], False)
+        self.assertEqual(collector._debian_candidate_summary(keys, set())["status"], "no_exact_match")
+
+    def test_debian_candidate_reader_rejects_ambiguous_or_unbounded_stanzas(self):
+        installed = {("example", "amd64", "1.0")}
+        for raw in (
+                b"Package: example\nPackage: example\nVersion: 1.0\nArchitecture: amd64\n",
+                b"Package: example\nVersion: 1.0\nArchitecture: amd64\r\n",
+                b"Package: example\nVersion: 1.0\nArchitecture: amd64\n" +
+                b"A" * (collector.DEBIAN_CANDIDATE_MAX_LINE + 1)):
+            scanner = collector._DebianPackageCandidateScanner(installed)
+            with self.assertRaises(ValueError):
+                for position in range(0, len(raw), 16384):
+                    scanner.feed(raw[position:position + 16384])
+                scanner.finish()
 
     def test_target_program_keeps_python35_syntax(self):
         ast.parse(COLLECTOR.read_text(), feature_version=(3, 5))
