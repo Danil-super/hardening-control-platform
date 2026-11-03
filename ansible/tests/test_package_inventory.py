@@ -274,6 +274,26 @@ class PackageInventoryTest(unittest.TestCase):
                 self.assertEqual(result["status"], "unavailable")
                 run.assert_not_called()
 
+    def test_signed_release_backports_requires_exact_origin_and_codename_pair(self):
+        def release(origin, codename):
+            return ("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+                    "Origin: " + origin + "\nCodename: " + codename + "\n"
+                    "Date: Mon, 02 Nov 2026 10:00:00 UTC\n"
+                    "-----BEGIN PGP SIGNATURE-----\nsynthetic\n-----END PGP SIGNATURE-----\n").encode()
+        self.assertEqual(collector._debian_inrelease_headers(
+            release("Debian Backports", "bookworm-backports"), "bookworm"), "bookworm-backports")
+        self.assertEqual(collector._debian_inrelease_headers(
+            release("Debian", "bookworm-security"), "bookworm"), "bookworm-security")
+        for origin, codename in [
+            ("Debian Backports", "bookworm"),
+            ("Debian", "bookworm-backports"),
+            ("Unrelated Builder", "bookworm"),
+            ("Debian Backports", "trixie-backports"),
+        ]:
+            with self.subTest(origin=origin, codename=codename):
+                with self.assertRaises(ValueError):
+                    collector._debian_inrelease_headers(release(origin, codename), "bookworm")
+
     def test_cached_signed_debian_release_is_only_locally_verified(self):
         import hashlib
         from unittest.mock import Mock
