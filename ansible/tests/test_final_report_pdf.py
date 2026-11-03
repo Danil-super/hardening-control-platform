@@ -167,6 +167,29 @@ class FinalReportIdentityPdfTest(unittest.TestCase):
                 **evidence, "installedVersionCandidates": {**candidate, **invalid}}]
             with self.subTest(invalid_candidate=invalid), self.assertRaises(ValueError):
                 RENDERER.render(fixture)
+        archive = {
+            "schemaVersion": 1, "status": "locally_hash_matched", "eligibleInstalled": 150,
+            "candidateArchives": 1, "matchedArchives": 1, "mismatchedArchives": 0,
+            "missingIndexHashes": 0, "ambiguousIndexHashes": 0,
+            "verifiedArchiveSha256": ["f" * 64],
+            "scope": "cached-deb-sha256-locally-verified-Packages-record-only-v1",
+            "publisherAuthenticated": False, "installedPackageOriginVerified": False,
+            "remediationAuthorized": False,
+        }
+        fixture["debianPackageIndexEvidence"] = [{
+            **evidence, "installedVersionCandidates": candidate, "cachedArchiveEvidence": archive}]
+        self.assertTrue(RENDERER.render(fixture).startswith(b"%PDF-"))
+        for tamper in [
+            {"publisherAuthenticated": True}, {"installedPackageOriginVerified": True},
+            {"remediationAuthorized": True}, {"candidateArchives": 0},
+            {"matchedArchives": 2}, {"verifiedArchiveSha256": ["../secret"]},
+            {"scope": "trusted-installed-archive"}, {"status": "installed-origin-verified"},
+        ]:
+            fixture["debianPackageIndexEvidence"] = [{
+                **evidence, "installedVersionCandidates": candidate,
+                "cachedArchiveEvidence": {**archive, **tamper}}]
+            with self.subTest(archive=tamper), self.assertRaises(ValueError):
+                RENDERER.render(fixture)
         for update in [
             {"publisherAuthenticated": True},
             {"keyringIndependentlyAuthenticated": True},
