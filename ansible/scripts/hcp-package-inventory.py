@@ -663,6 +663,120 @@ def _debian_candidate_summary(eligible, matched=None):
     return base
 
 
+
+def _debian_stream_archive_sha256(filename, maximum):
+    """Read bounded archive bytes through O_NOFOLLOW and verify inode stability."""
+    original = os.lstat(filename)
+    if (not stat.S_ISREG(original.st_mode) or original.st_size <= 0
+            or original.st_size > maximum or original.st_nlink != 1):
+        raise ValueError("Cached Debian archive is not a bounded private regular file")
+    descriptor = os.open(filename, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    digest = hashlib.sha256()
+    try:
+        before = os.fstat(descriptor)
+        if (not stat.S_ISREG(before.st_mode) or before.st_dev != original.st_dev
+                or before.st_ino != original.st_ino or before.st_size != original.st_size):
+            raise ValueError("Cached Debian archive changed before reading")
+        total = 0
+        deadline = time.monotonic() + 20
+        with os.fdopen(descriptor, "rb", closefd=False) as stream:
+            while True:
+                if time.monotonic() >= deadline:
+                    raise ValueError("Cached Debian archive digest exceeded time budget")
+                block = stream.read(131072)
+                if not block:
+                    break
+                total += len(block)
+                if total > maximum:
+                    raise ValueError("Cached Debian archive exceeded byte budget")
+                digest.update(block)
+        after, current = os.fstat(descriptor), os.lstat(filename)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns", "st_nlink")
+        if (total != before.st_size or any(getattr(before, k) != getattr(after, k)
+                or getattr(after, k) != getattr(current, k) for k in fields)):
+            raise ValueError("Cached Debian archive changed during hashing")
+        return digest.hexdigest(), total
+    finally:
+        os.close(descriptor)
+
+
+def _debian_cached_archive_evidence(installed_keys, expectations):
+    """Correlate *cached archive bytes* to locally verified Packages SHA256.
+
+    Only files already available under the fixed APT cache root are read.
+    This does not prove an archive was installed or attest publisher keys.
+    """
+    base = {
+        "schemaVersion": 1, "status": "unavailable",
+        "eligibleInstalled": len(installed_keys), "candidateArchives": 0,
+        "matchedArchives": 0, "mismatchedArchives": 0,
+        "missingIndexHashes": 0, "ambiguousIndexHashes": 0,
+        "verifiedArchiveSha256": [], "scope": DEBIAN_ARCHIVE_SCOPE,
+        "publisherAuthenticated": False, "installedPackageOriginVerified": False,
+        "remediationAuthorized": False,
+    }
+    try:
+        directory = os.lstat(DEBIAN_ARCHIVE_DIR)
+        if not stat.S_ISDIR(directory.st_mode) or stat.S_ISLNK(directory.st_mode):
+            raise ValueError("APT archive cache directory is not an ordinary directory")
+        names = os.listdir(DEBIAN_ARCHIVE_DIR)
+        if len(names) > 20000:
+            raise ValueError("APT cache directory exceeds enumeration budget")
+        selected = []
+        for name in names:
+            if len(name) > 600:
+                continue
+            match = re.match(
+                r"^([a-z0-9][a-z0-9.+-]{0,254})_([0-9][A-Za-z0-9.+:~%-]{0,255})_([a-z0-9][a-z0-9-]{0,31})\.deb$",
+                name,
+            )
+            if not match:
+                continue
+            package, raw_version, arch = match.groups()
+            # Only the APT filename encoding of an epoch colon is decoded.
+            # All other percent sequences remain unmatched, never traversed.
+            version = re.sub(r"%3[aA]", ":", raw_version)
+            if (package, arch, version) in installed_keys:
+                selected.append((name, (package, arch, version)))
+        base["candidateArchives"] = len(selected)
+        if not selected:
+            base["status"] = "no_cached_archives"
+            return base
+        if len(selected) > DEBIAN_ARCHIVE_MAX_FILES:
+            base["status"] = "budget_exceeded"
+            return base
+        if any(os.lstat(os.path.join(DEBIAN_ARCHIVE_DIR, name)).st_size >
+               DEBIAN_ARCHIVE_MAX_BYTES for name, unused in selected):
+            base["status"] = "budget_exceeded"
+            return base
+        if sum(os.lstat(os.path.join(DEBIAN_ARCHIVE_DIR, name)).st_size
+               for name, unused in selected) > DEBIAN_ARCHIVE_MAX_TOTAL_BYTES:
+            base["status"] = "budget_exceeded"
+            return base
+        for name, identity in sorted(selected):
+            expected = expectations.get(identity)
+            if expected is None:
+                if identity in expectations:
+                    base["ambiguousIndexHashes"] += 1
+                else:
+                    base["missingIndexHashes"] += 1
+                continue
+            actual_sha, length = _debian_stream_archive_sha256(
+                os.path.join(DEBIAN_ARCHIVE_DIR, name), DEBIAN_ARCHIVE_MAX_BYTES)
+            if (actual_sha, length) == expected:
+                base["matchedArchives"] += 1
+                base["verifiedArchiveSha256"].append(actual_sha)
+            else:
+                base["mismatchedArchives"] += 1
+        base["verifiedArchiveSha256"].sort()
+        base["status"] = ("locally_hash_matched"
+                          if base["matchedArchives"] == base["candidateArchives"] else "partial")
+    except (OSError, ValueError, UnicodeError):
+        base.update(status="unavailable", matchedArchives=0, mismatchedArchives=0,
+                    missingIndexHashes=0, ambiguousIndexHashes=0, verifiedArchiveSha256=[])
+    return base
+
+
 def _debian_apt_helper_sha256(filename, installed_candidates=None):
     """Bounded decompression and hashing with a hard time and byte budget.
 
