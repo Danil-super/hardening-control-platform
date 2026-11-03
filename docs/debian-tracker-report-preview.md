@@ -29,6 +29,6 @@ Checks: `web/tests/debian-tracker-preview.test.mjs` covers fixed/affected/uncert
 
 ## Explicit remaining scope
 
-This is only the CVE **JSON and browser report** stage. Final signed project-report snapshot, PDF, correlation, independently checked exact-multiset preservation and native Debian VM verification of the preview pathway remain separate work. There is no claim of Debian publisher signature authentication, up-to-date full CVE coverage or fully verified package provenance. No automatic package upgrades may be based on this candidate.
+This is only the CVE **JSON and browser report** stage. The immutable final project-report JSON and PDF now retain complete source-bound Debian CVE evidence, with independently checked exact-multiset preservation (see [debian-tracker-final-evidence.md](debian-tracker-final-evidence.md)). Correlation is intentionally not the source of that projection. Native Debian VM verification of the new final-export path remains separate work. There is no claim of Debian publisher signature authentication, up-to-date full CVE coverage or fully verified package provenance. No automatic package upgrades may be based on this candidate.
 
 Official upstream documentation: https://security-team.debian.org/security_tracker.html and https://www.debian.org/security/.
