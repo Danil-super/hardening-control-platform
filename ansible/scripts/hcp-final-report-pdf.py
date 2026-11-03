@@ -598,6 +598,53 @@ def render(snapshot):
                 story.append(Paragraph(
                     'Совпадение версии с записью Packages не подтверждает происхождение '
                     'или содержимое установленного .deb и не разрешает исправление.', small))
+            archives = entry.get('cachedArchiveEvidence')
+            if archives is not None:
+                if (not isinstance(archives, dict) or archives.get('schemaVersion') != 1
+                        or archives.get('status') not in ('locally_hash_matched', 'partial',
+                                                           'no_cached_archives', 'budget_exceeded', 'unavailable')
+                        or entry['status'] != 'locally_hash_matched'
+                        or archives.get('scope') != 'cached-deb-sha256-locally-verified-Packages-record-only-v1'
+                        or archives.get('publisherAuthenticated') is not False
+                        or archives.get('installedPackageOriginVerified') is not False
+                        or archives.get('remediationAuthorized') is not False
+                        or any(type(archives.get(field)) is not int
+                               or not 0 <= archives[field] <= (250000 if field == 'eligibleInstalled'
+                                   else 20000 if field == 'candidateArchives' else 8)
+                               for field in ('eligibleInstalled', 'candidateArchives', 'matchedArchives',
+                                             'mismatchedArchives', 'missingIndexHashes', 'ambiguousIndexHashes'))
+                        or sum(archives[key] for key in ('matchedArchives', 'mismatchedArchives',
+                              'missingIndexHashes', 'ambiguousIndexHashes')) > archives['candidateArchives']
+                        or (candidates is not None
+                            and archives['eligibleInstalled'] != candidates['eligibleInstalled'])
+                        or not isinstance(archives.get('verifiedArchiveSha256'), list)
+                        or len(archives['verifiedArchiveSha256']) != archives['matchedArchives']
+                        or any(not isinstance(h, str) or not re.fullmatch(r'[a-f0-9]{64}', h)
+                               for h in archives['verifiedArchiveSha256'])
+                        or (archives['status'] == 'locally_hash_matched' and
+                            (archives['candidateArchives'] == 0
+                             or archives['matchedArchives'] != archives['candidateArchives']))
+                        or (archives['status'] == 'no_cached_archives' and archives['candidateArchives'] != 0)
+                        or (archives['status'] == 'partial' and
+                            (archives['candidateArchives'] == 0
+                             or archives['matchedArchives'] == archives['candidateArchives']))
+                        or (archives['status'] in ('unavailable', 'budget_exceeded', 'no_cached_archives')
+                            and archives['matchedArchives'] != 0)):
+                    raise ValueError('Некорректное доказательство хеша кешированного Debian .deb.')
+                story.append(Paragraph(
+                    'Локальные кешированные .deb: %d найдено, %d совпало с SHA-256 '
+                    'записи Packages, %d изменено, %d без хеша, %d неоднозначно; статус: %s.' %
+                    (archives['candidateArchives'], archives['matchedArchives'],
+                     archives['mismatchedArchives'], archives['missingIndexHashes'],
+                     archives['ambiguousIndexHashes'], esc(archives['status'], 40)), small))
+                if archives['verifiedArchiveSha256']:
+                    story.append(Paragraph(
+                        'SHA-256 кешированных архивов: %s.' %
+                        esc(', '.join(archives['verifiedArchiveSha256']), 800), small))
+                story.append(Paragraph(
+                    'Совпадение хеша доступного архива в APT-кеше не подтверждает, '
+                    'что он был установлен, либо состояние файлов установленного пакета. '
+                    'Подлинность издателя и разрешение на исправление НЕ подтверждены.', small))
             for index in entry['indexRecords']:
                 if (not isinstance(index, dict)
                         or not isinstance(index.get('suite'), str)
