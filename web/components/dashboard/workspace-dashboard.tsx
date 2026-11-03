@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button, LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { errorMessage, readApiResponse } from "@/lib/client-api";
+import { summarizeDashboardEvidence } from "@/lib/dashboard-evidence-status";
 
 type Health = {
   ansibleInstalled?: boolean;
@@ -17,6 +18,11 @@ type Host = {
   alias: string;
   reportCount: number;
   lastReport: { createdAt: string | null; score: number | null } | null;
+  riskSummary?: {
+    critical: number; high: number; medium: number; low: number; unknown: number;
+    auditCount: number; freshCount: number; partialCount: number; staleCount: number;
+    identityExcludedCount?: number; maxAgeHours: number;
+  };
 };
 
 type HostPayload = { ok?: boolean; hosts?: Host[]; message?: string };
@@ -57,13 +63,14 @@ export function WorkspaceDashboard() {
 
   const summary = useMemo(() => {
     const hosts = state?.hosts ?? [];
-    const audited = hosts.filter((host) => host.reportCount > 0);
+    const audited = hosts.filter((host) => (host.riskSummary?.auditCount ?? 0) > 0);
     const latest = audited
       .map((host) => ({ host, time: host.lastReport?.createdAt ? new Date(host.lastReport.createdAt).getTime() : 0 }))
       .sort((left, right) => right.time - left.time)[0]?.host ?? null;
     return { hosts, audited, latest };
   }, [state]);
 
+  const evidence = useMemo(() => summarizeDashboardEvidence(state?.hosts ?? []), [state]);
   const controlReady = Boolean(state?.health.ansibleInstalled && state?.health.inventoryReady);
   const controlDetail = !state
     ? "Проверяем Ansible и inventory"
@@ -101,8 +108,67 @@ export function WorkspaceDashboard() {
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <SummaryCard label="Control node" value={loading ? "…" : controlReady ? "готов" : "требует внимания"} detail={controlDetail} icon={controlReady ? <CheckCircle2 size={18} /> : <CircleAlert size={18} />} />
         <SummaryCard label="Подключённые хосты" value={loading ? "…" : summary.hosts.length} detail={summary.hosts.length ? "Хосты из inventory" : "Добавьте первый хост"} icon={<Server size={18} />} />
-        <SummaryCard label="С аудитом" value={loading ? "…" : summary.audited.length} detail={summary.audited.length ? "Есть сохранённые отчёты" : "Основной аудит ещё не запускался"} icon={<ShieldCheck size={18} />} />
-        <SummaryCard label="Последний отчёт" value={loading ? "…" : summary.latest?.alias ?? "нет"} detail={summary.latest ? formatDate(summary.latest.lastReport?.createdAt ?? null) : "Появится после первого аудита"} icon={<FileText size={18} />} />
+        <SummaryCard label="Со свежими проверками" value={loading ? "…" : evidence.freshEvidenceHosts} detail="Свежие доказательства, без известных пробелов источников" icon={<ShieldCheck size={18} />} />
+        <SummaryCard label="Требуют уточнения" value={loading ? "…" : evidence.needsReviewHosts} detail="Есть неполные, устаревшие или исключённые источники" icon={<CircleAlert size={18} />} />
+        <SummaryCard label="Без свежего аудита" value={loading ? "…" : evidence.noFreshEvidenceHosts} detail="Аудита нет либо свежесть не подтверждена" icon={<FileText size={18} />} />
+      </section>
+
+      <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-5" aria-labelledby="dashboard-evidence-title">
+        <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
+          <div>
+            <h2 id="dashboard-evidence-title" className="text-lg font-semibold text-white">Достоверность аудита по хостам</h2>
+            <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">
+              Данные из последнего применимого отчёта каждого инструмента и профиля в пределах периода свежести.
+              Это не процент полного CVE-покрытия и не итоговая оценка защищённости.
+            </p>
+          </div>
+          <LinkButton href="/hosts" variant="secondary">Открыть хосты</LinkButton>
+        </div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+            <p className="text-sm text-slate-400">Критические и высокие находки в сводках</p>
+            <p className="mt-1 text-2xl font-semibold text-white">{loading ? "…" : evidence.criticalHighFindings}</p>
+          </div>
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
+            <p className="text-sm text-slate-400">Находки с неизвестной критичностью</p>
+            <p className="mt-1 text-2xl font-semibold text-white">{loading ? "…" : evidence.unknownSeverityFindings}</p>
+          </div>
+        </div>
+        {!loading && evidence.assessed.length ? (
+          <div className="mt-4 overflow-x-auto">
+            <table className="w-full text-left text-sm">
+              <thead>
+                <tr className="border-b border-slate-800 text-slate-400">
+                  <th className="px-2 py-3 font-medium">Хост</th>
+                  <th className="px-2 py-3 font-medium">Статус доказательств</th>
+                  <th className="px-2 py-3 font-medium">Последний аудит</th>
+                  <th className="px-2 py-3 text-right font-medium">Крит. + высокие</th>
+                  <th className="px-2 py-3 text-right font-medium">Без оценки</th>
+                </tr>
+              </thead>
+              <tbody>
+                {evidence.assessed.slice(0, 10).map(host => (
+                  <tr key={host.alias} className="border-b border-slate-800/70">
+                    <td className="px-2 py-3 font-medium text-slate-200">{host.alias}</td>
+                    <td className="px-2 py-3">
+                      <span className={host.state === "has_fresh_evidence" ? "text-emerald-200"
+                        : host.state === "needs_review" ? "text-amber-200" : "text-slate-300"}>
+                        {host.stateLabel}
+                      </span>
+                      <p className="mt-1 max-w-sm text-xs leading-5 text-slate-500">{host.detail}</p>
+                    </td>
+                    <td className="whitespace-nowrap px-2 py-3 text-slate-300">{formatDate(host.lastAuditAt)}</td>
+                    <td className="px-2 py-3 text-right text-slate-300">{host.criticalHigh}</td>
+                    <td className="px-2 py-3 text-right text-slate-300">{host.unknown}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {evidence.assessed.length > 10 ? (
+              <p className="mt-3 text-sm text-slate-400">Показаны первые 10 хостов из {evidence.assessed.length}. Полный список — на странице «Хосты».</p>
+            ) : null}
+          </div>
+        ) : !loading ? <p className="mt-4 text-sm text-slate-400">Подключённых хостов пока нет.</p> : null}
       </section>
 
       <section className="rounded-2xl border border-sky-400/20 bg-[linear-gradient(135deg,rgba(14,116,144,.17),rgba(8,17,31,.92)_56%)] p-5 shadow-xl shadow-black/10 sm:p-6">
