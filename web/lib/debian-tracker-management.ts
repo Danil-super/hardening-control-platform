@@ -34,6 +34,7 @@ export function getDebianTrackerManagementStatus() {
     ok: true,
     sourceUrl: DEBIAN_TRACKER_URL,
     mode: getVulnerabilityDatabaseSettings().mode,
+    maxImportAgeHours: Number(process.env.HCP_DEBIAN_TRACKER_MAX_IMPORT_AGE_HOURS ?? "168"),
     selectedSha256: selected.sha256,
     selectionSource: selected.source,
     selectionUpdatedAt: selected.updatedAt,
