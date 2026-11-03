@@ -78,3 +78,46 @@ test("fake independent publisher, installed-origin claim, truncation and hash su
     assert.equal(result.verifiedAgainstLocallySignedRelease, false);
   }
 });
+
+const exampleCandidates = () => ({
+  schemaVersion: 1, status: "candidate_record_match",
+  eligibleInstalled: 125, exactInstalledVersionCandidates: 73,
+  matchedIdentitySha256: "e".repeat(64),
+  scope: "installed-dpkg-version-in-locally-verified-Packages-record-v1",
+  publisherAuthenticated: false, installedPackageOriginVerified: false,
+  remediationAuthorized: false,
+});
+test("exact installed-version candidates are projected without package-origin authority", () => {
+  const candidate = summarizeDebianPackageIndexes(
+    { ...example(), installedVersionCandidates: exampleCandidates() }, os);
+  assert.equal(candidate.status, "locally_hash_matched");
+  assert.equal(candidate.installedVersionCandidates?.status, "candidate_record_match");
+  assert.equal(candidate.installedVersionCandidates?.exactInstalledVersionCandidates, 73);
+  assert.equal(candidate.installedVersionCandidates?.eligibleInstalled, 125);
+  assert.equal(candidate.installedVersionCandidates?.publisherAuthenticated, false);
+  assert.equal(candidate.installedVersionCandidates?.installedPackageOriginVerified, false);
+  assert.equal(candidate.installedVersionCandidates?.remediationAuthorized, false);
+});
+test("candidate evidence rejects forged trust flags, count inflation and incomplete hash gates", () => {
+  const modifications = [
+    { publisherAuthenticated: true }, { installedPackageOriginVerified: true },
+    { remediationAuthorized: true }, { exactInstalledVersionCandidates: 126 },
+    { eligibleInstalled: -1 }, { matchedIdentitySha256: "../../secret" },
+    { scope: "installed-deb-is-authentic" }, { status: "validated-installed-archive" },
+  ];
+  for (const mutation of modifications) {
+    const result = summarizeDebianPackageIndexes(
+      { ...example(), installedVersionCandidates: { ...exampleCandidates(), ...mutation } }, os);
+    assert.equal(result.status, "invalid", JSON.stringify(mutation));
+    assert.equal(result.installedPackageOriginVerified, false);
+  }
+  const partial = { ...example(), status: "partial", candidateIndexes: 3,
+    matchedIndexes: 2, missingSignedHashes: 1, verifiedAgainstLocallySignedRelease: false,
+    installedVersionCandidates: exampleCandidates() };
+  assert.equal(summarizeDebianPackageIndexes(partial, os).status, "invalid");
+  const noMatch = { ...exampleCandidates(), status: "no_exact_match",
+    exactInstalledVersionCandidates: 0 };
+  assert.equal(summarizeDebianPackageIndexes(
+    { ...example(), installedVersionCandidates: noMatch }, os).installedVersionCandidates?.status,
+  "no_exact_match");
+});
