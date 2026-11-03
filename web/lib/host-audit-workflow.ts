@@ -14,7 +14,7 @@ export type HostAuditWorkflowInput = {
 
 export type HostAuditNextStep = {
   id: "connect" | "recovery" | "controller" | "running" | "identity" | "first_audit"
-    | "repeat" | "coverage" | "triage" | "report";
+    | "repeat" | "coverage" | "triage" | "report" | "unknown";
   title: string;
   detail: string;
   action: string;
@@ -48,6 +48,20 @@ export function selectHostAuditNextStep(input: HostAuditWorkflowInput): HostAudi
     action: "Перейти к заданию", href: "#ansible-actions", tone: "neutral",
   };
   const risk = input.riskSummary;
+  // Missing or malformed API evidence is unknown, never an assertion that a host
+  // has never been assessed or that the observable scope has no findings.
+  const required = ["auditCount", "freshCount", "partialCount", "staleCount",
+    "critical", "high", "medium", "low", "unknown", "maxAgeHours"] as const;
+  const trustedCounters = risk && required.every((key) =>
+    typeof risk[key] === "number" && Number.isSafeInteger(risk[key]) && risk[key] >= 0)
+    && (risk.identityExcludedCount === undefined ||
+      (Number.isSafeInteger(risk.identityExcludedCount) && risk.identityExcludedCount >= 0))
+    && !(risk.auditCount === 0 && (risk.freshCount > 0 || risk.partialCount > 0 || risk.staleCount > 0));
+  if (!trustedCounters) return {
+    id: "unknown" as const, title: "Статус аудита не подтверждён",
+    detail: "Не удалось достоверно получить сводку доказательств. Проверьте историю отчётов и обновите данные; отсутствие сводки не означает, что проверок не было.",
+    action: "Открыть историю", href: `/reports/agentless?host=${encodeURIComponent(alias)}`, tone: "attention" as const,
+  };
   const assessment = describeHostAuditEvidence({ alias, riskSummary: risk });
   if (assessment.state === "no_audit") {
     if (count(risk?.identityExcludedCount) > 0) return {
