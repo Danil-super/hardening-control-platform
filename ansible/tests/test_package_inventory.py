@@ -193,6 +193,86 @@ class PackageInventoryTest(unittest.TestCase):
         self.assertNotIn("private-password", str(result))
         self.assertIn("installed-origin-not-attested", result["scope"])
 
+    def test_debian_apt_policy_observes_release_hints_without_pretending_signatures(self):
+        raw = ("Package files:\n"
+               " 100 /var/lib/dpkg/status\n"
+               "     release a=now\n"
+               " 500 https://secret:password@repo.example/debian bookworm/main amd64 Packages\n"
+               "     release v=12.12,o=Debian,a=oldstable,n=bookworm,l=Debian,c=main,b=amd64\n"
+               "     origin repo.example\n"
+               " 500 https://repo.example/debian-security bookworm-security/main amd64 Packages\n"
+               "     release o=Debian,a=oldstable-security,n=bookworm-security,l=Debian-Security,c=main,b=amd64\n"
+               "Pinned packages:\n")
+        with patch.object(collector.shutil, "which", return_value="/usr/bin/apt-cache"), \
+                patch.object(collector, "run", return_value=(0, raw.rstrip("\n"), "")) as native:
+            evidence = collector.debian_apt_repository_observation({
+                "ID": "debian", "VERSION_ID": "12", "VERSION_CODENAME": "bookworm"})
+        native.assert_called_once_with(["apt-cache", "policy"])
+        self.assertEqual(evidence["status"], "observed")
+        self.assertEqual(evidence["indexEntries"], 2)
+        self.assertEqual(evidence["debianLabelEntries"], 2)
+        self.assertEqual(evidence["suites"], ["bookworm", "bookworm-security"])
+        self.assertTrue(evidence["suiteConsistent"])
+        self.assertFalse(evidence["publisherAuthenticated"])
+        self.assertFalse(evidence["repositorySignatureVerified"])
+        self.assertFalse(evidence["installedPackageOriginVerified"])
+        self.assertEqual(len(evidence["policySha256"]), 64)
+        self.assertNotIn("secret", str(evidence))
+        self.assertNotIn("repo.example", str(evidence))
+        self.assertIn("installed-origin-or-signature-attestation", evidence["scope"])
+
+    def test_apt_policy_foreign_label_and_suite_remain_uncertain(self):
+        raw = ("Package files:\n"
+               " 500 https://mirror.invalid stable/main amd64 Packages\n"
+               "     release o=Some Corporate Mirror,a=stable,n=trixie,c=main,b=amd64\n"
+               "Pinned packages:\n")
+        with patch.object(collector.shutil, "which", return_value="/usr/bin/apt-cache"), \
+                patch.object(collector, "run", return_value=(0, raw.rstrip("\n"), "")):
+            result = collector.debian_apt_repository_observation({
+                "ID": "debian", "VERSION_CODENAME": "bookworm"})
+        self.assertEqual(result["status"], "observed")
+        self.assertEqual(result["otherLabelEntries"], 1)
+        self.assertEqual(result["releaseLabels"], ["other-label-observed"])
+        self.assertFalse(result["suiteConsistent"])
+        self.assertFalse(result["repositorySignatureVerified"])
+
+    def test_malformed_or_missing_apt_policy_is_not_debian_signing_evidence(self):
+        inputs = [
+            "Package files:\n 500 file:/packages\n release o=Debian,n=bookworm,n=trixie\nPinned packages:",
+            "Package files:\n 500 file:/packages\n release o=Debian,n=https://tokens.example\nPinned packages:",
+            "Package files:\n 100 /var/lib/dpkg/status\n release a=now\nPinned packages:",
+            "Package files:\nPinned packages:",
+        ]
+        for raw in inputs:
+            with self.subTest(raw=raw[:28]), patch.object(collector.shutil, "which", return_value="/usr/bin/apt-cache"), \
+                    patch.object(collector, "run", return_value=(0, raw, "")):
+                evidence = collector.debian_apt_repository_observation({
+                    "ID": "debian", "VERSION_CODENAME": "bookworm"})
+                self.assertEqual(evidence["status"], "ambiguous")
+                self.assertIsNotNone(evidence["policySha256"])
+                self.assertFalse(evidence["suiteConsistent"])
+                self.assertFalse(evidence["installedPackageOriginVerified"])
+        with patch.object(collector.shutil, "which", return_value=None), \
+                patch.object(collector, "run") as run:
+            missing = collector.debian_apt_repository_observation({
+                "ID": "debian", "VERSION_CODENAME": "bookworm"})
+            self.assertEqual(missing["status"], "unavailable")
+            run.assert_not_called()
+        with patch.object(collector.shutil, "which", return_value="/usr/bin/apt-cache"), \
+                patch.object(collector, "run", return_value=(2, "", "hidden local error")):
+            failure = collector.debian_apt_repository_observation({
+                "ID": "debian", "VERSION_CODENAME": "bookworm"})
+            self.assertEqual(failure["status"], "unavailable")
+            self.assertNotIn("hidden", str(failure))
+
+    def test_apt_evidence_cannot_inherit_debian_identity_from_astra_or_ubuntu(self):
+        for osid in ("astra", "ubuntu", "custom"):
+            with self.subTest(os=osid), patch.object(collector, "run") as run:
+                result = collector.debian_apt_repository_observation({
+                    "ID": osid, "VERSION_CODENAME": "bookworm"})
+                self.assertEqual(result["status"], "unavailable")
+                run.assert_not_called()
+
     def test_target_program_keeps_python35_syntax(self):
         ast.parse(COLLECTOR.read_text(), feature_version=(3, 5))
 
