@@ -17,6 +17,7 @@ type Status = {
   ok: boolean;
   sourceUrl: string;
   mode: "online" | "offline";
+  maxImportAgeHours: number;
   selectedSha256: string | null;
   selectionSource: "environment" | "interface";
   selectionUpdatedAt: string | null;
@@ -86,7 +87,7 @@ export function DebianTrackerClient() {
   const noActions = busy !== null || loading;
   const offline = data?.mode === "offline";
   const candidateAgeHours = candidate ? Math.max(0, (Date.now() - Date.parse(candidate.capturedAt)) / 3600000) : null;
-  const candidateStale = candidateAgeHours !== null && candidateAgeHours > 168;
+  const candidateStale = candidateAgeHours !== null && (candidateAgeHours > (data?.maxImportAgeHours ?? 168) || !Number.isInteger(data?.maxImportAgeHours) || (data?.maxImportAgeHours ?? 168) < 1 || (data?.maxImportAgeHours ?? 168) > 8760);
 
   return (
     <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5" aria-labelledby="debian-tracker-title">
@@ -143,7 +144,7 @@ export function DebianTrackerClient() {
         Выбран локальный режим CVE-баз. Для сетевой загрузки сначала включите сетевой режим Trivy выше.
       </p> : null}
       {candidateAvailable && candidateStale ? <p className="mt-3 text-sm text-amber-200">
-        Локальный снимок старше семи дней; требуется новая загрузка. Даже недавний импорт не доказывает свежесть у Debian.
+        Превышен допустимый возраст локального снимка или политика некорректна. Повторите загрузку или проверьте настройки контроллера. Недавний импорт не доказывает актуальность у Debian.
       </p> : null}
       {message ? <p role="status" className={"mt-3 rounded-md border px-3 py-2 text-sm " +
         (message.error ? "border-rose-400/30 text-rose-200" : "border-sky-400/30 text-sky-100")}>{message.text}</p> : null}
