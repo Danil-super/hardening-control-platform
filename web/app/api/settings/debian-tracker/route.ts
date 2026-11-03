@@ -25,7 +25,9 @@ async function smallBody(request: Request): Promise<Record<string, unknown>> {
   if (length > 512) throw new DebianTrackerManagementError("invalid", "Слишком большой запрос.");
   const text = await request.text();
   if (Buffer.byteLength(text, "utf8") > 512) throw new DebianTrackerManagementError("invalid", "Слишком большой запрос.");
-  const value: unknown = JSON.parse(text || "{}");
+  let value: unknown;
+  try { value = JSON.parse(text || "{}"); }
+  catch { throw new DebianTrackerManagementError("invalid", "Неверный JSON запроса."); }
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new DebianTrackerManagementError("invalid", "Некорректный запрос.");
   }
