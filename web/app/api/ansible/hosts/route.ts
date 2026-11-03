@@ -255,11 +255,10 @@ function identityCollides(current: string, alias: string, group: string) {
 }
 
 function attachReports(hosts: InventoryHost[], reportsPath: string) {
-  if (!existsSync(reportsPath)) {
-    return hosts;
-  }
-
-  const reports = listAnsibleReports();
+  // A fresh installation has no reports directory yet. It still needs an
+  // explicit zero-audit, evidence-bound summary for each inventory host;
+  // missing metadata must not masquerade as an API failure or completed audit.
+  const reports = existsSync(reportsPath) ? listAnsibleReports() : [];
 
   return hosts.map((host) => {
     const hostReports = reports.filter((report) => targetAliasFromReport(report) === host.alias);
