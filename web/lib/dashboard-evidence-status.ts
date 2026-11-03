@@ -47,9 +47,16 @@ export function describeHostAuditEvidence(host: DashboardHostEvidence): Dashboar
     detail: "Источники устарели, недоступны или не имеют подтверждённой свежести.",
     criticalHigh, unknown, lastAuditAt,
   };
-  if (partialCount || staleCount || identityExcluded) return {
+  // Never call the observed scope complete if the source counters disagree.
+  // A fresh source that cannot be accounted for is a coverage gap, not proof.
+  const inconsistentCounters = freshCount > auditCount
+    || staleCount > auditCount
+    || partialCount > auditCount
+    || freshCount + staleCount > auditCount
+    || (freshCount < auditCount && partialCount === 0 && staleCount === 0);
+  if (partialCount || staleCount || identityExcluded || inconsistentCounters) return {
     alias: host.alias, state: "needs_review", stateLabel: "Требует уточнения",
-    detail: "Есть свежие данные, но часть источников неполная, устарела или исключена по идентичности.",
+    detail: "Есть свежие данные, но часть источников неполная, устарела, исключена по идентичности либо учтена некорректно.",
     criticalHigh, unknown, lastAuditAt,
   };
   return {
