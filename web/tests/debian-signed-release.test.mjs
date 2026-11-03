@@ -31,7 +31,7 @@ test("local InRelease gpgv state is never certified Debian publisher or installe
   assert.equal(evidence.installedPackageOriginVerified, false);
   assert.equal(evidence.remediationAuthorized, false);
   assert.deepEqual(evidence.signedReleases, ["bookworm", "bookworm-security"]);
-  assert.match(evidence.note, /не удостоверен/);
+  assert.match(evidence.note, /не установлена/);
 });
 
 test("Astra, Ubuntu and derivative OS cannot inherit the Debian local keyring", () => {
