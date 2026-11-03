@@ -315,6 +315,44 @@ class PackageInventoryTest(unittest.TestCase):
             self.assertEqual(run.call_args.args[0][0], "gpgv")
             self.assertNotIn("sh", run.call_args.args[0][0])
 
+    def test_only_fixed_same_directory_debian_gpg_pgp_alias_is_allowed(self):
+        from unittest.mock import Mock
+        with tempfile.TemporaryDirectory(prefix="hcp-inrelease-alias-") as temp:
+            directory = Path(temp)
+            apt = directory / "lists"
+            apt.mkdir()
+            key = directory / "debian-archive-keyring.pgp"
+            key.write_bytes(b"synthetic-local-only-keyring")
+            alias = directory / "debian-archive-keyring.gpg"
+            alias.symlink_to("debian-archive-keyring.pgp")
+            release = apt / "mirror_debian_dists_bookworm_InRelease"
+            release.write_bytes((
+                "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+                "Origin: Debian\nCodename: bookworm\nDate: Mon, 02 Nov 2026 10:00:00 UTC\n"
+                "-----BEGIN PGP SIGNATURE-----\nsynthetic\n-----END PGP SIGNATURE-----\n").encode())
+            stdout = ("[GNUPG:] GOODSIG 1234567890 Example\n[GNUPG:] VALIDSIG " +
+                      "A" * 40 + " extra\n").encode()
+            def verify(command, **kwargs):
+                self.assertEqual(command[4], str(key))
+                return Mock(returncode=0, stdout=stdout, stderr=b"")
+            with patch.object(collector, "DEBIAN_INRELEASE_DIR", str(apt)), \
+                    patch.object(collector, "DEBIAN_ARCHIVE_KEYRING", str(alias)), \
+                    patch.object(collector.shutil, "which", return_value="/usr/bin/gpgv"), \
+                    patch.object(collector.subprocess, "run", side_effect=verify):
+                good = collector.debian_cached_inrelease_signatures({
+                    "ID": "debian", "VERSION_CODENAME": "bookworm"})
+            self.assertEqual(good["status"], "verified_with_local_keyring")
+            self.assertTrue(good["localSignatureVerified"])
+            alias.unlink()
+            alias.symlink_to("../untrusted-location")
+            with patch.object(collector, "DEBIAN_INRELEASE_DIR", str(apt)), \
+                    patch.object(collector, "DEBIAN_ARCHIVE_KEYRING", str(alias)), \
+                    patch.object(collector.shutil, "which", return_value="/usr/bin/gpgv"):
+                bad = collector.debian_cached_inrelease_signatures({
+                    "ID": "debian", "VERSION_CODENAME": "bookworm"})
+            self.assertEqual(bad["status"], "unavailable")
+            self.assertFalse(bad["publisherAuthenticated"])
+
     def test_cached_release_rejects_invalid_local_signature_and_distro_spoof(self):
         from unittest.mock import Mock
         with tempfile.TemporaryDirectory(prefix="hcp-debian-inrelease-") as temp:
