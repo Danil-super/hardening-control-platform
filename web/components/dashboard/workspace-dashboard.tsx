@@ -86,8 +86,12 @@ export function WorkspaceDashboard() {
       : !summary.hosts.length
         ? { title: "Подключите первый хост", text: "Добавьте Astra или другой Linux-хост через безопасное SSH-подключение. Пароль используется один раз и не сохраняется.", href: "/hosts", label: "Добавить хост" }
         : !summary.audited.length
-          ? { title: "Запустите основной аудит", text: "Выберите подключённый хост и профиль. После завершения отчёт подскажет, какие проверки нужно исправить или продолжить.", href: "/hosts", label: "Перейти к аудиту" }
-          : { title: "Разберите подтверждённые результаты", text: "Откройте свежий отчёт, выберите только нужные изменения и добавьте их в план работ. Фактические изменения firewall остаются обратимыми.", href: "/remediation-plan", label: "Открыть план работ" };
+          ? { title: "Запустите основной аудит", text: "Выберите подключённый хост и профиль. Инвентаризация и сбор фактов сами по себе не являются аудитом безопасности.", href: "/hosts", label: "Перейти к аудиту" }
+          : evidence.noFreshEvidenceHosts > 0
+            ? { title: "Проверьте хосты без свежего аудита", text: "Часть подключённых хостов не имеет подтверждённых свежих результатов. Запустите или повторите аудит для этих узлов.", href: "/hosts", label: "Открыть хосты" }
+            : evidence.needsReviewHosts > 0
+              ? { title: "Уточните неполные результаты", text: "Свежие проверки есть, но часть источников неполна, устарела или исключена по идентичности. Проверьте причины перед планом исправлений.", href: "/hosts", label: "Проверить источники" }
+              : { title: "Разберите подтверждённые результаты", text: "Откройте свежий отчёт, выберите только нужные изменения и добавьте их в план работ. Фактические изменения firewall остаются обратимыми.", href: "/remediation-plan", label: "Открыть план работ" };
 
   return (
     <div className="space-y-6">
@@ -105,7 +109,7 @@ export function WorkspaceDashboard() {
 
       {message ? <section role="alert" className="rounded-xl border border-red-400/30 bg-red-500/10 p-4 text-sm leading-6 text-red-100">{message}</section> : null}
 
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-5">
         <SummaryCard label="Control node" value={loading ? "…" : controlReady ? "готов" : "требует внимания"} detail={controlDetail} icon={controlReady ? <CheckCircle2 size={18} /> : <CircleAlert size={18} />} />
         <SummaryCard label="Подключённые хосты" value={loading ? "…" : summary.hosts.length} detail={summary.hosts.length ? "Хосты из inventory" : "Добавьте первый хост"} icon={<Server size={18} />} />
         <SummaryCard label="Со свежими проверками" value={loading ? "…" : evidence.freshEvidenceHosts} detail="Свежие доказательства, без известных пробелов источников" icon={<ShieldCheck size={18} />} />
