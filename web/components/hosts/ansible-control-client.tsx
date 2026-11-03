@@ -32,6 +32,7 @@ import { AssetIdentityPanel } from "@/components/hosts/asset-identity-panel";
 
 import { useAuditJobs, AuditJobHistory } from "@/components/hosts/audit-jobs-provider";
 import { HostRiskSummary } from "@/components/hosts/host-risk-summary";
+import { HostAuditNextStep } from "@/components/hosts/host-audit-next-step";
 import { auditReportLabels, auditCompletionMessage } from "@/lib/audit-job-status";
 import type { HostRiskSummary as RiskSummary } from "@/lib/host-risk-summary";
 
@@ -424,9 +425,12 @@ export function AnsibleControlClient() {
       setHealth(nextHealth);
       setHosts(nextHosts);
       setTransactions(nextRemediations.transactions ?? []);
-      if (!selectedAlias && nextHosts.hosts?.[0]) {
-        setSelectedAlias((value) => value || nextHosts.hosts[0].alias);
-      }
+      setSelectedAlias((value) => {
+        if (value && nextHosts.hosts?.some((item: ManagedHost) => item.alias === value)) return value;
+        const requested = new URLSearchParams(window.location.search).get("host");
+        if (requested && nextHosts.hosts?.some((item: ManagedHost) => item.alias === requested)) return requested;
+        return nextHosts.hosts?.[0]?.alias ?? "";
+      });
       if (announce) notify("Данные хостов обновлены.", "success");
       return nextHosts as HostsPayload;
     } catch (error) {
@@ -938,6 +942,16 @@ export function AnsibleControlClient() {
         <StatusTile label="Хосты" value={summary?.total ?? 0} />
         <StatusTile label="Хосты с аудитом" value={summary?.withReports ?? 0} />
       </section>
+
+      <HostAuditNextStep
+        hosts={hosts?.hosts ?? []}
+        host={selectedHost}
+        onSelectHost={setSelectedAlias}
+        controlReady={Boolean(health?.ansibleInstalled && health?.inventoryReady)}
+        activeJob={Boolean(activeJob)}
+        recoveryRequired={transactions.some((transaction) => transaction.hostAlias === selectedAlias
+          && (transaction.recoveryRequired || ["interrupted", "recovery_ready", "rollback_failed"].includes(transaction.status)))}
+      />
 
       <NetworkDiscovery cidr={scanCidr} result={discovery} loading={loading || accessLoading}
         onCidr={setScanCidr} onDetect={detectNetwork} onScan={scanNetwork} onChoose={startNewHost} />
