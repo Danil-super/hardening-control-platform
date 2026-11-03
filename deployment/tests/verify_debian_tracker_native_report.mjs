@@ -182,6 +182,7 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
       hostAlias: control.inventoryHost, reportId,
     });
     const cv = result.report.vulnerabilityScan;
+    diagnosticStage = "production-trivy-result-coverage";
     assert.equal(result.partial, false);
     assert.equal(cv.provider, "Trivy");
     assert.equal(cv.providerMode, "offline");
@@ -189,9 +190,15 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
     assert.equal(cv.debianTrackerPreview.state, "enabled");
     assert.equal(cv.debianTrackerPreview.snapshotSha256, manifest.sha256);
     assert.equal(result.report.summary.score, null);
+    // One vulnerable source package may have many Trivy CVEs. Every eligible
+    // record, including beyond the labelled control, must survive to PDF.
+    diagnosticStage = "production-trivy-preview-completeness";
+    const allAnnotated = result.report.findings.filter(x => x.debianTrackerPreview !== undefined);
     const hits = result.report.findings.filter(x => x.cveApplicability?.advisory.id === CVE);
     assert.ok(hits.length >= 1);
-    assert.equal(cv.debianTrackerPreview.annotatedFindings, hits.length);
+    assert.ok(allAnnotated.length >= hits.length);
+    assert.equal(cv.debianTrackerPreview.annotatedFindings, allAnnotated.length);
+    diagnosticStage = "production-trivy-named-cve-control";
     for (const finding of hits) {
       assert.equal(finding.source, "trivy");
       assert.equal(finding.status, "failed");
@@ -223,15 +230,16 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
     diagnosticStage = "project-final-json-evidence";
     const finalJson = readJson(path.join(stateRoot, "project-reports",
       final.fileName.replace(/\.pdf$/, ".json")));
-    assert.equal(finalJson.debianTrackerEvidence.length, hits.length);
+    assert.equal(finalJson.debianTrackerEvidence.length, allAnnotated.length);
     assert.match(finalJson.debianTrackerEvidenceSha256, SHA);
     assert.ok(finalJson.sourceManifest.some(x => x.id === result.reportId));
     const originalDigest = ansible.hashAnsibleReport(result.reportId);
     exportTools.assertDebianTrackerEvidenceMultiset([{
       reportId: result.reportId, reportSha256: originalDigest, findings: result.report.findings,
     }], finalJson.debianTrackerEvidence);
+    diagnosticStage = "project-exact-cve-tuples";
     for (const tuple of finalJson.debianTrackerEvidence) {
-      const raw = hits.find(x => x.id === tuple.findingId);
+      const raw = allAnnotated.find(x => x.id === tuple.findingId);
       assert.ok(raw);
       assert.equal(tuple.sourceReportSha256, originalDigest);
       assert.equal(tuple.fullSnapshotSha256, manifest.sha256);
@@ -266,7 +274,8 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
         publisherAuthenticated: false, publisherFreshnessVerified: false },
       syntheticTrivyControl: { installedOnGuest: false, cveId: CVE, sourceName: SOURCE,
         vulnerableSourceVersion: CONTROL_VERSION, nativeTrivyFindingCount: nativeFixtureCount,
-        originalFindingCount: hits.length, candidateVerdict: "affected",
+        originalFindingCount: hits.length, allAnnotatedFindings: allAnnotated.length,
+        candidateVerdict: "affected",
         trustedVerdict: "unknown", remediationAuthorized: false },
       projectReport: { originalReportSha256: originalDigest,
         sourceReportId: result.reportId, evidenceCount: finalJson.debianTrackerEvidence.length,
@@ -303,7 +312,17 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     // Diagnostics contain only a fixed stage name and an assertion/runtime
     // class, never raw guest inventory, package names, paths or advisory bytes.
     const kind = error instanceof Error ? error.name.replace(/[^A-Za-z]/g, "").slice(0, 40) : "Unknown";
-    console.error("FAIL Debian CVE end-to-end native acceptance; stage=" + diagnosticStage + "; kind=" + kind);
+    // Print only primitive synthetic-assertion values. No paths, objects,
+    // guest machine identity, credentials or raw vendor record data.
+    const primitive = value => {
+      if (typeof value === "number" || typeof value === "boolean") return String(value);
+      if (typeof value === "string" && /^[a-zA-Z0-9_.:+~-]{1,80}$/.test(value)) return value;
+      return "redacted";
+    };
+    const values = kind === "AssertionError" ? ";actual=" + primitive(error.actual) +
+      ";expected=" + primitive(error.expected) : "";
+    console.error("FAIL Debian CVE end-to-end native acceptance; stage=" + diagnosticStage +
+      ";kind=" + kind + values);
     process.exitCode = 1;
   }
 }
