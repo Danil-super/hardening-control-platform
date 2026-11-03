@@ -23,6 +23,9 @@ const debianPreviewModule = await import(compiledDebianPreview.url("debian-track
 test.after(() => rmSync(compiledDebianPreview.directory, { recursive: true, force: true }));
 const compiledAptEvidence = compileServerModules(["debian-apt-provenance"]);
 const aptEvidenceModule = await import(compiledAptEvidence.url("debian-apt-provenance"));
+const compiledSignedRelease = compileServerModules(["debian-signed-release"]);
+const signedReleaseModule = await import(compiledSignedRelease.url("debian-signed-release"));
+test.after(() => rmSync(compiledSignedRelease.directory, { recursive: true, force: true }));
 test.after(() => rmSync(compiledAptEvidence.directory, { recursive: true, force: true }));
 
 const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -55,6 +58,7 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
     "@/lib/ubuntu-osv-preview": previewModule,
     "@/lib/debian-tracker-preview": debianPreviewModule,
     "@/lib/debian-apt-provenance": aptEvidenceModule,
+    "@/lib/debian-signed-release": signedReleaseModule,
     "@/lib/ansible-control": { getStateDir: () => dir, getRepoRoot: () => path.resolve(webDir, "..") },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
     "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), getDebianTrackerSelection: () => ({ sha256: null, source: "environment", updatedAt: null }), appendAuditEvent: () => {} },
@@ -72,6 +76,17 @@ test("APT index metadata on exact Debian CVE reports remains host-scoped and nev
   h.report.packageInventory.osRelease = { ID: "debian", VERSION_ID: "12", VERSION_CODENAME: "bookworm" };
   h.report.packages[0].maintainer = "Debian Security Team <team@debian.org>";
   h.report.packages[0].origin = "Debian";
+  h.report.packageInventory.debianSignedReleases = {
+    schemaVersion: 1, status: "verified_with_local_keyring",
+    releaseCodename: "bookworm", candidateFiles: 1, validLocalSignatures: 1,
+    invalidOrUnverifiable: 0, signedReleases: ["bookworm"],
+    signerFingerprints: ["a".repeat(40)], inReleaseSha256: ["b".repeat(64)],
+    localKeyringSha256: "c".repeat(64), localSignatureVerified: true,
+    publisherAuthenticated: false, publisherFreshnessVerified: false,
+    packageIndexHashesVerified: false, installedPackageOriginVerified: false,
+    remediationAuthorized: false,
+    scope: "cached-inrelease-gpgv-installed-archive-keyring-only",
+  };
   h.report.packageInventory.aptRepositories = {
     schemaVersion: 1, status: "observed", releaseCodename: "bookworm",
     indexEntries: 1, debianLabelEntries: 1, otherLabelEntries: 0,
@@ -85,6 +100,13 @@ test("APT index metadata on exact Debian CVE reports remains host-scoped and nev
   const result = await h.scan();
   const evidence = result.report.vulnerabilityScan.aptRepositoryEvidence;
   assert.equal(evidence.state, "observed");
+  const signature = result.report.vulnerabilityScan.debianSignedReleaseEvidence;
+  assert.equal(signature.status, "verified_with_local_keyring");
+  assert.equal(signature.localSignatureVerified, true);
+  assert.equal(signature.publisherAuthenticated, false);
+  assert.equal(signature.packageIndexHashesVerified, false);
+  assert.equal(signature.installedPackageOriginVerified, false);
+  assert.equal(signature.remediationAuthorized, false);
   assert.equal(evidence.publisherAuthenticated, false);
   assert.equal(evidence.repositorySignatureVerified, false);
   assert.equal(evidence.installedPackageOriginVerified, false);
