@@ -220,6 +220,47 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
       assert.equal(row.remediationAuthorized, false);
     }
 
+    // Preserve actual VM inventory's Release→Packages proof through the
+    // independent native-final project path; never mix this real host report
+    // with the labelled synthetic vulnerable-version host.
+    diagnosticStage = "real-vm-index-final-project-json-pdf";
+    assert.equal(native.inventoryHost, "hcp-deb-ci");
+    const realInventoryReportId = "hcp-deb-ci-packages-signed-index-native-run";
+    writeFileSync(path.join(reports, realInventoryReportId + ".json"), JSON.stringify(native),
+      { flag: "wx", mode: 0o600 });
+    const realInventoryNormalized = ansible.readAnsibleReport(realInventoryReportId);
+    assert.ok(realInventoryNormalized && realInventoryNormalized.reportTimeValid);
+    const actualFinalReport = await finalReport.createProjectReport({
+      hostAlias: native.inventoryHost,
+      subject: { clientName: "HCP CI native guest", projectName: "Actual Debian Packages proof",
+        period: "Debian KVM acceptance", specialist: "HCP CI" },
+    });
+    const nativeFinalJson = readJson(path.join(stateRoot, "project-reports",
+      actualFinalReport.fileName.replace(/\.pdf$/, ".json")));
+    assert.equal(nativeFinalJson.debianPackageIndexEvidence.length, 1);
+    assert.match(nativeFinalJson.debianPackageIndexEvidenceSha256, SHA);
+    const sourceIndexEvidence = nativeFinalJson.debianPackageIndexEvidence[0];
+    assert.equal(sourceIndexEvidence.sourceReportId, realInventoryReportId);
+    assert.equal(sourceIndexEvidence.sourceReportSha256, ansible.hashAnsibleReport(realInventoryReportId));
+    assert.equal(sourceIndexEvidence.status, "locally_hash_matched");
+    assert.equal(sourceIndexEvidence.matchedIndexes, indexes.matchedIndexes);
+    assert.equal(sourceIndexEvidence.verifiedAgainstLocallySignedRelease, true);
+    assert.deepEqual(sourceIndexEvidence.indexRecords, indexes.indexRecords);
+    assert.equal(sourceIndexEvidence.publisherAuthenticated, false);
+    assert.equal(sourceIndexEvidence.installedPackageOriginVerified, false);
+    assert.equal(sourceIndexEvidence.remediationAuthorized, false);
+    const realPdf = finalReport.readProjectReportPdf(actualFinalReport.id)?.pdf;
+    assert.ok(realPdf && sha256(realPdf) === actualFinalReport.pdfSha256);
+    const nativeRendered = decodedPdf(realPdf);
+    for (const item of sourceIndexEvidence.indexRecords) {
+      assert.ok(nativeRendered.includes(item.releaseSha256),
+        "Real Debian InRelease SHA-256 was lost from the final PDF");
+      assert.ok(nativeRendered.includes(item.packagesSha256),
+        "Real decoded Packages SHA-256 was lost from the final PDF");
+    }
+    assert.ok(nativeRendered.includes(nativeFinalJson.debianPackageIndexEvidenceSha256));
+    assert.ok(nativeRendered.includes(sourceIndexEvidence.sourceReportSha256));
+
     // Native, unmodified Trivy binary scans a LABELLED SYNTHETIC metadata
     // fixture. It runs offline on the already-verified real Trivy DB.
     diagnosticStage = "production-trivy-control-scan";
@@ -318,6 +359,8 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
         aptIndexEntries: real.aptIndexEntries, independentlyMatchedAptPolicySha256: real.aptPolicySha256,
         locallyVerifiedInReleaseSignatures: real.locallyVerifiedSignatures,
         verifiedLocalPackageIndexes: real.verifiedLocalPackageIndexes,
+        nativeIndexFinalJsonAndPdfVerified: true,
+        nativeIndexProjectionSha256: nativeFinalJson.debianPackageIndexEvidenceSha256,
         localKeyringSha256: real.localKeyringSha256,
         observedSourceVersions: real.versions.length,
         candidateVerdicts: actual.map(x => x.candidateVerdict),
