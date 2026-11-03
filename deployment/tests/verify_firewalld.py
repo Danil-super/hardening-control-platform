@@ -83,7 +83,17 @@ def cleanup(work):
                 execute(["ip", "netns", "delete", namespace])
         if re.fullmatch(r"hfw[a-f0-9]{10}", interface):
             if execute(["ip", "link", "show", "dev", interface], allowed=(0, 1)).returncode == 0:
-                execute(["ip", "link", "delete", interface])
+                try:
+                    execute(["ip", "link", "delete", interface])
+                except RuntimeError as error:
+                    # When netns delete tears down the peer veth
+                    # asynchronously, the host end can disappear between
+                    # 'show' and 'delete'. A strict ENODEV + independent
+                    # absence probe is successful idempotent cleanup. Any
+                    # other failure, including permissions, remains fatal.
+                    missing = execute(["ip", "link", "show", "dev", interface], allowed=(0, 1))
+                    if missing.returncode != 1 or "Cannot find device" not in str(error):
+                        raise
     except Exception as error:
         errors.append(str(error))
     # Docker is stopped so it cannot add runtime-only zones during the test.
