@@ -618,10 +618,23 @@ def debian_cached_package_index_hashes(os_release, signed_summary):
         keyring = _private_cached_regular(keyring_path, DEBIAN_KEYRING_MAX_BYTES)
         if hashlib.sha256(keyring).hexdigest() != signed_summary.get("localKeyringSha256"):
             raise ValueError("Cached Debian signer keyring changed")
+        # The previous gpgv phase attested an exact multiset of cached
+        # InRelease files. A vanished file must not turn the remaining subset
+        # into a fresh success when the package indexes are checked.
+        expected_digests = signed_summary.get("inReleaseSha256")
+        if (not isinstance(expected_digests, list) or not expected_digests
+                or len(expected_digests) > 12
+                or signed_summary.get("candidateFiles") != len(expected_digests)
+                or signed_summary.get("validLocalSignatures") != len(expected_digests)
+                or any(not isinstance(digest, str)
+                       or not re.match(r"^[a-f0-9]{64}$", digest)
+                       for digest in expected_digests)):
+            raise ValueError("Invalid prior InRelease signature inventory")
         names = os.listdir(DEBIAN_INRELEASE_DIR)
         if len(names) > 20000:
             raise ValueError("Too many local APT files")
         release_map = {}
+        observed_digests = []
         accepted_suites = {codename, codename + "-security", codename + "-updates", codename + "-backports"}
         for name in names:
             if len(name) > 360 or not re.match(r"^[A-Za-z0-9._-]+$", name):
@@ -631,7 +644,8 @@ def debian_cached_package_index_hashes(os_release, signed_summary):
                 continue
             full = os.path.join(DEBIAN_INRELEASE_DIR, name)
             raw = _private_cached_regular(full, DEBIAN_INRELEASE_MAX_BYTES)
-            if hashlib.sha256(raw).hexdigest() not in signed_summary.get("inReleaseSha256", []):
+            release_digest = hashlib.sha256(raw).hexdigest()
+            if release_digest not in expected_digests:
                 raise ValueError("Unrecognized InRelease digest")
             release, hashes = _debian_signed_package_hashes(raw, codename)
             check = subprocess.run(
@@ -649,7 +663,10 @@ def debian_cached_package_index_hashes(os_release, signed_summary):
             prefix = name[:-len("InRelease")]
             if prefix in release_map:
                 raise ValueError("Ambiguous Debian release cache prefix")
-            release_map[prefix] = (release, hashes, hashlib.sha256(raw).hexdigest())
+            release_map[prefix] = (release, hashes, release_digest)
+            observed_digests.append(release_digest)
+        if sorted(observed_digests) != sorted(expected_digests):
+            raise ValueError("Cached InRelease set changed between audit phases")
         observed = []
         for name in names:
             if len(name) > 360 or not re.match(r"^[A-Za-z0-9._-]+$", name):
