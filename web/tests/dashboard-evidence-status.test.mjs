@@ -82,3 +82,16 @@ test("missing fresh evidence takes priority over remediation when a different ho
   assert.equal(result.noFreshEvidenceHosts, 1);
   assert.equal(result.hostsWithAudits, 2);
 });
+
+test("dashboard never labels the last diagnostic report as last security audit", () => {
+  const recentFacts = { alias: "node", lastReport: { createdAt: "2026-11-03T18:45:00Z" },
+    riskSummary: risk({ lastSecurityAuditAt: "2026-11-02T11:30:00Z" }) };
+  assert.equal(describeHostAuditEvidence(recentFacts).lastAuditAt, "2026-11-02T11:30:00Z");
+  const noAudit = { ...recentFacts, riskSummary: risk({ auditCount: 0, freshCount: 0,
+    lastSecurityAuditAt: null }) };
+  assert.equal(describeHostAuditEvidence(noAudit).lastAuditAt, null);
+  const olderFactsWithoutEvidence = { ...recentFacts, riskSummary: risk({
+    lastSecurityAuditAt: undefined,
+  }) };
+  assert.equal(describeHostAuditEvidence(olderFactsWithoutEvidence).lastAuditAt, null);
+});
