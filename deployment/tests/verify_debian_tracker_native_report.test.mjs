@@ -19,6 +19,14 @@ const source = () => ({
       indexRecords: [{ suite: "bookworm", component: "main", architecture: "amd64",
         releaseSha256: "b".repeat(64), packagesSha256: "e".repeat(64), packagesBytes: 100 }],
       verifiedAgainstLocallySignedRelease: true,
+      installedVersionCandidates: {
+        schemaVersion: 1, status: "candidate_record_match",
+        eligibleInstalled: 2, exactInstalledVersionCandidates: 2,
+        matchedIdentitySha256: "f".repeat(64),
+        scope: "installed-dpkg-version-in-locally-verified-Packages-record-v1",
+        publisherAuthenticated: false, installedPackageOriginVerified: false,
+        remediationAuthorized: false,
+      },
       publisherAuthenticated: false, keyringIndependentlyAuthenticated: false,
       publisherFreshnessVerified: false, installedPackageOriginVerified: false,
       remediationAuthorized: false,
@@ -47,6 +55,10 @@ const protocol = () => ({
         installedPackageOriginVerified: false } },
     { name: "Cached Debian InRelease signatures verified by native gpgv with local keyring only",
       detail: { localKeyringSha256: "d".repeat(64), inReleaseSha256: ["b".repeat(64)] } },
+    { name: "Native installed dpkg versions have exact matching records in hash-verified cached Packages",
+      detail: { eligibleInstalled: 2, exactInstalledVersionCandidates: 2,
+        matchedIdentitySha256: "f".repeat(64), publisherAuthenticated: false,
+        installedPackageOriginVerified: false, remediationAuthorized: false } },
     { name: "Native Debian cached Packages SHA256 matches locally signed InRelease records",
       detail: { matchedIndexes: 1,
         verifiedIndexes: [{ suite: "bookworm", component: "main", architecture: "amd64",
@@ -74,6 +86,7 @@ test("requires independently checked, actual guest dpkg source versions and neve
   assert.equal(result.locallyVerifiedSignatures, 1);
   assert.equal(result.localKeyringSha256, "d".repeat(64));
   assert.equal(result.verifiedLocalPackageIndexes, 1);
+  assert.equal(result.exactInstalledVersionCandidates, 2);
 });
 test("never treats an Ubuntu/Astra identity, incomplete inventory or fake VM as native Debian proof", () => {
   for (const changed of [
@@ -135,6 +148,8 @@ test("native signed Packages SHA256 evidence cannot assert installed archive or 
     { installedPackageOriginVerified: true },
     { remediationAuthorized: true },
     { verifiedAgainstLocallySignedRelease: false },
+    { installedVersionCandidates: { ...source().packageInventory.debianPackageIndexes.installedVersionCandidates,
+      installedPackageOriginVerified: true } },
     { indexRecords: [{ ...source().packageInventory.debianPackageIndexes.indexRecords[0], packagesSha256: "f".repeat(64) }] },
   ]) {
     const native = source();
