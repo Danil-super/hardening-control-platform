@@ -101,7 +101,7 @@ test("full-feed HTTPS import stores verified immutable bytes and an exact source
   });
   assert.equal(result.derivedExcerptSha256, sha256(extracted));
   assertNoTrust(result);
-  assert.equal(await f.imported(), manifest, "Second import reuses an exact manifest");
+  assert.deepEqual(await f.imported(), manifest, "Second import reuses an exact manifest");
 });
 
 test("native dpkg evaluates source backports but only returns untrusted candidate evidence", async t => {
