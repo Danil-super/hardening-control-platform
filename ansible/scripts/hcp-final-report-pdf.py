@@ -393,6 +393,60 @@ def render(snapshot):
                  esc(entry.get('derivedExcerptSha256'), 64), esc(entry.get('capturedAt'), 80),
                  esc(entry.get('pinMode'), 60)), small))
 
+    apt_index_evidence = snapshot.get('debianAptIndexEvidence', [])
+    if not isinstance(apt_index_evidence, list) or len(apt_index_evidence) > 4096:
+        raise ValueError('Некорректный размер APT-доказательств итогового отчёта.')
+    if apt_index_evidence:
+        projection_digest = snapshot.get('debianAptIndexEvidenceSha256')
+        if not isinstance(projection_digest, str) or not re.fullmatch(r'[a-f0-9]{64}', projection_digest):
+            raise ValueError('Контрольная сумма APT-доказательств отсутствует.')
+        story.append(Paragraph('8. Наблюдение за источниками пакетов Debian (APT)', heading))
+        story.append(Paragraph(
+            'Сведения APT относятся к настроенным пакетным индексам управлявшегося хоста. '
+            'Они не удостоверяют происхождение уже установленного .deb, не проверяют '
+            'подпись репозитория и не изменяют предварительные выводы CVE. '
+            'Метка Debian или совпадение имени выпуска сами по себе не доказывают '
+            'подлинность производителя.', body))
+        story.append(Paragraph(
+            'Записей исходных инвентарей: %d · SHA-256 проекции: %s.' %
+            (len(apt_index_evidence), esc(projection_digest, 64)), small))
+        apt_seen = set()
+        for item in apt_index_evidence:
+            if (not isinstance(item, dict) or item.get('schemaVersion') != 1
+                    or item.get('state') not in ('observed', 'ambiguous', 'unavailable', 'not_collected', 'invalid')
+                    or item.get('publisherAuthenticated') is not False
+                    or item.get('repositorySignatureVerified') is not False
+                    or item.get('installedPackageOriginVerified') is not False
+                    or item.get('provenanceScope') != 'configured-apt-indexes-only'
+                    or not isinstance(item.get('sourceReportId'), str) or not item.get('sourceReportId')
+                    or not isinstance(item.get('sourceReportSha256'), str)
+                    or not re.fullmatch(r'[a-f0-9]{64}', item.get('sourceReportSha256'))
+                    or item.get('sourceReportId') in apt_seen
+                    or not isinstance(item.get('indexEntries'), int) or item.get('indexEntries') < 0
+                    or item.get('indexEntries') > 1024
+                    or not isinstance(item.get('suites'), list) or len(item['suites']) > 32
+                    or any(not isinstance(x, str) or not re.fullmatch(r'[a-z][a-z0-9-]{1,31}', x)
+                           for x in item['suites'])
+                    or item.get('policySha256') is not None and (
+                        not isinstance(item.get('policySha256'), str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', item['policySha256']))):
+                raise ValueError('APT-доказательства нарушают ограничения доверия.')
+            apt_seen.add(item['sourceReportId'])
+            story.append(Paragraph(
+                'Инвентарь: <b>%s</b> · SHA-256 исходного отчёта: %s · '
+                'наблюдение: %s · индексов: %s · метка Debian: %s · другие: %s.' %
+                (esc(item.get('sourceReportId'), 180), esc(item.get('sourceReportSha256'), 64),
+                 esc(item.get('state'), 40), esc(item.get('indexEntries'), 12),
+                 esc(item.get('debianLabelEntries'), 12), esc(item.get('otherLabelEntries'), 12)), small))
+            story.append(Paragraph(
+                'Объявленный выпуск: %s · ветки: %s · имена веток согласуются: %s · '
+                'SHA-256 локального apt-cache policy: %s. '
+                'Подпись: не проверена. Источник установленного пакета: неизвестен.' %
+                (esc(item.get('releaseCodename'), 40),
+                 esc(', '.join(item['suites']) if item['suites'] else 'не установлены', 1024),
+                 'да (только по метаданным)' if item.get('state') == 'observed' and item.get('suiteConsistent') is True else 'не подтверждено',
+                 esc(item.get('policySha256'), 64)), small))
+
     def footer(canvas, document):
         canvas.saveState()
         canvas.setFont('HCPDejaVu', 7)

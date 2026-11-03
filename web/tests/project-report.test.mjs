@@ -226,3 +226,69 @@ test("final Debian project JSON and actual PDF preserve every paired CVE×source
   assert.ok(rendered.includes("CVE-2024-6120"), "PDF dropped an unknown CVE observation");
   assert.equal(store.verifyAuditChain().valid, true);
 });
+
+
+test("Debian APT source-index metadata retains report identity and trust caveats in final JSON and real PDF", async () => {
+  const sourceId = "apt-source-host-packages-native-run";
+  const aptDigest = "e".repeat(64);
+  writeFileSync(path.join(reports, sourceId + ".json"), JSON.stringify({
+    inventoryHost: "apt-source-host", hostname: "apt-source-host", mode: "packages",
+    profileId: "packages", createdAt: new Date().toISOString(),
+    packageInventory: {
+      manager: "dpkg", packageCount: 1, osRelease: {
+        ID: "debian", VERSION_ID: "12", VERSION_CODENAME: "bookworm",
+      },
+      aptRepositories: {
+        schemaVersion: 1, status: "observed", releaseCodename: "bookworm",
+        indexEntries: 2, debianLabelEntries: 2, otherLabelEntries: 0,
+        unknownLabelEntries: 0, suites: ["bookworm", "bookworm-security"],
+        releaseLabels: ["Debian"], suiteConsistent: true, policySha256: aptDigest,
+        publisherAuthenticated: false, repositorySignatureVerified: false,
+        installedPackageOriginVerified: false,
+        scope: "apt-cache-policy-index-metadata-only; no-installed-origin-or-signature-attestation",
+      },
+    },
+    packages: [{ name: "libssl3:amd64", version: "3.0.14-1~deb12u2", manager: "dpkg",
+      arch: "amd64", sourceName: "openssl", sourceVersion: "3.0.14-1~deb12u2",
+      sourceEpochKnown: true, maintainer: "Debian Team", origin: "" }],
+    findings: [], events: [],
+  }));
+  const record = await projectReports.createProjectReport({ hostAlias: "apt-source-host",
+    subject: { clientName: "ООО Тест", projectName: "APT evidence", period: "Ноябрь 2026",
+      specialist: "Специалист HCP" },
+  });
+  const snapshot = JSON.parse(readFileSync(path.join(state, "project-reports",
+    record.fileName.replace(/\.pdf$/, ".json")), "utf8"));
+  assert.equal(snapshot.debianAptIndexEvidence.length, 1);
+  const observation = snapshot.debianAptIndexEvidence[0];
+  assert.equal(observation.sourceReportId, sourceId);
+  assert.match(observation.sourceReportSha256, /^[a-f0-9]{64}$/);
+  assert.equal(observation.state, "observed");
+  assert.equal(observation.policySha256, aptDigest);
+  assert.deepEqual(observation.suites, ["bookworm", "bookworm-security"]);
+  assert.equal(observation.publisherAuthenticated, false);
+  assert.equal(observation.repositorySignatureVerified, false);
+  assert.equal(observation.installedPackageOriginVerified, false);
+  assert.match(snapshot.debianAptIndexEvidenceSha256, /^[a-f0-9]{64}$/);
+  const pdf = projectReports.readProjectReportPdf(record.id).pdf;
+  const python = [
+    "import base64,re,sys,zlib",
+    "pdf=sys.stdin.buffer.read()",
+    "chunks=[]",
+    "for raw in re.findall(rb'stream\\r?\\n(.*?)endstream',pdf,re.S):",
+    "    try:",
+    "        raw=raw.strip()",
+    "        if raw.endswith(b'~>'): raw=base64.a85decode(raw,adobe=True)",
+    "        chunks.append(zlib.decompress(raw))",
+    "    except (ValueError,zlib.error): pass",
+    "sys.stdout.write(b'\\n'.join(chunks).decode('latin1'))",
+  ].join("\n");
+  const rendered = execFileSync("/usr/bin/python3", ["-c", python], {
+    input: pdf, encoding: "utf8", maxBuffer: 12 * 1024 * 1024,
+  });
+  for (const marker of [sourceId, observation.sourceReportSha256, aptDigest,
+    snapshot.debianAptIndexEvidenceSha256, "bookworm-security"]) {
+    assert.ok(rendered.includes(marker), "Final PDF dropped APT source identity or metadata hash");
+  }
+  assert.equal(store.verifyAuditChain().valid, true);
+});

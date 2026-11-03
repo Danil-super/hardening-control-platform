@@ -45,6 +45,21 @@ export function checkNativeSources(native, vm) {
   assert.equal(vm?.publicationPrivacyVerified, true);
   assert.equal(vm?.checks?.find(x => x.name === "Production dpkg collector equals all eight independent native fields")
     ?.detail?.allEightNativeFieldsEqual, true);
+  const apt = native.packageInventory?.aptRepositories;
+  const aptProof = vm.checks?.find(x =>
+    x.name === "Debian APT index metadata SHA equals independent native apt-cache policy")?.detail;
+  assert.equal(apt?.schemaVersion, 1);
+  assert.equal(apt?.status, "observed");
+  assert.ok(apt.indexEntries > 0);
+  assert.match(apt.policySha256, SHA);
+  assert.equal(apt.releaseCodename, "bookworm");
+  assert.equal(apt.policySha256, aptProof?.sha256,
+    "APT release hints must match an independently observed native apt-cache policy");
+  assert.equal(apt.publisherAuthenticated, false);
+  assert.equal(apt.repositorySignatureVerified, false);
+  assert.equal(apt.installedPackageOriginVerified, false);
+  assert.equal(aptProof?.repositorySignatureVerified, false);
+  assert.equal(aptProof?.installedPackageOriginVerified, false);
   const found = native.packages.filter(pkg => pkg.manager === "dpkg" && pkg.sourceName === SOURCE);
   assert.ok(found.length > 0);
   const versions = [...new Set(found.map(x => x.sourceVersion))];
@@ -56,7 +71,9 @@ export function checkNativeSources(native, vm) {
     assert.ok(typeof pkg.maintainer === "string" && pkg.maintainer.length);
     assert.equal(typeof pkg.origin, "string");
   }
-  return { versions, recordCount: found.length, publisherSignedPackageProvenanceVerified: false };
+  return { versions, recordCount: found.length,
+    aptIndexEntries: apt.indexEntries, aptPolicySha256: apt.policySha256,
+    publisherSignedPackageProvenanceVerified: false };
 }
 
 export function checkSyntheticControl(control, matching) {
@@ -266,6 +283,7 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
       schemaVersion: 1, status: "passed", sourceCommit: process.env.GITHUB_SHA ?? null,
       nativeGuest: { distribution: "debian", version: "12", release: "bookworm",
         independentDpkgEightFieldEquality: true, observedSourceRecords: real.recordCount,
+        aptIndexEntries: real.aptIndexEntries, independentlyMatchedAptPolicySha256: real.aptPolicySha256,
         observedSourceVersions: real.versions.length,
         candidateVerdicts: actual.map(x => x.candidateVerdict),
         packagePublisherSignatureVerified: false },

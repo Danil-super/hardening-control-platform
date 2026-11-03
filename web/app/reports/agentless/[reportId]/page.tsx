@@ -11,6 +11,7 @@ import { describeIncompleteAuditChecks } from "@/lib/audit-coverage";
 import { readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
 import { describeAstraOvalNextStep } from "@/lib/astra-oval-policy";
 import { auditReportLimitations } from "@/lib/audit-result";
+import { summarizeDebianAptRepositoryEvidence } from "@/lib/debian-apt-provenance";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -103,6 +104,13 @@ export default async function AgentlessReportDetailPage({
   const applicabilitySummary = asRecord(vulnerabilityScan.applicabilitySummary);
   const osvPreview = asRecord(vulnerabilityScan.ubuntuOsvPreview);
   const debianPreview = asRecord(vulnerabilityScan.debianTrackerPreview);
+  const aptRepositoryEvidence = report.mode === "packages"
+    ? summarizeDebianAptRepositoryEvidence(packageInventory.aptRepositories, asRecord(packageInventory.osRelease))
+    : report.mode === "vulnerabilities" && Object.keys(asRecord(vulnerabilityScan.aptRepositoryEvidence)).length
+      ? asRecord(vulnerabilityScan.aptRepositoryEvidence) : null;
+  const aptSuites = Array.isArray(aptRepositoryEvidence?.suites)
+    ? aptRepositoryEvidence.suites.filter((entry): entry is string => typeof entry === "string" && /^[a-z][a-z0-9-]{1,31}$/.test(entry)).slice(0, 32)
+    : [];
   const vendorStatuses = Object.entries(asRecord(vendorAssessment.statuses))
     .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
     .map(([status, count]) => `${status}: ${count}`);
@@ -242,6 +250,28 @@ export default async function AgentlessReportDetailPage({
       </div>}
 
       {isOvalReport && ovalUnknown > 0 ? <p className="rounded-lg border border-amber-400/25 bg-amber-500/5 p-4 text-sm leading-6 text-amber-100">У {ovalUnknown} срабатываний критичность неизвестна. Оценки Chromium взяты из явно указанного поля в описаниях базы; CVSS не вычислялся. Нули в отдельных категориях не подтверждают отсутствие опасных уязвимостей.</p> : report.needsReview && !report.partial && !isOvalReport ? <p className="text-sm leading-6 text-amber-100">Часть результатов требует ручной оценки. Завершение сбора данных не означает, что все настройки признаны безопасными.</p> : null}
+
+      {aptRepositoryEvidence ? (
+        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <h2 className="text-xl font-semibold text-white">APT: наблюдение за источниками пакетов Debian</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            Данные получены из локального apt-cache policy без обновления репозиториев. Это сведения о настроенных индексах,
+            а не доказательство того, откуда установлен конкретный пакет или прошла ли проверка подписи Release.
+            Метаданные APT не изменяют выводы Trivy, уровень риска и разрешения на исправление.
+          </p>
+          <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+            <div><dt className="text-slate-500">Сбор</dt><dd className="mt-1 text-slate-200">{aptRepositoryEvidence.state === "observed" ? "Наблюдались APT-индексы" : aptRepositoryEvidence.state === "ambiguous" ? "Данные неоднозначны" : aptRepositoryEvidence.state === "unavailable" ? "APT-данные недоступны" : aptRepositoryEvidence.state === "invalid" ? "Некорректные данные — не приняты" : "Не собирались"}</dd></div>
+            <div><dt className="text-slate-500">Индексы</dt><dd className="mt-1 text-slate-200">{textValue(aptRepositoryEvidence.indexEntries)}</dd></div>
+            <div><dt className="text-slate-500">Метка Debian</dt><dd className="mt-1 text-slate-200">{textValue(aptRepositoryEvidence.debianLabelEntries)} · другие: {textValue(aptRepositoryEvidence.otherLabelEntries)}</dd></div>
+            <div><dt className="text-slate-500">Сопоставление выпуска</dt><dd className="mt-1 text-slate-200">{aptRepositoryEvidence.state === "observed" && aptRepositoryEvidence.suiteConsistent === true ? "Названия веток совпадают" : "Не подтверждено"}</dd></div>
+          </dl>
+          {aptSuites.length ? <p className="mt-3 text-sm text-slate-300">Указанные APT suites: {aptSuites.join(", ")}.</p> : null}
+          {typeof aptRepositoryEvidence.policySha256 === "string" && /^[a-f0-9]{64}$/.test(aptRepositoryEvidence.policySha256) ? (
+            <p className="mt-2 break-all text-xs text-slate-400">SHA-256 наблюдения apt-cache policy: {aptRepositoryEvidence.policySha256}</p>
+          ) : null}
+          <p className="mt-3 text-sm text-amber-100">Подпись репозитория: не проверена. Происхождение установленных .deb: не подтверждено. Даже метка Debian в APT-индексе не является криптографическим доказательством.</p>
+        </section>
+      ) : null}
 
       {report.mode === "facts" ? (
         <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">

@@ -130,6 +130,40 @@ class FinalReportIdentityPdfTest(unittest.TestCase):
         self.assertLessEqual(page_count, 3)
 
 
+    def test_apt_repository_pdf_rejects_signature_claims_and_duplicate_source_ids(self):
+        fixture = identity_fixture()
+        item = {
+            "schemaVersion": 1, "sourceReportId": "debian-packages-run",
+            "sourceReportSha256": "a" * 64, "state": "observed",
+            "provenanceScope": "configured-apt-indexes-only",
+            "indexEntries": 2, "debianLabelEntries": 2, "otherLabelEntries": 0,
+            "suites": ["bookworm", "bookworm-security"], "suiteConsistent": True,
+            "policySha256": "b" * 64, "releaseCodename": "bookworm",
+            "publisherAuthenticated": False, "repositorySignatureVerified": False,
+            "installedPackageOriginVerified": False,
+        }
+        fixture["debianAptIndexEvidence"] = [item]
+        fixture["debianAptIndexEvidenceSha256"] = "c" * 64
+        self.assertTrue(RENDERER.render(fixture).startswith(b"%PDF-"))
+        for fields in [
+            {"publisherAuthenticated": True},
+            {"repositorySignatureVerified": True},
+            {"installedPackageOriginVerified": True},
+            {"policySha256": "../../private"},
+            {"suites": ["https://credentials.invalid"]},
+        ]:
+            with self.subTest(fields=fields):
+                fixture["debianAptIndexEvidence"] = [dict(item, **fields)]
+                with self.assertRaises(ValueError):
+                    RENDERER.render(fixture)
+        fixture["debianAptIndexEvidence"] = [item, item]
+        with self.assertRaises(ValueError):
+            RENDERER.render(fixture)
+        fixture["debianAptIndexEvidence"] = [item]
+        fixture["debianAptIndexEvidenceSha256"] = "invalid"
+        with self.assertRaises(ValueError):
+            RENDERER.render(fixture)
+
     def test_debian_pdf_rejects_false_trust_duplicate_finding_and_missing_digest(self):
         fixture = identity_fixture()
         base = {
