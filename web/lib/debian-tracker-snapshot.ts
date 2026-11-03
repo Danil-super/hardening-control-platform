@@ -225,10 +225,11 @@ function decodeUtf8(bytes: Buffer): string {
   return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
-export function readPinnedDebianTrackerFullSnapshot(root: string, digest: string): {
-  manifest: DebianTrackerFullManifest;
-  data: JsonRecord;
-} {
+/**
+ * Lightweight controller-only status: validates private manifest shape but
+ * does NOT read the full archive. Approval and scans must always verify bytes.
+ */
+export function readDebianTrackerSnapshotManifest(root: string, digest: string): DebianTrackerFullManifest {
   const locations = pathsFor(root, digest);
   const parsedManifest: unknown = JSON.parse(decodeUtf8(privateFile(locations.manifest, 4096)));
   if (!record(parsedManifest)) throw new Error("Invalid Debian tracker manifest");
@@ -243,6 +244,15 @@ export function readPinnedDebianTrackerFullSnapshot(root: string, digest: string
     || !Number.isSafeInteger(m.issueCount)) {
     throw new Error("Invalid or unsupported Debian tracker snapshot manifest");
   }
+  return m;
+}
+
+export function readPinnedDebianTrackerFullSnapshot(root: string, digest: string): {
+  manifest: DebianTrackerFullManifest;
+  data: JsonRecord;
+} {
+  const locations = pathsFor(root, digest);
+  const m = readDebianTrackerSnapshotManifest(root, digest);
   const bytes = privateFile(locations.data, DEBIAN_TRACKER_MAX_BYTES);
   if (bytes.length !== m.bytes || sha256(bytes) !== digest) {
     throw new Error("Debian tracker full snapshot integrity mismatch");
