@@ -90,6 +90,21 @@ export function checkNativeSources(native, vm) {
   for (const key of ["publisherAuthenticated", "keyringIndependentlyAuthenticated",
     "publisherFreshnessVerified", "installedPackageOriginVerified", "remediationAuthorized"])
     assert.equal(indexes[key], false);
+  const candidates = indexes.installedVersionCandidates;
+  const candidateProof = vm.checks?.find(x =>
+    x.name === "Native installed dpkg versions have exact matching records in hash-verified cached Packages")?.detail;
+  assert.equal(candidates?.schemaVersion, 1);
+  assert.equal(candidates?.status, "candidate_record_match");
+  assert.ok(candidates?.eligibleInstalled > 0);
+  assert.ok(candidates.exactInstalledVersionCandidates > 0
+    && candidates.exactInstalledVersionCandidates <= candidates.eligibleInstalled);
+  assert.match(candidates.matchedIdentitySha256, SHA);
+  assert.equal(candidates.scope, "installed-dpkg-version-in-locally-verified-Packages-record-v1");
+  assert.equal(candidates.exactInstalledVersionCandidates, candidateProof?.exactInstalledVersionCandidates);
+  assert.equal(candidates.eligibleInstalled, candidateProof?.eligibleInstalled);
+  assert.equal(candidates.matchedIdentitySha256, candidateProof?.matchedIdentitySha256);
+  for (const key of ["publisherAuthenticated", "installedPackageOriginVerified", "remediationAuthorized"])
+    assert.equal(candidates[key], false);
   const found = native.packages.filter(pkg => pkg.manager === "dpkg" && pkg.sourceName === SOURCE);
   assert.ok(found.length > 0);
   const versions = [...new Set(found.map(x => x.sourceVersion))];
@@ -105,6 +120,7 @@ export function checkNativeSources(native, vm) {
     aptIndexEntries: apt.indexEntries, aptPolicySha256: apt.policySha256,
     locallyVerifiedSignatures: signed.validLocalSignatures, localKeyringSha256: signed.localKeyringSha256,
     verifiedLocalPackageIndexes: indexes.matchedIndexes,
+    exactInstalledVersionCandidates: candidates.exactInstalledVersionCandidates,
     publisherSignedPackageProvenanceVerified: false };
 }
 
@@ -247,6 +263,8 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
     assert.equal(sourceIndexEvidence.matchedIndexes, indexes.matchedIndexes);
     assert.equal(sourceIndexEvidence.verifiedAgainstLocallySignedRelease, true);
     assert.deepEqual(sourceIndexEvidence.indexRecords, indexes.indexRecords);
+    assert.deepEqual(sourceIndexEvidence.installedVersionCandidates, indexes.installedVersionCandidates);
+    assert.equal(sourceIndexEvidence.installedVersionCandidates.installedPackageOriginVerified, false);
     assert.equal(sourceIndexEvidence.publisherAuthenticated, false);
     assert.equal(sourceIndexEvidence.installedPackageOriginVerified, false);
     assert.equal(sourceIndexEvidence.remediationAuthorized, false);
@@ -259,6 +277,8 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
       assert.ok(nativeRendered.includes(item.packagesSha256),
         "Real decoded Packages SHA-256 was lost from the final PDF");
     }
+    assert.ok(nativeRendered.includes(indexes.installedVersionCandidates.matchedIdentitySha256),
+      "Exact installed candidate SHA-256 was lost from real Debian PDF");
     assert.ok(nativeRendered.includes(nativeFinalJson.debianPackageIndexEvidenceSha256));
     assert.ok(nativeRendered.includes(sourceIndexEvidence.sourceReportSha256));
 
