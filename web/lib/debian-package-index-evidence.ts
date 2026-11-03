@@ -19,6 +19,17 @@ export type DebianPackageIndexEvidence = {
     releaseSha256: string; packagesSha256: string; packagesBytes: number;
   }>;
   verifiedAgainstLocallySignedRelease: boolean;
+  installedVersionCandidates?: {
+    schemaVersion: 1;
+    status: "candidate_record_match" | "no_exact_match" | "unavailable";
+    eligibleInstalled: number;
+    exactInstalledVersionCandidates: number;
+    matchedIdentitySha256: string | null;
+    scope: "installed-dpkg-version-in-locally-verified-Packages-record-v1";
+    publisherAuthenticated: false;
+    installedPackageOriginVerified: false;
+    remediationAuthorized: false;
+  };
   publisherAuthenticated: false;
   keyringIndependentlyAuthenticated: false;
   publisherFreshnessVerified: false;
@@ -34,6 +45,7 @@ const COMPONENT = /^[a-z][a-z0-9-]{0,31}$/;
 const ARCH = /^[a-z0-9]{2,20}$/;
 const SCOPE = "cached-debian-packages-uncompressed-sha256-locally-signed-release-v1";
 const MAX_BYTES = 160 * 1024 * 1024;
+const CANDIDATE_SCOPE = "installed-dpkg-version-in-locally-verified-Packages-record-v1";
 const note = "Сверены SHA-256 распакованных локальных индексов Packages с хешами в локальном InRelease, " +
   "подпись которого проверена по набору ключей самой проверяемой ОС. Набор ключей не аттестован независимо. " +
   "Не удостоверены издатель, полнота всех репозиториев, дата у издателя, архив .deb и происхождение установленных пакетов.";
@@ -96,6 +108,41 @@ export function summarizeDebianPackageIndexes(
     }))
   ) return empty("invalid", codename);
 
+  // Optional exact installed-version record matches must be tied to the
+  // successful index hash gate. Neither a record match nor its SHA identifies
+  // the installed .deb archive or grants remediation authority.
+  let installedVersionCandidates: DebianPackageIndexEvidence["installedVersionCandidates"];
+  if (Object.prototype.hasOwnProperty.call(data, "installedVersionCandidates")) {
+    const candidate = record(data.installedVersionCandidates);
+    const candidateStatus = candidate?.status;
+    const eligible = candidate?.eligibleInstalled;
+    const matches = candidate?.exactInstalledVersionCandidates;
+    const digest = candidate?.matchedIdentitySha256;
+    if (!candidate || candidate.schemaVersion !== 1
+      || !["candidate_record_match", "no_exact_match", "unavailable"].includes(String(candidateStatus))
+      || !Number.isSafeInteger(eligible) || (eligible as number) < 0 || (eligible as number) > 250000
+      || !Number.isSafeInteger(matches) || (matches as number) < 0 || (matches as number) > (eligible as number)
+      || candidate.scope !== CANDIDATE_SCOPE
+      || candidate.publisherAuthenticated !== false || candidate.installedPackageOriginVerified !== false
+      || candidate.remediationAuthorized !== false
+      || (candidateStatus === "unavailable" && (matches !== 0 || digest !== null))
+      || (candidateStatus === "candidate_record_match" && ((matches as number) < 1 || !SHA.test(String(digest))))
+      || (candidateStatus === "no_exact_match" && (matches !== 0 || !SHA.test(String(digest))))
+      || (candidateStatus !== "unavailable" && status !== "locally_hash_matched")
+    ) return empty("invalid", codename);
+    installedVersionCandidates = {
+      schemaVersion: 1,
+      status: candidateStatus as "candidate_record_match" | "no_exact_match" | "unavailable",
+      eligibleInstalled: eligible as number,
+      exactInstalledVersionCandidates: matches as number,
+      matchedIdentitySha256: digest as string | null,
+      scope: CANDIDATE_SCOPE,
+      publisherAuthenticated: false,
+      installedPackageOriginVerified: false,
+      remediationAuthorized: false,
+    };
+  }
+
   // Recreate without untrusted keys/hidden metadata, preserve every eligible
   // signed index's exact count and SHA identity, including repeated suites.
   return {
@@ -109,5 +156,6 @@ export function summarizeDebianPackageIndexes(
       releaseSha256: item.releaseSha256, packagesSha256: item.packagesSha256, packagesBytes: item.packagesBytes,
     })),
     verifiedAgainstLocallySignedRelease: data.verifiedAgainstLocallySignedRelease as boolean,
+    ...(installedVersionCandidates ? { installedVersionCandidates } : {}),
   };
 }
