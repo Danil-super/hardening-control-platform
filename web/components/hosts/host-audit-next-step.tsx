@@ -3,6 +3,7 @@
 import { ArrowRight, CircleAlert, ClipboardCheck, Server, ShieldCheck } from "lucide-react";
 import { LinkButton } from "@/components/ui/button";
 import { Select } from "@/components/ui/select";
+import { HostSourceGuidance } from "@/components/hosts/host-source-guidance";
 import { selectHostAuditNextStep } from "@/lib/host-audit-workflow";
 import type { DashboardHostEvidence } from "@/lib/dashboard-evidence-status";
 
@@ -61,6 +62,7 @@ export function HostAuditNextStep({
           {next.action}<ArrowRight size={16} aria-hidden="true" />
         </LinkButton> : null}
       </div>
+      <HostSourceGuidance alias={host?.alias ?? null} />
       <div className="mt-3 grid gap-2 text-xs leading-5 text-slate-400 md:grid-cols-3">
         <div className="flex gap-2 rounded-lg border border-slate-800/80 p-3">
           <Server size={17} className="mt-0.5 shrink-0 text-sky-200" aria-hidden="true" />
