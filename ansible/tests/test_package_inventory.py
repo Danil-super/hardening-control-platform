@@ -637,6 +637,12 @@ class PackageInventoryTest(unittest.TestCase):
                     collector._debian_cached_archive_evidence({identity}, {identity: expected})["status"],
                     "unavailable")
                 archived.unlink()
+                extra_suffix = root / ("example_1.0_amd64.deb" + chr(10))
+                extra_suffix.write_bytes(content)
+                self.assertEqual(
+                    collector._debian_cached_archive_evidence({identity}, {identity: expected})["status"],
+                    "no_cached_archives")
+                extra_suffix.unlink()
                 self.assertEqual(
                     collector._debian_cached_archive_evidence({identity}, {identity: expected})["status"],
                     "no_cached_archives")
