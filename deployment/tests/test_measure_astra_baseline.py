@@ -30,6 +30,7 @@ def fixture(failed=("0", "1"), time="2026-11-03T10:00:00Z"):
         "scanner": {"profile": MODULE.PROFILE,
                     "datastream": "/__hcp_builtin__/astra-baseline.xml",
                     "datastreamChecksum": "sha256:" + "b" * 64,
+                    "contentIdentity": "bundle-sha256:" + "a" * 64,
                     "scannerExitCode": 2, "partial": False,
                     "ruleResultCounts": {
                         "pass": 18 - len(failed), "fail": len(failed),
@@ -51,6 +52,9 @@ class HcpAstraExperimentGateTest(unittest.TestCase):
         self.assertEqual(result["observedPassedToFailed"], 0)
         self.assertEqual(result["netFailedRuleChange"], -1)
         self.assertEqual(result["improvedRules"], ["openscap_xccdf_org.hcp_rule_test_0"])
+        self.assertEqual(result["source"]["sourceBundleSha256"], "bundle-sha256:" + "a" * 64)
+        self.assertEqual(result["source"]["executedDatastreamSha256Before"], "sha256:" + "b" * 64)
+        self.assertEqual(result["source"]["executedDatastreamSha256After"], "sha256:" + "b" * 64)
         self.assertNotIn("percentageSecure", result)
         self.assertNotIn("timeSavedSeconds", result)
 
@@ -61,11 +65,12 @@ class HcpAstraExperimentGateTest(unittest.TestCase):
             ("asset identity changed", lambda x: x["assetBinding"].update(assetId="asset-" + "b" * 64)),
             ("asset generation changed", lambda x: x["assetBinding"].update(generation=3)),
             ("different alias", lambda x: x.update(inventoryHost="other")),
-            ("different profile bytes", lambda x: x["scanner"].update(datastreamChecksum="sha256:" + "c" * 64)),
+            ("different source bundle", lambda x: x["scanner"].update(contentIdentity="bundle-sha256:" + "c" * 64)),
             ("same timestamp", lambda x: x.update(createdAt=baseline["createdAt"])),
             ("different rule scope", lambda x: x["findings"][0].update(id="openscap_xccdf_org.hcp_rule_other")),
             ("partial", lambda x: x.update(partial=True)),
             ("scanner partial", lambda x: x["scanner"].update(partial=True)),
+            ("scanner completion unproven", lambda x: x["scanner"].pop("partial")),
             ("unverified binding", lambda x: x["assetBinding"].update(status="unknown")),
             ("removed finding", lambda x: x["findings"].pop()),
             ("duplicate rule", lambda x: x["findings"][1].update(id=x["findings"][0]["id"])),
@@ -79,6 +84,24 @@ class HcpAstraExperimentGateTest(unittest.TestCase):
                 edit(after)
                 with self.assertRaises(ValueError):
                     MODULE.measure(baseline, after, "c" * 64, "d" * 64)
+
+    def test_recompilation_timestamps_change_execution_sha_not_policy_identity(self):
+        before = fixture()
+        after = fixture(failed=(), time="2026-11-03T10:30:00Z")
+        before["scanner"]["datastreamChecksum"] = "sha256:d01811aa52c133de51d59dfacff9581e929b37c97951c26a2d4b6ccf033fce04"
+        after["scanner"]["datastreamChecksum"] = "sha256:4f9f0eb5351de1b6bb94e2425a294473cc5f6d120671dfa132610f40c9271a02"
+        stable = "bundle-sha256:d5dcd96987d288da7ca92bfcfced2b1cfc3b51f787821870ed14a49c9b0416b7"
+        before["scanner"]["contentIdentity"] = stable
+        after["scanner"]["contentIdentity"] = stable
+        # Native unpublished scanner reports omit top-level partial; the
+        # scanner's own explicit partial=False remains mandatory.
+        before.pop("partial")
+        after.pop("partial")
+        measured = MODULE.measure(before, after, "c" * 64, "d" * 64)
+        self.assertEqual(measured["source"]["sourceBundleSha256"], stable)
+        self.assertNotEqual(measured["source"]["executedDatastreamSha256Before"],
+                            measured["source"]["executedDatastreamSha256After"])
+        self.assertEqual(measured["observedFailedToPassed"], 2)
 
     def test_real_cli_rejects_symlinks_and_does_not_overwrite_inputs(self):
         with tempfile.TemporaryDirectory(prefix="hcp-experiment-fixture-") as temporary:
