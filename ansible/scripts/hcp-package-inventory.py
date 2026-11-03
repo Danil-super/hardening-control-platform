@@ -247,7 +247,8 @@ def debian_apt_repository_observation(os_release):
         return base
     if not shutil.which("apt-cache"):
         return base
-    code, output, error = run(["env", "LC_ALL=C", "apt-cache", "policy"])
+    code, output, error = run(["env", "LC_ALL=C", "apt-cache",
+                              "-o", "Dir::Cache::pkgcache=", "-o", "Dir::Cache::srcpkgcache=", "policy"])
     if code != 0 or not isinstance(output, str) or len(output.encode("utf-8")) > 512 * 1024:
         return base
 
