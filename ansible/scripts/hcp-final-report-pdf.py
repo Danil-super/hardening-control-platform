@@ -344,6 +344,55 @@ def render(snapshot):
                  esc(entry.get('snapshotSha256'), 64),
                  esc(entry.get('sourceRevision'), 40)), small))
 
+    debian_evidence = snapshot.get('debianTrackerEvidence', [])
+    if not isinstance(debian_evidence, list) or len(debian_evidence) > 4096:
+        raise ValueError('Недопустимый состав или число Debian CVE-доказательств.')
+    if debian_evidence:
+        digest = snapshot.get('debianTrackerEvidenceSha256')
+        if not isinstance(digest, str) or not re.fullmatch(r'[a-f0-9]{64}', digest):
+            raise ValueError('Отсутствует контрольная сумма Debian CVE-проекции.')
+        story.append(Paragraph('7. Предварительная сверка CVE с Debian Security Tracker', heading))
+        story.append(Paragraph(
+            'Ниже приведены все сохранённые наблюдения CVE и исходных пакетов Debian из исходных JSON Trivy. '
+            'Снимок полной базы был закреплён оператором по SHA-256. Время локального получения не доказывает '
+            'актуальность данных производителя; цифровая подпись Debian не проверена. Результат носит '
+            'предварительный характер, не удаляет находки Trivy и не разрешает изменение пакетов.', body))
+        story.append(Paragraph(
+            'Число исходных пар CVE×пакет: %d. SHA-256 независимой Debian-проекции: %s. '
+            'Каждая запись сохраняет идентификатор Trivy, исходный JSON, полный снимок и производную CVE-запись.' %
+            (len(debian_evidence), esc(digest, 64)), small))
+        seen_debian = set()
+        for index, entry in enumerate(debian_evidence, 1):
+            if not isinstance(entry, dict) or entry.get('schemaVersion') != 1                     or entry.get('trustedVerdict') != 'unknown'                     or entry.get('publisherAuthenticated') is not False                     or entry.get('publisherFreshnessVerified') is not False                     or entry.get('remediationAuthorized') is not False                     or entry.get('candidateStatus') not in ('provisional', 'unavailable')                     or entry.get('candidateVerdict') not in ('affected', 'fixed_or_not_affected', 'needs_review', 'unknown')                     or entry.get('candidateStatus') == 'unavailable' and entry.get('candidateVerdict') != 'unknown'                     or entry.get('candidateStatus') == 'provisional' and not entry.get('derivedExcerptSha256')                     or not isinstance(entry.get('conflictingWithTrivy'), bool)                     or not all(isinstance(entry.get(k), str) and re.fullmatch(r'[a-f0-9]{64}', entry[k])
+                               for k in ('sourceReportSha256', 'fullSnapshotSha256'))                     or entry.get('derivedExcerptSha256') is not None and (
+                        not isinstance(entry.get('derivedExcerptSha256'), str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', entry['derivedExcerptSha256'])):
+                raise ValueError('Debian-доказательство не соответствует ограничениям доверия.')
+            identity = (entry.get('sourceReportId'), entry.get('findingId'))
+            if identity in seen_debian or not all(isinstance(x, str) and x for x in identity):
+                raise ValueError('Повторяющийся или некорректный идентификатор Debian CVE.')
+            seen_debian.add(identity)
+            story.append(Paragraph(
+                '%d. <b>%s</b> · Debian %s · бинарный пакет %s %s · исходный пакет %s %s' %
+                (index, esc(entry.get('cveId'), 40), esc(entry.get('release'), 40),
+                 esc(entry.get('packageName'), 180), esc(entry.get('installedVersion'), 256),
+                 esc(entry.get('sourcePackage'), 180), esc(entry.get('sourceVersion'), 256)), small))
+            story.append(Paragraph(
+                'Trivy: статус %s; применимость %s. Debian Tracker: кандидат %s; статус %s; '
+                'основание %s; порог исправления %s. %s Доверенный вывод: неизвестно.' %
+                (esc(entry.get('scannerStatus'), 32), esc(entry.get('trivyApplicability'), 80),
+                 esc(entry.get('candidateVerdict'), 64), esc(entry.get('candidateStatus'), 32),
+                 esc(entry.get('candidateReason'), 120), esc(entry.get('fixedVersion'), 256),
+                 'РАСХОЖДЕНИЕ С TRIVY.' if entry.get('conflictingWithTrivy') else ''), small))
+            story.append(Paragraph(
+                'Исходный JSON: %s · ID находки: %s · SHA-256 JSON: %s. '
+                'SHA-256 полной базы: %s · SHA-256 CVE-записи: %s. '
+                'Локально получен: %s · режим pin: %s.' %
+                (esc(entry.get('sourceReportId'), 180), esc(entry.get('findingId'), 256),
+                 esc(entry.get('sourceReportSha256'), 64), esc(entry.get('fullSnapshotSha256'), 64),
+                 esc(entry.get('derivedExcerptSha256'), 64), esc(entry.get('capturedAt'), 80),
+                 esc(entry.get('pinMode'), 60)), small))
+
     def footer(canvas, document):
         canvas.saveState()
         canvas.setFont('HCPDejaVu', 7)
