@@ -70,7 +70,7 @@ class HcpAstraExperimentGateTest(unittest.TestCase):
             ("removed finding", lambda x: x["findings"].pop()),
             ("duplicate rule", lambda x: x["findings"][1].update(id=x["findings"][0]["id"])),
             ("invalid scanner exit", lambda x: x["scanner"].update(scannerExitCode=1)),
-            ("tampered counter", lambda x: x["scanner"]["ruleResultCounts"].update(fail=0)),
+            ("tampered counter", lambda x: x["scanner"]["ruleResultCounts"].update(fail=1)),
             ("unknown result", lambda x: x["findings"][0].update(status="manual")),
         ]
         for label, edit in edits:
