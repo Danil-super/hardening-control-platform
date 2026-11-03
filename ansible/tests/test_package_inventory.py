@@ -631,6 +631,12 @@ class PackageInventoryTest(unittest.TestCase):
                     budget = collector._debian_cached_archive_evidence({identity}, {identity: expected})
                     self.assertEqual(budget["status"], "budget_exceeded")
                     self.assertEqual(budget["matchedArchives"], 0)
+                second_link = root / "second-hardlink.deb"
+                os.link(str(archived), str(second_link))
+                self.assertEqual(
+                    collector._debian_cached_archive_evidence({identity}, {identity: expected})["status"],
+                    "unavailable")
+                second_link.unlink()
                 archived.unlink()
                 archived.symlink_to(root / "other-private-file")
                 self.assertEqual(
