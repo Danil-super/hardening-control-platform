@@ -542,10 +542,11 @@ class PackageInventoryTest(unittest.TestCase):
             sha, size = collector._debian_apt_helper_sha256(str(filename))
             self.assertEqual(size, len(raw))
             self.assertEqual(sha, hashlib.sha256(raw).hexdigest())
-            new_sha, new_size, matched = collector._debian_apt_helper_sha256(
+            new_sha, new_size, matched, archive_expectations = collector._debian_apt_helper_sha256(
                 str(filename), {("libssl3", "amd64", "1"), ("libssl3", "amd64", "2")})
             self.assertEqual((new_sha, new_size), (sha, size))
             self.assertEqual(matched, {("libssl3", "amd64", "1")})
+            self.assertEqual(archive_expectations, {})
 
     def test_debian_installed_version_candidate_match_is_exact_and_non_authoritative(self):
         import hashlib
@@ -596,6 +597,73 @@ class PackageInventoryTest(unittest.TestCase):
                 for position in range(0, len(raw), 16384):
                     scanner.feed(raw[position:position + 16384])
                 scanner.finish()
+
+    def test_debian_cached_archive_hashes_match_only_exact_local_signed_index_metadata(self):
+        import hashlib
+        from unittest.mock import patch
+        content = b"!<arch>\nsynthetic archive hash-control only\n"
+        identity = ("example", "amd64", "1.0")
+        expected = (hashlib.sha256(content).hexdigest(), len(content))
+        with tempfile.TemporaryDirectory(prefix="hcp-deb-cache-") as directory:
+            root = Path(directory)
+            archived = root / "example_1.0_amd64.deb"
+            archived.write_bytes(content)
+            with patch.object(collector, "DEBIAN_ARCHIVE_DIR", str(root)):
+                positive = collector._debian_cached_archive_evidence({identity}, {identity: expected})
+                self.assertEqual(positive["status"], "locally_hash_matched")
+                self.assertEqual(positive["candidateArchives"], 1)
+                self.assertEqual(positive["matchedArchives"], 1)
+                self.assertEqual(positive["verifiedArchiveSha256"], [expected[0]])
+                for key in ("publisherAuthenticated", "installedPackageOriginVerified", "remediationAuthorized"):
+                    self.assertIs(positive[key], False)
+                mismatch = collector._debian_cached_archive_evidence(
+                    {identity}, {identity: ("a" * 64, len(content))})
+                self.assertEqual(mismatch["status"], "partial")
+                self.assertEqual(mismatch["mismatchedArchives"], 1)
+                self.assertEqual(mismatch["matchedArchives"], 0)
+                missing = collector._debian_cached_archive_evidence({identity}, {})
+                self.assertEqual(missing["missingIndexHashes"], 1)
+                self.assertEqual(missing["status"], "partial")
+                ambiguous = collector._debian_cached_archive_evidence({identity}, {identity: None})
+                self.assertEqual(ambiguous["ambiguousIndexHashes"], 1)
+                self.assertEqual(ambiguous["status"], "partial")
+                with patch.object(collector, "DEBIAN_ARCHIVE_MAX_BYTES", len(content) - 1):
+                    budget = collector._debian_cached_archive_evidence({identity}, {identity: expected})
+                    self.assertEqual(budget["status"], "budget_exceeded")
+                    self.assertEqual(budget["matchedArchives"], 0)
+                archived.unlink()
+                archived.symlink_to(root / "other-private-file")
+                self.assertEqual(
+                    collector._debian_cached_archive_evidence({identity}, {identity: expected})["status"],
+                    "unavailable")
+                archived.unlink()
+                self.assertEqual(
+                    collector._debian_cached_archive_evidence({identity}, {identity: expected})["status"],
+                    "no_cached_archives")
+
+    def test_debian_index_record_extracts_archive_digest_only_for_exact_installed_identity(self):
+        import hashlib
+        identity = ("example", "amd64", "1:2.0-1")
+        raw = b"fake-deb-contents"
+        checksum = hashlib.sha256(raw).hexdigest()
+        stanza = ("Package: example\nVersion: 1:2.0-1\nArchitecture: amd64\n"
+                  "SHA256: " + checksum + "\nSize: " + str(len(raw)) + "\n\n").encode()
+        parser = collector._DebianPackageCandidateScanner({identity})
+        parser.feed(stanza[:17])
+        parser.feed(stanza[17:])
+        self.assertEqual(parser.finish(), {identity})
+        self.assertEqual(parser.archive_expectations, {identity: (checksum, len(raw))})
+        different = stanza.replace(("SHA256: " + checksum).encode(), ("SHA256: " + "f" * 64).encode())
+        parser = collector._DebianPackageCandidateScanner({identity})
+        parser.feed(stanza + different)
+        parser.finish()
+        self.assertEqual(parser.archive_expectations, {identity: None})
+        with tempfile.TemporaryDirectory(prefix="hcp-deb-cache-") as directory:
+            (Path(directory) / "example_1%3a2.0-1_amd64.deb").write_bytes(raw)
+            with patch.object(collector, "DEBIAN_ARCHIVE_DIR", directory):
+                actual = collector._debian_cached_archive_evidence(
+                    {identity}, {identity: (checksum, len(raw))})
+                self.assertEqual(actual["status"], "locally_hash_matched")
 
     def test_target_program_keeps_python35_syntax(self):
         ast.parse(COLLECTOR.read_text(), feature_version=(3, 5))
