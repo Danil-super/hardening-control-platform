@@ -33,6 +33,7 @@ export function getDebianTrackerManagementStatus() {
   return {
     ok: true,
     sourceUrl: DEBIAN_TRACKER_URL,
+    mode: getVulnerabilityDatabaseSettings().mode,
     selectedSha256: selected.sha256,
     selectionSource: selected.source,
     selectionUpdatedAt: selected.updatedAt,
@@ -66,8 +67,9 @@ export async function fetchDebianTrackerCandidate(input: {
     throw new DebianTrackerManagementError("invalid", "Некорректная независимая контрольная сумма.");
   }
   importInProgress = true;
+  let manifest: DebianTrackerFullManifest;
   try {
-    const manifest = await importDebianTrackerFullSnapshot({
+    manifest = await importDebianTrackerFullSnapshot({
       stateRoot: getHcpStateDirectory(), expectedSha256: input.expectedSha256,
       fetchImpl: input.fetchImpl, now: input.now, reuseIdenticalSnapshot: true,
     });
@@ -75,10 +77,10 @@ export async function fetchDebianTrackerCandidate(input: {
     recordDebianTrackerImportedSnapshot(manifest.sha256, earlier === manifest.sha256);
     // A new download NEVER changes the active per-scan source. Administrator
     // must separately review and approve it through a second PATCH.
-    return { ...getDebianTrackerManagementStatus(), imported: manifest };
   } finally {
     importInProgress = false;
   }
+  return { ...getDebianTrackerManagementStatus(), imported: manifest };
 }
 
 /** Approval checks complete immutable bytes and only the most recently imported digest. */
