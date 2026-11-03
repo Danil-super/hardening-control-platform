@@ -130,6 +130,47 @@ class FinalReportIdentityPdfTest(unittest.TestCase):
         self.assertLessEqual(page_count, 3)
 
 
+    def test_debian_package_index_pdf_rejects_forged_install_origin_or_corrupt_digest(self):
+        fixture = identity_fixture()
+        evidence = {
+            "schemaVersion": 1, "sourceReportId": "debian-package-inventory",
+            "sourceReportSha256": "a" * 64, "status": "locally_hash_matched",
+            "provenanceScope": "cached-debian-packages-uncompressed-sha256-locally-signed-release-v1",
+            "candidateIndexes": 1, "matchedIndexes": 1, "missingSignedHashes": 0,
+            "mismatchedIndexes": 0, "verifiedAgainstLocallySignedRelease": True,
+            "publisherAuthenticated": False, "keyringIndependentlyAuthenticated": False,
+            "publisherFreshnessVerified": False, "installedPackageOriginVerified": False,
+            "remediationAuthorized": False,
+            "indexRecords": [{"suite": "bookworm", "component": "main", "architecture": "amd64",
+                              "releaseSha256": "b" * 64, "packagesSha256": "c" * 64,
+                              "packagesBytes": 4096}],
+        }
+        fixture["debianPackageIndexEvidence"] = [evidence]
+        fixture["debianPackageIndexEvidenceSha256"] = "d" * 64
+        self.assertTrue(RENDERER.render(fixture).startswith(b"%PDF-"))
+        for update in [
+            {"publisherAuthenticated": True},
+            {"keyringIndependentlyAuthenticated": True},
+            {"publisherFreshnessVerified": True},
+            {"installedPackageOriginVerified": True},
+            {"remediationAuthorized": True},
+            {"verifiedAgainstLocallySignedRelease": False},
+            {"candidateIndexes": -1},
+            {"indexRecords": [{**evidence["indexRecords"][0], "packagesSha256": "../secret"}]},
+            {"indexRecords": [{**evidence["indexRecords"][0], "suite": "trixie/../../"}]},
+        ]:
+            with self.subTest(update=update):
+                fixture["debianPackageIndexEvidence"] = [{**evidence, **update}]
+                with self.assertRaises(ValueError):
+                    RENDERER.render(fixture)
+        fixture["debianPackageIndexEvidence"] = [evidence, evidence]
+        with self.assertRaises(ValueError):
+            RENDERER.render(fixture)
+        fixture["debianPackageIndexEvidence"] = [evidence]
+        fixture["debianPackageIndexEvidenceSha256"] = "not-a-digest"
+        with self.assertRaises(ValueError):
+            RENDERER.render(fixture)
+
     def test_signed_release_pdf_rejects_untrusted_keyring_upgrades(self):
         fixture = identity_fixture()
         observation = {

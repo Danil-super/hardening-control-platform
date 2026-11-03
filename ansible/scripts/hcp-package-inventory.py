@@ -8,11 +8,13 @@ import hashlib
 import json
 import os
 import re
+import selectors
 import shlex
 import shutil
 import socket
 import stat
 import subprocess
+import time
 from datetime import datetime, timezone
 from urllib.parse import quote, urlsplit
 
@@ -478,6 +480,246 @@ def debian_cached_inrelease_signatures(os_release):
     return base
 
 
+
+# The *selected APT package index* verification is distinct from the local
+# gpgv observation. InRelease SHA256 can cover uncompressed Packages bytes
+# even if APT stores them as .lz4. apt-helper cat-file is APT's read-only
+# decompressor. No package is installed/downloaded, and no URL is fetched.
+DEBIAN_INDEX_MAX_FILES = 8
+DEBIAN_INDEX_MAX_ENCODED_BYTES = 64 * 1024 * 1024
+DEBIAN_INDEX_MAX_DECODED_BYTES = 160 * 1024 * 1024
+DEBIAN_INDEX_MAX_DURATION = 35
+
+
+def _debian_signed_package_hashes(raw, codename):
+    """Only accept a bounded SHA256 stanza inside a verified InRelease.
+
+    Keys are exact main/binary-amd64/Packages-style relative filenames;
+    never parse a path containing traversal, comments or arbitrary URLs.
+    """
+    release = _debian_inrelease_headers(raw, codename)
+    text = raw.decode("utf-8", "strict")
+    start = text.find("\n\n")
+    end = text.find("\n-----BEGIN PGP SIGNATURE-----")
+    signed = text[start + 2:end]
+    inside = False
+    found = {}
+    saw_sha256 = False
+    for line in signed.splitlines():
+        if line == "SHA256:":
+            if saw_sha256:
+                raise ValueError("Duplicate SHA256 section in signed release")
+            saw_sha256, inside = True, True
+            continue
+        if not inside:
+            continue
+        if line and line[0] not in " \t":
+            break
+        parts = line.strip().split()
+        if not parts:
+            continue
+        if len(parts) != 3 or not re.match(r"^[a-f0-9]{64}$", parts[0], re.I) or not re.match(r"^[0-9]{1,12}$", parts[1]):
+            raise ValueError("Malformed SHA256 entry in signed Debian Release")
+        key = parts[2]
+        if not re.match(r"^[a-z][a-z0-9-]{0,31}/binary-[a-z0-9]{2,20}/Packages$", key):
+            continue
+        if key in found:
+            raise ValueError("Duplicate package-index SHA256 key in signed Release")
+        length = int(parts[1])
+        if length < 1 or length > DEBIAN_INDEX_MAX_DECODED_BYTES:
+            # An index too large for this probe is not silently declared good.
+            found[key] = (parts[0].lower(), length)
+            continue
+        found[key] = (parts[0].lower(), length)
+        if len(found) > 1024:
+            raise ValueError("Excessive Packages SHA256 entry count")
+    if not saw_sha256:
+        raise ValueError("Signed Debian Release has no SHA256 section")
+    return release, found
+
+
+def _debian_apt_helper_sha256(filename):
+    """Bounded decompression and hashing with a hard time and byte budget.
+
+    APT helper is fixed at the distribution's local path and invoked without
+    a shell, network or unbounded stdout capture. This never writes caches.
+    """
+    executable = "/usr/lib/apt/apt-helper"
+    if not os.path.isfile(executable):
+        raise ValueError("APT helper is missing")
+    process = subprocess.Popen(
+        [executable, "cat-file", filename], stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL,
+    )
+    digest = hashlib.sha256()
+    total = 0
+    deadline = time.monotonic() + DEBIAN_INDEX_MAX_DURATION
+    poller = selectors.DefaultSelector()
+    try:
+        poller.register(process.stdout, selectors.EVENT_READ)
+        while poller.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ValueError("APT decompression exceeded time budget")
+            for key, unused in poller.select(min(remaining, 0.5)):
+                block = os.read(key.fileobj.fileno(), 65536)
+                if not block:
+                    poller.unregister(key.fileobj)
+                    continue
+                total += len(block)
+                if total > DEBIAN_INDEX_MAX_DECODED_BYTES:
+                    raise ValueError("APT decompression exceeded decoded byte budget")
+                digest.update(block)
+        process.wait(timeout=max(0.1, deadline - time.monotonic()))
+        if process.returncode != 0 or total == 0:
+            raise ValueError("APT decompression failed")
+        return digest.hexdigest(), total
+    finally:
+        poller.close()
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        process.stdout.close()
+
+
+def debian_cached_package_index_hashes(os_release, signed_summary):
+    """Verify locally cached *uncompressed* Packages against signed Release.
+
+    A local gpgv verification and selected fixed Debian suite are prerequisites.
+    The installed archive keyring itself is NOT independently authenticated.
+    No installed .deb or individual installed-package provenance is attested.
+    """
+    codename = os_release.get("VERSION_CODENAME")
+    result = {
+        "schemaVersion": 1, "status": "unavailable", "releaseCodename": codename,
+        "candidateIndexes": 0, "matchedIndexes": 0, "missingSignedHashes": 0,
+        "mismatchedIndexes": 0, "indexRecords": [],
+        "verifiedAgainstLocallySignedRelease": False,
+        "publisherAuthenticated": False, "keyringIndependentlyAuthenticated": False,
+        "publisherFreshnessVerified": False, "installedPackageOriginVerified": False,
+        "remediationAuthorized": False,
+        "scope": "cached-debian-packages-uncompressed-sha256-locally-signed-release-v1",
+    }
+    if (os_release.get("ID") != "debian" or not isinstance(codename, str)
+            or not re.match(r"^[a-z][a-z0-9-]{1,31}$", codename)
+            or not isinstance(signed_summary, dict)
+            or signed_summary.get("status") != "verified_with_local_keyring"
+            or signed_summary.get("localSignatureVerified") is not True
+            or signed_summary.get("publisherAuthenticated") is not False
+            or signed_summary.get("installedPackageOriginVerified") is not False):
+        return result
+    try:
+        keyring_path = DEBIAN_ARCHIVE_KEYRING
+        if stat.S_ISLNK(os.lstat(keyring_path).st_mode):
+            if (os.path.basename(keyring_path) != "debian-archive-keyring.gpg"
+                    or os.readlink(keyring_path) != "debian-archive-keyring.pgp"):
+                raise ValueError("Unexpected local Debian archive keyring link")
+            keyring_path = os.path.join(os.path.dirname(keyring_path), "debian-archive-keyring.pgp")
+        keyring = _private_cached_regular(keyring_path, DEBIAN_KEYRING_MAX_BYTES)
+        if hashlib.sha256(keyring).hexdigest() != signed_summary.get("localKeyringSha256"):
+            raise ValueError("Cached Debian signer keyring changed")
+        # The previous gpgv phase attested an exact multiset of cached
+        # InRelease files. A vanished file must not turn the remaining subset
+        # into a fresh success when the package indexes are checked.
+        expected_digests = signed_summary.get("inReleaseSha256")
+        if (not isinstance(expected_digests, list) or not expected_digests
+                or len(expected_digests) > 12
+                or signed_summary.get("candidateFiles") != len(expected_digests)
+                or signed_summary.get("validLocalSignatures") != len(expected_digests)
+                or any(not isinstance(digest, str)
+                       or not re.match(r"^[a-f0-9]{64}$", digest)
+                       for digest in expected_digests)):
+            raise ValueError("Invalid prior InRelease signature inventory")
+        names = os.listdir(DEBIAN_INRELEASE_DIR)
+        if len(names) > 20000:
+            raise ValueError("Too many local APT files")
+        release_map = {}
+        observed_digests = []
+        accepted_suites = {codename, codename + "-security", codename + "-updates", codename + "-backports"}
+        for name in names:
+            if len(name) > 360 or not re.match(r"^[A-Za-z0-9._-]+$", name):
+                continue
+            matched = re.search(r"_dists_([a-z][a-z0-9-]{1,31})_InRelease$", name)
+            if not matched or matched.group(1) not in accepted_suites:
+                continue
+            full = os.path.join(DEBIAN_INRELEASE_DIR, name)
+            raw = _private_cached_regular(full, DEBIAN_INRELEASE_MAX_BYTES)
+            release_digest = hashlib.sha256(raw).hexdigest()
+            if release_digest not in expected_digests:
+                raise ValueError("Unrecognized InRelease digest")
+            release, hashes = _debian_signed_package_hashes(raw, codename)
+            check = subprocess.run(
+                ["gpgv", "--status-fd", "1", "--keyring", keyring_path, full],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=12, check=False,
+            )
+            status = check.stdout[:65536].decode("ascii", "replace")
+            if (check.returncode != 0 or "[GNUPG:] GOODSIG " not in status
+                    or not re.search(r"^\[GNUPG:\] VALIDSIG (?:[a-fA-F0-9]{40}|[a-fA-F0-9]{64})\s", status, re.M)
+                    or any("[GNUPG:] " + word in status for word in (
+                        "BADSIG", "ERRSIG", "EXPSIG", "EXPKEYSIG", "REVKEYSIG", "NO_PUBKEY"))):
+                raise ValueError("Cached Debian release signature no longer verifies")
+            if _private_cached_regular(full, DEBIAN_INRELEASE_MAX_BYTES) != raw:
+                raise ValueError("InRelease changed during index validation")
+            prefix = name[:-len("InRelease")]
+            if prefix in release_map:
+                raise ValueError("Ambiguous Debian release cache prefix")
+            release_map[prefix] = (release, hashes, release_digest)
+            observed_digests.append(release_digest)
+        if sorted(observed_digests) != sorted(expected_digests):
+            raise ValueError("Cached InRelease set changed between audit phases")
+        observed = []
+        for name in names:
+            if len(name) > 360 or not re.match(r"^[A-Za-z0-9._-]+$", name):
+                continue
+            match = re.search(
+                r"_dists_([a-z][a-z0-9-]{1,31})_([a-z][a-z0-9-]{0,31})_binary-([a-z0-9]{2,20})_Packages(?:\.(lz4|gz|xz))?$",
+                name,
+            )
+            if not match or match.group(1) not in accepted_suites:
+                continue
+            index_prefix = name[:match.start(2)]
+            key = match.group(2) + "/binary-" + match.group(3) + "/Packages"
+            if index_prefix not in release_map or release_map[index_prefix][0] != match.group(1):
+                continue
+            observed.append((name, match.group(1), match.group(2), match.group(3), key, index_prefix))
+        if len(observed) > DEBIAN_INDEX_MAX_FILES:
+            return dict(result, status="budget_exceeded", candidateIndexes=len(observed))
+        if not observed:
+            return result
+        result["candidateIndexes"] = len(observed)
+        for name, release, component, arch, relative, prefix in sorted(observed):
+            expected = release_map[prefix][1].get(relative)
+            if not expected:
+                result["missingSignedHashes"] += 1
+                continue
+            filename = os.path.join(DEBIAN_INRELEASE_DIR, name)
+            packed = _private_cached_regular(filename, DEBIAN_INDEX_MAX_ENCODED_BYTES)
+            actual_digest, actual_length = _debian_apt_helper_sha256(filename)
+            if _private_cached_regular(filename, DEBIAN_INDEX_MAX_ENCODED_BYTES) != packed:
+                raise ValueError("Package index changed while decompressing")
+            if actual_digest != expected[0] or actual_length != expected[1]:
+                result["mismatchedIndexes"] += 1
+                continue
+            result["matchedIndexes"] += 1
+            result["indexRecords"].append({
+                "suite": release, "component": component, "architecture": arch,
+                "releaseSha256": release_map[prefix][2], "packagesSha256": actual_digest,
+                "packagesBytes": actual_length,
+            })
+        if hashlib.sha256(_private_cached_regular(keyring_path, DEBIAN_KEYRING_MAX_BYTES)).hexdigest() != signed_summary.get("localKeyringSha256"):
+            raise ValueError("Signer keyring changed during package index validation")
+        result["verifiedAgainstLocallySignedRelease"] = (
+            result["matchedIndexes"] == result["candidateIndexes"] and result["candidateIndexes"] > 0)
+        result["status"] = "locally_hash_matched" if result["verifiedAgainstLocallySignedRelease"] else "partial"
+    except (OSError, ValueError, UnicodeError, subprocess.TimeoutExpired):
+        # Do not publish partial success on a potentially changed/ambiguous input.
+        result["status"] = "unavailable"
+        result["verifiedAgainstLocallySignedRelease"] = False
+        result["matchedIndexes"] = 0
+        result["indexRecords"] = []
+    return result
+
+
 def resolve_rpm_database():
     """Resolve only RPM's native directory and three supported backend files.
 
@@ -634,6 +876,7 @@ def collect():
             elif manager == "dpkg" and os_release.get("ID") == "debian":
                 extra["aptRepositories"] = debian_apt_repository_observation(os_release)
                 extra["debianSignedReleases"] = debian_cached_inrelease_signatures(os_release)
+                extra["debianPackageIndexes"] = debian_cached_package_index_hashes(os_release, extra["debianSignedReleases"])
             same_configuration = rpm_database is None or resolve_rpm_database() == rpm_database
             if not consistency.unchanged() or not same_configuration:
                 error = "The native package database changed during collection; repeat the inventory"

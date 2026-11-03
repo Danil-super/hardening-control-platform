@@ -1010,6 +1010,39 @@ sudo -n ufw --force enable
                         "publisherAuthenticated": False,
                         "packageIndexHashesVerified": False,
                         "installedPackageOriginVerified": False})
+            package_indexes = package_report.get("packageInventory", {}).get("debianPackageIndexes")
+            if (not isinstance(package_indexes, dict) or package_indexes.get("schemaVersion") != 1
+                    or package_indexes.get("status") != "locally_hash_matched"
+                    or package_indexes.get("verifiedAgainstLocallySignedRelease") is not True
+                    or package_indexes.get("candidateIndexes", 0) < 1
+                    or package_indexes.get("candidateIndexes") != package_indexes.get("matchedIndexes")
+                    or package_indexes.get("mismatchedIndexes") != 0
+                    or package_indexes.get("missingSignedHashes") != 0
+                    or package_indexes.get("publisherAuthenticated") is not False
+                    or package_indexes.get("keyringIndependentlyAuthenticated") is not False
+                    or package_indexes.get("publisherFreshnessVerified") is not False
+                    or package_indexes.get("installedPackageOriginVerified") is not False
+                    or package_indexes.get("remediationAuthorized") is not False):
+                safe_status = package_indexes.get("status") if isinstance(package_indexes, dict) else "missing"
+                if safe_status not in ("locally_hash_matched", "partial", "unavailable",
+                                       "budget_exceeded", "missing"):
+                    safe_status = "unknown"
+                raise RuntimeError("Native Debian Packages hash-chain verification incomplete: state=" + safe_status)
+            verified_indexes = package_indexes.get("indexRecords", [])
+            if (not isinstance(verified_indexes, list)
+                    or len(verified_indexes) != package_indexes.get("matchedIndexes")
+                    or any(not isinstance(item, dict) or
+                           not re.fullmatch(r"[a-f0-9]{64}", item.get("packagesSha256", "")) or
+                           item.get("releaseSha256") not in signed.get("inReleaseSha256", [])
+                           for item in verified_indexes)):
+                raise RuntimeError("Native Debian Packages hash chain could not be linked to signed InRelease")
+            checkpoint("Native Debian cached Packages SHA256 matches locally signed InRelease records",
+                       {"matchedIndexes": package_indexes["matchedIndexes"],
+                        "candidateIndexes": package_indexes["candidateIndexes"],
+                        "verifiedIndexes": verified_indexes,
+                        "publisherAuthenticated": False,
+                        "installedPackageOriginVerified": False,
+                        "remediationAuthorized": False})
         readiness = json.loads(remote("sudo -n python3 /home/hcp-ci/hcp-source/hcp-host-readiness.py",
                                       output=artifacts / "host-readiness.json").stdout)
         if (readiness.get("osRelease", {}).get("ID") != distribution

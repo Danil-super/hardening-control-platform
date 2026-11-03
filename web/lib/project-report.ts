@@ -8,6 +8,7 @@ import { projectVendorAdvisoryEvidence } from "@/lib/vendor-crosscheck-report";
 import { projectDebianTrackerEvidence } from "@/lib/debian-tracker-export";
 import { summarizeDebianAptRepositoryEvidence } from "@/lib/debian-apt-provenance";
 import { summarizeDebianSignedReleases } from "@/lib/debian-signed-release";
+import { summarizeDebianPackageIndexes } from "@/lib/debian-package-index-evidence";
 import { resolvePlanSeverity } from "@/lib/remediation-plan-evidence";
 import type { AssetBinding } from "@/lib/asset-binding";
 import { hasActivePlanDecision, planObservationState } from "@/lib/remediation-plan-observations";
@@ -217,6 +218,21 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
     return evidence ? [{ sourceReportId: source.id, sourceReportSha256: source.sha256, ...evidence }] : [];
   });
   const debianSignedReleaseEvidenceSha256 = sha256(canonical({ version: 1, hostAlias, debianSignedReleaseEvidence }));
+  // Index hashes belong to the original package inventory; the correlation
+  // view is not an authoritative source of APT and InRelease proof.
+  const debianPackageIndexEvidence = sourceManifest.filter(source => source.mode === "packages").flatMap(source => {
+    const saved = readAnsibleReport(source.id);
+    if (!saved || !source.sha256) throw new Error("Недоступен исходный инвентарь для проверки Packages.");
+    const raw = saved.raw && typeof saved.raw === "object" && !Array.isArray(saved.raw)
+      ? saved.raw as Record<string, unknown> : {};
+    const inventory = raw.packageInventory && typeof raw.packageInventory === "object" && !Array.isArray(raw.packageInventory)
+      ? raw.packageInventory as Record<string, unknown> : {};
+    const osRelease = inventory.osRelease && typeof inventory.osRelease === "object" && !Array.isArray(inventory.osRelease)
+      ? inventory.osRelease as Record<string, unknown> : {};
+    const evidence = summarizeDebianPackageIndexes(inventory.debianPackageIndexes, osRelease);
+    return evidence ? [{ sourceReportId: source.id, sourceReportSha256: source.sha256, ...evidence }] : [];
+  });
+  const debianPackageIndexEvidenceSha256 = sha256(canonical({ version: 1, hostAlias, debianPackageIndexEvidence }));
   const correlation = buildHostCorrelation(hostAlias);
   const now = Date.parse(createdAt);
   const current = new Map(correlation?.findings.map((finding) => [finding.id, finding]));
@@ -253,6 +269,7 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
     debianTrackerEvidence, debianTrackerEvidenceSha256,
     debianAptIndexEvidence, debianAptIndexEvidenceSha256,
     debianSignedReleaseEvidence, debianSignedReleaseEvidenceSha256,
+    debianPackageIndexEvidence, debianPackageIndexEvidenceSha256,
   };
   const pdf = await runPdfRenderer(snapshot);
   const pdfSha256 = sha256(pdf);

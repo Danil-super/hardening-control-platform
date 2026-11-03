@@ -514,6 +514,80 @@ def render(snapshot):
                 'Независимая подлинность издателя: НЕ подтверждена. '
                 'Связь с установленным пакетом: НЕ подтверждена.', small))
 
+    deb_indexes = snapshot.get('debianPackageIndexEvidence', [])
+    if not isinstance(deb_indexes, list) or len(deb_indexes) > 4096:
+        raise ValueError('Недопустимый размер Debian Packages-доказательств.')
+    if deb_indexes:
+        projection = snapshot.get('debianPackageIndexEvidenceSha256')
+        if not isinstance(projection, str) or not re.fullmatch(r'[a-f0-9]{64}', projection):
+            raise ValueError('Нет контрольной суммы Debian Packages-проекции.')
+        story.append(Paragraph('10. Целостность локальных Packages по подписанному InRelease', heading))
+        story.append(Paragraph(
+            'SHA-256 распакованных локальных файлов Packages сравнивается с хешем '
+            'в том же InRelease, подпись которого локально проверена по keyring '
+            'оцениваемого Debian. Это только цепочка сохранённого APT-кэша, '
+            'а не независимая аутентификация издателя, всех APT-репозиториев '
+            'или установленного .deb. Автоматическое исправление не разрешено.', body))
+        story.append(Paragraph(
+            'Исходных инвентарей: %d · SHA-256 проекции: %s.' %
+            (len(deb_indexes), esc(projection, 64)), small))
+        observed_ids = set()
+        for entry in deb_indexes:
+            if (not isinstance(entry, dict) or entry.get('schemaVersion') != 1
+                    or entry.get('status') not in ('locally_hash_matched', 'partial',
+                                                  'unavailable', 'budget_exceeded',
+                                                  'not_collected', 'invalid')
+                    or entry.get('provenanceScope') != 'cached-debian-packages-uncompressed-sha256-locally-signed-release-v1'
+                    or entry.get('publisherAuthenticated') is not False
+                    or entry.get('keyringIndependentlyAuthenticated') is not False
+                    or entry.get('publisherFreshnessVerified') is not False
+                    or entry.get('installedPackageOriginVerified') is not False
+                    or entry.get('remediationAuthorized') is not False
+                    or not isinstance(entry.get('sourceReportId'), str) or not entry['sourceReportId']
+                    or entry['sourceReportId'] in observed_ids
+                    or not isinstance(entry.get('sourceReportSha256'), str)
+                    or not re.fullmatch(r'[a-f0-9]{64}', entry['sourceReportSha256'])
+                    or not isinstance(entry.get('candidateIndexes'), int)
+                    or not 0 <= entry['candidateIndexes'] <= 20000
+                    or not isinstance(entry.get('matchedIndexes'), int)
+                    or not 0 <= entry['matchedIndexes'] <= 8
+                    or not isinstance(entry.get('verifiedAgainstLocallySignedRelease'), bool)
+                    or (entry.get('status') == 'locally_hash_matched') != entry['verifiedAgainstLocallySignedRelease']
+                    or not isinstance(entry.get('indexRecords'), list)
+                    or len(entry['indexRecords']) != entry['matchedIndexes']
+                    or len(entry['indexRecords']) > 8):
+                raise ValueError('Debian Packages-доказательство нарушает ограничения доверия.')
+            observed_ids.add(entry['sourceReportId'])
+            story.append(Paragraph(
+                'Инвентарь: %s · JSON SHA-256: %s · статус: %s · '
+                'локально совпало: %d из %d.' %
+                (esc(entry['sourceReportId'], 180), esc(entry['sourceReportSha256'], 64),
+                 esc(entry['status'], 40), entry['matchedIndexes'], entry['candidateIndexes']), small))
+            for index in entry['indexRecords']:
+                if (not isinstance(index, dict)
+                        or not isinstance(index.get('suite'), str)
+                        or not re.fullmatch(r'[a-z][a-z0-9-]{1,31}', index['suite'])
+                        or not isinstance(index.get('component'), str)
+                        or not re.fullmatch(r'[a-z][a-z0-9-]{0,31}', index['component'])
+                        or not isinstance(index.get('architecture'), str)
+                        or not re.fullmatch(r'[a-z0-9]{2,20}', index['architecture'])
+                        or not isinstance(index.get('releaseSha256'), str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', index['releaseSha256'])
+                        or not isinstance(index.get('packagesSha256'), str)
+                        or not re.fullmatch(r'[a-f0-9]{64}', index['packagesSha256'])
+                        or type(index.get('packagesBytes')) is not int
+                        or not 1 <= index['packagesBytes'] <= 160 * 1024 * 1024):
+                    raise ValueError('Некорректная подтверждённая запись Packages.')
+                story.append(Paragraph(
+                    'Выпуск: %s · компонент: %s · архитектура: %s · байт: %d. '
+                    'SHA-256 InRelease: %s · SHA-256 распакованного Packages: %s.' %
+                    (esc(index['suite'], 40), esc(index['component'], 40),
+                     esc(index['architecture'], 40), index['packagesBytes'],
+                     esc(index['releaseSha256'], 64), esc(index['packagesSha256'], 64)), small))
+            story.append(Paragraph(
+                'Издатель независимо: НЕ подтверждён. '
+                'Происхождение установленных пакетов: НЕ подтверждено.', small))
+
     def footer(canvas, document):
         canvas.saveState()
         canvas.setFont('HCPDejaVu', 7)

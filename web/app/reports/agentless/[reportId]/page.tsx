@@ -13,6 +13,7 @@ import { describeAstraOvalNextStep } from "@/lib/astra-oval-policy";
 import { auditReportLimitations } from "@/lib/audit-result";
 import { summarizeDebianAptRepositoryEvidence } from "@/lib/debian-apt-provenance";
 import { summarizeDebianSignedReleases } from "@/lib/debian-signed-release";
+import { summarizeDebianPackageIndexes } from "@/lib/debian-package-index-evidence";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -115,6 +116,14 @@ export default async function AgentlessReportDetailPage({
       ? summarizeDebianSignedReleases(vulnerabilityScan.debianSignedReleaseEvidence, {
           ID: "debian",
           VERSION_CODENAME: asRecord(vulnerabilityScan.debianSignedReleaseEvidence).releaseCodename,
+        })
+      : null;
+  const debianIndexEvidence = report.mode === "packages"
+    ? summarizeDebianPackageIndexes(packageInventory.debianPackageIndexes,
+      asRecord(packageInventory.osRelease))
+    : report.mode === "vulnerabilities" && vulnerabilityScan.ecosystem === "Debian"
+      ? summarizeDebianPackageIndexes(vulnerabilityScan.debianPackageIndexEvidence, {
+          ID: "debian", VERSION_CODENAME: asRecord(vulnerabilityScan.debianPackageIndexEvidence).releaseCodename,
         })
       : null;
   const aptSuites = Array.isArray(aptRepositoryEvidence?.suites)
@@ -301,6 +310,44 @@ export default async function AgentlessReportDetailPage({
           <p className="mt-3 text-sm text-amber-100">
             Подлинность ключей из независимого доверенного источника не проверена. Подпись пакета, связь с
             установленным файлом и хеши Packages не проверены; права на исправление не предоставлены.
+          </p>
+        </section>
+      ) : null}
+
+      {debianIndexEvidence ? (
+        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <h2 className="text-xl font-semibold text-white">Debian: целостность локальных индексов Packages</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-400">
+            SHA-256 распакованных индексов сопоставляется с записью внутри локального подписанного InRelease.
+            Подпись проверяется локальным набором ключей на оцениваемой системе; подлинность самого набора ключей,
+            происхождение установленного .deb и полнота всех APT-индексов независимо не подтверждены.
+          </p>
+          <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+            <div><dt className="text-slate-500">Статус</dt><dd className="mt-1 text-slate-200">{
+              debianIndexEvidence.status === "locally_hash_matched" ? "Хеши выбранных индексов совпали"
+                : debianIndexEvidence.status === "partial" ? "Неполное совпадение"
+                : debianIndexEvidence.status === "budget_exceeded" ? "Превышен безопасный лимит"
+                : debianIndexEvidence.status === "invalid" ? "Некорректное доказательство"
+                : "Не выполнена"
+            }</dd></div>
+            <div><dt className="text-slate-500">Выбрано индексов</dt><dd className="mt-1 text-slate-200">{debianIndexEvidence.candidateIndexes}</dd></div>
+            <div><dt className="text-slate-500">Хеш совпал</dt><dd className="mt-1 text-slate-200">{debianIndexEvidence.matchedIndexes}</dd></div>
+            <div><dt className="text-slate-500">Отсутствуют / не совпали</dt><dd className="mt-1 text-slate-200">{debianIndexEvidence.missingSignedHashes} / {debianIndexEvidence.mismatchedIndexes}</dd></div>
+          </dl>
+          {debianIndexEvidence.indexRecords.length ? (
+            <div className="mt-4 space-y-3 border-t border-slate-800 pt-4">
+              {debianIndexEvidence.indexRecords.map((entry, index) => (
+                <div key={index} className="rounded-md border border-slate-800 bg-slate-900/50 p-3 text-sm">
+                  <p className="font-semibold text-slate-200">{entry.suite} · {entry.component} · {entry.architecture}</p>
+                  <p className="mt-1 break-all font-mono text-xs text-slate-400">SHA-256 Packages: {entry.packagesSha256}</p>
+                  <p className="mt-1 break-all font-mono text-xs text-slate-400">SHA-256 InRelease: {entry.releaseSha256}</p>
+                </div>
+              ))}
+            </div>
+          ) : null}
+          <p className="mt-3 text-sm text-amber-100">
+            Локальное совпадение хешей не удостоверяет установленные пакеты. Выводы Trivy не изменяются;
+            разрешение автоматического исправления не предоставлено.
           </p>
         </section>
       ) : null}

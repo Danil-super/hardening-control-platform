@@ -417,6 +417,132 @@ class PackageInventoryTest(unittest.TestCase):
                 self.assertEqual(bad["status"], "unavailable")
                 self.assertFalse(bad["localSignatureVerified"])
 
+
+    def test_debian_release_signed_sha256_parses_exact_uncompressed_packages_without_urls(self):
+        import hashlib
+        raw_pkg = b"Package: libssl3\nVersion: 3.0.14-1~deb12u2\n\n"
+        sha = hashlib.sha256(raw_pkg).hexdigest()
+        contents = ("-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+                    "Origin: Debian\nCodename: bookworm\nDate: Tue, 03 Nov 2026 10:00:00 UTC\n"
+                    "SHA256:\n " + sha + " " + str(len(raw_pkg)) + " main/binary-amd64/Packages\n"
+                    " " + "a" * 64 + " 2 main/binary-amd64/Packages.xz\n"
+                    "-----BEGIN PGP SIGNATURE-----\nsynthetic-test-only\n"
+                    "-----END PGP SIGNATURE-----\n").encode()
+        release, entries = collector._debian_signed_package_hashes(contents, "bookworm")
+        self.assertEqual(release, "bookworm")
+        self.assertEqual(entries, {"main/binary-amd64/Packages": (sha, len(raw_pkg))})
+        altered = contents.replace(b" main/binary-amd64/Packages\n",
+                                   b" ../private/Packages\n")
+        self.assertEqual(collector._debian_signed_package_hashes(altered, "bookworm")[1], {})
+        repeated = contents.replace(b"-----BEGIN PGP SIGNATURE-----",
+                                    (" " + sha + " " + str(len(raw_pkg)) + " main/binary-amd64/Packages\n"
+                                     "-----BEGIN PGP SIGNATURE-----").encode())
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            collector._debian_signed_package_hashes(repeated, "bookworm")
+
+    def test_debian_cached_packages_match_only_actual_signed_release_sha256(self):
+        import hashlib
+        from unittest.mock import Mock
+        package = b"Package: libssl3\nVersion: 3.0.14-1~deb12u2\nArchitecture: amd64\n\n"
+        sha = hashlib.sha256(package).hexdigest()
+        with tempfile.TemporaryDirectory(prefix="hcp-signed-packages-") as directory:
+            root = Path(directory)
+            lists = root / "lists"
+            lists.mkdir()
+            key = root / "debian-archive-keyring.gpg"
+            key.write_bytes(b"synthetic-keyring")
+            inrelease = lists / "mirror_debian_dists_bookworm_InRelease"
+            inrelease.write_bytes((
+                "-----BEGIN PGP SIGNED MESSAGE-----\nHash: SHA256\n\n"
+                "Origin: Debian\nCodename: bookworm\nDate: Tue, 03 Nov 2026 10:00:00 UTC\n"
+                "SHA256:\n " + sha + " " + str(len(package)) + " main/binary-amd64/Packages\n"
+                "-----BEGIN PGP SIGNATURE-----\nsynthetic-only\n-----END PGP SIGNATURE-----\n").encode())
+            index = lists / "mirror_debian_dists_bookworm_main_binary-amd64_Packages.lz4"
+            index.write_bytes(b"synthetic-compressed-bytes")
+            signature = {"status": "verified_with_local_keyring", "localSignatureVerified": True,
+                         "candidateFiles": 1, "validLocalSignatures": 1,
+                         "publisherAuthenticated": False, "installedPackageOriginVerified": False,
+                         "localKeyringSha256": hashlib.sha256(key.read_bytes()).hexdigest(),
+                         "inReleaseSha256": [hashlib.sha256(inrelease.read_bytes()).hexdigest()]}
+            verification = Mock(returncode=0,
+                                stdout=("[GNUPG:] GOODSIG ABC Example\n[GNUPG:] VALIDSIG " +
+                                        "A" * 40 + " extra\n").encode())
+            with patch.object(collector, "DEBIAN_INRELEASE_DIR", str(lists)), \
+                    patch.object(collector, "DEBIAN_ARCHIVE_KEYRING", str(key)), \
+                    patch.object(collector.subprocess, "run", return_value=verification), \
+                    patch.object(collector, "_debian_apt_helper_sha256", return_value=(sha, len(package))) as decode:
+                observed = collector.debian_cached_package_index_hashes(
+                    {"ID": "debian", "VERSION_CODENAME": "bookworm"}, signature)
+                self.assertEqual(observed["status"], "locally_hash_matched")
+                self.assertTrue(observed["verifiedAgainstLocallySignedRelease"])
+                self.assertEqual(observed["candidateIndexes"], 1)
+                self.assertEqual(observed["matchedIndexes"], 1)
+                self.assertEqual(observed["indexRecords"][0]["packagesSha256"], sha)
+                self.assertEqual(observed["indexRecords"][0]["releaseSha256"],
+                                 hashlib.sha256(inrelease.read_bytes()).hexdigest())
+                self.assertEqual(observed["indexRecords"][0]["component"], "main")
+                self.assertEqual(observed["indexRecords"][0]["architecture"], "amd64")
+                self.assertEqual(decode.call_count, 1)
+                # A previously verified InRelease vanished after the first
+                # phase: the surviving subset must NOT count as authenticated.
+                missing_signed_release = dict(
+                    signature, candidateFiles=2, validLocalSignatures=2,
+                    inReleaseSha256=signature["inReleaseSha256"] + ["f" * 64])
+                with patch.object(collector, "_debian_apt_helper_sha256",
+                                  side_effect=AssertionError("must reject before decompression")):
+                    disappeared = collector.debian_cached_package_index_hashes(
+                        {"ID": "debian", "VERSION_CODENAME": "bookworm"},
+                        missing_signed_release)
+                self.assertEqual(disappeared["status"], "unavailable")
+                self.assertFalse(disappeared["verifiedAgainstLocallySignedRelease"])
+                self.assertEqual(disappeared["indexRecords"], [])
+                for flag in ("publisherAuthenticated", "keyringIndependentlyAuthenticated",
+                             "publisherFreshnessVerified", "installedPackageOriginVerified",
+                             "remediationAuthorized"):
+                    self.assertIs(observed[flag], False)
+                with patch.object(collector, "_debian_apt_helper_sha256", return_value=("f" * 64, len(package))):
+                    bad = collector.debian_cached_package_index_hashes(
+                        {"ID": "debian", "VERSION_CODENAME": "bookworm"}, signature)
+                    self.assertEqual(bad["status"], "partial")
+                    self.assertEqual(bad["matchedIndexes"], 0)
+                    self.assertEqual(bad["mismatchedIndexes"], 1)
+                    self.assertFalse(bad["verifiedAgainstLocallySignedRelease"])
+                with patch.object(collector, "_debian_apt_helper_sha256", return_value=(sha, len(package) - 1)):
+                    bad_length = collector.debian_cached_package_index_hashes(
+                        {"ID": "debian", "VERSION_CODENAME": "bookworm"}, signature)
+                    self.assertEqual(bad_length["status"], "partial")
+                index.unlink()
+                index.symlink_to(str(key))
+                with patch.object(collector, "_debian_apt_helper_sha256", return_value=(sha, len(package))):
+                    symlink = collector.debian_cached_package_index_hashes(
+                        {"ID": "debian", "VERSION_CODENAME": "bookworm"}, signature)
+                    self.assertEqual(symlink["status"], "unavailable")
+                    self.assertFalse(symlink["verifiedAgainstLocallySignedRelease"])
+                    self.assertEqual(symlink["indexRecords"], [])
+
+    def test_debian_package_index_hashes_never_inherit_astra_or_suggest_installed_origin(self):
+        with patch.object(collector, "_debian_apt_helper_sha256") as decompress:
+            for distro in ("astra", "ubuntu", "derivative"):
+                evidence = collector.debian_cached_package_index_hashes(
+                    {"ID": distro, "VERSION_CODENAME": "bookworm"}, {})
+                self.assertEqual(evidence["status"], "unavailable")
+                self.assertFalse(evidence["installedPackageOriginVerified"])
+            decompress.assert_not_called()
+
+    def test_apt_helper_streams_actual_gzip_without_network_or_unbounded_output(self):
+        import gzip
+        import hashlib
+        apt_helper = Path("/usr/lib/apt/apt-helper")
+        if not apt_helper.is_file():
+            self.skipTest("APT helper is not installed on this runner")
+        raw = b"Package: libssl3\nVersion: 1\n\n" * 1024
+        with tempfile.TemporaryDirectory(prefix="hcp-apt-helper-") as directory:
+            filename = Path(directory) / "test_Packages.gz"
+            filename.write_bytes(gzip.compress(raw))
+            sha, size = collector._debian_apt_helper_sha256(str(filename))
+            self.assertEqual(size, len(raw))
+            self.assertEqual(sha, hashlib.sha256(raw).hexdigest())
+
     def test_target_program_keeps_python35_syntax(self):
         ast.parse(COLLECTOR.read_text(), feature_version=(3, 5))
 
