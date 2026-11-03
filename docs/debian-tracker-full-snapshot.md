@@ -6,7 +6,7 @@
 
 Debian provides a single complete JSON export at the **fixed** official address
 https://security-tracker.debian.org/tracker/data/json . It is larger than the
-8 MiB Ubuntu per-CVE immutable vault bound; a separate 64 MiB ceiling protects
+8 MiB Ubuntu per-CVE immutable vault bound; a separate 128 MiB ceiling protects
 the controller against an unexpectedly large response. Debian explicitly calls
 the JSON export an **unstable interface**. Its source package, CVE, per-release,
 status and fixed_version semantics require an independently versioned adapter.
@@ -21,7 +21,7 @@ importDebianTrackerFullSnapshot:
 2. Uses GET, credentials omitted, redirects disabled, no cache, and an AbortSignal
    timeout of 60 seconds. Requires HTTP 200, application/json and no Content-Range.
 3. Rejects oversized or invalid Content-Length before reading and bounds the
-   actual streamed body to 64 MiB regardless of headers.
+   actual streamed body to 128 MiB regardless of headers.
 4. Verifies UTF-8, valid JSON, duplicate object keys (including escaped equivalent
    keys), source-package and CVE release-map schema, bounded counts.
 5. Optionally requires an **independently supplied SHA-256**. Without this pin
@@ -101,3 +101,15 @@ browser-facing fetch or operational automatic refresh yet.
 
 Official reference: https://security-team.debian.org/security_tracker.html
 and https://www.debian.org/security/ .
+
+## Real feed size gate (3 November 2026)
+
+The first disposable GitHub Actions live feed check found that HTTP gzip
+`Content-Length` was **14,441,247 bytes**, while Node's transparently decoded
+stream contained **87,754,048 bytes**. The original 64 MiB limit correctly
+rejected the decoded stream before publication. The importer now caps **decoded**
+bytes at **128 MiB** and still validates both the advertised length and
+actual stream count. These measured sizes are one observation, not an
+upstream size guarantee or a publisher signature. If the live source later
+exceeds this bound, the download must fail closed rather than silently
+increasing permitted memory use.
