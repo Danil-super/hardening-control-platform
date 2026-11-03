@@ -6,6 +6,7 @@ import { buildHostCorrelation } from "@/lib/audit-correlation";
 import { hashAnsibleReport, listAnsibleReports, readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
 import { projectVendorAdvisoryEvidence } from "@/lib/vendor-crosscheck-report";
 import { projectDebianTrackerEvidence } from "@/lib/debian-tracker-export";
+import { summarizeDebianAptRepositoryEvidence } from "@/lib/debian-apt-provenance";
 import { resolvePlanSeverity } from "@/lib/remediation-plan-evidence";
 import type { AssetBinding } from "@/lib/asset-binding";
 import { hasActivePlanDecision, planObservationState } from "@/lib/remediation-plan-observations";
@@ -186,6 +187,22 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
   // may collapse repeated CVE observations or lose source-package metadata.
   const debianTrackerEvidence = projectDebianTrackerEvidence(vendorAdvisorySources);
   const debianTrackerEvidenceSha256 = sha256(canonical({ version: 1, hostAlias, debianTrackerEvidence }));
+  // Keep repository index evidence host-scoped, separately bound to its
+  // original package inventory. APT metadata cannot attest installed .deb
+  // origin and MUST NOT upgrade any CVE candidate or remediation privilege.
+  const debianAptIndexEvidence = sourceManifest.filter(source => source.mode === "packages").flatMap(source => {
+    const saved = readAnsibleReport(source.id);
+    if (!saved || !source.sha256) throw new Error("Исходный инвентарь пакетов недоступен для сохранения APT-доказательств.");
+    const raw = saved.raw && typeof saved.raw === "object" && !Array.isArray(saved.raw)
+      ? saved.raw as Record<string, unknown> : {};
+    const info = raw.packageInventory && typeof raw.packageInventory === "object" && !Array.isArray(raw.packageInventory)
+      ? raw.packageInventory as Record<string, unknown> : {};
+    const osInfo = info.osRelease && typeof info.osRelease === "object" && !Array.isArray(info.osRelease)
+      ? info.osRelease as Record<string, unknown> : {};
+    const evidence = summarizeDebianAptRepositoryEvidence(info.aptRepositories, osInfo);
+    return evidence ? [{ sourceReportId: source.id, sourceReportSha256: source.sha256, ...evidence }] : [];
+  });
+  const debianAptIndexEvidenceSha256 = sha256(canonical({ version: 1, hostAlias, debianAptIndexEvidence }));
   const correlation = buildHostCorrelation(hostAlias);
   const now = Date.parse(createdAt);
   const current = new Map(correlation?.findings.map((finding) => [finding.id, finding]));
@@ -220,6 +237,7 @@ export async function createProjectReport(input: { hostAlias: unknown; subject: 
     coverage, lostCoverage: correlation?.lostCoverage ?? [], findings, unplannedFindings, transactions, integrity: verifyAuditChain(), sourceManifest, sourceManifestSha256,
     vendorAdvisoryEvidence, vendorAdvisoryEvidenceSha256,
     debianTrackerEvidence, debianTrackerEvidenceSha256,
+    debianAptIndexEvidence, debianAptIndexEvidenceSha256,
   };
   const pdf = await runPdfRenderer(snapshot);
   const pdfSha256 = sha256(pdf);
