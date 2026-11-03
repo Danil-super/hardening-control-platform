@@ -955,6 +955,26 @@ sudo -n ufw --force enable
                         output=artifacts / "native-dpkg-records.txt").stdout
         checkpoint("Production dpkg collector equals all eight independent native fields",
                    verify_dpkg_inventory(package_report, native, distribution))
+        if distribution == "debian":
+            apt = package_report.get("packageInventory", {}).get("aptRepositories")
+            # No repository URL, credential or raw APT output is retained in
+            # public CI evidence. Independently compare two read-only views.
+            native_apt = remote("env LC_ALL=C apt-cache policy", timeout=60).stdout.rstrip("\n")
+            expected_policy_sha = hashlib.sha256(native_apt.encode("utf-8")).hexdigest()
+            if (not isinstance(apt, dict) or apt.get("schemaVersion") != 1
+                    or apt.get("status") != "observed" or apt.get("indexEntries", 0) <= 0
+                    or apt.get("policySha256") != expected_policy_sha
+                    or apt.get("releaseCodename") != "bookworm"
+                    or apt.get("publisherAuthenticated") is not False
+                    or apt.get("repositorySignatureVerified") is not False
+                    or apt.get("installedPackageOriginVerified") is not False):
+                raise RuntimeError("APT index metadata observation was incomplete, changed or claimed unverified signing authority")
+            checkpoint("Debian APT index metadata SHA equals independent native apt-cache policy",
+                       {"sha256": expected_policy_sha, "indexEntries": apt["indexEntries"],
+                        "suites": apt.get("suites", []), "suiteConsistent": apt.get("suiteConsistent") is True,
+                        "releaseLabels": apt.get("releaseLabels", []),
+                        "publisherAuthenticated": False, "repositorySignatureVerified": False,
+                        "installedPackageOriginVerified": False})
         readiness = json.loads(remote("sudo -n python3 /home/hcp-ci/hcp-source/hcp-host-readiness.py",
                                       output=artifacts / "host-readiness.json").stdout)
         if (readiness.get("osRelease", {}).get("ID") != distribution
