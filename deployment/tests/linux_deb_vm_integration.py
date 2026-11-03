@@ -1047,6 +1047,30 @@ sudo -n ufw --force enable
                         "matchedIdentitySha256": candidates["matchedIdentitySha256"],
                         "publisherAuthenticated": False, "installedPackageOriginVerified": False,
                         "remediationAuthorized": False})
+            archives = package_indexes.get("cachedArchiveEvidence")
+            if (not isinstance(archives, dict) or archives.get("schemaVersion") != 1
+                    or archives.get("status") not in ("locally_hash_matched", "partial",
+                                                      "no_cached_archives", "budget_exceeded", "unavailable")
+                    or type(archives.get("candidateArchives")) is not int
+                    or type(archives.get("matchedArchives")) is not int
+                    or archives["matchedArchives"] < 0
+                    or archives["matchedArchives"] > archives["candidateArchives"]
+                    or archives.get("eligibleInstalled") != candidates["eligibleInstalled"]
+                    or archives.get("scope") != "cached-deb-sha256-locally-verified-Packages-record-only-v1"
+                    or archives.get("publisherAuthenticated") is not False
+                    or archives.get("installedPackageOriginVerified") is not False
+                    or archives.get("remediationAuthorized") is not False
+                    or not isinstance(archives.get("verifiedArchiveSha256"), list)
+                    or len(archives["verifiedArchiveSha256"]) != archives["matchedArchives"]
+                    or any(not isinstance(x, str) or not re.fullmatch(r"[a-f0-9]{64}", x)
+                           for x in archives["verifiedArchiveSha256"])):
+                raise RuntimeError("Native Debian cached archive evidence has invalid status or authority")
+            checkpoint("Native optional cached Debian archives preserve conservative local SHA256 evidence",
+                       {"status": archives["status"], "candidateArchives": archives["candidateArchives"],
+                        "matchedArchives": archives["matchedArchives"],
+                        "verifiedArchiveSha256": archives["verifiedArchiveSha256"],
+                        "publisherAuthenticated": False, "installedPackageOriginVerified": False,
+                        "remediationAuthorized": False})
             verified_indexes = package_indexes.get("indexRecords", [])
             if (not isinstance(verified_indexes, list)
                     or len(verified_indexes) != package_indexes.get("matchedIndexes")

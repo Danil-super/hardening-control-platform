@@ -105,6 +105,22 @@ export function checkNativeSources(native, vm) {
   assert.equal(candidates.matchedIdentitySha256, candidateProof?.matchedIdentitySha256);
   for (const key of ["publisherAuthenticated", "installedPackageOriginVerified", "remediationAuthorized"])
     assert.equal(candidates[key], false);
+  const archives = indexes.cachedArchiveEvidence;
+  const archiveProof = vm.checks?.find(x =>
+    x.name === "Native optional cached Debian archives preserve conservative local SHA256 evidence")?.detail;
+  assert.equal(archives?.schemaVersion, 1);
+  assert.ok(["locally_hash_matched", "partial", "no_cached_archives",
+    "budget_exceeded", "unavailable"].includes(archives?.status));
+  assert.equal(archives.eligibleInstalled, candidates.eligibleInstalled);
+  assert.ok(archives.candidateArchives >= archives.matchedArchives && archives.matchedArchives >= 0);
+  assert.equal(archives.verifiedArchiveSha256.length, archives.matchedArchives);
+  assert.deepEqual(archives.verifiedArchiveSha256, archiveProof?.verifiedArchiveSha256);
+  assert.equal(archives.candidateArchives, archiveProof?.candidateArchives);
+  assert.equal(archives.matchedArchives, archiveProof?.matchedArchives);
+  assert.equal(archives.scope, "cached-deb-sha256-locally-verified-Packages-record-only-v1");
+  for (const digest of archives.verifiedArchiveSha256) assert.match(digest, SHA);
+  for (const key of ["publisherAuthenticated", "installedPackageOriginVerified", "remediationAuthorized"])
+    assert.equal(archives[key], false);
   const found = native.packages.filter(pkg => pkg.manager === "dpkg" && pkg.sourceName === SOURCE);
   assert.ok(found.length > 0);
   const versions = [...new Set(found.map(x => x.sourceVersion))];
@@ -121,6 +137,7 @@ export function checkNativeSources(native, vm) {
     locallyVerifiedSignatures: signed.validLocalSignatures, localKeyringSha256: signed.localKeyringSha256,
     verifiedLocalPackageIndexes: indexes.matchedIndexes,
     exactInstalledVersionCandidates: candidates.exactInstalledVersionCandidates,
+    locallyMatchedCachedArchives: archives.matchedArchives,
     publisherSignedPackageProvenanceVerified: false };
 }
 
@@ -264,6 +281,8 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
     assert.equal(sourceIndexEvidence.verifiedAgainstLocallySignedRelease, true);
     assert.deepEqual(sourceIndexEvidence.indexRecords, indexes.indexRecords);
     assert.deepEqual(sourceIndexEvidence.installedVersionCandidates, indexes.installedVersionCandidates);
+    assert.deepEqual(sourceIndexEvidence.cachedArchiveEvidence, indexes.cachedArchiveEvidence);
+    assert.equal(sourceIndexEvidence.cachedArchiveEvidence.installedPackageOriginVerified, false);
     assert.equal(sourceIndexEvidence.installedVersionCandidates.installedPackageOriginVerified, false);
     assert.equal(sourceIndexEvidence.publisherAuthenticated, false);
     assert.equal(sourceIndexEvidence.installedPackageOriginVerified, false);
@@ -279,6 +298,10 @@ export async function accept(nativePath, matchingDir, vmProtocolPath, outDir) {
     }
     assert.ok(nativeRendered.includes(indexes.installedVersionCandidates.matchedIdentitySha256),
       "Exact installed candidate SHA-256 was lost from real Debian PDF");
+    for (const digest of indexes.cachedArchiveEvidence.verifiedArchiveSha256) {
+      assert.ok(nativeRendered.includes(digest),
+        "Local verified Debian .deb SHA-256 was lost from final PDF");
+    }
     assert.ok(nativeRendered.includes(nativeFinalJson.debianPackageIndexEvidenceSha256));
     assert.ok(nativeRendered.includes(sourceIndexEvidence.sourceReportSha256));
 

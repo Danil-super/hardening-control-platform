@@ -364,6 +364,45 @@ export default async function AgentlessReportDetailPage({
               </p>
             </div>
           ) : null}
+          {debianIndexEvidence.cachedArchiveEvidence ? (
+            <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/50 p-4">
+              <h3 className="font-semibold text-slate-100">Проверка кешированных .deb по SHA-256</h3>
+              <p className="mt-1 text-sm text-slate-400">
+                Файлы только читаются из локального APT-кеша. Хеш сравнивается с записью
+                в проверенном Packages; отсутствие архива не является уязвимостью.
+              </p>
+              <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-3 xl:grid-cols-5">
+                <div><dt className="text-slate-500">Результат</dt><dd className="text-slate-200">{
+                  debianIndexEvidence.cachedArchiveEvidence.status === "locally_hash_matched"
+                    ? "Хеши совпали"
+                    : debianIndexEvidence.cachedArchiveEvidence.status === "no_cached_archives"
+                    ? "Локальных архивов нет"
+                    : debianIndexEvidence.cachedArchiveEvidence.status === "partial"
+                    ? "Неполная проверка"
+                    : debianIndexEvidence.cachedArchiveEvidence.status === "budget_exceeded"
+                    ? "Превышен лимит" : "Недоступна"
+                }</dd></div>
+                <div><dt className="text-slate-500">Архивов</dt><dd className="text-slate-200">
+                  {debianIndexEvidence.cachedArchiveEvidence.candidateArchives}</dd></div>
+                <div><dt className="text-slate-500">Хеш совпал</dt><dd className="text-slate-200">
+                  {debianIndexEvidence.cachedArchiveEvidence.matchedArchives}</dd></div>
+                <div><dt className="text-slate-500">Хеш не совпал</dt><dd className="text-slate-200">
+                  {debianIndexEvidence.cachedArchiveEvidence.mismatchedArchives}</dd></div>
+                <div><dt className="text-slate-500">Без записи / неоднозначно</dt><dd className="text-slate-200">
+                  {debianIndexEvidence.cachedArchiveEvidence.missingIndexHashes} / {debianIndexEvidence.cachedArchiveEvidence.ambiguousIndexHashes}
+                </dd></div>
+              </dl>
+              {debianIndexEvidence.cachedArchiveEvidence.verifiedArchiveSha256.length ? (
+                <p className="mt-3 break-all font-mono text-xs text-slate-400">
+                  SHA-256 проверенных кешированных архивов: {debianIndexEvidence.cachedArchiveEvidence.verifiedArchiveSha256.join(", ")}
+                </p>
+              ) : null}
+              <p className="mt-3 text-sm text-amber-100">
+                Данные относятся к файлам кеша, а не к подтверждённому происхождению установленного пакета.
+                Подлинность ключей издателя и право автоматического исправления не установлены.
+              </p>
+            </div>
+          ) : null}
           {debianIndexEvidence.indexRecords.length ? (
             <div className="mt-4 space-y-3 border-t border-slate-800 pt-4">
               {debianIndexEvidence.indexRecords.map((entry, index) => (
