@@ -368,11 +368,15 @@ def _debian_inrelease_headers(raw, codename):
             if key in headers or len(value) > 180:
                 raise ValueError("Duplicate or oversized signed Release field")
             headers[key] = value.strip()
-    if headers.get("Origin") != "Debian":
-        raise ValueError("Cached Release Origin does not claim Debian")
     allowed = (codename, codename + "-security", codename + "-updates", codename + "-backports")
-    if headers.get("Codename") not in allowed:
+    release = headers.get("Codename")
+    if release not in allowed:
         raise ValueError("Cached signed release does not match exact OS codename")
+    # Debian's official backports suite has the distinct, signed
+    # 'Origin: Debian Backports'. Never accept it for base/security/updates.
+    expected_origin = "Debian Backports" if release == codename + "-backports" else "Debian"
+    if headers.get("Origin") != expected_origin:
+        raise ValueError("Cached signed release Origin differs from its exact suite")
     if not headers.get("Date"):
         raise ValueError("Signed release has no publication date")
     # Do not treat Valid-Until or Date as independently publisher-fresh.
