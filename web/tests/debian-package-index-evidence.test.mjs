@@ -123,3 +123,47 @@ test("candidate evidence rejects forged trust flags, count inflation and incompl
     { ...example(), installedVersionCandidates: noMatch }, os).installedVersionCandidates?.status,
   "no_exact_match");
 });
+
+const archiveExample = () => ({
+  schemaVersion: 1, status: "locally_hash_matched",
+  eligibleInstalled: 125, candidateArchives: 2, matchedArchives: 2,
+  mismatchedArchives: 0, missingIndexHashes: 0, ambiguousIndexHashes: 0,
+  verifiedArchiveSha256: ["a".repeat(64), "b".repeat(64)],
+  scope: "cached-deb-sha256-locally-verified-Packages-record-only-v1",
+  publisherAuthenticated: false, installedPackageOriginVerified: false,
+  remediationAuthorized: false,
+});
+test("bounded cached .deb digests survive strict CVE projection without claiming installed origin", () => {
+  const input = { ...example(), installedVersionCandidates: exampleCandidates(),
+    cachedArchiveEvidence: archiveExample() };
+  const result = summarizeDebianPackageIndexes(input, os);
+  assert.equal(result.status, "locally_hash_matched");
+  assert.equal(result.cachedArchiveEvidence?.status, "locally_hash_matched");
+  assert.equal(result.cachedArchiveEvidence?.matchedArchives, 2);
+  assert.equal(result.cachedArchiveEvidence?.verifiedArchiveSha256.length, 2);
+  assert.equal(result.cachedArchiveEvidence?.publisherAuthenticated, false);
+  assert.equal(result.cachedArchiveEvidence?.installedPackageOriginVerified, false);
+  assert.equal(result.cachedArchiveEvidence?.remediationAuthorized, false);
+  assert.deepEqual(summarizeDebianPackageIndexes(result, os), result);
+});
+test("cached archives cannot forge authority, unbounded counts or partial successes", () => {
+  for (const change of [
+    { publisherAuthenticated: true }, { installedPackageOriginVerified: true },
+    { remediationAuthorized: true }, { matchedArchives: 3 },
+    { candidateArchives: -1 }, { verifiedArchiveSha256: ["../../etc/passwd"] },
+    { verifiedArchiveSha256: ["f".repeat(64)] }, { scope: "signed-installed-package" },
+    { status: "authenticated-origin" },
+  ]) {
+    const result = summarizeDebianPackageIndexes(
+      { ...example(), cachedArchiveEvidence: { ...archiveExample(), ...change } }, os);
+    assert.equal(result.status, "invalid", JSON.stringify(change));
+  }
+  const noCache = { ...archiveExample(), status: "no_cached_archives",
+    candidateArchives: 0, matchedArchives: 0, verifiedArchiveSha256: [] };
+  assert.equal(summarizeDebianPackageIndexes(
+    { ...example(), cachedArchiveEvidence: noCache }, os).cachedArchiveEvidence?.status,
+  "no_cached_archives");
+  const partial = { ...example(), status: "partial", verifiedAgainstLocallySignedRelease: false,
+    candidateIndexes: 3, missingSignedHashes: 1, cachedArchiveEvidence: archiveExample() };
+  assert.equal(summarizeDebianPackageIndexes(partial, os).status, "invalid");
+});
