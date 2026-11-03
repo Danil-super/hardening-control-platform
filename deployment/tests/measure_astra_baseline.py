@@ -108,7 +108,7 @@ def parse_report(report):
         identifier, status = item.get("id"), item.get("status")
         require(isinstance(identifier, str)
                 and identifier.startswith(PREFIX) and len(identifier) <= 140
-                and re.fullmatch(r"[a-zA-Z0-9_]+", identifier),
+                and re.fullmatch(r"[a-zA-Z0-9_]+", identifier[len(PREFIX):]),
                 "Non-Astra profile rule encountered")
         require(status in ("passed", "failed"), "Rule result unresolved; do not claim improvement")
         require(identifier not in statuses, "Duplicate rule identity")
