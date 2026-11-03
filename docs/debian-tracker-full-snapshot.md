@@ -76,11 +76,15 @@ epoch/backports, other releases, unmatched source binaries, 404s/redirects,
 wrong MIME, oversized stream, duplicate JSON keys, corrupt immutable data,
 symlink replacement, interrupted import and stale/future capture times.
 
-This stage **does not fetch and validate a real live Debian feed in CI** and
-therefore cannot establish acceptance of every upstream entry. The published
-full export is a moving target and may require further shape compatibility
-work using controlled real-feed fixtures. There is intentionally no
-browser-facing fetch or operational automatic refresh yet.
+A separate disposable, path-filtered **live CI acceptance** now fetches and
+validates Debian's actual full export, then checks the real
+`openssl/CVE-2024-6119` record in bookworm against two native dpkg versions.
+See `.github/workflows/debian-tracker-live.yml` and
+`web/tests/debian-tracker-live-acceptance.mjs`. This is a compatibility check
+at one point in time, not verification of every vulnerability record or of
+upstream publisher authenticity. The published full export is a moving target.
+There is still no browser-facing download, operational automatic refresh,
+or host remediation.
 
 ## Remaining before use in normal CVE reports
 
@@ -113,3 +117,20 @@ actual stream count. These measured sizes are one observation, not an
 upstream size guarantee or a publisher signature. If the live source later
 exceeds this bound, the download must fail closed rather than silently
 increasing permitted memory use.
+
+## Successful real-feed compatibility observation
+
+The live CI action captured the exact digest
+`2bdb1ef767c72d6576c3199c481e66e0426a4703585be5b97d251527a4053083`
+from its 3 November 2026 observation. The archive contained 4,153 source
+package keys and 79,097 issue keys. The original gzip transfer length was
+14,441,247 bytes; decoded JSON was 87,754,048 bytes. The live source entry
+for `openssl/CVE-2024-6119/bookworm` was `resolved` with
+`fixed_version=3.0.14-1~deb12u2`; the native `dpkg` comparison returned
+candidate `affected` for `3.0.14-1~deb12u1` and candidate
+`fixed_or_not_affected` at `3.0.14-1~deb12u2`. All publisher authentication,
+publisher freshness and remediation claims remain false/unknown.
+
+This is historical evidence for one observed, mutable upstream feed; it is
+not a pinned Debian signing-key attestation, a reproducible copy of every
+package/version on a target host or evidence of complete CVE coverage.
