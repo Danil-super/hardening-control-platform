@@ -1028,6 +1028,25 @@ sudo -n ufw --force enable
                                        "budget_exceeded", "missing"):
                     safe_status = "unknown"
                 raise RuntimeError("Native Debian Packages hash-chain verification incomplete: state=" + safe_status)
+            candidates = package_indexes.get("installedVersionCandidates")
+            if (not isinstance(candidates, dict)
+                    or candidates.get("schemaVersion") != 1
+                    or candidates.get("status") != "candidate_record_match"
+                    or type(candidates.get("eligibleInstalled")) is not int
+                    or type(candidates.get("exactInstalledVersionCandidates")) is not int
+                    or not 0 < candidates["exactInstalledVersionCandidates"] <= candidates["eligibleInstalled"]
+                    or not re.fullmatch(r"[a-f0-9]{64}", candidates.get("matchedIdentitySha256", ""))
+                    or candidates.get("scope") != "installed-dpkg-version-in-locally-verified-Packages-record-v1"
+                    or candidates.get("publisherAuthenticated") is not False
+                    or candidates.get("installedPackageOriginVerified") is not False
+                    or candidates.get("remediationAuthorized") is not False):
+                raise RuntimeError("Native Debian installed package candidate records failed the exact-version acceptance gate")
+            checkpoint("Native installed dpkg versions have exact matching records in hash-verified cached Packages",
+                       {"eligibleInstalled": candidates["eligibleInstalled"],
+                        "exactInstalledVersionCandidates": candidates["exactInstalledVersionCandidates"],
+                        "matchedIdentitySha256": candidates["matchedIdentitySha256"],
+                        "publisherAuthenticated": False, "installedPackageOriginVerified": False,
+                        "remediationAuthorized": False})
             verified_indexes = package_indexes.get("indexRecords", [])
             if (not isinstance(verified_indexes, list)
                     or len(verified_indexes) != package_indexes.get("matchedIndexes")
