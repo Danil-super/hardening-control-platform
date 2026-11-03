@@ -238,6 +238,16 @@ test("Debian APT source-index metadata retains report identity and trust caveats
       manager: "dpkg", packageCount: 1, osRelease: {
         ID: "debian", VERSION_ID: "12", VERSION_CODENAME: "bookworm",
       },
+      debianSignedReleases: {
+        schemaVersion: 1, status: "verified_with_local_keyring", releaseCodename: "bookworm",
+        candidateFiles: 1, validLocalSignatures: 1, invalidOrUnverifiable: 0,
+        signedReleases: ["bookworm"], signerFingerprints: ["a".repeat(40)],
+        inReleaseSha256: ["b".repeat(64)], localKeyringSha256: "c".repeat(64),
+        localSignatureVerified: true, publisherAuthenticated: false,
+        publisherFreshnessVerified: false, packageIndexHashesVerified: false,
+        installedPackageOriginVerified: false, remediationAuthorized: false,
+        scope: "cached-inrelease-gpgv-installed-archive-keyring-only",
+      },
       aptRepositories: {
         schemaVersion: 1, status: "observed", releaseCodename: "bookworm",
         indexEntries: 2, debianLabelEntries: 2, otherLabelEntries: 0,
@@ -270,6 +280,18 @@ test("Debian APT source-index metadata retains report identity and trust caveats
   assert.equal(observation.repositorySignatureVerified, false);
   assert.equal(observation.installedPackageOriginVerified, false);
   assert.match(snapshot.debianAptIndexEvidenceSha256, /^[a-f0-9]{64}$/);
+  assert.equal(snapshot.debianSignedReleaseEvidence.length, 1);
+  const signature = snapshot.debianSignedReleaseEvidence[0];
+  assert.equal(signature.sourceReportId, sourceId);
+  assert.equal(signature.status, "verified_with_local_keyring");
+  assert.equal(signature.localSignatureVerified, true);
+  assert.equal(signature.publisherAuthenticated, false);
+  assert.equal(signature.publisherFreshnessVerified, false);
+  assert.equal(signature.packageIndexHashesVerified, false);
+  assert.equal(signature.installedPackageOriginVerified, false);
+  assert.equal(signature.remediationAuthorized, false);
+  assert.equal(signature.localKeyringSha256, "c".repeat(64));
+  assert.match(snapshot.debianSignedReleaseEvidenceSha256, /^[a-f0-9]{64}$/);
   const pdf = projectReports.readProjectReportPdf(record.id).pdf;
   const python = [
     "import base64,re,sys,zlib",
@@ -287,7 +309,8 @@ test("Debian APT source-index metadata retains report identity and trust caveats
     input: pdf, encoding: "utf8", maxBuffer: 12 * 1024 * 1024,
   });
   for (const marker of [sourceId, observation.sourceReportSha256, aptDigest,
-    snapshot.debianAptIndexEvidenceSha256, "bookworm-security"]) {
+    snapshot.debianAptIndexEvidenceSha256, snapshot.debianSignedReleaseEvidenceSha256, "bookworm-security",
+    signature.localKeyringSha256, signature.inReleaseSha256[0], signature.signerFingerprints[0]]) {
     assert.ok(rendered.includes(marker), "Final PDF dropped APT source identity or metadata hash");
   }
   assert.equal(store.verifyAuditChain().valid, true);
