@@ -460,6 +460,7 @@ class PackageInventoryTest(unittest.TestCase):
             index = lists / "mirror_debian_dists_bookworm_main_binary-amd64_Packages.lz4"
             index.write_bytes(b"synthetic-compressed-bytes")
             signature = {"status": "verified_with_local_keyring", "localSignatureVerified": True,
+                         "candidateFiles": 1, "validLocalSignatures": 1,
                          "publisherAuthenticated": False, "installedPackageOriginVerified": False,
                          "localKeyringSha256": hashlib.sha256(key.read_bytes()).hexdigest(),
                          "inReleaseSha256": [hashlib.sha256(inrelease.read_bytes()).hexdigest()]}
@@ -482,6 +483,19 @@ class PackageInventoryTest(unittest.TestCase):
                 self.assertEqual(observed["indexRecords"][0]["component"], "main")
                 self.assertEqual(observed["indexRecords"][0]["architecture"], "amd64")
                 self.assertEqual(decode.call_count, 1)
+                # A previously verified InRelease vanished after the first
+                # phase: the surviving subset must NOT count as authenticated.
+                missing_signed_release = dict(
+                    signature, candidateFiles=2, validLocalSignatures=2,
+                    inReleaseSha256=signature["inReleaseSha256"] + ["f" * 64])
+                with patch.object(collector, "_debian_apt_helper_sha256",
+                                  side_effect=AssertionError("must reject before decompression")):
+                    disappeared = collector.debian_cached_package_index_hashes(
+                        {"ID": "debian", "VERSION_CODENAME": "bookworm"},
+                        missing_signed_release)
+                self.assertEqual(disappeared["status"], "unavailable")
+                self.assertFalse(disappeared["verifiedAgainstLocallySignedRelease"])
+                self.assertEqual(disappeared["indexRecords"], [])
                 for flag in ("publisherAuthenticated", "keyringIndependentlyAuthenticated",
                              "publisherFreshnessVerified", "installedPackageOriginVerified",
                              "remediationAuthorized"):
