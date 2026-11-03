@@ -535,13 +535,17 @@ class PackageInventoryTest(unittest.TestCase):
         apt_helper = Path("/usr/lib/apt/apt-helper")
         if not apt_helper.is_file():
             self.skipTest("APT helper is not installed on this runner")
-        raw = b"Package: libssl3\nVersion: 1\n\n" * 1024
+        raw = b"Package: libssl3\nVersion: 1\nArchitecture: amd64\n\n" * 1024
         with tempfile.TemporaryDirectory(prefix="hcp-apt-helper-") as directory:
             filename = Path(directory) / "test_Packages.gz"
             filename.write_bytes(gzip.compress(raw))
             sha, size = collector._debian_apt_helper_sha256(str(filename))
             self.assertEqual(size, len(raw))
             self.assertEqual(sha, hashlib.sha256(raw).hexdigest())
+            new_sha, new_size, matched = collector._debian_apt_helper_sha256(
+                str(filename), {("libssl3", "amd64", "1"), ("libssl3", "amd64", "2")})
+            self.assertEqual((new_sha, new_size), (sha, size))
+            self.assertEqual(matched, {("libssl3", "amd64", "1")})
 
     def test_debian_installed_version_candidate_match_is_exact_and_non_authoritative(self):
         import hashlib
