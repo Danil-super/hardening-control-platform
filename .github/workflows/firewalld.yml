@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/firewalld.yml
       - deployment/tests/verify_firewalld.py
+      - deployment/tests/test_firewalld_cleanup.py
       - deployment/tests/verify_firewall.py
       - ansible/scripts/hcp-firewall.py
       - ansible/tasks/firewall-operation.yml
@@ -27,6 +28,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
+
+      - name: Test strict idempotent cleanup of disposable veth interfaces
+        run: python3 -m unittest discover -s deployment/tests -p 'test_firewalld_cleanup.py' -v
 
       - name: Install firewalld, SSH and Ansible without enabling a firewall
         timeout-minutes: 5
