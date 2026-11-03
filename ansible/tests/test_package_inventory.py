@@ -431,12 +431,12 @@ class PackageInventoryTest(unittest.TestCase):
         release, entries = collector._debian_signed_package_hashes(contents, "bookworm")
         self.assertEqual(release, "bookworm")
         self.assertEqual(entries, {"main/binary-amd64/Packages": (sha, len(raw_pkg))})
-        altered = contents.replace(" main/binary-amd64/Packages\n",
-                                   " ../private/Packages\n")
+        altered = contents.replace(b" main/binary-amd64/Packages\n",
+                                   b" ../private/Packages\n")
         self.assertEqual(collector._debian_signed_package_hashes(altered, "bookworm")[1], {})
-        repeated = contents.replace("-----BEGIN PGP SIGNATURE-----",
-                                    " " + sha + " " + str(len(raw_pkg)) + " main/binary-amd64/Packages\n"
-                                    "-----BEGIN PGP SIGNATURE-----")
+        repeated = contents.replace(b"-----BEGIN PGP SIGNATURE-----",
+                                    (" " + sha + " " + str(len(raw_pkg)) + " main/binary-amd64/Packages\n"
+                                     "-----BEGIN PGP SIGNATURE-----").encode())
         with self.assertRaisesRegex(ValueError, "Duplicate"):
             collector._debian_signed_package_hashes(repeated, "bookworm")
 
