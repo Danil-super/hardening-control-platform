@@ -111,9 +111,11 @@ export default async function AgentlessReportDetailPage({
       ? asRecord(vulnerabilityScan.aptRepositoryEvidence) : null;
   const signedReleases = report.mode === "packages"
     ? summarizeDebianSignedReleases(packageInventory.debianSignedReleases, asRecord(packageInventory.osRelease))
-    : report.mode === "vulnerabilities"
-      ? summarizeDebianSignedReleases(vulnerabilityScan.debianSignedReleaseEvidence,
-          asRecord(asRecord(raw.packageInventory).osRelease))
+    : report.mode === "vulnerabilities" && vulnerabilityScan.ecosystem === "Debian"
+      ? summarizeDebianSignedReleases(vulnerabilityScan.debianSignedReleaseEvidence, {
+          ID: "debian",
+          VERSION_CODENAME: asRecord(vulnerabilityScan.debianSignedReleaseEvidence).releaseCodename,
+        })
       : null;
   const aptSuites = Array.isArray(aptRepositoryEvidence?.suites)
     ? aptRepositoryEvidence.suites.filter((entry): entry is string => typeof entry === "string" && /^[a-z][a-z0-9-]{1,31}$/.test(entry)).slice(0, 32)
