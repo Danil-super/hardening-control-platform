@@ -78,7 +78,7 @@ export function summarizeDebianPackageIndexes(
   const records = data.indexRecords;
   if (data.schemaVersion !== 1
     || !["locally_hash_matched", "partial", "unavailable", "budget_exceeded"].includes(status)
-    || data.releaseCodename !== codename || data.scope !== SCOPE
+    || data.releaseCodename !== codename || (data.scope ?? data.provenanceScope) !== SCOPE
     || data.publisherAuthenticated !== false || data.keyringIndependentlyAuthenticated !== false
     || data.publisherFreshnessVerified !== false || data.installedPackageOriginVerified !== false
     || data.remediationAuthorized !== false
