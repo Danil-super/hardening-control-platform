@@ -407,7 +407,16 @@ def debian_cached_inrelease_signatures(os_release):
         directory = os.lstat(DEBIAN_INRELEASE_DIR)
         if not stat.S_ISDIR(directory.st_mode) or stat.S_ISLNK(directory.st_mode):
             return base
-        keyring = _private_cached_regular(DEBIAN_ARCHIVE_KEYRING, DEBIAN_KEYRING_MAX_BYTES)
+        keyring_path = DEBIAN_ARCHIVE_KEYRING
+        # On modern Debian, the .gpg compatibility name is legitimately a
+        # same-directory link to the .pgp binary archive keyring. Accept ONLY
+        # this exact fixed alias; no arbitrary filesystem traversal or URL.
+        if stat.S_ISLNK(os.lstat(keyring_path).st_mode):
+            if (os.path.basename(keyring_path) != "debian-archive-keyring.gpg"
+                    or os.readlink(keyring_path) != "debian-archive-keyring.pgp"):
+                raise ValueError("Unsupported Debian archive keyring symlink")
+            keyring_path = os.path.join(os.path.dirname(keyring_path), "debian-archive-keyring.pgp")
+        keyring = _private_cached_regular(keyring_path, DEBIAN_KEYRING_MAX_BYTES)
         base["localKeyringSha256"] = hashlib.sha256(keyring).hexdigest()
         names = os.listdir(DEBIAN_INRELEASE_DIR)
         if len(names) > 20000:
@@ -432,10 +441,12 @@ def debian_cached_inrelease_signatures(os_release):
             # No shell and no network. A result is valid only when gpgv actually
             # checked the *same* bytes later returned by the bounded reader.
             check = subprocess.run(
-                ["gpgv", "--status-fd", "1", "--keyring", DEBIAN_ARCHIVE_KEYRING, filename],
+                ["gpgv", "--status-fd", "1", "--keyring", keyring_path, filename],
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12, check=False,
             )
             after = _private_cached_regular(filename, DEBIAN_INRELEASE_MAX_BYTES)
+            if _private_cached_regular(keyring_path, DEBIAN_KEYRING_MAX_BYTES) != keyring:
+                raise ValueError("Debian archive keyring changed during verification")
             if before != after:
                 raise ValueError("Cached signed Release changed during gpgv")
             output = check.stdout[:65536].decode("ascii", "replace")
