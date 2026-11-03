@@ -1002,7 +1002,8 @@ def collect():
             elif manager == "dpkg" and os_release.get("ID") == "debian":
                 extra["aptRepositories"] = debian_apt_repository_observation(os_release)
                 extra["debianSignedReleases"] = debian_cached_inrelease_signatures(os_release)
-                extra["debianPackageIndexes"] = debian_cached_package_index_hashes(os_release, extra["debianSignedReleases"])
+                extra["debianPackageIndexes"] = debian_cached_package_index_hashes(
+                    os_release, extra["debianSignedReleases"], packages if not error else None)
             same_configuration = rpm_database is None or resolve_rpm_database() == rpm_database
             if not consistency.unchanged() or not same_configuration:
                 error = "The native package database changed during collection; repeat the inventory"
