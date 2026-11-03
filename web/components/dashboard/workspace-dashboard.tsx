@@ -2,6 +2,7 @@
 
 import { CheckCircle2, CircleAlert, Database, FileText, RefreshCw, Server, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Button, LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { errorMessage, readApiResponse } from "@/lib/client-api";
@@ -175,7 +176,7 @@ export function WorkspaceDashboard() {
               <tbody>
                 {evidence.assessed.slice(0, 10).map(host => (
                   <tr key={host.alias} className="border-b border-slate-800/70">
-                    <td className="px-2 py-3 font-medium text-slate-200">{host.alias}</td>
+                    <td className="px-2 py-3 font-medium text-slate-200"><Link href={`/hosts?host=${encodeURIComponent(host.alias)}#host-audit-flow`} className="text-sky-200 underline-offset-4 hover:underline" aria-label={`Открыть маршрут проверки хоста ${host.alias}`}>{host.alias}</Link></td>
                     <td className="px-2 py-3">
                       <span className={host.state === "has_fresh_evidence" ? "text-emerald-200"
                         : host.state === "needs_review" ? "text-amber-200" : "text-slate-300"}>
