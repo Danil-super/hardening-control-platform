@@ -86,7 +86,7 @@ class SessionRestoreAcceptanceTests(unittest.TestCase):
         self.assertEqual(data["remainingSessionHashes"], 0)
         self.assertFalse(data["hmacChainVerified"])
         self.assertFalse(data["oldBrowserCookiesTested"])
-        self.assertFalse(data["originalControllerAffected"])
+        self.assertFalse(data["originalControllerIsolationIndependentlyVerified"])
         self.assertEqual(receipt.stat().st_mode & 0o777, 0o600)
         self.assertNotIn(SECRET, receipt.read_text() + result.stdout + result.stderr)
         self.assertEqual(self.count(), 0)
