@@ -45,7 +45,9 @@ test("parallel processes append one unbranched audit chain", async () => {
     const store = await import(${JSON.stringify(compiled.url("state-store"))});
     for (let i = 0; i < 20; i++) store.appendAuditEvent("parallel", "${worker}-" + i, { worker: ${worker}, i });
   `], { env: { ...process.env }, timeout: 20000 })));
-  assert.deepEqual(store.verifyAuditChain(), { valid: true, entries: 80, brokenAt: null, legacyEntries: 0, payloadProtected: true });
+  const { lastEntryHash: head, ...integrity } = store.verifyAuditChain();
+  assert.match(head, /^[a-f0-9]{64}$/);
+  assert.deepEqual(integrity, { valid: true, entries: 80, brokenAt: null, legacyEntries: 0, payloadProtected: true });
 });
 
 test("failed audit insertion rolls back the associated state update", () => {
@@ -79,7 +81,9 @@ test("legacy signatures are preserved and marked as lacking full payload protect
   database.prepare("INSERT INTO audit_events VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run("old", value.createdAt, value.eventType, value.entityId, JSON.stringify(value.payload), null, hash, 1);
   database.close();
   store.appendAuditEvent("new", "new", { parameters: { port: "8080" } });
-  assert.deepEqual(store.verifyAuditChain(), { valid: true, entries: 2, brokenAt: null, legacyEntries: 1, payloadProtected: false });
+  const { lastEntryHash: legacyHead, ...legacyIntegrity } = store.verifyAuditChain();
+  assert.match(legacyHead, /^[a-f0-9]{64}$/);
+  assert.deepEqual(legacyIntegrity, { valid: true, entries: 2, brokenAt: null, legacyEntries: 1, payloadProtected: false });
 });
 
 test("rollback atomically claims its host and rejects duplicate requests", () => {
