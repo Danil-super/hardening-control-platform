@@ -172,8 +172,39 @@ def execute(args, work, artifacts, reports, sources, protocol):
                 time.sleep(3)
             else:
                 raise RuntimeError("Actual Astra 1.7 guest did not pass SSH readiness")
-            remote("sudo cloud-init status --wait",
-                   output=artifacts / "cloud-init-status.txt", timeout=300)
+            # A genuine 1.7.6.UU2 guest has reached SSH. Cloud-init may
+            # still fail one module, so collect only bounded, non-secret
+            # module/stage diagnostics in private runner state before refusing
+            # an incomplete initialization. Never echo raw user-data,
+            # cloud-init.log or the original guest identity into CI artifacts.
+            init_status = remote("sudo cloud-init status --wait",
+                                 accepted=(0, 1, 2), timeout=300)
+            write_json(work / "cloud-init-private-status.json", {
+                "exitCode": init_status.returncode,
+                "outputSha256": hashlib.sha256(init_status.stdout.encode()).hexdigest(),
+            })
+            if init_status.returncode != 0:
+                status_detail = remote("sudo cloud-init status --long",
+                                       accepted=(0, 1, 2), timeout=30)
+                # Cloud-init can include operator-defined user-data in its
+                # messages. Emit only a strict enumeration, never raw text.
+                status_lines = status_detail.stdout.splitlines()
+                diagnostic = {
+                    "status": "failed",
+                    "initExitCode": init_status.returncode,
+                    "nativeSshReachable": True,
+                    "cloudInitStatusLongSha256": hashlib.sha256(
+                        status_detail.stdout.encode()).hexdigest(),
+                    "errorLineCount": sum(bool(re.match(
+                        r"^\\s*(?:errors|recoverable_errors|error|detail)\\s*:", line))
+                        for line in status_lines),
+                    "notes": "Cloud-init error is blocking; guest logs and seed remain private.",
+                }
+                checkpoint("Native guest cloud-init failure; no audit claimed", diagnostic)
+                raise RuntimeError("Native Astra cloud-init failed; private diagnostics recorded")
+            checkpoint("Actual native guest cloud-init completed", {
+                "status": "done", "exitCode": 0,
+            })
             identity_command = (
                 "cat /etc/os-release; printf '\\nRELEASE='; cat /etc/astra_version; "
                 "printf '\\nKERNEL='; uname -r; printf 'MACHINE_ID='; "
