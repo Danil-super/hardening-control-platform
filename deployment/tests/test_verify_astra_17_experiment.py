@@ -111,6 +111,14 @@ class Astra17IdentityGateTests(unittest.TestCase):
                     gate.verify_experiment(*records, observed_facts, identity,
                                            fingerprint, hashes())
 
+    def test_no_actual_control_transition_cannot_be_sold_as_an_experiment(self):
+        records, facts = observations()
+        records[1]["findings"] = copy.deepcopy(records[0]["findings"])
+        records[1]["scanner"]["ruleResultCounts"] = copy.deepcopy(
+            records[0]["scanner"]["ruleResultCounts"])
+        with self.assertRaisesRegex(ValueError, "No observed rule transition"):
+            gate.verify_experiment(*records, facts, IDENTITY, FINGERPRINT, hashes())
+
     def test_exact_source_binding_rejects_fingerprint_mismatch_even_if_asset_matches(self):
         reports, facts = observations()
         reports[0]["assetBinding"]["sshHostKeyFingerprint"] = "SHA256:" + "B" * 43
