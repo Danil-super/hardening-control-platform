@@ -123,6 +123,11 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertEqual(selected, ["ssh", "users_groups"])
         self.assertNotIn("SENSITIVE", json.dumps(selected))
         self.assertNotIn("machine-id", json.dumps(selected))
+        extra = ("2026-11-04 10:01:22 [DEBUG] finish: "
+                 "init-network/config-users-groups: FAIL: private error\\n"
+                 "finish: modules-final/config-phone-home: FAIL: secret URL\\n")
+        self.assertEqual(vm.classify_private_cloud_init_errors(extra),
+                         ["phone_home", "users_groups"])
 
     def test_public_failure_summary_discards_raw_guest_values_and_commands(self):
         from summarize_astra17_ci_failure import summary
