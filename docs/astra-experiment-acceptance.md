@@ -31,10 +31,10 @@
 7. При испытании с откатом выполните третий реальный прогон **после восстановления** и сохраните оригинальный JSON. Для автоматического трёхточечного сопоставления на управляющей машине используйте:
 
    ```bash
-   python3 deployment/tests/measure_astra_baseline.py \\
-     --before /path/to/real-baseline.json \\
-     --after /path/to/real-after-change.json \\
-     --restored /path/to/real-after-rollback.json \\
+   python3 deployment/tests/measure_astra_baseline.py \
+     --before /path/to/real-baseline.json \
+     --after /path/to/real-after-change.json \
+     --restored /path/to/real-after-rollback.json \
      --output /path/to/new-three-stage-metrics.json
    ```
 
