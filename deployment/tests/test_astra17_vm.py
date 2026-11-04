@@ -140,6 +140,28 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertNotIn("credentials", json.dumps(selected_classes))
 
 
+    def test_guest_script_metadata_probe_returns_only_bounded_sanitized_types(self):
+        from types import SimpleNamespace
+        recorded = []
+        def remote(command, **kwargs):
+            recorded.append((command, kwargs))
+            return SimpleNamespace(stdout=json.dumps({
+                "directoryExists": True,
+                "scriptCount": 1,
+                "scripts": [{
+                    "regular": True, "executable": False,
+                    "sizeBytes": 643,
+                    "sha256": "a" * 64, "shebangCategory": "shell",
+                    "interpreterPresent": True,
+                }],
+            }))
+        metadata = vm.inspect_guest_per_once_scripts(remote)
+        self.assertEqual(metadata["scriptCount"], 1)
+        self.assertEqual(metadata["scripts"][0]["executable"], False)
+        self.assertEqual(len(recorded), 1)
+        self.assertTrue(recorded[0][0].startswith("sudo python3 -c "))
+        self.assertNotIn("secret:", json.dumps(metadata))
+
     def test_public_failure_summary_discards_raw_guest_values_and_commands(self):
         from summarize_astra17_ci_failure import summary
         private = {
@@ -151,6 +173,8 @@ class NativeAstra17GateTests(unittest.TestCase):
                  "detail": {"reportedModuleNames": ["users_groups", "secret-custom-stage"],
                             "perOnceDirectoryPresent": True,
                             "perOnceScriptCount": 3,
+                            "perOnceExecutableCount": 1,
+                            "perOnceInterpreterCategories": ["shell", "other", "private-sh"],
                             "failureClasses": ["permission_denied", "secret_reason"],
                             "privateKey": "SENSITIVE"}},
             ],
@@ -163,6 +187,8 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertEqual(public["failureClass"], "RuntimeError")
         self.assertEqual(public["cloudInitPerOnceScriptCount"], 3)
         self.assertEqual(public["cloudInitPerOnceDirectoryPresent"], True)
+        self.assertEqual(public["cloudInitPerOnceExecutableCount"], 1)
+        self.assertEqual(public["cloudInitPerOnceInterpreterCategories"], ["other", "shell"])
         self.assertEqual(public["cloudInitFailureCategories"], ["permission_denied"])
         self.assertNotIn("secret_reason", json.dumps(public))
         self.assertEqual(public["completedSafeStageNames"],
