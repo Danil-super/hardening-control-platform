@@ -137,6 +137,17 @@ class HcpAstraExperimentGateTest(unittest.TestCase):
         self.assertEqual(data["baselineToRestored"]["regressedRules"],
                          ["openscap_xccdf_org.hcp_rule_test_3"])
 
+    def test_no_observed_intervention_is_not_claimed_as_effective_hardening(self):
+        baseline = fixture(failed=("0", "1"), time="2026-11-03T10:00:00Z")
+        changed = fixture(failed=("0", "1"), time="2026-11-03T10:10:00Z")
+        restored = fixture(failed=("0", "1"), time="2026-11-03T10:20:00Z")
+        result = MODULE.measure_three_stage(baseline, changed, restored, "1" * 64,
+                                            "2" * 64, "3" * 64)
+        self.assertFalse(result["observedChangeIn18Rules"])
+        self.assertTrue(result["restorationMatchesBaseline18Rules"])
+        self.assertEqual(result["baselineToChanged"]["netFailedRuleChange"], 0)
+        self.assertNotIn("effectiveHardening", result)
+
     def test_three_stage_rejects_different_assets_scopes_and_chronology(self):
         base = fixture(time="2026-11-03T10:00:00Z")
         changed = fixture(failed=(), time="2026-11-03T10:10:00Z")
