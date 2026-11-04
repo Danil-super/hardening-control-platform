@@ -173,6 +173,15 @@ def container_python(image, volume, scripts, args, config=None, receipt=None):
     return read_json(run(command, timeout=120))
 
 
+def tar_restore_command(image, volume):
+    # Docker does NOT connect the container's stdin unless -i is specified.
+    # This is a required property when extracting the original private tar
+    # stream from a local file into the isolated restored named volume.
+    return ["docker", "run", "--rm", "-i", "--network", "none",
+            "-v", volume + ":/to", "--entrypoint", "tar",
+            image, "-C", "/to", "-xzf", "-"]
+
+
 def offline_checkpoint(image, volume):
     # On the already-copied disposable volume ONLY: commit valid WAL frames
     # using SQLite itself, and refuse a lingering WAL instead of deleting it.
@@ -279,9 +288,8 @@ def main():
         docker("volume", "create", restored_volume)
         new_volume = True
         with runtime_archive.open("rb") as input_file:
-            run(["docker", "run", "--rm", "--network", "none", "-v",
-                 restored_volume + ":/to", "--entrypoint", "tar",
-                 image, "-C", "/to", "-xzf", "-"], stdin=input_file, timeout=240)
+            run(tar_restore_command(image, restored_volume),
+                stdin=input_file, timeout=240)
         comparison = read_json(docker("run", "--rm", "--network", "none",
             "-v", source + ":/before:ro", "-v", restored_volume + ":/after:ro",
             "--entrypoint", "python3", image, "-c", COMPARE_CODE, timeout=240))
