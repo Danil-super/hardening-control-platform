@@ -66,7 +66,7 @@ def classify_cloud_init_failure_classes(text):
 def inspect_guest_per_once_scripts(remote):
     """Read-only metadata for cloud-init's vendor scripts, never their content."""
     probe = r"""
-import hashlib, json, os, stat
+import hashlib, json, os, shutil, stat
 directory = "/var/lib/cloud/scripts/per-once"
 out = {"directoryExists": os.path.isdir(directory), "scriptCount": 0,
        "scripts": []}
@@ -101,12 +101,25 @@ if out["directoryExists"]:
                     if stable:
                         meta["sha256"] = hashlib.sha256(data).hexdigest()
                         first = bytes(data).split(b"\n", 1)[0][:200]
-                        if first.startswith((b"#!/bin/sh", b"#!/bin/bash")):
+                        if first.startswith(b"#!/bin/bash"):
                             meta["shebangCategory"] = "shell"
-                            meta["interpreterPresent"] = True
-                        elif first.startswith((b"#!/usr/bin/python", b"#!/usr/bin/env python")):
+                            meta["interpreterPresent"] = os.access("/bin/bash", os.X_OK)
+                        elif first.startswith(b"#!/bin/sh"):
+                            meta["shebangCategory"] = "shell"
+                            meta["interpreterPresent"] = os.access("/bin/sh", os.X_OK)
+                        elif first.startswith(b"#!/usr/bin/python3"):
                             meta["shebangCategory"] = "python"
-                            meta["interpreterPresent"] = True
+                            meta["interpreterPresent"] = os.access("/usr/bin/python3", os.X_OK)
+                        elif first.startswith(b"#!/usr/bin/env python3"):
+                            meta["shebangCategory"] = "python"
+                            meta["interpreterPresent"] = bool(
+                                os.access("/usr/bin/env", os.X_OK)
+                                and shutil.which("python3"))
+                        elif first.startswith(b"#!/usr/bin/env bash"):
+                            meta["shebangCategory"] = "shell"
+                            meta["interpreterPresent"] = bool(
+                                os.access("/usr/bin/env", os.X_OK)
+                                and shutil.which("bash"))
                         elif first.startswith(b"#!"):
                             meta["shebangCategory"] = "other"
                         else:
