@@ -32,6 +32,21 @@ HOST = "hcp-real-astra"
 NS_DEFINITION = "{http://oval.mitre.org/XMLSchema/oval-definitions-5}definition"
 
 
+def classify_private_cloud_init_errors(output):
+    """Return only known machine-generated module names; never private log text."""
+    accepted = {
+        "users_groups", "ssh", "set_hostname", "update_hostname",
+        "update_etc_hosts", "growpart", "resizefs", "mounts",
+        "package_update_upgrade_install", "runcmd", "scripts_user",
+        "scripts_per_boot", "scripts_per_instance", "scripts_per_once",
+        "final_message", "phone_home", "ssh_import_id", "network",
+        "write_files", "timezone", "locale",
+    }
+    names = set(re.findall(r"['\\\"]([a-z][a-z0-9_]{1,70})['\\\"]\\s*,",
+                           output))
+    return sorted(names & accepted)
+
+
 def full_oval_definition_count(path):
     # Stream a genuine XML source, not a hand-picked vulnerability excerpt.
     count = 0
@@ -198,6 +213,8 @@ def execute(args, work, artifacts, reports, sources, protocol):
                     "errorLineCount": sum(bool(re.match(
                         r"^\\s*(?:errors|recoverable_errors|error|detail)\\s*:", line))
                         for line in status_lines),
+                    "reportedModuleNames": classify_private_cloud_init_errors(
+                        status_detail.stdout),
                     "notes": "Cloud-init error is blocking; guest logs and seed remain private.",
                 }
                 checkpoint("Native guest cloud-init failure; no audit claimed", diagnostic)
