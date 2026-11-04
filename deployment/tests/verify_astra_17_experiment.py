@@ -19,6 +19,9 @@ import sys
 
 from measure_astra_baseline import measure_three_stage, parse_date, read_report, require
 
+# Astra writes the point release and full build to DIFFERENT files.
+# /etc/astra_version = 1.7.6; /etc/astra/build_version = 1.7.6.15 for UU2.
+EXPECTED_BASE_RELEASE = "1.7.6"
 EXPECTED_RELEASE = "1.7.6.15"
 EXPECTED_ARCH = "x86_64"
 MAX_IDENTITY_BYTES = 128 * 1024
@@ -71,8 +74,10 @@ def native_observation(text, observed_fingerprint):
             "SSH host key fingerprint must come from a separately checked connection")
     require(native_field(text, "ID").lower() == "astra",
             "Native OS ID is not Astra Linux")
-    require(native_field(text, "RELEASE") == EXPECTED_RELEASE,
-            "Native Astra release is not the required 1.7.6.15")
+    require(native_field(text, "RELEASE") == EXPECTED_BASE_RELEASE,
+            "Native Astra point release is not the required 1.7.6")
+    require(native_field(text, "BUILD_VERSION") == EXPECTED_RELEASE,
+            "Native Astra full build is not the required 1.7.6.15")
     kernel = native_field(text, "KERNEL")
     require(re.fullmatch(r"[A-Za-z0-9_.+:-]{1,120}", kernel) is not None,
             "Native kernel version is malformed")
@@ -86,7 +91,8 @@ def native_observation(text, observed_fingerprint):
                    ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
     return {"assetId": asset, "machineIdSha256": machine_hash,
             "sshHostKeyFingerprint": observed_fingerprint,
-            "kernel": kernel, "release": EXPECTED_RELEASE}
+            "kernel": kernel, "release": EXPECTED_BASE_RELEASE,
+            "buildVersion": EXPECTED_RELEASE}
 
 
 def verify_experiment(before, changed, restored, facts, identity_text, fingerprint,
@@ -136,6 +142,9 @@ def verify_experiment(before, changed, restored, facts, identity_text, fingerpri
                 "Facts report is attached to a different identity or connection generation")
     metrics["nativeReleaseCrosscheck"] = {
         "declaredRelease": EXPECTED_RELEASE,
+        "observedPointRelease": EXPECTED_BASE_RELEASE,
+        "fullBuildVersion": EXPECTED_RELEASE,
+        "pointReleaseAndBuildMatched": True,
         "nativeOsId": "astra", "architecture": EXPECTED_ARCH,
         "kernel": observed["kernel"],
         "factsSha256": hashes["facts"],
@@ -146,6 +155,7 @@ def verify_experiment(before, changed, restored, facts, identity_text, fingerpri
         "scope": "captured-SSH-and-HCP-evidence-only",
         "limitations": [
             "Inputs require an independently pinned SSH host key and original native guest observation",
+            "Point release and full build are distinct: /etc/astra_version is 1.7.6, while /etc/astra/build_version must be 1.7.6.15",
             "The command does not execute SSH, attest an OS publisher or prove that the guest files are unmodified",
             "Full CVE completeness, protected modes, firewall and network restoration remain separate tests",
         ],

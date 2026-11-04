@@ -15,7 +15,8 @@ from test_measure_astra_baseline import fixture
 MACHINE = "0123456789abcdef0123456789abcdef"
 FINGERPRINT = "SHA256:" + "A" * 43
 KERNEL = "6.1.90-1-generic"
-IDENTITY = ("NAME=Astra Linux\nID=astra\nRELEASE=1.7.6.15\n"
+IDENTITY = ("NAME=Astra Linux\nID=astra\nRELEASE=1.7.6\n"
+            "BUILD_VERSION=1.7.6.15\n"
             "KERNEL=" + KERNEL + "\nMACHINE_ID=" + MACHINE + "\n")
 MACHINE_HASH = hmac.new(gate.ASSET_KEY, MACHINE.encode("ascii"),
                         hashlib.sha256).hexdigest()
@@ -64,6 +65,11 @@ class Astra17IdentityGateTests(unittest.TestCase):
         self.assertTrue(result["restorationMatchesBaseline18Rules"])
         self.assertEqual(result["nativeReleaseCrosscheck"]["declaredRelease"],
                          "1.7.6.15")
+        self.assertEqual(result["nativeReleaseCrosscheck"]["observedPointRelease"],
+                         "1.7.6")
+        self.assertEqual(result["nativeReleaseCrosscheck"]["fullBuildVersion"],
+                         "1.7.6.15")
+        self.assertTrue(result["nativeReleaseCrosscheck"]["pointReleaseAndBuildMatched"])
         self.assertTrue(result["nativeReleaseCrosscheck"]["machineIdMatchedBinding"])
         self.assertFalse(result["nativeReleaseCrosscheck"]["vendorImageAttested"])
         for secret in (MACHINE,):
@@ -76,8 +82,14 @@ class Astra17IdentityGateTests(unittest.TestCase):
              IDENTITY, FINGERPRINT),
             ("non-Astra native OS", None, None, IDENTITY.replace("ID=astra", "ID=debian"),
              FINGERPRINT),
-            ("wrong native release", None, None, IDENTITY.replace("1.7.6.15", "1.7.6.14"),
+            ("wrong native full build", None, None, IDENTITY.replace("1.7.6.15", "1.7.6.14"),
              FINGERPRINT),
+            ("wrong point release", None, None,
+             IDENTITY.replace("RELEASE=1.7.6\n", "RELEASE=1.7.7\n"), FINGERPRINT),
+            ("missing full build", None, None,
+             IDENTITY.replace("BUILD_VERSION=1.7.6.15\n", ""), FINGERPRINT),
+            ("duplicate build claims", None, None,
+             IDENTITY + "BUILD_VERSION=1.7.6.15\n", FINGERPRINT),
             ("different SSH host key", None, None, IDENTITY, "SHA256:" + "B" * 43),
             ("wrong kernel", None, {"kernel": "different-generic"}, IDENTITY,
              FINGERPRINT),
