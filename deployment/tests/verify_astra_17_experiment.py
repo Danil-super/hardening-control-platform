@@ -129,9 +129,11 @@ def verify_experiment(before, changed, restored, facts, identity_text, fingerpri
             "HCP facts must be captured no later than the baseline")
     facts_binding = facts.get("assetBinding")
     if facts_binding is not None:
-        require(isinstance(facts_binding, dict) and facts_binding.get("assetId")
-                == observed["assetId"],
-                "Facts report is attached to a different identity")
+        require(isinstance(facts_binding, dict) and all(
+            facts_binding.get(field) == binding.get(field) for field in (
+                "assetId", "alias", "generation", "machineIdSha256",
+                "sshHostKeyFingerprint", "connectionId")),
+                "Facts report is attached to a different identity or connection generation")
     metrics["nativeReleaseCrosscheck"] = {
         "declaredRelease": EXPECTED_RELEASE,
         "nativeOsId": "astra", "architecture": EXPECTED_ARCH,
