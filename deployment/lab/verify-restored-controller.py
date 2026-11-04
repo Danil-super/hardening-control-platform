@@ -11,6 +11,7 @@ import hashlib
 import http.cookiejar
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -105,7 +106,7 @@ def find_network(container):
 
 def full_image(container):
     value = docker("inspect", "--format", "{{.Image}}", container).strip()
-    require(value.startswith(SHA) and len(value) == 71,
+    require(re.fullmatch(r"sha256:[a-f0-9]{64}", value) is not None,
             "Lab controller must have an immutable image identity")
     return value
 
@@ -131,6 +132,11 @@ for path in source.rglob("*"):
             continue
         raise RuntimeError("unsupported evidence member")
     other = target / rel
+    for parent in other.parents:
+        if parent == target:
+            break
+        if parent.is_symlink():
+            raise RuntimeError("restored critical subtree is symlinked")
     if other.is_symlink() or not other.is_file():
         raise RuntimeError("missing or linked restored evidence")
     if rel.startswith("ssh-host-keys/") and not rel.endswith(".pub"):
