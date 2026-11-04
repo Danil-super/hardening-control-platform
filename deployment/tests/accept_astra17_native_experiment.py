@@ -120,7 +120,7 @@ def assess_image(ova, evidence):
     image_bytes, image_sha = hash_image(ova)
     report, report_sha = read_report(evidence)
     name = Path(ova).name
-    demand(re.fullmatch(r"alse-1\\.7\\.6\\.uu2-(base|adv|max)-virtualbox-mg15\\.3\\.1-amd64\\.ova", name)
+    demand(re.fullmatch(r"alse-1\.7\.6\.uu2-(base|adv|max)-virtualbox-mg15\.3\.1-amd64\.ova", name)
            is not None, "unrecognised_astra_17_image")
     demand(report.get("schemaVersion") == 1
            and report.get("imageName") == name
