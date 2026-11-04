@@ -114,6 +114,59 @@ class NativeAstra17GateTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     vm.verify_native_oval_report(candidate, source, 3)
 
+    def test_true_guest_release_is_observed_without_leaking_machine_identity(self):
+        machine = "0123456789abcdef0123456789abcdef"
+        raw = ("NAME=Astra Linux\nID=astra\nPRETTY_NAME=Astra Linux SE\n"
+               "RELEASE=1.7.6.15\nKERNEL=5.10.99-1-astra-amd64\n"
+               "MACHINE_ID=" + machine + "\n")
+        proof = vm.parse_native_guest_release_summary(raw)
+        self.assertTrue(proof["guestOsIdIsAstra"])
+        self.assertTrue(proof["exactRequiredReleaseObserved"])
+        self.assertTrue(proof["independentGuestKernelObserved"])
+        self.assertTrue(proof["machineIdPresent"])
+        self.assertEqual(proof["observedReleaseToken"], "1.7.6.15")
+        self.assertNotIn(machine, json.dumps(proof))
+
+        other = vm.parse_native_guest_release_summary(
+            raw.replace("RELEASE=1.7.6.15", "RELEASE=1.7.6.16"))
+        self.assertTrue(other["guestOsIdIsAstra"])
+        self.assertFalse(other["exactRequiredReleaseObserved"])
+        self.assertEqual(other["observedReleaseToken"], "1.7.6.16")
+        duplicated = vm.parse_native_guest_release_summary(
+            raw + "RELEASE=1.7.6.15\n")
+        self.assertFalse(duplicated["exactRequiredReleaseObserved"])
+        self.assertEqual(duplicated["observedReleaseToken"], "unavailable")
+        unsafe = vm.parse_native_guest_release_summary(
+            raw.replace("RELEASE=1.7.6.15",
+                        "RELEASE=1.7.6.15 secret-hostname-and-user"))
+        self.assertFalse(unsafe["exactRequiredReleaseObserved"])
+        self.assertEqual(unsafe["observedReleaseToken"], "unavailable")
+
+    def test_native_release_failure_summary_keeps_only_version_numbers(self):
+        from summarize_astra17_ci_failure import summary
+        base = {
+            "status": "failed",
+            "checks": [
+                {"name": "Native guest release preflight recorded", "detail": {
+                    "observedReleaseToken": "1.7.6.16",
+                    "guestOsIdIsAstra": True,
+                    "exactRequiredReleaseObserved": False,
+                    "rawMachineId": "0123456789abcdef0123456789abcdef",
+                }},
+            ],
+            "error": {"type": "AssertionError", "message": "private path /etc"},
+        }
+        result = summary(base)
+        self.assertEqual(result["observedGuestRelease"], "1.7.6.16")
+        self.assertTrue(result["guestOsIdIsAstra"])
+        self.assertFalse(result["exactRelease117615Observed"])
+        self.assertFalse(result["nativeAcceptancePassed"])
+        self.assertNotIn("0123456789abcdef", json.dumps(result))
+        self.assertNotIn("private path", json.dumps(result))
+        base["checks"][0]["detail"]["observedReleaseToken"] = (
+            "secret-hostname.example.org")
+        self.assertIsNone(summary(base)["observedGuestRelease"])
+
     def test_cloud_init_diagnostics_only_expose_allowlisted_module_names(self):
         raw = ("status: error\\nerrors:\\n - ('users_groups', "
                "RuntimeError('secret-client-key SENSITIVE'))\\n"
@@ -169,6 +222,11 @@ class NativeAstra17GateTests(unittest.TestCase):
             "checks": [
                 {"name": "Official fixed Astra 1.7.6.UU2 image bytes match source catalog",
                  "detail": {"rawMachineId": "confidential-identity"}},
+                {"name": "Native guest release preflight recorded",
+                 "detail": {"observedReleaseToken": "1.7.6.15",
+                            "guestOsIdIsAstra": True,
+                            "exactRequiredReleaseObserved": True,
+                            "rawMachineId": "never-publish"}},
                 {"name": "Native Astra 1.7.6.15 identity observed before final cloud-init",
                  "detail": {"rawMachineId": "never-publish", "releaseObserved": True}},
                 {"name": "Native guest cloud-init failure; no audit claimed",
@@ -187,6 +245,9 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertFalse(public["nativeAcceptancePassed"])
         self.assertEqual(public["cloudInitFailingModuleNames"], ["users_groups"])
         self.assertEqual(public["failureClass"], "RuntimeError")
+        self.assertEqual(public["observedGuestRelease"], "1.7.6.15")
+        self.assertTrue(public["guestOsIdIsAstra"])
+        self.assertTrue(public["exactRelease117615Observed"])
         self.assertEqual(public["cloudInitPerOnceScriptCount"], 3)
         self.assertEqual(public["cloudInitPerOnceDirectoryPresent"], True)
         self.assertEqual(public["cloudInitPerOnceExecutableCount"], 1)
@@ -194,8 +255,9 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertEqual(public["cloudInitFailureCategories"], ["permission_denied"])
         self.assertNotIn("secret_reason", json.dumps(public))
         self.assertEqual(public["completedSafeStageNames"],
-                         ["image_sha256_verified", "native_release_17_observed",
-                          "cloud_init_failed"])
+                         ["image_sha256_verified",
+                          "native_release_observed_but_not_yet_accepted",
+                          "native_release_17_observed", "cloud_init_failed"])
         self.assertNotIn("SENSITIVE", json.dumps(public))
         self.assertNotIn("privatekey", json.dumps(public))
         self.assertNotIn("confidential-identity", json.dumps(public))
