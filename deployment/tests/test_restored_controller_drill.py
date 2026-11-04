@@ -31,6 +31,13 @@ class RestoreDrillContractTests(unittest.TestCase):
         self.assertNotIn("address", first[0])
         self.assertNotIn("lastReport", first[1])
 
+    def test_cookiejar_is_independent_of_http_request_helper(self):
+        # A previous CI run failed before snapshot because a function named
+        # http accidentally shadowed the imported http.cookiejar module.
+        jar = MODULE.cookiejar.CookieJar()
+        self.assertIsNotNone(jar)
+        self.assertTrue(callable(MODULE.http))
+
     def test_source_volume_must_be_hcp_lab_named_volume_only(self):
         values = [
             ({"Destination": "/var/lib/hcp", "Type": "volume",
