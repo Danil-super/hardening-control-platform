@@ -200,6 +200,17 @@ def main():
     original = docker("compose", "-f", "deployment/lab/docker-compose.yml",
                       "ps", "-q", "hcp").strip()
     require(len(original) >= 12, "Original lab HCP is not running")
+    # Refuse to stop anything other than the exact disposable fixture:
+    # Docker commands run only on GitHub-hosted CI, never user installations.
+    original_info = json.loads(docker("inspect", "--format", "{{json .Config.Env}}", original))
+    lab_env = dict(item.split("=", 1) for item in original_info if "=" in item)
+    require(all(lab_env.get(k) == v for k, v in {
+        "HCP_ADMIN_PASSWORD": "lab-only-password",
+        "HCP_AUTH_SECRET": "lab-only-secret-change-in-production",
+        "HCP_AUDIT_HMAC_KEY": "lab-only-audit-integrity-key-change-in-production",
+    }.items()), "Refusing to operate on non-fixture HCP controller")
+    require(docker("inspect", "--format", "{{.State.Running}}", original).strip() == "true",
+            "Lab controller must be running before stopping it")
     image = full_image(original)
     source = find_source_volume(original)
     network = find_network(original)
@@ -251,8 +262,14 @@ def main():
             run(["docker", "run", "--rm", "--network", "none", "-v",
                  source + ":/from:ro", "--entrypoint", "tar",
                  image, "-C", "/from", "-czf", "-", "."], stdout=output, timeout=240)
-        state["sourceTarSha256"] = hashlib.sha256(runtime_archive.read_bytes()).hexdigest()
+        digest = hashlib.sha256()
+        with runtime_archive.open("rb") as original_tar:
+            for chunk in iter(lambda: original_tar.read(1048576), b""):
+                digest.update(chunk)
+        state["sourceTarSha256"] = digest.hexdigest()
         state["sourceTarBytes"] = runtime_archive.stat().st_size
+        require(0 < state["sourceTarBytes"] < 10 * 1024**3,
+                "Lab backup archive exceeds bounded acceptance budget")
         docker("volume", "create", restored_volume)
         new_volume = True
         with runtime_archive.open("rb") as input_file:
@@ -373,13 +390,29 @@ def main():
         PROTOCOL.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
         PROTOCOL.chmod(0o600)
         print("PASS: disposable restored HCP boots with old cookies rejected, preserved evidence and real SSH.")
+    except BaseException:
+        # A failed laboratory recovery is never a PASS. Save a small, sanitized
+        # checkpoint even when secret-bearing source archives are discarded.
+        state["status"] = "failed-lab-controller-restore"
+        state["restoreElapsedSeconds"] = round(time.monotonic() - begin, 2)
+        state["limitations"] = ["No production recovery attested; inspect CI job steps."]
+        PROTOCOL.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+        PROTOCOL.chmod(0o600)
+        raise
     finally:
         if new_container:
-            docker("rm", "-f", restored_name, timeout=60)
+            subprocess.run(["docker", "rm", "-f", restored_name],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=60, check=False)
         if new_volume:
-            docker("volume", "rm", restored_volume, timeout=60)
+            subprocess.run(["docker", "volume", "rm", restored_volume],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                           timeout=60, check=False)
         if stopped:
-            docker("start", original, timeout=60)
+            # Never leave the original CI fixture stopped after the restore
+            # exercise, even when the new controller or HMAC validation fails.
+            subprocess.run(["docker", "start", original], stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=60, check=False)
         # A root-owned receipt can exist; remove only this random local path.
         subprocess.run(["sudo", "chown", "-R", str(os.getuid()) + ":" + str(os.getgid()),
                         str(staging)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
