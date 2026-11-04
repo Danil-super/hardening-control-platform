@@ -30,6 +30,7 @@ HOST = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9.:-]{0,252}$")
 USER = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$")
 SHA = re.compile(r"^[a-f0-9]{64}$")
 MAX_SSH_BYTES = 128 * 1024
+MAX_OVAL_REPORT = 256 * 1024 * 1024
 REMOTE_OBSERVATION = (
     "cat /etc/os-release; printf '\\nRELEASE='; cat /etc/astra_version; "
     "printf '\\nKERNEL='; uname -r; printf 'MACHINE_ID='; "
@@ -143,6 +144,41 @@ def post_restore_ssh(host, port, user, private_key, known_hosts_file,
             raise AcceptanceError("post_restore_ssh_identity_invalid")
 
 
+def read_large_oval(path):
+    """Bounded original HCP OVAL JSON reader; official full OVAL can exceed 32 MiB."""
+    info = os.lstat(path)
+    demand(stat.S_ISREG(info.st_mode) and 0 < info.st_size <= MAX_OVAL_REPORT,
+           "oval_report_not_bounded_regular_file")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        opened = os.fstat(fd)
+        demand((opened.st_dev, opened.st_ino) == (info.st_dev, info.st_ino)
+               and stat.S_ISREG(opened.st_mode), "oval_report_file_changed")
+        raw = bytearray()
+        hasher = hashlib.sha256()
+        while len(raw) <= MAX_OVAL_REPORT:
+            chunk = os.read(fd, min(1048576, MAX_OVAL_REPORT + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+            hasher.update(chunk)
+        current = os.fstat(fd)
+        after = os.lstat(path)
+        fields = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        demand(len(raw) == info.st_size and len(raw) <= MAX_OVAL_REPORT
+               and all(getattr(info, field) == getattr(current, field)
+                       == getattr(after, field) for field in fields),
+               "oval_report_file_changed")
+    finally:
+        os.close(fd)
+    try:
+        parsed = json.loads(raw.decode("utf-8", "strict"))
+    except (UnicodeError, ValueError):
+        raise AcceptanceError("oval_report_invalid_json")
+    demand(type(parsed) is dict, "oval_report_not_json_object")
+    return parsed, hasher.hexdigest()
+
+
 def assess_image(ova, evidence):
     image_bytes, image_sha = hash_image(ova)
     report, report_sha = read_report(evidence)
@@ -203,7 +239,8 @@ def check_oval(report, reference_sha, host_alias):
 def verify_all(image, image_evidence, before, changed, restored, facts, native_text,
                post_text, fingerprint, oval, oval_pin):
     image_record = assess_image(image, image_evidence)
-    originals = [read_report(path) for path in (before, changed, restored, facts, oval)]
+    originals = [read_report(path) for path in (before, changed, restored, facts)]
+    originals.append(read_large_oval(oval))
     a, b, c, facts_value, oval_value = [item[0] for item in originals]
     hashes = {"before": originals[0][1], "changed": originals[1][1],
               "restored": originals[2][1], "facts": originals[3][1],
