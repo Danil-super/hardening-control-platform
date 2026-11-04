@@ -29,6 +29,7 @@ from verify_astra_17_experiment import EXPECTED_RELEASE
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "deployment/astra-vm/sources-17.json"
 HOST = "hcp-real-astra"
+EXPECTED_POINT_RELEASE = "1.7.6"
 NS_DEFINITION = "{http://oval.mitre.org/XMLSchema/oval-definitions-5}definition"
 
 
@@ -45,15 +46,20 @@ def parse_native_guest_release_summary(identity):
               for line in lines if line.startswith("ID=")]
     versions = [line.partition("=")[2].strip().strip('"').strip("'")
                 for line in lines if line.startswith("RELEASE=")]
+    builds = [line.partition("=")[2].strip().strip('"').strip("'")
+              for line in lines if line.startswith("BUILD_VERSION=")]
     kernels = [line.partition("=")[2].strip()
                for line in lines if line.startswith("KERNEL=")]
     ids = [line.partition("=")[2].strip()
            for line in lines if line.startswith("MACHINE_ID=")]
-    observed = versions[0] if len(versions) == 1 else ""
-    # This is safe to place in a public CI failure summary: numeric version
-    # notation only, no arbitrary image/user-data, host or secret strings.
-    version_public = (observed if re.fullmatch(r"[0-9]+(?:\.[A-Za-z0-9]+){1,7}(?:[+._-][A-Za-z0-9]+)*", observed)
-                      and len(observed) <= 64 else "unavailable")
+    observed_point = versions[0] if len(versions) == 1 else ""
+    observed_build = builds[0] if len(builds) == 1 else ""
+    # No arbitrary user-data or host text may leak from failed CI; accept
+    # only numeric version-like tokens with a short, strict upper bound.
+    def public_release(value):
+        return (value if len(value) <= 64 and re.fullmatch(
+            r"[0-9]+(?:\.[A-Za-z0-9]+){1,7}(?:[+._-][A-Za-z0-9]+)*",
+            value) else "unavailable")
     kernel_ok = (len(kernels) == 1 and re.fullmatch(
         r"[A-Za-z0-9_.+:-]{1,120}", kernels[0]) is not None
         and kernels[0] != os.uname().release)
@@ -61,10 +67,16 @@ def parse_native_guest_release_summary(identity):
         r"[a-f0-9]{32}", ids[0]) is not None and ids[0] != "0" * 32)
     return {
         "guestOsIdIsAstra": len(os_ids) == 1 and os_ids[0] == "astra",
-        "observedReleaseToken": version_public,
-        "observedReleaseSha256": hashlib.sha256(observed.encode("utf-8")).hexdigest(),
+        "observedReleaseToken": public_release(observed_point),
+        "observedBuildVersionToken": public_release(observed_build),
+        "observedReleaseSha256": hashlib.sha256(observed_point.encode("utf-8")).hexdigest(),
+        "observedBuildVersionSha256": hashlib.sha256(observed_build.encode("utf-8")).hexdigest(),
         "observedReleaseCount": len(versions),
-        "exactRequiredReleaseObserved": len(versions) == 1 and observed == EXPECTED_RELEASE,
+        "observedBuildVersionCount": len(builds),
+        "pointReleaseMatchesExpected": len(versions) == 1 and observed_point == EXPECTED_POINT_RELEASE,
+        "buildVersionMatchesExpected": len(builds) == 1 and observed_build == EXPECTED_RELEASE,
+        "exactRequiredReleaseObserved": (len(versions) == 1 and observed_point == EXPECTED_POINT_RELEASE
+                                         and len(builds) == 1 and observed_build == EXPECTED_RELEASE),
         "independentGuestKernelObserved": bool(kernel_ok),
         "machineIdPresent": bool(machine_ok),
         "identityObservationSha256": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
@@ -201,7 +213,7 @@ def verify_native_oval_report(report, source, count):
     assert report.get("mode") == "astra-oval" and isinstance(scanner, dict)
     identity = scanner.get("hostIdentity")
     assert isinstance(identity, dict) and identity.get("id") == "astra"
-    assert identity.get("astraVersion") == EXPECTED_RELEASE
+    assert identity.get("astraVersion") == EXPECTED_POINT_RELEASE
     database = scanner.get("database")
     assert isinstance(database, dict)
     assert database.get("sha256") == source["sha256"]
@@ -337,6 +349,7 @@ def execute(args, work, artifacts, reports, sources, protocol):
             # Astra SE 1.7.6.15. It still blocks release acceptance.
             identity_command = (
                 "set -eu; cat /etc/os-release; printf '\\nRELEASE='; cat /etc/astra_version; "
+                "printf '\\nBUILD_VERSION='; cat /etc/astra/build_version; "
                 "printf '\\nKERNEL='; uname -r; printf 'MACHINE_ID='; "
                 "cat /etc/machine-id"
             )
