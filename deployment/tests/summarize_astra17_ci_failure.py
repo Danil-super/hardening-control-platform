@@ -50,6 +50,9 @@ def summary(private):
     interpreter_types = []
     classes = []
     observed_release = None
+    observed_build = None
+    point_matches_expected = None
+    build_matches_expected = None
     guest_os_id_astra = None
     version_matches_expected = None
     for item in checks[-30:]:
@@ -70,6 +73,20 @@ def summary(private):
                     value,
                 ):
                     observed_release = value
+                build = candidate.get("observedBuildVersionToken")
+                if isinstance(build, str) and len(build) <= 64 and re.fullmatch(
+                    r"[0-9]+(?:\.[A-Za-z0-9]+){1,7}(?:[+._-][A-Za-z0-9]+)*",
+                    build,
+                ):
+                    observed_build = build
+                point_matches_expected = (
+                    candidate["pointReleaseMatchesExpected"]
+                    if type(candidate.get("pointReleaseMatchesExpected")) is bool else None
+                )
+                build_matches_expected = (
+                    candidate["buildVersionMatchesExpected"]
+                    if type(candidate.get("buildVersionMatchesExpected")) is bool else None
+                )
                 guest_os_id_astra = (candidate["guestOsIdIsAstra"]
                                      if type(candidate.get("guestOsIdIsAstra")) is bool
                                      else None)
@@ -111,6 +128,9 @@ def summary(private):
         "nativeAcceptancePassed": False,
         "completedSafeStageNames": normalized,
         "observedGuestRelease": observed_release,
+        "observedGuestBuildVersion": observed_build,
+        "pointReleaseMatchesExpected": point_matches_expected,
+        "buildVersionMatchesExpected": build_matches_expected,
         "guestOsIdIsAstra": guest_os_id_astra,
         "exactRelease117615Observed": version_matches_expected,
         "cloudInitFailingModuleNames": modules,
