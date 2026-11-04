@@ -9,6 +9,11 @@ on:
       - deployment/astra-vm/**
       - deployment/tests/verify_astra_vm*
       - deployment/tests/test_astra_vm.py
+      - deployment/tests/measure_astra_baseline.py
+      - deployment/tests/test_measure_astra_baseline.py
+      - web/lib/asset-report-publication.ts
+      - web/lib/asset-binding.ts
+      - web/lib/state-store.ts
       - ansible/playbooks/**
       - ansible/scripts/hcp-oval-audit.py
       - ansible/scripts/hcp-controller-scan.py
@@ -20,6 +25,11 @@ on:
       - deployment/astra-vm/**
       - deployment/tests/verify_astra_vm*
       - deployment/tests/test_astra_vm.py
+      - deployment/tests/measure_astra_baseline.py
+      - deployment/tests/test_measure_astra_baseline.py
+      - web/lib/asset-report-publication.ts
+      - web/lib/asset-binding.ts
+      - web/lib/state-store.ts
       - ansible/playbooks/**
       - ansible/scripts/hcp-oval-audit.py
       - ansible/scripts/hcp-controller-scan.py
