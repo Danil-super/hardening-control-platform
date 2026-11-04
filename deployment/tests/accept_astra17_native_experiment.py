@@ -185,8 +185,10 @@ def assess_image(ova, evidence):
     name = Path(ova).name
     demand(re.fullmatch(r"alse-1\.7\.6\.uu2-(base|adv|max)-virtualbox-mg15\.3\.1-amd64\.ova", name)
            is not None, "unrecognised_astra_17_image")
+    mode = name.split("-")[2].split("-")[0]
     demand(report.get("schemaVersion") == 1
            and report.get("imageName") == name
+           and report.get("securityLevelCandidate") == mode
            and report.get("status") == "local-bytes-match-recorded-pin"
            and report.get("fileSizeBytes") == image_bytes
            and report.get("sha256") == image_sha
@@ -199,7 +201,7 @@ def assess_image(ova, evidence):
             "publisherSignatureVerified": False}
 
 
-def check_oval(report, reference_sha, host_alias):
+def check_oval(report, reference_sha, host_alias, expected_binding):
     """Real separate OVAL result; scope and scanner completion, not all-CVE recall."""
     demand(SHA.fullmatch(reference_sha) is not None, "invalid_oval_digest_pin")
     scanner = report.get("scanner")
@@ -207,6 +209,13 @@ def check_oval(report, reference_sha, host_alias):
            and report.get("mode") == "astra-oval"
            and report.get("inventoryHost") == host_alias,
            "oval_missing_or_wrong_host")
+    binding = report.get("assetBinding")
+    demand(isinstance(binding, dict)
+           and binding.get("status") == "verified"
+           and all(binding.get(field) == expected_binding.get(field) for field in (
+               "alias", "assetId", "generation", "machineIdSha256",
+               "sshHostKeyFingerprint", "connectionId")),
+           "oval_different_or_unverified_asset_binding")
     database = scanner.get("database")
     demand(isinstance(database, dict)
            and database.get("sha256") == reference_sha
@@ -250,7 +259,8 @@ def verify_all(image, image_evidence, before, changed, restored, facts, native_t
     before_id = native_observation(native_text, fingerprint)
     after_id = native_observation(post_text, fingerprint)
     demand(before_id == after_id, "post_restore_guest_identity_changed")
-    oval_record = check_oval(oval_value, oval_pin, a["inventoryHost"])
+    oval_record = check_oval(oval_value, oval_pin, a["inventoryHost"],
+                            a["assetBinding"])
     demand(measured["restorationMatchesBaseline18Rules"],
            "baseline_rule_statuses_not_restored")
     return {
