@@ -58,7 +58,8 @@ def open_member(dir_fd, name):
     descriptor = os.open(name, flags, dir_fd=dir_fd)
     try:
         before = os.fstat(descriptor)
-        ensure(stat.S_ISREG(before.st_mode) and 0 < before.st_size <= MAX_FILE_BYTES,
+        ensure(stat.S_ISREG(before.st_mode) and before.st_size <= MAX_FILE_BYTES
+               and (before.st_size > 0 or name == "active-timers.txt"),
                "bundle_file_unsafe")
         ensure((before.st_mode & 0o077) == 0, "bundle_file_permissions")
         return descriptor, before
