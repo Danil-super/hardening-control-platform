@@ -100,6 +100,38 @@ class Astra17NativeAcceptanceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.accept(IDENTITY.replace("RELEASE=1.7.6.15", "RELEASE=1.8.6"))
 
+    def test_actual_full_oval_size_above_generic_32_mib_is_supported_safely(self):
+        # A real full vendor OVAL HCP JSON can be 70+ MiB. This synthetic
+        # payload tests only file-size handling, never CVE correctness.
+        large = self.root / "large-oval.json"
+        with large.open("wb") as stream:
+            stream.write(b'{"mode":"astra-oval","filler":"')
+            segment = b"x" * (1024 * 1024)
+            for _ in range(33):
+                stream.write(segment)
+            stream.write(b'"}')
+        parsed, digest = gate.read_large_oval(str(large))
+        self.assertEqual(parsed["mode"], "astra-oval")
+        self.assertEqual(len(parsed["filler"]), 33 * 1024 * 1024)
+        self.assertEqual(digest, hashlib.sha256(large.read_bytes()).hexdigest())
+        with self.assertRaises(ValueError):
+            gate.read_report(str(large))
+        shortcut = self.root / "large-oval-symlink.json"
+        shortcut.symlink_to(large)
+        with self.assertRaises(ValueError):
+            gate.read_large_oval(str(shortcut))
+
+    def test_oval_size_budget_is_strict_and_exclusive_of_special_files(self):
+        oversized = self.root / "oversize-oval.json"
+        oversized.write_text('{"mode":"astra-oval","extra":"abcdef"}')
+        old_budget = gate.MAX_OVAL_REPORT
+        try:
+            gate.MAX_OVAL_REPORT = 16
+            with self.assertRaisesRegex(ValueError, "oval_report_not_bounded_regular_file"):
+                gate.read_large_oval(str(oversized))
+        finally:
+            gate.MAX_OVAL_REPORT = old_budget
+
     def test_oval_database_or_definition_coverage_mismatch_is_not_pass(self):
         self.oval["scanner"]["database"]["sha256"] = "b" * 64
         self.save()
