@@ -50,6 +50,19 @@ def classify_private_cloud_init_errors(output):
     return sorted(names & accepted)
 
 
+def classify_cloud_init_failure_classes(text):
+    """Disclose only generic error categories, never script content or paths."""
+    patterns = {
+        "script_process_failed": r"run-parts|ScriptFailure|non-zero exit status",
+        "permission_denied": r"PermissionError|Permission denied",
+        "missing_file": r"FileNotFoundError|No such file or directory",
+        "invalid_executable": r"Exec format error|bad interpreter",
+        "python_exception": r"Traceback \(most recent call last\)",
+    }
+    return sorted(name for name, pattern in patterns.items()
+                  if re.search(pattern, text, flags=re.IGNORECASE))
+
+
 def full_oval_definition_count(path):
     # Stream a genuine XML source, not a hand-picked vulnerability excerpt.
     count = 0
@@ -218,6 +231,14 @@ def execute(args, work, artifacts, reports, sources, protocol):
                 module_trace = remote(
                     "sudo grep 'finish:' /var/log/cloud-init.log | tail -70",
                     accepted=(0, 1), timeout=25)
+                count_probe = remote(
+                    "if sudo test -d /var/lib/cloud/scripts/per-once; then "
+                    "sudo find /var/lib/cloud/scripts/per-once -maxdepth 1 -type f | wc -l; "
+                    "else printf 'missing\\n'; fi",
+                    timeout=25)
+                count_text = count_probe.stdout.strip()
+                per_once_count = (int(count_text) if count_text.isdigit()
+                                  and 0 <= int(count_text) <= 1000 else None)
                 status_lines = status_detail.stdout.splitlines()
                 diagnostic = {
                     "status": "failed",
@@ -231,6 +252,10 @@ def execute(args, work, artifacts, reports, sources, protocol):
                     "reportedModuleNames": sorted(set(
                         classify_private_cloud_init_errors(status_detail.stdout)
                         + classify_private_cloud_init_errors(module_trace.stdout))),
+                    "perOnceDirectoryPresent": count_text != "missing",
+                    "perOnceScriptCount": per_once_count,
+                    "failureClasses": classify_cloud_init_failure_classes(
+                        status_detail.stdout + module_trace.stdout),
                     "notes": "Cloud-init error is blocking; guest logs and seed remain private.",
                 }
                 checkpoint("Native guest cloud-init failure; no audit claimed", diagnostic)
@@ -258,6 +283,7 @@ def execute(args, work, artifacts, reports, sources, protocol):
                 "observedAt": datetime.now(timezone.utc).isoformat(),
                 "connection": {"address": "127.0.0.1", "port": port, "user": "hcp-ci"},
             })
+            protocol["realAstraHostVerified"] = True
             checkpoint("Genuine Astra SE 1.7.6.15 guest kernel and SSH key verified",
                        {"observedRelease": "1.7.6.15",
                         "kernel": re.search(r"^KERNEL=(.+)$", identity, re.MULTILINE).group(1),
