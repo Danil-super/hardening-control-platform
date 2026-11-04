@@ -149,12 +149,12 @@ def download(level, directory, *, opener, progress, clock=time.monotonic,
                 file.flush()
                 os.fsync(file.fileno())
 
-        require(total > 1024 and preview[257:262] == b"ustar",
-                "Downloaded bytes are not a recognizable OVA/TAR archive")
         if length is not None:
             require(total == int(length), "Remote image transfer is truncated")
         require(digest.hexdigest() == advertised,
                 "Downloaded bytes do not match the publisher-side checksum")
+        require(total > 1024 and preview[257:262] == b"ustar",
+                "Downloaded bytes are not a recognizable OVA/TAR archive")
         if expected_bytes is not None:
             require(total == expected_bytes, "Downloaded file size differs from operator pin")
         require(clock() - start <= max_seconds, "Image download exceeded time budget")
@@ -209,7 +209,7 @@ def download(level, directory, *, opener, progress, clock=time.monotonic,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--level", choices=sorted(FILENAMES), required=True)
-    parser.add_argument("--output-dir", required=True,
+    parser.add_argument("--output-dir",
                         help="Existing private directory chmod 700; no files are overwritten")
     parser.add_argument("--expected-sha256", help="Optional independently recorded SHA-256")
     parser.add_argument("--expected-bytes", type=int, help="Optional independently recorded size")
@@ -225,6 +225,7 @@ def main():
             "publisherSignatureVerified": False, "nativeGuestVerified": False,
         }, ensure_ascii=False))
         return
+    require(bool(args.output_dir), "Specify an existing private --output-dir for downloads")
     def progress(downloaded, total):
         value = "{:.1f} MiB".format(downloaded / 1048576)
         whole = " / {:.1f} MiB".format(total / 1048576) if total else ""
