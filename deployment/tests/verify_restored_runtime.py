@@ -100,8 +100,12 @@ def compare_runtime(backup_dir, restored_dir, require_enrolled_host=False):
                                 archived_wal = True
                             if not is_critical(name):
                                 continue
-                            # A selected path must be a regular file. Never
-                            # follow a symlink or reconstruct devices/links.
+                            # Directory entries inside reports/, sbom/ and
+                            # ssh-host-keys/ are expected in GNU tar, not
+                            # restored file evidence. Files must be regular;
+                            # links and devices are never treated as data.
+                            if item.isdir():
+                                continue
                             ensure(item.isfile(), "backup_critical_member_not_regular")
                             ensure(name not in seen, "backup_critical_duplicate")
                             seen.add(name)
