@@ -125,6 +125,24 @@ class Astra17IdentityGateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             gate.verify_experiment(*reports, facts, IDENTITY, FINGERPRINT, hashes())
 
+    def test_bound_facts_must_match_the_same_asset_generation_and_ssh_connection(self):
+        reports, facts = observations()
+        facts["assetBinding"] = copy.deepcopy(reports[0]["assetBinding"])
+        self.assertTrue(gate.verify_experiment(*reports, facts, IDENTITY,
+                                               FINGERPRINT, hashes())
+                        ["nativeReleaseCrosscheck"]["machineIdMatchedBinding"])
+        for field, invalid in (
+            ("generation", 3),
+            ("connectionId", "e" * 64),
+            ("machineIdSha256", "0" * 64),
+        ):
+            with self.subTest(field=field):
+                wrong = copy.deepcopy(facts)
+                wrong["assetBinding"][field] = invalid
+                with self.assertRaises(ValueError):
+                    gate.verify_experiment(*reports, wrong, IDENTITY,
+                                           FINGERPRINT, hashes())
+
     def test_identity_file_symlink_public_permissions_and_overlong_text_refused(self):
         with tempfile.TemporaryDirectory(prefix="hcp-astra17-private-") as directory:
             root = Path(directory)
