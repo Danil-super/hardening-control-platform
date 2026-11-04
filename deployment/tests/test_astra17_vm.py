@@ -128,6 +128,17 @@ class NativeAstra17GateTests(unittest.TestCase):
                  "finish: modules-final/config-phone-home: FAIL: secret URL\\n")
         self.assertEqual(vm.classify_private_cloud_init_errors(extra),
                          ["phone_home", "users_groups"])
+        error_text = ("Traceback (most recent call last)\\n"
+                      "ScriptFailure: run-parts: exit status 1\\n"
+                      "FileNotFoundError: /private/credentials/missing\\n"
+                      "Permission denied: ssh key")
+        selected_classes = vm.classify_cloud_init_failure_classes(error_text)
+        self.assertEqual(selected_classes, [
+            "missing_file", "permission_denied", "python_exception",
+            "script_process_failed",
+        ])
+        self.assertNotIn("credentials", json.dumps(selected_classes))
+
 
     def test_public_failure_summary_discards_raw_guest_values_and_commands(self):
         from summarize_astra17_ci_failure import summary
@@ -138,6 +149,9 @@ class NativeAstra17GateTests(unittest.TestCase):
                  "detail": {"rawMachineId": "confidential-identity"}},
                 {"name": "Native guest cloud-init failure; no audit claimed",
                  "detail": {"reportedModuleNames": ["users_groups", "secret-custom-stage"],
+                            "perOnceDirectoryPresent": True,
+                            "perOnceScriptCount": 3,
+                            "failureClasses": ["permission_denied", "secret_reason"],
                             "privateKey": "SENSITIVE"}},
             ],
             "error": {"type": "RuntimeError",
@@ -147,6 +161,10 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertFalse(public["nativeAcceptancePassed"])
         self.assertEqual(public["cloudInitFailingModuleNames"], ["users_groups"])
         self.assertEqual(public["failureClass"], "RuntimeError")
+        self.assertEqual(public["cloudInitPerOnceScriptCount"], 3)
+        self.assertEqual(public["cloudInitPerOnceDirectoryPresent"], True)
+        self.assertEqual(public["cloudInitFailureCategories"], ["permission_denied"])
+        self.assertNotIn("secret_reason", json.dumps(public))
         self.assertEqual(public["completedSafeStageNames"],
                          ["image_sha256_verified", "cloud_init_failed"])
         self.assertNotIn("SENSITIVE", json.dumps(public))
