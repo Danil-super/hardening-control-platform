@@ -153,9 +153,10 @@ def revoke(runtime, expected_sha):
         "revocationPerformed": True,
         "hmacChainVerified": False,
         "oldBrowserCookiesTested": False,
-        "originalControllerAffected": False,
+        "originalControllerIsolationIndependentlyVerified": False,
         "limitations": [
             "This edits ONLY admin_sessions in an operator-declared isolated stopped restoration.",
+            "The tool cannot independently prove that the path is not the active production volume.",
             "Old cookies must be tested against the restored server after startup.",
             "HMAC audit chain, login and remote SSH are separate release acceptance gates.",
         ],
