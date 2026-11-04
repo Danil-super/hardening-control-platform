@@ -32,6 +32,46 @@ HOST = "hcp-real-astra"
 NS_DEFINITION = "{http://oval.mitre.org/XMLSchema/oval-definitions-5}definition"
 
 
+def parse_native_guest_release_summary(identity):
+    """Safe release evidence from real guest stdout; never return machine-id.
+
+    The upstream image name/Artifactory SHA do not prove /etc/astra_version.
+    Report a bounded *version-like* token or 'unavailable', but always require
+    exact guest release before any scanner or configuration modification.
+    """
+    assert isinstance(identity, str) and len(identity.encode("utf-8")) <= 128 * 1024
+    lines = identity.splitlines()
+    os_ids = [line.partition("=")[2].strip().strip('"').strip("'")
+              for line in lines if line.startswith("ID=")]
+    versions = [line.partition("=")[2].strip().strip('"').strip("'")
+                for line in lines if line.startswith("RELEASE=")]
+    kernels = [line.partition("=")[2].strip()
+               for line in lines if line.startswith("KERNEL=")]
+    ids = [line.partition("=")[2].strip()
+           for line in lines if line.startswith("MACHINE_ID=")]
+    observed = versions[0] if len(versions) == 1 else ""
+    # This is safe to place in a public CI failure summary: numeric version
+    # notation only, no arbitrary image/user-data, host or secret strings.
+    version_public = (observed if re.fullmatch(r"[0-9]+(?:\.[A-Za-z0-9]+){1,7}(?:[+._-][A-Za-z0-9]+)*", observed)
+                      and len(observed) <= 64 else "unavailable")
+    kernel_ok = (len(kernels) == 1 and re.fullmatch(
+        r"[A-Za-z0-9_.+:-]{1,120}", kernels[0]) is not None
+        and kernels[0] != os.uname().release)
+    machine_ok = (len(ids) == 1 and re.fullmatch(
+        r"[a-f0-9]{32}", ids[0]) is not None and ids[0] != "0" * 32)
+    return {
+        "guestOsIdIsAstra": len(os_ids) == 1 and os_ids[0] == "astra",
+        "observedReleaseToken": version_public,
+        "observedReleaseSha256": hashlib.sha256(observed.encode("utf-8")).hexdigest(),
+        "observedReleaseCount": len(versions),
+        "exactRequiredReleaseObserved": len(versions) == 1 and observed == EXPECTED_RELEASE,
+        "independentGuestKernelObserved": bool(kernel_ok),
+        "machineIdPresent": bool(machine_ok),
+        "identityObservationSha256": hashlib.sha256(identity.encode("utf-8")).hexdigest(),
+        "cloudInitCompletionNotYetVerified": True,
+    }
+
+
 def classify_private_cloud_init_errors(output):
     """Return only known machine-generated module names; never private log text."""
     accepted = {
@@ -296,32 +336,28 @@ def execute(args, work, artifacts, reports, sources, protocol):
             # must not prevent us from recording whether this was actually
             # Astra SE 1.7.6.15. It still blocks release acceptance.
             identity_command = (
-                "cat /etc/os-release; printf '\\nRELEASE='; cat /etc/astra_version; "
+                "set -eu; cat /etc/os-release; printf '\\nRELEASE='; cat /etc/astra_version; "
                 "printf '\\nKERNEL='; uname -r; printf 'MACHINE_ID='; "
                 "cat /etc/machine-id"
             )
             early_identity = remote(identity_command).stdout
-            identity_lines = early_identity.splitlines()
-            assert any(value.strip() in ("ID=astra", 'ID="astra"', "ID='astra'")
-                       for value in identity_lines), "Guest OS is not Astra Linux"
-            assert identity_lines.count("RELEASE=1.7.6.15") == 1, (
+            release_proof = parse_native_guest_release_summary(early_identity)
+            checkpoint("Native guest release preflight recorded", release_proof)
+            assert release_proof["guestOsIdIsAstra"], "Guest OS is not Astra Linux"
+            assert release_proof["exactRequiredReleaseObserved"], (
                 "Native Astra release is not exactly 1.7.6.15"
             )
-            kernels = [line.split("=", 1)[1] for line in identity_lines
-                       if line.startswith("KERNEL=")]
-            assert len(kernels) == 1 and kernels[0] != os.uname().release
-            early_kernel = kernels[0]
-            machine_ids = [line.split("=", 1)[1] for line in identity_lines
-                           if line.startswith("MACHINE_ID=")]
-            assert len(machine_ids) == 1
-            assert re.fullmatch(r"[a-f0-9]{32}", machine_ids[0])
-            assert machine_ids[0] != "0" * 32
+            assert release_proof["independentGuestKernelObserved"], (
+                "Native Astra guest kernel not independently verified"
+            )
+            assert release_proof["machineIdPresent"], (
+                "Native Astra machine identity missing or invalid"
+            )
             checkpoint("Native Astra 1.7.6.15 identity observed before final cloud-init", {
                 "releaseObserved": True,
                 "independentGuestKernelObserved": True,
                 "machineIdPresent": True,
-                "identityObservationSha256": hashlib.sha256(
-                    early_identity.encode()).hexdigest(),
+                "identityObservationSha256": release_proof["identityObservationSha256"],
                 "cloudInitCompletionNotYetVerified": True,
             })
             # A genuine 1.7.6.UU2 guest has reached SSH. Cloud-init may
