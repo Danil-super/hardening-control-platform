@@ -37,7 +37,12 @@ expectations; a changed remote file deliberately fails the workflow.
    reports, published identity-bound JSON, measured metrics, ARF and executed
    datastreams are kept as acceptance artifacts. This is stronger than unit
    fixtures but does **not** establish entire OS, SSH or firewall restoration.
-5. The complete pinned vendor OVAL file is evaluated, including 8,284 definitions.
+5. The complete byte-pinned vendor OVAL XML is evaluated. The native runner
+   parses the full exact source and obtains its **current real definition count**;
+   it then requires every definition to have one evaluated result. The earlier
+   8,284-definitions figure belongs only to the retained October 2026 snapshot,
+   not automatically to the updated November source. An upstream source change
+   must never be silently accepted without a reviewed size and SHA-256.
    The labelled CVE-2024-5535 definition's actual three package predicates are
    checked independently against the XML and `dpkg --compare-versions`. The
    older image must return `true`; the fixed image must return `false` for that
