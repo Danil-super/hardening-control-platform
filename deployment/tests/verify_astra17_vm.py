@@ -307,7 +307,10 @@ def execute(args, work, artifacts, reports, sources, protocol):
         "users": ["default", {
             "name": "hcp-ci", "groups": ["astra-admin"],
             "sudo": "ALL=(ALL) NOPASSWD:ALL", "lock_passwd": True,
-            "parsec_user_max_ilev": "high",
+            # CI-only A/B trial: do not override this disposable user's
+            # optional max integrity level. The guest's actual protection
+            # mechanisms and cloud-init modules remain enabled. Never use
+            # this candidate as production configuration without review.
             "ssh_authorized_keys": [(work / "client.pub").read_text().strip()],
         }],
         "ssh_keys": {
