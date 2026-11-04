@@ -7,6 +7,7 @@ import sys
 
 SAFE_CHECKS = {
     "Official fixed Astra 1.7.6.UU2 image bytes match source catalog": "image_sha256_verified",
+    "Native guest release preflight recorded": "native_release_observed_but_not_yet_accepted",
     "Native guest cloud-init failure; no audit claimed": "cloud_init_failed",
     "Native Astra 1.7.6.15 identity observed before final cloud-init": "native_release_17_observed",
     "Actual native guest cloud-init completed": "cloud_init_completed",
@@ -48,12 +49,35 @@ def summary(private):
     once_executable = None
     interpreter_types = []
     classes = []
+    observed_release = None
+    guest_os_id_astra = None
+    version_matches_expected = None
     for item in checks[-30:]:
         if not isinstance(item, dict):
             continue
         name = item.get("name")
         if name in SAFE_CHECKS:
             normalized.append(SAFE_CHECKS[name])
+        if name == "Native guest release preflight recorded":
+            candidate = item.get("detail")
+            if isinstance(candidate, dict):
+                value = candidate.get("observedReleaseToken")
+                # Only a narrowly formatted numeric version can leave the
+                # private runner. Never reuse raw identity, machine ID,
+                # arbitrary hostname or error messages from its JSON.
+                if isinstance(value, str) and len(value) <= 64 and re.fullmatch(
+                    r"[0-9]+(?:\.[A-Za-z0-9]+){1,7}(?:[+._-][A-Za-z0-9]+)*",
+                    value,
+                ):
+                    observed_release = value
+                guest_os_id_astra = (candidate["guestOsIdIsAstra"]
+                                     if type(candidate.get("guestOsIdIsAstra")) is bool
+                                     else None)
+                version_matches_expected = (
+                    candidate["exactRequiredReleaseObserved"]
+                    if type(candidate.get("exactRequiredReleaseObserved")) is bool
+                    else None
+                )
         if name == "Native guest cloud-init failure; no audit claimed":
             detail = item.get("detail")
             if isinstance(detail, dict) and isinstance(detail.get("reportedModuleNames"), list):
@@ -86,6 +110,9 @@ def summary(private):
         "runState": status,
         "nativeAcceptancePassed": False,
         "completedSafeStageNames": normalized,
+        "observedGuestRelease": observed_release,
+        "guestOsIdIsAstra": guest_os_id_astra,
+        "exactRelease117615Observed": version_matches_expected,
         "cloudInitFailingModuleNames": modules,
         "cloudInitPerOnceDirectoryPresent": once_present,
         "cloudInitPerOnceScriptCount": once_count,
