@@ -42,6 +42,7 @@ class Astra17NativeAcceptanceTests(unittest.TestCase):
         self.oval_sha = "a" * 64
         self.oval = {
             "mode": "astra-oval", "inventoryHost": "astra-fixture",
+            "assetBinding": dict(self.reports[0]["assetBinding"]),
             "partial": False,
             "scanner": {
                 "hostIdentity": {"id": "astra", "astraVersion": "1.7.6.15"},
@@ -146,6 +147,32 @@ class Astra17NativeAcceptanceTests(unittest.TestCase):
         self.oval["scanner"]["partial"] = True
         self.save()
         with self.assertRaises(gate.AcceptanceError):
+            self.accept()
+
+    def test_oval_must_belong_to_the_same_verified_asset_and_connection(self):
+        for field, invalid in (
+            ("assetId", "asset-" + "e" * 64),
+            ("generation", 7),
+            ("sshHostKeyFingerprint", "SHA256:" + "Z" * 43),
+            ("connectionId", "9" * 64),
+        ):
+            with self.subTest(field=field):
+                original = self.oval["assetBinding"][field]
+                self.oval["assetBinding"][field] = invalid
+                self.save()
+                with self.assertRaisesRegex(ValueError, "oval_different_or_unverified_asset_binding"):
+                    self.accept()
+                self.oval["assetBinding"][field] = original
+        self.oval["assetBinding"]["status"] = "unknown"
+        self.save()
+        with self.assertRaisesRegex(ValueError, "oval_different_or_unverified_asset_binding"):
+            self.accept()
+
+    def test_declared_image_protection_mode_cannot_differ_from_filename(self):
+        original = json.loads(self.image_evidence.read_text())
+        original["securityLevelCandidate"] = "max"
+        self.image_evidence.write_text(json.dumps(original))
+        with self.assertRaisesRegex(ValueError, "image_bytes_not_bound_to_local_pin"):
             self.accept()
 
     def test_restored_rule_regression_fails_instead_of_claiming_rollback(self):
