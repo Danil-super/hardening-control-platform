@@ -173,7 +173,7 @@ class Astra17IdentityGateTests(unittest.TestCase):
 
             # A failed rollback must preserve exact observed states, not return PASS.
             reports[2]["findings"][3]["status"] = "failed"
-            reports[2]["scanner"]["ruleResultCounts"].update({"pass": 13, "fail": 5})
+            reports[2]["scanner"]["ruleResultCounts"].update({"pass": 15, "fail": 3})
             paths[2].write_text(json.dumps(reports[2]), encoding="utf-8")
             result = subprocess.run(argv, capture_output=True, text=True)
             self.assertEqual(result.returncode, 2, result.stderr)
