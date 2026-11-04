@@ -161,6 +161,30 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertFalse(unsafe["exactRequiredReleaseObserved"])
         self.assertEqual(unsafe["observedBuildVersionToken"], "unavailable")
 
+    def test_full_build_release_crosscheck_survives_init_and_rollback(self):
+        machine = "0123456789abcdef0123456789abcdef"
+        original = chr(10).join((
+            "NAME=Astra Linux", "ID=astra", "RELEASE=1.7.6",
+            "BUILD_VERSION=1.7.6.15", "KERNEL=5.10.99-1-astra-amd64",
+            "MACHINE_ID=" + machine,
+        )) + chr(10)
+        result = vm.require_stable_native_guest_identity(original, original)
+        self.assertTrue(result["exactRequiredReleaseObserved"])
+        source = (vm.ROOT / "deployment/tests/verify_astra17_vm.py").read_text()
+        self.assertNotIn('assert "RELEASE=1.7.6.15" in identity', source)
+        for damaged in (
+            original.replace("RELEASE=1.7.6" + chr(10),
+                             "RELEASE=1.7.6.15" + chr(10)),
+            original.replace("BUILD_VERSION=1.7.6.15", "BUILD_VERSION=1.7.6.14"),
+            original.replace("BUILD_VERSION=1.7.6.15" + chr(10), ""),
+            original.replace("ID=astra", "ID=debian"),
+            original.replace(machine, "f" * 32),
+            original + "BUILD_VERSION=1.7.6.15" + chr(10),
+        ):
+            with self.subTest(variant=hash(damaged)):
+                with self.assertRaises(AssertionError):
+                    vm.require_stable_native_guest_identity(original, damaged)
+
     def test_native_release_failure_summary_keeps_only_version_numbers(self):
         from summarize_astra17_ci_failure import summary
         base = {
