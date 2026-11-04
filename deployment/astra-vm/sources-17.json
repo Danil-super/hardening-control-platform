@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-11-04",
+  "imageDocumentation": "https://registry.astralinux.ru/descriptions/cloud/cloudinit/",
+  "sourceTrust": "Source file digest and size observed in same public Astra Artifactory; not an independent publisher signature",
+  "images": {
+    "base": {
+      "url": "https://registry.astralinux.ru/artifactory/mg-generic/alse/cloudinit/alse-1.7.6.uu2-base-cloudinit-mg15.3.1-amd64.qcow2",
+      "metadataUrl": "https://registry.astralinux.ru/artifactory/api/storage/mg-generic/alse/cloudinit/alse-1.7.6.uu2-base-cloudinit-mg15.3.1-amd64.qcow2",
+      "bytes": 407673856,
+      "sha256": "654aae66598bb4e5e38efc4fc18e2c9cb53170713a31728ff502f04dabf1838e"
+    },
+    "adv": {
+      "url": "https://registry.astralinux.ru/artifactory/mg-generic/alse/cloudinit/alse-1.7.6.uu2-adv-cloudinit-mg15.3.1-amd64.qcow2",
+      "metadataUrl": "https://registry.astralinux.ru/artifactory/api/storage/mg-generic/alse/cloudinit/alse-1.7.6.uu2-adv-cloudinit-mg15.3.1-amd64.qcow2",
+      "bytes": 408068608,
+      "sha256": "03b72d0e058a7feabfb3e2e0b7636f7f4bd331f861f76ec8843cf9efad873c49"
+    },
+    "max": {
+      "url": "https://registry.astralinux.ru/artifactory/mg-generic/alse/cloudinit/alse-1.7.6.uu2-max-cloudinit-mg15.3.1-amd64.qcow2",
+      "metadataUrl": "https://registry.astralinux.ru/artifactory/api/storage/mg-generic/alse/cloudinit/alse-1.7.6.uu2-max-cloudinit-mg15.3.1-amd64.qcow2",
+      "bytes": 407246848,
+      "sha256": "0d0e10096c9df52d7eab25bc4456ee9d4210bc912d80d73d4a7b62c01527b2a4"
+    }
+  },
+  "oval": {
+    "url": "https://dl.astralinux.ru/artifactory/al-oval/1.7_x86-64/oval-definitions-alse-1.7.xml",
+    "metadataUrl": "https://dl.astralinux.ru/artifactory/api/storage/al-oval/1.7_x86-64/oval-definitions-alse-1.7.xml",
+    "bytes": 134668815,
+    "sha256": "c9364c80d664907dc472475d2ef57689c314abecede7a58e7e9dae8250891d17"
+  }
+}
