@@ -302,8 +302,8 @@ def execute(args, work, artifacts, reports, sources, protocol):
                     accepted=(0, 1), timeout=25)
                 try:
                     guest_script_metadata = inspect_guest_per_once_scripts(remote)
-                except (OSError, ValueError, AssertionError, subprocess.SubprocessError,
-                        json.JSONDecodeError):
+                except (OSError, ValueError, RuntimeError, AssertionError,
+                        subprocess.SubprocessError, TypeError):
                     # Diagnostics must never mask the original failed native
                     # cloud-init gate. No invented zero-script observations.
                     guest_script_metadata = {
