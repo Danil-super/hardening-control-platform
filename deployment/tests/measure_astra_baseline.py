@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare two real, source-bound HCP Astra OpenSCAP baseline reports.
+"""Compare source-bound HCP Astra OpenSCAP reports (two or three observations).
 
 Only the same verified asset, same 18-rule profile, same stable input bundle
 identity and complete, strictly comparable passes are accepted. OpenSCAP
@@ -173,18 +173,77 @@ def measure(before, after, before_sha, after_sha):
     }
 
 
+def measure_three_stage(before, changed, restored, before_sha, changed_sha, restored_sha):
+    """Evaluate three original HCP reports; never infer causality or full restoration."""
+    baseline_changed = measure(before, changed, before_sha, changed_sha)
+    changed_restored = measure(changed, restored, changed_sha, restored_sha)
+    baseline_restored = measure(before, restored, before_sha, restored_sha)
+
+    # All pairwise calls enforce the same verified asset/generation, exact
+    # source bundle, 18 rule IDs and strictly ordered observations.
+    def transitions(pair):
+        return {key: pair[key] for key in (
+            "beforeFailed", "afterFailed", "observedFailedToPassed",
+            "observedPassedToFailed", "improvedRules", "regressedRules",
+            "netFailedRuleChange")}
+
+    restored_match = (baseline_restored["observedFailedToPassed"] == 0
+                      and baseline_restored["observedPassedToFailed"] == 0)
+    changed_rules = (baseline_changed["observedFailedToPassed"] > 0
+                     or baseline_changed["observedPassedToFailed"] > 0)
+    first = baseline_changed["source"]
+    second = changed_restored["source"]
+    return {
+        "schemaVersion": 2,
+        "scope": "astra-builtin-18-rule-three-observation-evidence-only",
+        "completeComparableRuleCount": EXPECTED_RULES,
+        "source": {
+            "baselineSha256": before_sha, "changedSha256": changed_sha,
+            "restoredSha256": restored_sha,
+            "sourceBundleSha256": first["sourceBundleSha256"],
+            "assetId": first["assetId"], "assetGeneration": first["assetGeneration"],
+            "hostAlias": first["hostAlias"],
+            "executedDatastreamSha256Baseline": first["executedDatastreamSha256Before"],
+            "executedDatastreamSha256Changed": first["executedDatastreamSha256After"],
+            "executedDatastreamSha256Restored": second["executedDatastreamSha256After"],
+            "baselineAt": first["beforeAt"], "changedAt": first["afterAt"],
+            "restoredAt": second["afterAt"],
+        },
+        "baselineToChanged": transitions(baseline_changed),
+        "changedToRestored": transitions(changed_restored),
+        "baselineToRestored": transitions(baseline_restored),
+        "observedChangeIn18Rules": changed_rules,
+        "restorationMatchesBaseline18Rules": restored_match,
+        "status": "same-18-rule-statuses-observed" if restored_match else "rules-not-restored",
+        "claimLimits": [
+            "Result compares only the same 18 Astra HCP configuration rules.",
+            "Matching rule statuses do not prove identical OS, kernel, firewall or SSH reachability.",
+            "Observed change is not proof of a specific remediation or its causal effect.",
+            "No full-CVE coverage, general security score, precision, recall or time savings measured.",
+            "Synthetic fixtures test the parser only; real Astra 1.7 requires authorized native evidence.",
+        ],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--before", required=True)
     parser.add_argument("--after", required=True)
+    parser.add_argument("--restored", help="Optional third original audit after rollback")
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    require(os.path.abspath(args.output) not in
-            (os.path.abspath(args.before), os.path.abspath(args.after)),
-            "Refusing to overwrite source evidence")
+    paths = [args.before, args.after, args.output]
+    if args.restored:
+        paths.append(args.restored)
+    require(len({os.path.abspath(value) for value in paths}) == len(paths),
+            "Source evidence and output paths must be distinct")
     a, a_sha = read_report(args.before)
     b, b_sha = read_report(args.after)
-    result = measure(a, b, a_sha, b_sha)
+    if args.restored:
+        restored, restored_sha = read_report(args.restored)
+        result = measure_three_stage(a, b, restored, a_sha, b_sha, restored_sha)
+    else:
+        result = measure(a, b, a_sha, b_sha)
     output = Path(args.output)
     encoded = (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
     descriptor = os.open(str(output), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -198,12 +257,16 @@ def main():
         raise
     finally:
         os.close(descriptor)
-    print("PASS: independently comparable 18-rule Astra observations; digest-bound output saved.")
+    if args.restored and not result["restorationMatchesBaseline18Rules"]:
+        print("FAIL: 18-rule states differ from baseline; evidence saved for review.", file=sys.stderr)
+        return 2
+    print("PASS: independently comparable Astra observations; scoped digest-bound output saved.")
+    return 0
 
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except (OSError, ValueError, UnicodeError, json.JSONDecodeError) as error:
         print("FAIL: " + str(error), file=sys.stderr)
         sys.exit(1)
