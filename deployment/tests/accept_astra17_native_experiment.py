@@ -96,14 +96,20 @@ def post_restore_ssh(host, port, user, private_key, known_hosts_file,
     # inspection and subsequent OpenSSH operation use EXACTLY THESE BYTES:
     # replacing an operator's known_hosts between two commands cannot redirect
     # the acceptance probe to a newly trusted network key.
-    with open(known_hosts_file, "rb") as source:
-        original = os.fstat(source.fileno())
-        data = source.read(MAX_SSH_BYTES + 1)
-        current = os.fstat(source.fileno())
-        demand(len(data) <= MAX_SSH_BYTES and len(data) == original.st_size
-               and all(getattr(original, field) == getattr(current, field)
-                       for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")),
-               "ssh_known_hosts_changed")
+    fd_source = os.open(str(known_hosts_file), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        with os.fdopen(fd_source, "rb") as source:
+            original = os.fstat(source.fileno())
+            demand(stat.S_ISREG(original.st_mode) and not (original.st_mode & 0o077),
+                   "ssh_known_hosts_unsafe")
+            data = source.read(MAX_SSH_BYTES + 1)
+            current = os.fstat(source.fileno())
+            demand(len(data) <= MAX_SSH_BYTES and len(data) == original.st_size
+                   and all(getattr(original, field) == getattr(current, field)
+                           for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")),
+                   "ssh_known_hosts_changed")
+    except BaseException:
+        raise
     with tempfile.TemporaryDirectory(prefix="hcp-astra17-ssh-") as temporary:
         pinned_file = os.path.join(temporary, "known_hosts")
         fd = os.open(pinned_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -179,6 +185,7 @@ def check_oval(report, reference_sha, host_alias):
            and total > 0 and total == evaluated
            and scanner.get("evaluationPerformed") is True
            and scanner.get("available") is True
+           and type(scanner.get("exitCode")) is int
            and scanner.get("exitCode") in (0, 2)
            and scanner.get("partial") is False
            and isinstance(scanner.get("definitionResults"), list)
