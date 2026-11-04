@@ -14,7 +14,7 @@ OpenSCAP фиксируют непосредственно на разрешён
 предлагает виртуальные образы 1.7.6.UU2:
 https://registry.astralinux.ru/download/ и
 https://registry.astralinux.ru/descriptions/local/qemu/ .
-Условие `RELEASE=1.7.6.15` должно быть **наблюдено на гостевой ВМ**;
+Для Astra 1.7.6.UU2 на настоящей гостевой ВМ нужно увидеть **две различные строки**: `RELEASE=1.7.6` из `/etc/astra_version` и `BUILD_VERSION=1.7.6.15` из `/etc/astra/build_version`. Одна лишь версия 1.7.6 не подтверждает установленное UU2. Оба файла читаются только после проверки SSH host key;
 сходство названия образа с выпуском само по себе не достаточно.
 
 До подключения и изменений зафиксировать исходный хеш скачанного официального
@@ -37,7 +37,7 @@ https://registry.astralinux.ru/descriptions/local/qemu/ .
   исходную `bundle-sha256` и строго возрастающие временные метки.
 - `guest-identity.txt` — оригинальное чтение системной идентичности
   **по уже независимо проверенному SSH fingerprint**:
-  `/etc/os-release`, `/etc/astra_version`, `uname -r`,
+  `/etc/os-release`, `/etc/astra_version`, `/etc/astra/build_version`, `uname -r`,
   `/etc/machine-id`. Формат показан ниже; машинный идентификатор
   обрабатывается исключительно локально и не включается в результат.
 - `SSH_FINGERPRINT` — ранее независимо подтверждённый SHA256
@@ -55,7 +55,7 @@ umask 077
 ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
     -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
     -i /path/to/hcp-approved-private-key -p 22 approved-admin@approved-host \
-    'cat /etc/os-release; printf "RELEASE="; cat /etc/astra_version; printf "KERNEL="; uname -r; printf "MACHINE_ID="; cat /etc/machine-id' \
+    'set -eu; cat /etc/os-release; printf "\nRELEASE="; cat /etc/astra_version; printf "\nBUILD_VERSION="; cat /etc/astra/build_version; printf "\nKERNEL="; uname -r; printf "MACHINE_ID="; cat /etc/machine-id' \
     > /private/path/guest-identity.txt
 chmod 600 /private/path/guest-identity.txt
 ```
@@ -86,7 +86,7 @@ python3 deployment/tests/verify_astra_17_experiment.py \
 
 ## Проверяемые утверждения
 
-1. Реально наблюдённые поля `ID=astra`, `RELEASE=1.7.6.15`
+1. Реально наблюдённые поля `ID=astra`, `RELEASE=1.7.6` и `BUILD_VERSION=1.7.6.15`
    и ядро согласуются с оригинальным HCP `facts.json` ветки 1.7.
 2. Сырой machine-id локально преобразуется тем же алгоритмом
    HCP `HMAC-SHA256`, а проверенный SSH fingerprint совместно с ним
