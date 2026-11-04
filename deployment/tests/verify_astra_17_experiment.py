@@ -94,6 +94,8 @@ def verify_experiment(before, changed, restored, facts, identity_text, fingerpri
     """Crosscheck HCP source-bound reports against a native guest observation."""
     metrics = measure_three_stage(before, changed, restored, hashes["before"],
                                   hashes["changed"], hashes["restored"])
+    require(metrics["observedChangeIn18Rules"],
+            "No observed rule transition in the controlled experiment; cannot claim an effect")
     observed = native_observation(identity_text, fingerprint)
     binding = before.get("assetBinding")
     require(isinstance(binding, dict) and binding.get("version") == 1
