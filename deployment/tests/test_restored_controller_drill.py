@@ -58,6 +58,14 @@ class RestoreDrillContractTests(unittest.TestCase):
                         with self.assertRaises(AssertionError):
                             MODULE.find_source_volume("fixture")
 
+    def test_real_tar_restore_attaches_docker_stdin_instead_of_dev_null(self):
+        command = MODULE.tar_restore_command("sha256:" + "f" * 64, "hcp-ci-restored-volume-fixture")
+        self.assertEqual(command[:5], ["docker", "run", "--rm", "-i", "--network"])
+        self.assertEqual(command[-4:], ["-C", "/to", "-xzf", "-"])
+        self.assertIn("hcp-ci-restored-volume-fixture:/to", command)
+        self.assertEqual(command.count("-i"), 1)
+        self.assertNotIn("--privileged", command)
+
     def test_network_must_be_unique_lab_only(self):
         for networks, allowed in [
             ({"hcp-lab_lab": {}, "bridge": {}}, True),
