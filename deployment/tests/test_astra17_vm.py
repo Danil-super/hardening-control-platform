@@ -7,6 +7,7 @@ import tempfile
 import unittest
 
 import verify_astra17_vm as vm
+from astra17_cloud_init_forensics import validated_evidence, collect_guest_evidence, GUEST_PROBE
 
 
 class NativeAstra17GateTests(unittest.TestCase):
@@ -251,6 +252,52 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertNotIn("/private/", json.dumps(reasons))
 
 
+    def test_native_guest_log_probe_requires_strict_safe_schema(self):
+        import json
+        from types import SimpleNamespace
+        safe = {
+            "schemaVersion": 1,
+            "status": "sanitized-guest-log-observation",
+            "cloudLogReadable": True,
+            "outputLogReadable": True,
+            "cloudLogClasses": ["script_process_failed"],
+            "outputLogClasses": ["name_resolution_failure"],
+            "observedNonzeroExitCodes": [1],
+            "perOnceFailureMarkerSeen": True,
+            "defaultRoutePresent": False,
+            "resolverConfigured": True,
+            "rootFreeMiB": 3872,
+        }
+        self.assertEqual(validated_evidence(json.dumps(safe)), safe)
+        commands = []
+        def remote(command, **kwargs):
+            commands.append(command)
+            return SimpleNamespace(stdout=json.dumps(safe))
+        self.assertEqual(collect_guest_evidence(remote), safe)
+        self.assertEqual(len(commands), 1)
+        self.assertIn("sudo python3 -c ", commands[0])
+        self.assertNotIn("cloud-init single", commands[0])
+        self.assertNotIn("cloud-init clean", commands[0])
+        self.assertIn("cloud-init-output.log", GUEST_PROBE)
+        self.assertNotIn("print(cloud_log)", GUEST_PROBE)
+        self.assertNotIn("print(output_log)", GUEST_PROBE)
+        for altered in [
+            {**safe, "rawGuest": "my-secret-key"},
+            {**safe, "cloudLogClasses": ["my private path"]},
+            {**safe, "outputLogClasses": ["name_resolution_failure", "name_resolution_failure"]},
+            {**safe, "observedNonzeroExitCodes": [1, 0]},
+            {**safe, "observedNonzeroExitCodes": [True]},
+            {**safe, "rootFreeMiB": "secret"},
+            {**safe, "defaultRoutePresent": "false"},
+            {**safe, "status": "failed"},
+        ]:
+            with self.subTest(case=repr(list(altered.keys()))):
+                with self.assertRaises(ValueError):
+                    validated_evidence(json.dumps(altered))
+        for unsafe in ["secret-data", "{", "", "x" * 4100]:
+            with self.assertRaises(ValueError):
+                validated_evidence(unsafe)
+
     def test_guest_script_metadata_probe_returns_only_bounded_sanitized_types(self):
         from types import SimpleNamespace
         recorded = []
@@ -300,6 +347,20 @@ class NativeAstra17GateTests(unittest.TestCase):
                             "perOnceInterpreterCategories": ["shell", "other", "private-sh"],
                             "failureClasses": ["permission_denied", "secret_reason"],
                             "perOnceShellSyntaxValid": False,
+                            "guestLogEvidence": {
+                                "schemaVersion": 1,
+                                "status": "sanitized-guest-log-observation",
+                                "cloudLogReadable": True,
+                                "outputLogReadable": True,
+                                "cloudLogClasses": ["script_process_failed"],
+                                "outputLogClasses": ["name_resolution_failure"],
+                                "observedNonzeroExitCodes": [1],
+                                "perOnceFailureMarkerSeen": True,
+                                "defaultRoutePresent": False,
+                                "resolverConfigured": True,
+                                "rootFreeMiB": 3872,
+                                "rawGuestSecret": "never-include",
+                            },
                             "privateKey": "SENSITIVE"}},
             ],
             "error": {"type": "RuntimeError",
@@ -321,6 +382,12 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertEqual(public["cloudInitPerOnceInterpreterCategories"], ["other", "shell"])
         self.assertEqual(public["cloudInitFailureCategories"], ["permission_denied"])
         self.assertIs(public["cloudInitPerOnceShellSyntaxValid"], False)
+        self.assertIsNone(public["guestLogDiagnostics"])
+        private["checks"][-1]["detail"]["guestLogEvidence"].pop("rawGuestSecret")
+        validated = summary(private)
+        self.assertEqual(validated["guestLogDiagnostics"]["outputLogClasses"],
+                         ["name_resolution_failure"])
+        self.assertNotIn("rawGuestSecret", json.dumps(validated))
         self.assertNotIn("secret_reason", json.dumps(public))
         self.assertEqual(public["completedSafeStageNames"],
                          ["image_sha256_verified",

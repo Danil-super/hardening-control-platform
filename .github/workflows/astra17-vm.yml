@@ -14,6 +14,7 @@ on:
       - .github/workflows/astra17-vm.yml
       - deployment/astra-vm/sources-17.json
       - deployment/tests/verify_astra17_vm.py
+      - deployment/tests/astra17_cloud_init_forensics.py
       - deployment/tests/verify_astra17_vm_normalization.mjs
       - deployment/tests/test_astra17_vm.py
       - deployment/tests/measure_astra_baseline.py

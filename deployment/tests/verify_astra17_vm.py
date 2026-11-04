@@ -25,6 +25,7 @@ from verify_astra_vm import (
     record_failure, PROFILE, RULE,
 )
 from verify_astra_17_experiment import EXPECTED_RELEASE
+from astra17_cloud_init_forensics import collect_guest_evidence
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "deployment/astra-vm/sources-17.json"
@@ -445,18 +446,14 @@ def execute(args, work, artifacts, reports, sources, protocol):
                     }
                 write_json(work / "cloud-init-private-script-metadata.json",
                            guest_script_metadata)
-                # Only inspect bounded log text transiently in runner
-                # memory. It can contain private user-data: never print it,
-                # store it in artifacts, or expose raw matching lines.
+                # Classify original cloud-init and cloud-init-output logs
+                # INSIDE the guest. Never transmit raw log lines via SSH.
                 try:
-                    recent_private_log = remote(
-                        "sudo tail -n 200 /var/log/cloud-init.log",
-                        accepted=(0, 1, 2), timeout=25).stdout
-                except (OSError, RuntimeError, subprocess.SubprocessError):
-                    recent_private_log = ""
-                classified_text = (
-                    status_detail.stdout + "\n" + module_trace.stdout + "\n"
-                    + recent_private_log)
+                    log_evidence = collect_guest_evidence(remote)
+                except (OSError, RuntimeError, AssertionError, ValueError,
+                        subprocess.SubprocessError, TypeError):
+                    log_evidence = None
+                classified_text = status_detail.stdout + "\n" + module_trace.stdout
                 status_lines = status_detail.stdout.splitlines()
                 diagnostic = {
                     "status": "failed",
@@ -495,6 +492,7 @@ def execute(args, work, artifacts, reports, sources, protocol):
                         else None),
                     "failureClasses": classify_cloud_init_failure_classes(
                         classified_text),
+                    "guestLogEvidence": log_evidence,
                     "notes": "Cloud-init error is blocking; guest logs and seed remain private.",
                 }
                 checkpoint("Native guest cloud-init failure; no audit claimed", diagnostic)

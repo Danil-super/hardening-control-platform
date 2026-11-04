@@ -51,6 +51,7 @@ def summary(private):
     interpreter_types = []
     classes = []
     shell_syntax_valid = None
+    guest_log_evidence = None
     observed_release = None
     observed_build = None
     point_matches_expected = None
@@ -117,6 +118,15 @@ def summary(private):
                                                and name in SAFE_INTERPRETERS})
                 syntax_value = detail.get("perOnceShellSyntaxValid")
                 shell_syntax_valid = syntax_value if type(syntax_value) is bool else None
+                # Evidence was strictly validated by the guest collector;
+                # still whitelist it AGAIN when reading private runner JSON.
+                observation = detail.get("guestLogEvidence")
+                if isinstance(observation, dict):
+                    try:
+                        from astra17_cloud_init_forensics import validated_evidence
+                        guest_log_evidence = validated_evidence(json.dumps(observation))
+                    except (ValueError, TypeError):
+                        guest_log_evidence = None
                 provided = detail.get("failureClasses")
                 if isinstance(provided, list):
                     classes = sorted({x for x in provided
@@ -144,6 +154,7 @@ def summary(private):
         "cloudInitPerOnceInterpreterCategories": interpreter_types,
         "cloudInitFailureCategories": classes,
         "cloudInitPerOnceShellSyntaxValid": shell_syntax_valid,
+        "guestLogDiagnostics": guest_log_evidence,
         "failureClass": error_type if error_type in SAFE_ERRORS else "unknown",
         "rawGuestOutputPublished": False,
         "notes": ("Only an allowlisted diagnostic summary; no raw identity, "
