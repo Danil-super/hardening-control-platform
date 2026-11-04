@@ -8,7 +8,7 @@ This is NOT an operator's production recovery drill or Astra acceptance.
 Never publish the original runtime tar, SQLite, keys, cookie or lab .env.
 """
 import hashlib
-import http.cookiejar
+import http.cookiejar as cookiejar
 import json
 import os
 import re
@@ -220,7 +220,7 @@ def main():
     image = full_image(original)
     source = find_source_volume(original)
     network = find_network(original)
-    old_jar = http.cookiejar.CookieJar()
+    old_jar = cookiejar.CookieJar()
     old = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(old_jar))
     http(old, SOURCE_URL, "/api/ansible/auth/login", payload={"password": LAB_PASSWORD})
     old_hosts = http(old, SOURCE_URL, "/api/ansible/hosts")
@@ -358,7 +358,7 @@ def main():
                 "Original lab cookie remained valid after restored-session revocation")
         state["oldSessionRejected"] = True
         fresh = urllib.request.build_opener(
-            urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+            urllib.request.HTTPCookieProcessor(cookiejar.CookieJar()))
         http(fresh, RESTORED_URL, "/api/ansible/auth/login",
              payload={"password": LAB_PASSWORD})
         require(http(fresh, RESTORED_URL, "/api/ansible/session")["ok"] is True,
