@@ -22,7 +22,22 @@ expectations; a changed remote file deliberately fails the workflow.
    restored in `finally` and the owned VM is stopped even after failure.
    Every reported rule status and SCE observation is compared with the native
    ARF; the report's content checksum must match the retained compiled datastream.
-4. The complete pinned vendor OVAL file is evaluated, including 8,284 definitions.
+4. After the real baseline → violation → restored cycle, the three **original**
+   HCP OpenSCAP JSON reports are copied into the actual production
+   `publishCapturedAssetReports` flow using the independently observed guest
+   machine-id and pinned SSH fingerprint (the same captured binding for all
+   three reports). The publisher must preserve every original rule finding.
+   The production source-bound Python comparator
+   `deployment/tests/measure_astra_baseline.py --restored` then checks
+   identical 18-rule scope and stable source bundle, strictly increasing
+   timestamps, a verified asset ID/generation, all three report SHA-256s and
+   separate compiled-datastream SHA-256s. On both disposable native Astra
+   guests, the expected one-rule `passed → failed → passed` must be observed,
+   with **zero baseline-to-restored rule-status regressions**. Original raw
+   reports, published identity-bound JSON, measured metrics, ARF and executed
+   datastreams are kept as acceptance artifacts. This is stronger than unit
+   fixtures but does **not** establish entire OS, SSH or firewall restoration.
+5. The complete pinned vendor OVAL file is evaluated, including 8,284 definitions.
    The labelled CVE-2024-5535 definition's actual three package predicates are
    checked independently against the XML and `dpkg --compare-versions`. The
    older image must return `true`; the fixed image must return `false` for that
@@ -31,7 +46,7 @@ expectations; a changed remote file deliberately fails the workflow.
    Version controls use installed dpkg records, excluding residual configuration
    from removed packages. A surviving labelled result cannot hide a failed
    native process or a result set missing other source definitions.
-5. The actual web report normalizer must retain the finding, CVE identity,
+6. The actual web report normalizer must retain the finding, CVE identity,
    incomplete-evaluation status and absence of a misleading aggregate CVE score.
 
 ## Scope and evidence
