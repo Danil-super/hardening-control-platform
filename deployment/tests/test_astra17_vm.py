@@ -117,30 +117,49 @@ class NativeAstra17GateTests(unittest.TestCase):
     def test_true_guest_release_is_observed_without_leaking_machine_identity(self):
         machine = "0123456789abcdef0123456789abcdef"
         raw = ("NAME=Astra Linux\nID=astra\nPRETTY_NAME=Astra Linux SE\n"
-               "RELEASE=1.7.6.15\nKERNEL=5.10.99-1-astra-amd64\n"
-               "MACHINE_ID=" + machine + "\n")
+               "RELEASE=1.7.6\nBUILD_VERSION=1.7.6.15\n"
+               "KERNEL=5.10.99-1-astra-amd64\nMACHINE_ID=" + machine + "\n")
         proof = vm.parse_native_guest_release_summary(raw)
         self.assertTrue(proof["guestOsIdIsAstra"])
         self.assertTrue(proof["exactRequiredReleaseObserved"])
+        self.assertTrue(proof["pointReleaseMatchesExpected"])
+        self.assertTrue(proof["buildVersionMatchesExpected"])
         self.assertTrue(proof["independentGuestKernelObserved"])
         self.assertTrue(proof["machineIdPresent"])
-        self.assertEqual(proof["observedReleaseToken"], "1.7.6.15")
+        self.assertEqual(proof["observedReleaseToken"], "1.7.6")
+        self.assertEqual(proof["observedBuildVersionToken"], "1.7.6.15")
         self.assertNotIn(machine, json.dumps(proof))
 
-        other = vm.parse_native_guest_release_summary(
-            raw.replace("RELEASE=1.7.6.15", "RELEASE=1.7.6.16"))
-        self.assertTrue(other["guestOsIdIsAstra"])
-        self.assertFalse(other["exactRequiredReleaseObserved"])
-        self.assertEqual(other["observedReleaseToken"], "1.7.6.16")
+        wrong_point = vm.parse_native_guest_release_summary(
+            raw.replace("RELEASE=1.7.6\n", "RELEASE=1.7.7\n"))
+        self.assertTrue(wrong_point["guestOsIdIsAstra"])
+        self.assertFalse(wrong_point["exactRequiredReleaseObserved"])
+        self.assertFalse(wrong_point["pointReleaseMatchesExpected"])
+        self.assertTrue(wrong_point["buildVersionMatchesExpected"])
+        self.assertEqual(wrong_point["observedReleaseToken"], "1.7.7")
+
+        wrong_build = vm.parse_native_guest_release_summary(
+            raw.replace("BUILD_VERSION=1.7.6.15", "BUILD_VERSION=1.7.6.14"))
+        self.assertFalse(wrong_build["exactRequiredReleaseObserved"])
+        self.assertTrue(wrong_build["pointReleaseMatchesExpected"])
+        self.assertFalse(wrong_build["buildVersionMatchesExpected"])
+        self.assertEqual(wrong_build["observedBuildVersionToken"], "1.7.6.14")
+
+        missing_build = vm.parse_native_guest_release_summary(
+            raw.replace("BUILD_VERSION=1.7.6.15\n", ""))
+        self.assertFalse(missing_build["exactRequiredReleaseObserved"])
+        self.assertEqual(missing_build["observedBuildVersionToken"], "unavailable")
+
         duplicated = vm.parse_native_guest_release_summary(
-            raw + "RELEASE=1.7.6.15\n")
+            raw + "BUILD_VERSION=1.7.6.15\n")
         self.assertFalse(duplicated["exactRequiredReleaseObserved"])
-        self.assertEqual(duplicated["observedReleaseToken"], "unavailable")
+        self.assertEqual(duplicated["observedBuildVersionToken"], "unavailable")
+
         unsafe = vm.parse_native_guest_release_summary(
-            raw.replace("RELEASE=1.7.6.15",
-                        "RELEASE=1.7.6.15 secret-hostname-and-user"))
+            raw.replace("BUILD_VERSION=1.7.6.15",
+                        "BUILD_VERSION=1.7.6.15 secret-hostname-and-user"))
         self.assertFalse(unsafe["exactRequiredReleaseObserved"])
-        self.assertEqual(unsafe["observedReleaseToken"], "unavailable")
+        self.assertEqual(unsafe["observedBuildVersionToken"], "unavailable")
 
     def test_native_release_failure_summary_keeps_only_version_numbers(self):
         from summarize_astra17_ci_failure import summary
@@ -148,7 +167,10 @@ class NativeAstra17GateTests(unittest.TestCase):
             "status": "failed",
             "checks": [
                 {"name": "Native guest release preflight recorded", "detail": {
-                    "observedReleaseToken": "1.7.6.16",
+                    "observedReleaseToken": "1.7.6",
+                    "observedBuildVersionToken": "1.7.6.14",
+                    "pointReleaseMatchesExpected": True,
+                    "buildVersionMatchesExpected": False,
                     "guestOsIdIsAstra": True,
                     "exactRequiredReleaseObserved": False,
                     "rawMachineId": "0123456789abcdef0123456789abcdef",
@@ -157,15 +179,18 @@ class NativeAstra17GateTests(unittest.TestCase):
             "error": {"type": "AssertionError", "message": "private path /etc"},
         }
         result = summary(base)
-        self.assertEqual(result["observedGuestRelease"], "1.7.6.16")
+        self.assertEqual(result["observedGuestRelease"], "1.7.6")
+        self.assertEqual(result["observedGuestBuildVersion"], "1.7.6.14")
+        self.assertTrue(result["pointReleaseMatchesExpected"])
+        self.assertFalse(result["buildVersionMatchesExpected"])
         self.assertTrue(result["guestOsIdIsAstra"])
         self.assertFalse(result["exactRelease117615Observed"])
         self.assertFalse(result["nativeAcceptancePassed"])
         self.assertNotIn("0123456789abcdef", json.dumps(result))
         self.assertNotIn("private path", json.dumps(result))
-        base["checks"][0]["detail"]["observedReleaseToken"] = (
+        base["checks"][0]["detail"]["observedBuildVersionToken"] = (
             "secret-hostname.example.org")
-        self.assertIsNone(summary(base)["observedGuestRelease"])
+        self.assertIsNone(summary(base)["observedGuestBuildVersion"])
 
     def test_cloud_init_diagnostics_only_expose_allowlisted_module_names(self):
         raw = ("status: error\\nerrors:\\n - ('users_groups', "
@@ -223,7 +248,10 @@ class NativeAstra17GateTests(unittest.TestCase):
                 {"name": "Official fixed Astra 1.7.6.UU2 image bytes match source catalog",
                  "detail": {"rawMachineId": "confidential-identity"}},
                 {"name": "Native guest release preflight recorded",
-                 "detail": {"observedReleaseToken": "1.7.6.15",
+                 "detail": {"observedReleaseToken": "1.7.6",
+                            "observedBuildVersionToken": "1.7.6.15",
+                            "pointReleaseMatchesExpected": True,
+                            "buildVersionMatchesExpected": True,
                             "guestOsIdIsAstra": True,
                             "exactRequiredReleaseObserved": True,
                             "rawMachineId": "never-publish"}},
@@ -245,7 +273,10 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertFalse(public["nativeAcceptancePassed"])
         self.assertEqual(public["cloudInitFailingModuleNames"], ["users_groups"])
         self.assertEqual(public["failureClass"], "RuntimeError")
-        self.assertEqual(public["observedGuestRelease"], "1.7.6.15")
+        self.assertEqual(public["observedGuestRelease"], "1.7.6")
+        self.assertEqual(public["observedGuestBuildVersion"], "1.7.6.15")
+        self.assertTrue(public["pointReleaseMatchesExpected"])
+        self.assertTrue(public["buildVersionMatchesExpected"])
         self.assertTrue(public["guestOsIdIsAstra"])
         self.assertTrue(public["exactRelease117615Observed"])
         self.assertEqual(public["cloudInitPerOnceScriptCount"], 3)
