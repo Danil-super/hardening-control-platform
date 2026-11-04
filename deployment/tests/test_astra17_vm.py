@@ -59,7 +59,7 @@ class NativeAstra17GateTests(unittest.TestCase):
                 "exitCode": 0,
                 "partial": False,
                 "partialReasons": [],
-                "hostIdentity": {"id": "astra", "astraVersion": "1.7.6.15"},
+                "hostIdentity": {"id": "astra", "astraVersion": "1.7.6"},
                 "database": {"sha256": source["sha256"],
                              "checksumVerified": True},
                 "definitionCount": 3,
