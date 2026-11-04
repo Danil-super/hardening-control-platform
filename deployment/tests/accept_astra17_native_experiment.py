@@ -16,6 +16,7 @@ import re
 import stat
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 
 from measure_astra_baseline import read_report
@@ -90,30 +91,50 @@ def post_restore_ssh(host, port, user, private_key, known_hosts_file,
            and FINGERPRINT.fullmatch(expected_fingerprint) is not None,
            "invalid_expected_host_fingerprint")
     private_regular(private_key, 1048576)
-    pinned = authorized_key_fingerprints(known_hosts_file, host, port, runner)
-    demand(pinned == {expected_fingerprint},
-           "ssh_pinned_host_key_not_exactly_expected")
-    command = [
+    private_regular(known_hosts_file, MAX_SSH_BYTES)
+    # Make an immutable-by-convention private snapshot. Both the fingerprint
+    # inspection and subsequent OpenSSH operation use EXACTLY THESE BYTES:
+    # replacing an operator's known_hosts between two commands cannot redirect
+    # the acceptance probe to a newly trusted network key.
+    with open(known_hosts_file, "rb") as source:
+        original = os.fstat(source.fileno())
+        data = source.read(MAX_SSH_BYTES + 1)
+        current = os.fstat(source.fileno())
+        demand(len(data) <= MAX_SSH_BYTES and len(data) == original.st_size
+               and all(getattr(original, field) == getattr(current, field)
+                       for field in ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")),
+               "ssh_known_hosts_changed")
+    with tempfile.TemporaryDirectory(prefix="hcp-astra17-ssh-") as temporary:
+        pinned_file = os.path.join(temporary, "known_hosts")
+        fd = os.open(pinned_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "wb") as snapshot:
+            snapshot.write(data)
+            snapshot.flush()
+            os.fsync(snapshot.fileno())
+        pinned = authorized_key_fingerprints(pinned_file, host, port, runner)
+        demand(pinned == {expected_fingerprint},
+               "ssh_pinned_host_key_not_exactly_expected")
+        command = [
         "ssh", "-F", "/dev/null", "-i", str(private_key), "-p", str(port),
         "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
         "-o", "PasswordAuthentication=no", "-o", "KbdInteractiveAuthentication=no",
         "-o", "StrictHostKeyChecking=yes",
         "-o", "UpdateHostKeys=no", "-o", "CheckHostIP=no",
         "-o", "CanonicalizeHostname=no", "-o", "GlobalKnownHostsFile=/dev/null",
-        "-o", "UserKnownHostsFile=" + str(known_hosts_file),
+        "-o", "UserKnownHostsFile=" + pinned_file,
         "-o", "ConnectTimeout=10", "-o", "ConnectionAttempts=1",
         "{}@{}".format(user, host), REMOTE_OBSERVATION,
-    ]
-    try:
-        result = runner(command, capture_output=True, timeout=35, check=False)
-    except subprocess.TimeoutExpired:
-        raise AcceptanceError("post_restore_ssh_timeout")
-    demand(result.returncode == 0 and len(result.stdout) <= MAX_SSH_BYTES,
-           "post_restore_ssh_identity_unavailable")
-    try:
-        return result.stdout.decode("utf-8", "strict")
-    except UnicodeError:
-        raise AcceptanceError("post_restore_ssh_identity_invalid")
+        ]
+        try:
+            result = runner(command, capture_output=True, timeout=35, check=False)
+        except subprocess.TimeoutExpired:
+            raise AcceptanceError("post_restore_ssh_timeout")
+        demand(result.returncode == 0 and len(result.stdout) <= MAX_SSH_BYTES,
+               "post_restore_ssh_identity_unavailable")
+        try:
+            return result.stdout.decode("utf-8", "strict")
+        except UnicodeError:
+            raise AcceptanceError("post_restore_ssh_identity_invalid")
 
 
 def assess_image(ova, evidence):
