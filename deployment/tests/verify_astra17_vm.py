@@ -43,6 +43,10 @@ def classify_private_cloud_init_errors(output):
         "write_files", "timezone", "locale",
     }
     names = set(re.findall(r"'([a-z][a-z0-9_]{1,70})'\s*,", output))
+    stage_failures = re.findall(
+        r"finish:\\s+[-a-z0-9_]+/config-([a-z0-9_-]+):\\s+FAIL",
+        output, flags=re.IGNORECASE)
+    names.update(name.replace("-", "_").lower() for name in stage_failures)
     return sorted(names & accepted)
 
 
@@ -202,6 +206,12 @@ def execute(args, work, artifacts, reports, sources, protocol):
                                        accepted=(0, 1, 2), timeout=30)
                 # Cloud-init can include operator-defined user-data in its
                 # messages. Emit only a strict enumeration, never raw text.
+                # Read cloud-init phase markers only. Full guest log text
+                # may contain cloud-user-data or SSH secrets; it stays in a
+                # private subprocess buffer and is never printed/uploaded.
+                module_trace = remote(
+                    "sudo grep 'finish:' /var/log/cloud-init.log | tail -70",
+                    accepted=(0, 1), timeout=25)
                 status_lines = status_detail.stdout.splitlines()
                 diagnostic = {
                     "status": "failed",
@@ -212,8 +222,9 @@ def execute(args, work, artifacts, reports, sources, protocol):
                     "errorLineCount": sum(bool(re.match(
                         r"^\\s*(?:errors|recoverable_errors|error|detail)\\s*:", line))
                         for line in status_lines),
-                    "reportedModuleNames": classify_private_cloud_init_errors(
-                        status_detail.stdout),
+                    "reportedModuleNames": sorted(set(
+                        classify_private_cloud_init_errors(status_detail.stdout)
+                        + classify_private_cloud_init_errors(module_trace.stdout))),
                     "notes": "Cloud-init error is blocking; guest logs and seed remain private.",
                 }
                 checkpoint("Native guest cloud-init failure; no audit claimed", diagnostic)
