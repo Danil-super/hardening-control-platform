@@ -31,7 +31,8 @@ SAFE_ERRORS = {"RuntimeError", "ValueError", "AssertionError",
                "OSError", "CalledProcessError"}
 SAFE_FAILURE_CLASSES = {
     "script_process_failed", "permission_denied", "missing_file",
-    "invalid_executable", "python_exception",
+    "invalid_executable", "python_exception", "network_unavailable",
+    "shell_syntax_error",
 }
 SAFE_INTERPRETERS = {"shell", "python", "other", "none", "unreadable"}
 
@@ -49,6 +50,7 @@ def summary(private):
     once_executable = None
     interpreter_types = []
     classes = []
+    shell_syntax_valid = None
     observed_release = None
     observed_build = None
     point_matches_expected = None
@@ -113,6 +115,8 @@ def summary(private):
                     interpreter_types = sorted({name for name in types
                                                if isinstance(name, str)
                                                and name in SAFE_INTERPRETERS})
+                syntax_value = detail.get("perOnceShellSyntaxValid")
+                shell_syntax_valid = syntax_value if type(syntax_value) is bool else None
                 provided = detail.get("failureClasses")
                 if isinstance(provided, list):
                     classes = sorted({x for x in provided
@@ -139,6 +143,7 @@ def summary(private):
         "cloudInitPerOnceExecutableCount": once_executable,
         "cloudInitPerOnceInterpreterCategories": interpreter_types,
         "cloudInitFailureCategories": classes,
+        "cloudInitPerOnceShellSyntaxValid": shell_syntax_valid,
         "failureClass": error_type if error_type in SAFE_ERRORS else "unknown",
         "rawGuestOutputPublished": False,
         "notes": ("Only an allowlisted diagnostic summary; no raw identity, "

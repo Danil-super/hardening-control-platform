@@ -122,7 +122,9 @@ def classify_private_cloud_init_errors(output):
 def classify_cloud_init_failure_classes(text):
     """Disclose only generic error categories, never script content or paths."""
     patterns = {
-        "script_process_failed": r"run-parts|ScriptFailure|non-zero exit status",
+        "script_process_failed": r"run[- ]?parts|ScriptFailure|non[- ]zero exit status|failed with exit code",
+        "network_unavailable": r"Temporary failure resolving|Network is unreachable|Could not resolve|Name or service not known",
+        "shell_syntax_error": r"syntax error near unexpected token|unexpected EOF while looking for matching",
         "permission_denied": r"PermissionError|Permission denied",
         "missing_file": r"FileNotFoundError|No such file or directory",
         "invalid_executable": r"Exec format error|bad interpreter",
@@ -135,7 +137,7 @@ def classify_cloud_init_failure_classes(text):
 def inspect_guest_per_once_scripts(remote):
     """Read-only metadata for cloud-init's vendor scripts, never their content."""
     probe = r"""
-import hashlib, json, os, shutil, stat
+import hashlib, json, os, shutil, stat, subprocess
 directory = "/var/lib/cloud/scripts/per-once"
 out = {"directoryExists": os.path.isdir(directory), "scriptCount": 0,
        "scripts": []}
@@ -193,6 +195,23 @@ if out["directoryExists"]:
                             meta["shebangCategory"] = "other"
                         else:
                             meta["shebangCategory"] = "none"
+                        # Parser-only inspection. The vendor's per-once script
+                        # is NEVER executed again, edited, disabled or copied
+                        # to public CI artifacts. Keep stdout/stderr private.
+                        if (meta["shebangCategory"] == "shell"
+                                and meta["interpreterPresent"]):
+                            executable = ("/bin/bash" if first.startswith(
+                                (b"#!/bin/bash", b"#!/usr/bin/env bash"))
+                                else "/bin/sh")
+                            try:
+                                check = subprocess.run(
+                                    [executable, "-n"], input=bytes(data),
+                                    stdout=subprocess.DEVNULL,
+                                    stderr=subprocess.DEVNULL, timeout=4,
+                                    check=False)
+                                meta["shellSyntaxValid"] = check.returncode == 0
+                            except (OSError, subprocess.TimeoutExpired):
+                                meta["shellSyntaxValid"] = None
                 finally:
                     os.close(fd)
             out["scripts"].append(meta)
@@ -426,6 +445,18 @@ def execute(args, work, artifacts, reports, sources, protocol):
                     }
                 write_json(work / "cloud-init-private-script-metadata.json",
                            guest_script_metadata)
+                # Only inspect bounded log text transiently in runner
+                # memory. It can contain private user-data: never print it,
+                # store it in artifacts, or expose raw matching lines.
+                try:
+                    recent_private_log = remote(
+                        "sudo tail -n 200 /var/log/cloud-init.log",
+                        accepted=(0, 1, 2), timeout=25).stdout
+                except (OSError, RuntimeError, subprocess.SubprocessError):
+                    recent_private_log = ""
+                classified_text = (
+                    status_detail.stdout + "\n" + module_trace.stdout + "\n"
+                    + recent_private_log)
                 status_lines = status_detail.stdout.splitlines()
                 diagnostic = {
                     "status": "failed",
@@ -434,7 +465,7 @@ def execute(args, work, artifacts, reports, sources, protocol):
                     "cloudInitStatusLongSha256": hashlib.sha256(
                         status_detail.stdout.encode()).hexdigest(),
                     "errorLineCount": sum(bool(re.match(
-                        r"^\\s*(?:errors|recoverable_errors|error|detail)\\s*:", line))
+                        r"^\s*(?:errors|recoverable_errors|error|detail)\s*:", line))
                         for line in status_lines),
                     "reportedModuleNames": sorted(set(
                         classify_private_cloud_init_errors(status_detail.stdout)
@@ -453,8 +484,17 @@ def execute(args, work, artifacts, reports, sources, protocol):
                             "shell", "python", "other", "none", "unreadable"
                         )
                     }),
+                    "perOnceShellSyntaxValid": (
+                        all(item["shellSyntaxValid"] for item in guest_script_metadata["scripts"])
+                        if (guest_script_metadata["scriptCount"] ==
+                            len(guest_script_metadata["scripts"]) > 0
+                            and all(isinstance(item, dict)
+                                    and item.get("shebangCategory") == "shell"
+                                    and type(item.get("shellSyntaxValid")) is bool
+                                    for item in guest_script_metadata["scripts"]))
+                        else None),
                     "failureClasses": classify_cloud_init_failure_classes(
-                        status_detail.stdout + module_trace.stdout),
+                        classified_text),
                     "notes": "Cloud-init error is blocking; guest logs and seed remain private.",
                 }
                 checkpoint("Native guest cloud-init failure; no audit claimed", diagnostic)

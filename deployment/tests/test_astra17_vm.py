@@ -240,6 +240,15 @@ class NativeAstra17GateTests(unittest.TestCase):
             "script_process_failed",
         ])
         self.assertNotIn("credentials", json.dumps(selected_classes))
+        opaque = ("Runparts: failure in /private/key; "
+                  "Temporary failure resolving private.example; "
+                  "syntax error near unexpected token SECRET")
+        reasons = vm.classify_cloud_init_failure_classes(opaque)
+        self.assertEqual(reasons, [
+            "network_unavailable", "script_process_failed", "shell_syntax_error",
+        ])
+        self.assertNotIn("private.example", json.dumps(reasons))
+        self.assertNotIn("/private/", json.dumps(reasons))
 
 
     def test_guest_script_metadata_probe_returns_only_bounded_sanitized_types(self):
@@ -255,11 +264,13 @@ class NativeAstra17GateTests(unittest.TestCase):
                     "sizeBytes": 643,
                     "sha256": "a" * 64, "shebangCategory": "shell",
                     "interpreterPresent": True,
+                    "shellSyntaxValid": True,
                 }],
             }))
         metadata = vm.inspect_guest_per_once_scripts(remote)
         self.assertEqual(metadata["scriptCount"], 1)
         self.assertEqual(metadata["scripts"][0]["executable"], False)
+        self.assertIs(metadata["scripts"][0]["shellSyntaxValid"], True)
         self.assertEqual(len(recorded), 1)
         self.assertTrue(recorded[0][0].startswith("sudo python3 -c "))
         self.assertNotIn("secret:", json.dumps(metadata))
@@ -288,6 +299,7 @@ class NativeAstra17GateTests(unittest.TestCase):
                             "perOnceExecutableCount": 1,
                             "perOnceInterpreterCategories": ["shell", "other", "private-sh"],
                             "failureClasses": ["permission_denied", "secret_reason"],
+                            "perOnceShellSyntaxValid": False,
                             "privateKey": "SENSITIVE"}},
             ],
             "error": {"type": "RuntimeError",
@@ -308,6 +320,7 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertEqual(public["cloudInitPerOnceExecutableCount"], 1)
         self.assertEqual(public["cloudInitPerOnceInterpreterCategories"], ["other", "shell"])
         self.assertEqual(public["cloudInitFailureCategories"], ["permission_denied"])
+        self.assertIs(public["cloudInitPerOnceShellSyntaxValid"], False)
         self.assertNotIn("secret_reason", json.dumps(public))
         self.assertEqual(public["completedSafeStageNames"],
                          ["image_sha256_verified",
