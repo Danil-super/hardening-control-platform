@@ -54,14 +54,17 @@ Docker volume. Платформа не является SIEM, IDS, сертиф�
 QEMU запустился, SSH доступен, из гостя действительно наблюдается `ID=astra`,
 `/etc/astra_version=1.7.6`.
 
-**Обнаруженная ошибка реализации:** исходный gate ошибочно ожидал
+**Подтверждённое исправление:** исходный gate ошибочно ожидал
 `1.7.6.15` в `/etc/astra_version`. Документация Astra/ALD Pro различает
-`/etc/astra_version` (например, `1.7.7`) и `/etc/astra/build_version`
-(например, `1.7.7.9`). Установка с UU2 должна отдельно подтвердить
-`/etc/astra/build_version=1.7.6.15`. Это исправляется в
-[PR #64](https://github.com/Danil-super/hardening-control-platform/pull/64)
-и переносится в PR #62. Само название образа и его SHA
-**не заменяют чтения действительных системных файлов**.
+`/etc/astra_version` (point release) и `/etc/astra/build_version`
+(full build). [PR #64](https://github.com/Danil-super/hardening-control-platform/pull/64)
+уже принят с четырьмя зелёными CI. На **настоящей гостевой Astra 1.7.6.UU2**
+в [native run 41889382908](https://github.com/Danil-super/hardening-control-platform/actions/runs/41889382908)
+после исправления независимо прочитаны **оба фактических значения**:
+`/etc/astra_version=1.7.6` и `/etc/astra/build_version=1.7.6.15`.
+Точный build подтверждён **внутри** гостя, а не выведен из имени образа.
+Однако следующий gate `cloud-init` остался неуспешным; сканирование не
+производилось.
 
 **Второй независимый блокер:** у гостя первоначальный `cloud-init`
 возвращал `status: error` на `scripts_per_once` (один сценарий).
