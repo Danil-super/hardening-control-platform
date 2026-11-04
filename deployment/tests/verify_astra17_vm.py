@@ -301,13 +301,21 @@ def execute(args, work, artifacts, reports, sources, protocol):
                 "cat /etc/machine-id"
             )
             early_identity = remote(identity_command).stdout
-            assert ('ID=astra\\n' in early_identity or 'ID="astra"\\n' in early_identity)
-            assert re.search(r"^RELEASE=1\\.7\\.6\\.15$", early_identity, re.MULTILINE)
-            early_kernel = re.search(r"^KERNEL=(.+)$", early_identity, re.MULTILINE)
-            assert early_kernel and early_kernel.group(1) != os.uname().release
-            early_machine = re.search(
-                r"^MACHINE_ID=([a-f0-9]{32})$", early_identity, re.MULTILINE)
-            assert early_machine and early_machine.group(1) != "0" * 32
+            identity_lines = early_identity.splitlines()
+            assert any(value.strip() in ("ID=astra", 'ID="astra"', "ID='astra'")
+                       for value in identity_lines), "Guest OS is not Astra Linux"
+            assert identity_lines.count("RELEASE=1.7.6.15") == 1, (
+                "Native Astra release is not exactly 1.7.6.15"
+            )
+            kernels = [line.split("=", 1)[1] for line in identity_lines
+                       if line.startswith("KERNEL=")]
+            assert len(kernels) == 1 and kernels[0] != os.uname().release
+            early_kernel = kernels[0]
+            machine_ids = [line.split("=", 1)[1] for line in identity_lines
+                           if line.startswith("MACHINE_ID=")]
+            assert len(machine_ids) == 1
+            assert re.fullmatch(r"[a-f0-9]{32}", machine_ids[0])
+            assert machine_ids[0] != "0" * 32
             checkpoint("Native Astra 1.7.6.15 identity observed before final cloud-init", {
                 "releaseObserved": True,
                 "independentGuestKernelObserved": True,
