@@ -302,7 +302,6 @@ def execute(args, work, artifacts, reports, sources, protocol):
             measured = json.loads(metrics.read_text())
             assert measured["completeComparableRuleCount"] == 18
             assert measured["restorationMatchesBaseline18Rules"] is True
-            assert measured["observedPassedToFailed"] if False else True
             assert measured["baselineToChanged"]["observedPassedToFailed"] == 1
             assert measured["changedToRestored"]["observedFailedToPassed"] == 1
             checkpoint("Actual 18-rule original HCP source-bound measurement",
