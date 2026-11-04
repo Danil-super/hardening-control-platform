@@ -67,6 +67,55 @@ jobs:
           python3 deployment/tests/verify_astra17_vm.py \
             --level '${{ inputs.level || 'base' }}' \
             --work-dir "$RUNNER_TEMP/hcp-native-astra17"
+      # A large official image can be safely reused after a failed *guest*
+      # check. Verify the entire image against the reviewed manifest BEFORE
+      # allowing a cache write; never cache private VM disks, SSH or seed.
+      - name: Verify reusable official base image cache after native attempt
+        id: verified_image_cache
+        if: always()
+        env:
+          HCP_ASTRA17_IMAGE_CACHE_DIR: ${{ runner.temp }}/hcp-astra17-image-cache/${{ inputs.level || 'base' }}
+          HCP_ASTRA17_LEVEL: ${{ inputs.level || 'base' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'deployment/tests')
+          from verify_astra_vm import verified_pinned_file
+          manifest = json.loads(Path('deployment/astra-vm/sources-17.json').read_text())
+          level = os.environ['HCP_ASTRA17_LEVEL']
+          target = Path(os.environ['HCP_ASTRA17_IMAGE_CACHE_DIR']) / 'source.qcow2'
+          try:
+              valid = verified_pinned_file(target, manifest['images'][level])
+          except (OSError, ValueError):
+              valid = False
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('verified=' + ('true' if valid else 'false') + '\n')
+          print('Publisher-pinned cache verified:', bool(valid))
+          PY
+      - name: Cache only fully verified official image after guest failure
+        if: always() && steps.verified_image_cache.outputs.verified == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-image-cache/${{ inputs.level || 'base' }}
+          key: hcp-astra17-official-${{ inputs.level || 'base' }}-${{ hashFiles('deployment/astra-vm/sources-17.json') }}
+      - name: Create privacy-sanitized failure report
+        if: failure()
+        run: |
+          if test -f "$RUNNER_TEMP/hcp-native-astra17/artifacts/protocol.json"; then
+            python3 deployment/tests/summarize_astra17_ci_failure.py \
+              "$RUNNER_TEMP/hcp-native-astra17/artifacts/protocol.json" \
+              "$RUNNER_TEMP/hcp-astra17-public-failure.json"
+          fi
+      - name: Upload only scrubbed failure metadata (no guest logs or keys)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-astra17-${{ inputs.level || 'base' }}-failed-stage
+          path: ${{ runner.temp }}/hcp-astra17-public-failure.json
+          retention-days: 14
+          if-no-files-found: warn
       - name: Publish only successful native non-secret result evidence
         if: success()
         uses: actions/upload-artifact@v4
