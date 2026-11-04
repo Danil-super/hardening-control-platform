@@ -337,6 +337,51 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
                 remote("sudo chmod " + shlex.quote(original_mode) + " /etc/passwd")
             assert states == ["pass", "fail", "pass"]
             checkpoint("Unmodified Astra baseline: native pass/fail/restored", states)
+
+            # Exercise the REAL source-bound experimental tool against the
+            # unchanged three native reports, not synthetic acceptance JSON.
+            # Their original raw bytes, native ARF and compiled datastreams
+            # remain available in the private artifact directory.
+            bound_dir = artifacts / "three-stage-bound-reports"
+            run(["node", str(ROOT / "deployment/tests/verify_astra_vm_three_stage_publication.mjs"),
+                 str(work / "asset-observation.json"), str(bound_dir),
+                 *(str(reports / (HOST + "-openscap-" + phase + ".json"))
+                   for phase in ("baseline", "violation", "restored"))],
+                output=artifacts / "three-stage-publication.log",
+                env={**os.environ, "HCP_REPORTS_DIR": str(work / "three-stage-reports"),
+                     "HCP_STATE_DIR": str(work / "three-stage-state")})
+            metrics = artifacts / "three-stage-metrics.json"
+            run(["python3", str(ROOT / "deployment/tests/measure_astra_baseline.py"),
+                 "--before", str(bound_dir / "baseline.json"),
+                 "--after", str(bound_dir / "violation.json"),
+                 "--restored", str(bound_dir / "restored.json"),
+                 "--output", str(metrics)],
+                output=artifacts / "three-stage-measure.log")
+            measured = json.loads(metrics.read_text(encoding="utf-8"))
+            assert measured["completeComparableRuleCount"] == 18
+            assert measured["scope"] == "astra-builtin-18-rule-three-observation-evidence-only"
+            assert measured["baselineToChanged"]["observedPassedToFailed"] == 1
+            assert measured["baselineToChanged"]["observedFailedToPassed"] == 0
+            assert measured["changedToRestored"]["observedFailedToPassed"] == 1
+            assert measured["changedToRestored"]["observedPassedToFailed"] == 0
+            assert measured["restorationMatchesBaseline18Rules"] is True
+            assert measured["observedChangeIn18Rules"] is True
+            assert measured["baselineToRestored"]["netFailedRuleChange"] == 0
+            assert len(measured["baselineToRestored"]["improvedRules"]) == 0
+            assert len(measured["baselineToRestored"]["regressedRules"]) == 0
+            for phase, key in (("baseline", "baselineSha256"),
+                               ("violation", "changedSha256"),
+                               ("restored", "restoredSha256")):
+                assert measured["source"][key] == hashlib.sha256(
+                    (bound_dir / (phase + ".json")).read_bytes()).hexdigest()
+            checkpoint("Genuine Astra 18-rule three-stage source-bound measurements",
+                       {"observedChange": measured["observedChangeIn18Rules"],
+                        "restoredSameRuleStates": measured["restorationMatchesBaseline18Rules"],
+                        "source": measured["source"],
+                        "beforeFailed": measured["baselineToChanged"]["beforeFailed"],
+                        "changedFailed": measured["baselineToChanged"]["afterFailed"],
+                        "restoredFailed": measured["changedToRestored"]["afterFailed"]})
+
             config = {"mode": "online", "url": oval["url"], "sha256": oval["sha256"], "releasePattern": "1.8.*", "architectures": ["amd64"], "maxAgeDays": 90, "sourceName": "Official Astra 1.8 amd64 OVAL", "sourceReference": oval["metadataUrl"], "sourceReviewedAt": sources["reviewedAt"]}
             playbook("astra-oval-audit", "vendor-cve", {"hcp_oval_config": config}, timeout=1800)
             report_id = HOST + "-astra-oval-vendor-cve"
