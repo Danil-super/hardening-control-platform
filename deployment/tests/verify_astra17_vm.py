@@ -84,6 +84,23 @@ def parse_native_guest_release_summary(identity):
     }
 
 
+def require_stable_native_guest_identity(before, after):
+    """Check immutable native SSH evidence after init and again after rollback.
+
+    Astra 1.7.6.UU2 uses separate files: point release 1.7.6 and
+    full build 1.7.6.15. Neither the source-image name nor one file alone
+    establishes the actual version of the running VM.
+    """
+    assert after == before, "Native guest identity changed between SSH observations"
+    proof = parse_native_guest_release_summary(after)
+    assert proof["guestOsIdIsAstra"], "Guest OS is not Astra"
+    assert proof["pointReleaseMatchesExpected"], "Astra point release is not 1.7.6"
+    assert proof["buildVersionMatchesExpected"], "Astra build is not 1.7.6.15"
+    assert proof["independentGuestKernelObserved"], "Guest kernel is unverified"
+    assert proof["machineIdPresent"], "Guest machine-id is unverified"
+    return proof
+
+
 def classify_private_cloud_init_errors(output):
     """Return only known machine-generated module names; never private log text."""
     accepted = {
@@ -446,13 +463,10 @@ def execute(args, work, artifacts, reports, sources, protocol):
                 "status": "done", "exitCode": 0,
             })
             identity = remote(identity_command).stdout
-            assert identity == early_identity, (
-                "Native guest identity changed during cloud-init completion"
-            )
-            (work / "native-identity-private.txt").write_text(identity)
-            assert ('ID=astra\n' in identity or 'ID="astra"\n' in identity)
-            assert "RELEASE=1.7.6.15" in identity
-            assert "KERNEL=" + os.uname().release not in identity
+            require_stable_native_guest_identity(early_identity, identity)
+            private_identity = work / "native-identity-private.txt"
+            private_identity.write_text(identity)
+            private_identity.chmod(0o600)
             machine = re.search(r"^MACHINE_ID=([a-f0-9]{32})$", identity, re.MULTILINE)
             assert machine and machine.group(1) != "0" * 32
             fingerprint = run(["ssh-keygen", "-E", "sha256", "-lf",
@@ -465,7 +479,8 @@ def execute(args, work, artifacts, reports, sources, protocol):
             })
             protocol["realAstraHostVerified"] = True
             checkpoint("Genuine Astra SE 1.7.6.15 guest kernel and SSH key verified",
-                       {"observedRelease": "1.7.6.15",
+                       {"pointRelease": EXPECTED_POINT_RELEASE,
+                        "fullBuildVersion": EXPECTED_RELEASE,
                         "kernel": re.search(r"^KERNEL=(.+)$", identity, re.MULTILINE).group(1),
                         "identitySha256": hashlib.sha256(identity.encode()).hexdigest(),
                         "hasNativeMachineId": True,
@@ -546,7 +561,7 @@ def execute(args, work, artifacts, reports, sources, protocol):
             # New independent connection after rollback, still bound to the
             # exact pinned SSH host key and same native guest identity.
             restored_identity = remote(identity_command).stdout
-            assert restored_identity == identity
+            require_stable_native_guest_identity(identity, restored_identity)
             assert remote("stat -c '%a' /etc/passwd").stdout.strip() == original_mode
             checkpoint("Real Astra 1.7.6.15 source-bound pass/fail/restore",
                        {"testRule": RULE, "states": statuses,
