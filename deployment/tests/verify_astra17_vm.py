@@ -44,7 +44,7 @@ def classify_private_cloud_init_errors(output):
     }
     names = set(re.findall(r"'([a-z][a-z0-9_]{1,70})'\s*,", output))
     stage_failures = re.findall(
-        r"finish:\\s+[-a-z0-9_]+/config-([a-z0-9_-]+):\\s+FAIL",
+        r"finish:\s+[-a-z0-9_]+/config-([a-z0-9_-]+):\s+FAIL",
         output, flags=re.IGNORECASE)
     names.update(name.replace("-", "_").lower() for name in stage_failures)
     return sorted(names & accepted)
