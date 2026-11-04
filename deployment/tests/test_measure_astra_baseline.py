@@ -103,6 +103,96 @@ class HcpAstraExperimentGateTest(unittest.TestCase):
                             measured["source"]["executedDatastreamSha256After"])
         self.assertEqual(measured["observedFailedToPassed"], 2)
 
+    def test_three_observations_preserve_a_real_rule_transition_and_return_to_baseline(self):
+        baseline = fixture(failed=("0", "1"), time="2026-11-03T10:00:00Z")
+        changed = fixture(failed=("0", "1", "2"), time="2026-11-03T10:10:00Z")
+        restored = fixture(failed=("0", "1"), time="2026-11-03T10:20:00Z")
+        # OpenSCAP timestamps may change compiled XML bytes between invocations.
+        changed["scanner"]["datastreamChecksum"] = "sha256:" + "c" * 64
+        restored["scanner"]["datastreamChecksum"] = "sha256:" + "d" * 64
+        result = MODULE.measure_three_stage(baseline, changed, restored, "e" * 64,
+                                            "f" * 64, "0" * 64)
+        self.assertEqual(result["scope"], "astra-builtin-18-rule-three-observation-evidence-only")
+        self.assertEqual(result["completeComparableRuleCount"], 18)
+        self.assertEqual(result["baselineToChanged"]["observedPassedToFailed"], 1)
+        self.assertEqual(result["changedToRestored"]["observedFailedToPassed"], 1)
+        self.assertEqual(result["baselineToRestored"]["netFailedRuleChange"], 0)
+        self.assertTrue(result["observedChangeIn18Rules"])
+        self.assertTrue(result["restorationMatchesBaseline18Rules"])
+        self.assertEqual(result["status"], "same-18-rule-statuses-observed")
+        self.assertEqual(result["source"]["restoredSha256"], "0" * 64)
+        self.assertEqual(result["source"]["executedDatastreamSha256Changed"], "sha256:" + "c" * 64)
+        self.assertEqual(result["source"]["executedDatastreamSha256Restored"], "sha256:" + "d" * 64)
+        self.assertNotIn("fullCveCoverage", result)
+        self.assertNotIn("securityScore", result)
+
+    def test_restoration_mismatch_is_preserved_as_failure_not_reported_as_success(self):
+        baseline = fixture(failed=("0", "1"), time="2026-11-03T10:00:00Z")
+        changed = fixture(failed=("0", "1", "2"), time="2026-11-03T10:10:00Z")
+        restored = fixture(failed=("0", "1", "3"), time="2026-11-03T10:20:00Z")
+        data = MODULE.measure_three_stage(baseline, changed, restored, "a" * 64,
+                                          "b" * 64, "c" * 64)
+        self.assertFalse(data["restorationMatchesBaseline18Rules"])
+        self.assertEqual(data["status"], "rules-not-restored")
+        self.assertEqual(data["baselineToRestored"]["regressedRules"],
+                         ["openscap_xccdf_org.hcp_rule_test_3"])
+
+    def test_three_stage_rejects_different_assets_scopes_and_chronology(self):
+        base = fixture(time="2026-11-03T10:00:00Z")
+        changed = fixture(failed=(), time="2026-11-03T10:10:00Z")
+        restored = fixture(time="2026-11-03T10:20:00Z")
+        edits = [
+            lambda x: x["assetBinding"].update(assetId="asset-" + "b" * 64),
+            lambda x: x["assetBinding"].update(generation=3),
+            lambda x: x["scanner"].update(contentIdentity="bundle-sha256:" + "c" * 64),
+            lambda x: x.update(createdAt=changed["createdAt"]),
+            lambda x: x["findings"][0].update(status="manual"),
+        ]
+        for edit in edits:
+            with self.subTest(edit=edit):
+                candidate = copy.deepcopy(restored)
+                edit(candidate)
+                with self.assertRaises(ValueError):
+                    MODULE.measure_three_stage(base, changed, candidate, "1" * 64,
+                                               "2" * 64, "3" * 64)
+
+    def test_three_stage_cli_outputs_reviewable_failure_and_protects_originals(self):
+        with tempfile.TemporaryDirectory(prefix="hcp-astra-three-state-") as directory:
+            root = Path(directory)
+            baseline = root / "baseline.json"
+            changed = root / "changed.json"
+            restored = root / "restored.json"
+            output = root / "result.json"
+            baseline.write_text(json.dumps(fixture()), encoding="utf-8")
+            changed.write_text(json.dumps(fixture(failed=("0", "1", "2"),
+                time="2026-11-03T10:10:00Z")), encoding="utf-8")
+            restored.write_text(json.dumps(fixture(failed=("0", "1", "3"),
+                time="2026-11-03T10:20:00Z")), encoding="utf-8")
+            original = [p.read_bytes() for p in [baseline, changed, restored]]
+            cmd = [sys.executable, str(SCRIPT), "--before", str(baseline),
+                   "--after", str(changed), "--restored", str(restored),
+                   "--output", str(output)]
+            run = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 2, run.stderr)
+            result = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(result["status"], "rules-not-restored")
+            self.assertFalse(result["restorationMatchesBaseline18Rules"])
+            self.assertEqual(output.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(original, [p.read_bytes() for p in [baseline, changed, restored]])
+            output.unlink()
+            restored.write_text(json.dumps(fixture(failed=("0", "1"),
+                time="2026-11-03T10:20:00Z")), encoding="utf-8")
+            run = subprocess.run(cmd, capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            self.assertTrue(json.loads(output.read_text(encoding="utf-8"))
+                            ["restorationMatchesBaseline18Rules"])
+            self.assertNotEqual(subprocess.run(cmd, capture_output=True).returncode, 0)
+            output.unlink()
+            duplicate = cmd.copy()
+            duplicate[duplicate.index(str(restored))] = str(baseline)
+            self.assertNotEqual(subprocess.run(duplicate, capture_output=True).returncode, 0)
+            self.assertFalse(output.exists())
+
     def test_real_cli_rejects_symlinks_and_does_not_overwrite_inputs(self):
         with tempfile.TemporaryDirectory(prefix="hcp-experiment-fixture-") as temporary:
             root = Path(temporary)
