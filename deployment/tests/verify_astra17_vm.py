@@ -300,7 +300,18 @@ def execute(args, work, artifacts, reports, sources, protocol):
                 module_trace = remote(
                     "sudo grep 'finish:' /var/log/cloud-init.log | tail -70",
                     accepted=(0, 1), timeout=25)
-                guest_script_metadata = inspect_guest_per_once_scripts(remote)
+                try:
+                    guest_script_metadata = inspect_guest_per_once_scripts(remote)
+                except (OSError, ValueError, AssertionError, subprocess.SubprocessError,
+                        json.JSONDecodeError):
+                    # Diagnostics must never mask the original failed native
+                    # cloud-init gate. No invented zero-script observations.
+                    guest_script_metadata = {
+                        "directoryExists": None,
+                        "scriptCount": None,
+                        "scripts": [],
+                        "inspectionStatus": "unavailable",
+                    }
                 write_json(work / "cloud-init-private-script-metadata.json",
                            guest_script_metadata)
                 status_lines = status_detail.stdout.splitlines()
