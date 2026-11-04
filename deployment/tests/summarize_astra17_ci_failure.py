@@ -27,6 +27,10 @@ SAFE_STAGES = {
 SAFE_ERRORS = {"RuntimeError", "ValueError", "AssertionError",
                "TimeoutExpired", "InterruptedError", "KeyboardInterrupt",
                "OSError", "CalledProcessError"}
+SAFE_FAILURE_CLASSES = {
+    "script_process_failed", "permission_denied", "missing_file",
+    "invalid_executable", "python_exception",
+}
 
 
 def summary(private):
@@ -37,6 +41,9 @@ def summary(private):
     checks = raw_checks if isinstance(raw_checks, list) else []
     normalized = []
     modules = []
+    once_present = None
+    once_count = None
+    classes = []
     for item in checks[-30:]:
         if not isinstance(item, dict):
             continue
@@ -48,6 +55,15 @@ def summary(private):
             if isinstance(detail, dict) and isinstance(detail.get("reportedModuleNames"), list):
                 modules = sorted({x for x in detail["reportedModuleNames"]
                                   if isinstance(x, str) and x in SAFE_STAGES})
+            if isinstance(detail, dict):
+                presence = detail.get("perOnceDirectoryPresent")
+                once_present = presence if type(presence) is bool else None
+                count = detail.get("perOnceScriptCount")
+                once_count = count if type(count) is int and 0 <= count <= 1000 else None
+                provided = detail.get("failureClasses")
+                if isinstance(provided, list):
+                    classes = sorted({x for x in provided
+                                      if isinstance(x, str) and x in SAFE_FAILURE_CLASSES})
     err = private.get("error")
     error_type = err.get("type") if isinstance(err, dict) else None
     # The full error.message may contain raw guest stdout/stderr, SSH paths,
@@ -59,6 +75,9 @@ def summary(private):
         "nativeAcceptancePassed": False,
         "completedSafeStageNames": normalized,
         "cloudInitFailingModuleNames": modules,
+        "cloudInitPerOnceDirectoryPresent": once_present,
+        "cloudInitPerOnceScriptCount": once_count,
+        "cloudInitFailureCategories": classes,
         "failureClass": error_type if error_type in SAFE_ERRORS else "unknown",
         "rawGuestOutputPublished": False,
         "notes": ("Only an allowlisted diagnostic summary; no raw identity, "
