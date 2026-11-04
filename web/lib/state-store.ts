@@ -945,7 +945,11 @@ export function verifyAuditChain() {
     }
     previousHash = String(row.entry_hash);
   }
-  return { valid: true, entries: rows.length, brokenAt: null, legacyEntries, payloadProtected: legacyEntries === 0 };
+  // The final chain head is a non-secret HMAC digest that an authorized
+  // operator can retain in a DIFFERENT trust domain before backup. A locally
+  // visible head is not, by itself, independent proof of completeness.
+  return { valid: true, entries: rows.length, brokenAt: null, legacyEntries,
+    payloadProtected: legacyEntries === 0, lastEntryHash: previousHash };
 }
 
 export function createRemediationTransaction(input: Omit<RemediationTransaction, "createdAt" | "updatedAt" | "status" | "backupRef" | "preAuditReportId" | "postAuditReportId" | "error" | "recoveryVersion">) {

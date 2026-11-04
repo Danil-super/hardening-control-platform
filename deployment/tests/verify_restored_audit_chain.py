@@ -119,8 +119,17 @@ def sqlite_digest(runtime):
         os.close(root)
 
 
-def verify_events(runtime, key, *, require_payload_protection=False):
+def verify_events(runtime, key, *, require_payload_protection=False,
+                  expected_head_hash=None, expected_entry_count=None):
     demand(type(key) is bytes and len(key) >= 32, "audit_key_missing_or_short")
+    demand((expected_head_hash is None) == (expected_entry_count is None),
+           "audit_anchor_requires_hash_and_count")
+    if expected_head_hash is not None:
+        demand(type(expected_head_hash) is str and SHA.fullmatch(expected_head_hash),
+               "audit_anchor_hash_invalid")
+        demand(type(expected_entry_count) is int
+               and 0 < expected_entry_count <= LIMIT,
+               "audit_anchor_count_invalid")
     before_sha = sqlite_digest(runtime)
     uri = "file:" + quote(os.path.abspath(os.path.join(runtime, "hcp.sqlite"))) + "?mode=ro&immutable=1"
     conn = sqlite3.connect(uri, uri=True, timeout=5)
@@ -165,6 +174,14 @@ def verify_events(runtime, key, *, require_payload_protection=False):
                 legacy_count += 1
             previous = claimed_hash
         demand(entries > 0, "audit_history_empty")
+        # A self-consistent chain can have a valid signed prefix after its
+        # tail was deleted. Only an independently retained prior head+length
+        # can detect this loss without relying on the restored DB itself.
+        if expected_head_hash is not None:
+            demand(entries == expected_entry_count,
+                   "audit_anchor_entry_count_mismatch")
+            demand(hmac.compare_digest(previous, expected_head_hash),
+                   "audit_anchor_head_mismatch")
         if require_payload_protection:
             demand(legacy_count == 0, "legacy_entries_payload_not_fully_protected")
     except sqlite3.DatabaseError:
@@ -180,6 +197,7 @@ def verify_events(runtime, key, *, require_payload_protection=False):
         "legacyEntries": legacy_count,
         "payloadProtectedForAllEntries": legacy_count == 0,
         "lastEntryHash": previous,
+        "operatorHeadAnchorMatched": expected_head_hash is not None,
         "restoredDatabaseSha256": before_sha,
         "checkedAtUtc": datetime.now(timezone.utc).isoformat(),
         "usedOriginalHcpAuditKey": "operator-supplied-from-restored-env",
@@ -188,6 +206,8 @@ def verify_events(runtime, key, *, require_payload_protection=False):
         "sshRestorationVerified": False,
         "limitations": [
             "Matches hashes against the key inside the operator-provided protected .env; not independent authenticity.",
+            "A chain without an independently retained prior head and count cannot detect deletion of its valid tail.",
+            "Operator-provided head and count require independent retention to establish a trustworthy checkpoint.",
             "Legacy version 1 hash uses a JSON replacer and does not protect all nested payload fields.",
             "Does not prove old sessions were revoked, reports unchanged, or SSH/firewall restored.",
             "Requires an isolated stopped restored controller and an independent operational drill.",
@@ -201,6 +221,10 @@ def main(argv=None):
     parser.add_argument("--env", required=True, help="Private restored .env, never logged")
     parser.add_argument("--require-payload-protection", action="store_true",
                         help="Fail if any legacy v1 audit records exist")
+    parser.add_argument("--expected-head-hmac",
+                        help="Previously anchored last HMAC recorded OUTSIDE the backup/controller")
+    parser.add_argument("--expected-entry-count", type=int,
+                        help="Previously anchored exact chain length recorded outside the backup")
     parser.add_argument("--acknowledge-stopped", action="store_true")
     parser.add_argument("--output", help="New private JSON protocol outside the restored volume")
     args = parser.parse_args(argv)
@@ -210,7 +234,9 @@ def main(argv=None):
     demand(type(key) is str and len(key.encode("utf-8")) >= 32,
            "audit_key_missing_or_short")
     result = verify_events(args.restored_runtime, key.encode("utf-8"),
-                           require_payload_protection=args.require_payload_protection)
+                           require_payload_protection=args.require_payload_protection,
+                           expected_head_hash=args.expected_head_hmac,
+                           expected_entry_count=args.expected_entry_count)
     if args.output:
         target = os.path.abspath(args.output)
         demand(os.path.dirname(target) not in
