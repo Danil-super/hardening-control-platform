@@ -63,6 +63,75 @@ def classify_cloud_init_failure_classes(text):
                   if re.search(pattern, text, flags=re.IGNORECASE))
 
 
+def inspect_guest_per_once_scripts(remote):
+    """Read-only metadata for cloud-init's vendor scripts, never their content."""
+    probe = r"""
+import hashlib, json, os, stat
+directory = "/var/lib/cloud/scripts/per-once"
+out = {"directoryExists": os.path.isdir(directory), "scriptCount": 0,
+       "scripts": []}
+if out["directoryExists"]:
+    paths = sorted(os.listdir(directory))
+    out["scriptCount"] = len(paths)
+    for basename in paths[:12]:
+        item = os.path.join(directory, basename)
+        try:
+            original = os.lstat(item)
+            meta = {"regular": stat.S_ISREG(original.st_mode),
+                    "executable": bool(original.st_mode & 0o111),
+                    "sizeBytes": original.st_size,
+                    "shebangCategory": "unreadable", "interpreterPresent": None}
+            if meta["regular"] and 0 <= original.st_size <= 4 * 1024 * 1024:
+                fd = os.open(item, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+                try:
+                    opened = os.fstat(fd)
+                    assert opened.st_ino == original.st_ino
+                    data = bytearray()
+                    while len(data) <= 4 * 1024 * 1024:
+                        part = os.read(fd, 65536)
+                        if not part:
+                            break
+                        data.extend(part)
+                    final = os.fstat(fd)
+                    stable = (len(data) == original.st_size and
+                              all(getattr(original, key) == getattr(final, key)
+                                  for key in ("st_dev", "st_ino", "st_size",
+                                              "st_mtime_ns", "st_ctime_ns")))
+                    meta["readStable"] = stable
+                    if stable:
+                        meta["sha256"] = hashlib.sha256(data).hexdigest()
+                        first = bytes(data).split(b"\n", 1)[0][:200]
+                        if first.startswith((b"#!/bin/sh", b"#!/bin/bash")):
+                            meta["shebangCategory"] = "shell"
+                            meta["interpreterPresent"] = True
+                        elif first.startswith((b"#!/usr/bin/python", b"#!/usr/bin/env python")):
+                            meta["shebangCategory"] = "python"
+                            meta["interpreterPresent"] = True
+                        elif first.startswith(b"#!"):
+                            meta["shebangCategory"] = "other"
+                        else:
+                            meta["shebangCategory"] = "none"
+                finally:
+                    os.close(fd)
+            out["scripts"].append(meta)
+        except (OSError, AssertionError, ValueError):
+            out["scripts"].append({"regular": False, "inspectionFailed": True})
+print(json.dumps(out, sort_keys=True))
+"""
+    output = remote("sudo python3 -c " + shlex.quote(probe), timeout=30)
+    assert len(output.stdout) <= 8192, "Cloud-init script metadata exceeded budget"
+    metadata = json.loads(output.stdout)
+    assert isinstance(metadata, dict)
+    assert type(metadata.get("directoryExists")) is bool
+    assert type(metadata.get("scriptCount")) is int
+    assert 0 <= metadata["scriptCount"] <= 1000
+    assert isinstance(metadata.get("scripts"), list)
+    assert len(metadata["scripts"]) <= 12
+    # The probe does not emit script names or content; it only derives sizes,
+    # executable status, interpreter family and SHA-256 of official guest code.
+    return metadata
+
+
 def full_oval_definition_count(path):
     # Stream a genuine XML source, not a hand-picked vulnerability excerpt.
     count = 0
@@ -231,14 +300,9 @@ def execute(args, work, artifacts, reports, sources, protocol):
                 module_trace = remote(
                     "sudo grep 'finish:' /var/log/cloud-init.log | tail -70",
                     accepted=(0, 1), timeout=25)
-                count_probe = remote(
-                    "if sudo test -d /var/lib/cloud/scripts/per-once; then "
-                    "sudo find /var/lib/cloud/scripts/per-once -maxdepth 1 -type f | wc -l; "
-                    "else printf 'missing\\n'; fi",
-                    timeout=25)
-                count_text = count_probe.stdout.strip()
-                per_once_count = (int(count_text) if count_text.isdigit()
-                                  and 0 <= int(count_text) <= 1000 else None)
+                guest_script_metadata = inspect_guest_per_once_scripts(remote)
+                write_json(work / "cloud-init-private-script-metadata.json",
+                           guest_script_metadata)
                 status_lines = status_detail.stdout.splitlines()
                 diagnostic = {
                     "status": "failed",
@@ -252,8 +316,20 @@ def execute(args, work, artifacts, reports, sources, protocol):
                     "reportedModuleNames": sorted(set(
                         classify_private_cloud_init_errors(status_detail.stdout)
                         + classify_private_cloud_init_errors(module_trace.stdout))),
-                    "perOnceDirectoryPresent": count_text != "missing",
-                    "perOnceScriptCount": per_once_count,
+                    "perOnceDirectoryPresent": guest_script_metadata["directoryExists"],
+                    "perOnceScriptCount": guest_script_metadata["scriptCount"],
+                    "perOnceExecutableCount": sum(
+                        info.get("executable") is True
+                        for info in guest_script_metadata["scripts"]
+                        if isinstance(info, dict)),
+                    "perOnceInterpreterCategories": sorted({
+                        info.get("shebangCategory")
+                        for info in guest_script_metadata["scripts"]
+                        if isinstance(info, dict)
+                        and info.get("shebangCategory") in (
+                            "shell", "python", "other", "none", "unreadable"
+                        )
+                    }),
                     "failureClasses": classify_cloud_init_failure_classes(
                         status_detail.stdout + module_trace.stdout),
                     "notes": "Cloud-init error is blocking; guest logs and seed remain private.",
