@@ -181,6 +181,22 @@ class RestoredRuntimeTests(unittest.TestCase):
         # missing key: structural comparison still refuses the restore.
         self.assertNotEqual(self.command(require=False).returncode, 0)
 
+    def test_missing_source_bound_runtime_db_must_not_be_ignored(self):
+        file = self.restored / "hcp.sqlite"
+        file.unlink()
+        result = self.command()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["status"], "blocked")
+        self.assertNotIn("critical-runtime-bytes-match-backup", result.stdout)
+
+    def test_restored_private_key_is_not_group_readable(self):
+        key = self.restored / "ssh-host-keys/one/id_ed25519"
+        key.chmod(0o644)
+        result = self.command()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["reasonCode"],
+                         "restored_private_file_permissions")
+
     def test_private_result_is_new_and_never_written_inside_evidence(self):
         target = self.root / "post-restore.json"
         result = self.command("--output", str(target))
