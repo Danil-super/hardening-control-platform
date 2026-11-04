@@ -85,6 +85,61 @@ class RestoredAuditGateTests(unittest.TestCase):
         self.assertNotIn(SECRET, result.stdout + result.stderr)
         self.assertNotIn(str(self.runtime), result.stdout + result.stderr)
 
+    def test_independent_head_and_count_pin_confirms_complete_chain(self):
+        baseline = json.loads(self.invoke().stdout)
+        self.assertFalse(baseline["operatorHeadAnchorMatched"])
+        args = ("--expected-head-hmac", baseline["lastEntryHash"],
+                "--expected-entry-count", str(baseline["entries"]))
+        result = self.invoke(*args)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        verified = json.loads(result.stdout)
+        self.assertTrue(verified["operatorHeadAnchorMatched"])
+        self.assertEqual(verified["entries"], 2)
+        self.assertEqual(verified["lastEntryHash"], baseline["lastEntryHash"])
+        self.assertNotIn(KEY, result.stdout + result.stderr)
+
+    def test_truncating_valid_signed_tail_requires_external_checkpoint(self):
+        baseline = json.loads(self.invoke().stdout)
+        con = sqlite3.connect(str(self.db))
+        con.execute("DELETE FROM audit_events WHERE id = 'id-1'")
+        con.commit()
+        con.close()
+        # The remaining first row still forms a valid HMAC chain by itself.
+        self.assertEqual(self.invoke().returncode, 0)
+        pinned = self.invoke("--expected-head-hmac", baseline["lastEntryHash"],
+                             "--expected-entry-count", "2")
+        self.assertNotEqual(pinned.returncode, 0)
+        self.assertEqual(json.loads(pinned.stdout)["reasonCode"],
+                         "audit_anchor_entry_count_mismatch")
+
+    def test_replacing_tail_with_another_signed_tail_fails_head_anchor(self):
+        baseline = json.loads(self.invoke().stdout)
+        # Simulate a legitimate other branch of the history with the same
+        # number of self-consistent, correctly signed events.
+        self.insert_events([(2, {"nested": {"alpha": 1, "zeta": SECRET}}),
+                            (2, {"approved": False, "tags": [2, 1]})])
+        self.assertEqual(self.invoke().returncode, 0)
+        result = self.invoke("--expected-head-hmac", baseline["lastEntryHash"],
+                             "--expected-entry-count", "2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads(result.stdout)["reasonCode"],
+                         "audit_anchor_head_mismatch")
+
+    def test_anchor_must_include_strict_sha_and_count_together(self):
+        baseline = json.loads(self.invoke().stdout)
+        for args, code in [
+            (("--expected-head-hmac", baseline["lastEntryHash"]), "audit_anchor_requires_hash_and_count"),
+            (("--expected-entry-count", "2"), "audit_anchor_requires_hash_and_count"),
+            (("--expected-head-hmac", "z" * 64, "--expected-entry-count", "2"),
+             "audit_anchor_hash_invalid"),
+            (("--expected-head-hmac", baseline["lastEntryHash"], "--expected-entry-count", "0"),
+             "audit_anchor_count_invalid"),
+        ]:
+            with self.subTest(args=args):
+                output = self.invoke(*args)
+                self.assertNotEqual(output.returncode, 0)
+                self.assertEqual(json.loads(output.stdout)["reasonCode"], code)
+
     def test_modifying_a_payload_without_hmac_key_fails(self):
         conn = sqlite3.connect(str(self.db))
         conn.execute("UPDATE audit_events SET payload_json = ? WHERE id = ?",
