@@ -160,7 +160,7 @@ def verify_vendor_control(path, source):
     """Check the labelled expectation against actual pinned vendor predicates."""
     tree = ET.parse(path)
     definitions = tree.findall("o:definitions/o:definition", NS)
-    assert len(definitions) == source["definitionCount"]
+    assert len(definitions) > 0, "Pinned Astra vendor OVAL contains no definitions"
     selected = [entry for entry in definitions if entry.get("id") == source["definitionId"]]
     assert len(selected) == 1 and selected[0].get("class") == "vulnerability"
     assert any(entry.get("ref_id") == source["cve"] for entry in selected[0].iter()
@@ -182,9 +182,10 @@ def verify_vendor_control(path, source):
         assert evr.text == source["fixedVersion"]
         packages.append(name.text)
     assert sorted(packages) == sorted(source["packages"])
+    return len(definitions)
 
 
-def verify_oval_report(report, source, release, expected):
+def verify_oval_report(report, source, release, expected, definition_count=None):
     scanner = report["scanner"]
     assert scanner["available"] is True
     assert scanner["evaluationPerformed"] is True, scanner.get("partialReasons")
@@ -193,10 +194,16 @@ def verify_oval_report(report, source, release, expected):
     assert scanner["hostIdentity"]["astraVersion"].startswith(release)
     assert scanner["database"]["sha256"] == source["sha256"]
     assert scanner["database"]["checksumVerified"] is True
-    assert scanner["definitionCount"] == source["definitionCount"]
-    assert scanner["evaluatedDefinitionCount"] == source["definitionCount"]
-    assert len(scanner["definitionResults"]) == source["definitionCount"]
-    assert len({entry["id"] for entry in scanner["definitionResults"]}) == source["definitionCount"]
+    # Snapshot size/hash stay immutable; its actual source definition
+    # count is independently parsed from the exact downloaded XML. Publisher
+    # updates can legitimately change the count; hardcoding 2026-10 count
+    # after pinning 2026-11 bytes would incorrectly reject native evidence.
+    expected_count = source.get("definitionCount") if definition_count is None else definition_count
+    assert type(expected_count) is int and expected_count > 0
+    assert scanner["definitionCount"] == expected_count
+    assert scanner["evaluatedDefinitionCount"] == expected_count
+    assert len(scanner["definitionResults"]) == expected_count
+    assert len({entry["id"] for entry in scanner["definitionResults"]}) == expected_count
     assert re.fullmatch(r"[a-f0-9]{64}", scanner["resultSha256"])
     selected = [entry for entry in scanner["definitionResults"] if entry["id"] == source["definitionId"]]
     assert len(selected) == 1 and selected[0]["result"] == expected, selected
@@ -318,8 +325,12 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
     info = json.loads(run(["qemu-img", "info", "--output=json", str(work / "source.qcow2")]).stdout)
     assert info["format"] == "qcow2" and not info.get("backing-filename") and info["virtual-size"] <= 50 * 1024**3
     download(oval, work / "vendor.xml", max_seconds=1200)
-    verify_vendor_control(work / "vendor.xml", oval)
-    checkpoint("Publisher images and full OVAL verified by SHA-256", {"imageBytes": image["bytes"], "ovalBytes": oval["bytes"]})
+    real_oval_definition_count = verify_vendor_control(work / "vendor.xml", oval)
+    checkpoint("Publisher images and full OVAL verified by SHA-256", {
+        "imageBytes": image["bytes"], "ovalBytes": oval["bytes"],
+        "ovalDefinitionCountObserved": real_oval_definition_count,
+        "publisherSignatureVerifiedIndependently": False,
+    })
     for name in ("client", "server"):
         run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(work / name)])
     config = {"hostname": HOST, "ssh_pwauth": False, "disable_root": True,
@@ -479,7 +490,8 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
             playbook("astra-oval-audit", "vendor-cve", {"hcp_oval_config": config}, timeout=1800)
             report_id = HOST + "-astra-oval-vendor-cve"
             report = json.loads((reports / (report_id + ".json")).read_text())
-            detail = verify_oval_report(report, oval, args.release, image["expectedControl"])
+            detail = verify_oval_report(report, oval, args.release,
+                                image["expectedControl"], real_oval_definition_count)
             checkpoint("Full vendor OVAL and labelled native CVE result", detail)
             run(["node", str(ROOT / "deployment/tests/verify_astra_vm_normalization.mjs"), report_id, oval["definitionId"], oval["cve"], image["expectedControl"], str(artifacts / "web-normalized-oval.json"), str(reports / (report_id + ".json")), str(work / "asset-observation.json")], output=artifacts / "web-normalization.log", env={**os.environ, "HCP_REPORTS_DIR": str(artifacts / "published-reports"), "HCP_STATE_DIR": str(work / "state")})
             checkpoint("Production asset publication and web normalization preserve full native CVE evidence", {"nativeReportBytes": (reports / (report_id + ".json")).stat().st_size})

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-10-28",
+  "reviewedAt": "2026-11-04",
   "imageDocumentation": "https://registry.astralinux.ru/descriptions/cloud/cloudinit/",
   "images": {
     "1.8.1": {
@@ -21,12 +21,16 @@
   "oval": {
     "url": "https://dl.astralinux.ru/artifactory/al-oval/1.8_x86-64/oval-definitions-alse-1.8.xml",
     "metadataUrl": "https://dl.astralinux.ru/artifactory/api/storage/al-oval/1.8_x86-64/oval-definitions-alse-1.8.xml",
-    "bytes": 47960775,
-    "sha256": "3ba7e4c8126be503fc95bb916f2d9b45306869bd0f58f200abc5b1e1effbbe3d",
-    "definitionCount": 8284,
+    "bytes": 128465944,
+    "sha256": "ff59143634a610b0ee7e7ac3360e9541d1bbe2d81f3dcbe0788f1331114a7b60",
     "definitionId": "oval:astra:def:4214940672944626263348052579907",
     "cve": "CVE-2024-5535",
     "fixedVersion": "0:3.4.0-2-astra6",
-    "packages": ["libssl3", "openssl", "openssl-provider-legacy"]
+    "packages": [
+      "libssl3",
+      "openssl",
+      "openssl-provider-legacy"
+    ],
+    "definitionCountPolicy": "Count the entire byte-pinned XML before comparison; never assume a historical constant after publisher update"
   }
 }

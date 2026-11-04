@@ -116,6 +116,19 @@ class AstraVmAcceptanceTests(unittest.TestCase):
             self.assertTrue(proof["partial"])
             self.assertEqual(proof["result"], expected)
 
+    def test_refreshed_exact_pinned_vendor_xml_uses_observed_full_definition_count(self):
+        source, report = self.report("true")
+        source.pop("definitionCount")
+        # Native caller must supply the count obtained from the full,
+        # checksum-verified XML, never a stale historical constant.
+        proof = verify_oval_report(report, source, "1.8.1", "true", 2)
+        self.assertEqual(proof["definitionCount"], 2)
+        for count in (0, 1, 3, None):
+            with self.subTest(count=count), self.assertRaises(
+                (AssertionError, KeyError)
+            ):
+                verify_oval_report(report, source, "1.8.1", "true", count)
+
     def test_empty_unknown_or_forged_source_is_not_a_success(self):
         source, original = self.report()
         changes = [lambda r: r["scanner"].update(evaluationPerformed=False),
