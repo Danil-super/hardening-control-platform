@@ -41,6 +41,61 @@ class AstraVmAcceptanceTests(unittest.TestCase):
             download(source, target, opener=lambda *_args, **_kwargs: DownloadResponse(content))
             self.assertEqual(target.read_bytes(), content)
 
+    def test_verified_cache_skips_network_but_still_copies_exact_bytes(self):
+        content = b"vendor qcow2 acceptance fixture"
+        source = {"url": "https://publisher.invalid/pinned-image", "bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            cache = work / "cache" / "source.qcow2"
+            cache.parent.mkdir()
+            cache.write_bytes(content)
+            target = work / "image.qcow2"
+
+            def forbidden_opener(*_args, **_kwargs):
+                raise AssertionError("A verified cache hit must not access the network")
+
+            download(source, target, opener=forbidden_opener, cache_path=cache)
+            self.assertEqual(target.read_bytes(), content)
+            self.assertEqual(cache.read_bytes(), content)
+            self.assertFalse((work / "image.qcow2.download").exists())
+
+    def test_corrupt_cached_publisher_image_is_never_used_as_guest_backing(self):
+        content = b"verified image bytes fixture"
+        source = {"url": "https://publisher.invalid/pinned-image", "bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            cache = work / "cache" / "source.qcow2"
+            cache.parent.mkdir()
+            cache.write_bytes(b"x" * len(content))
+            target = work / "image.qcow2"
+            calls = []
+            def opener(*_args, **_kwargs):
+                calls.append(True)
+                return DownloadResponse(content)
+            download(source, target, opener=opener, cache_path=cache)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(target.read_bytes(), content)
+            self.assertEqual(cache.read_bytes(), content)
+
+    def test_symlinked_cache_is_rejected_without_network_or_image_publication(self):
+        content = b"immutable fixture image"
+        source = {"url": "https://publisher.invalid/pinned-image", "bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        with tempfile.TemporaryDirectory() as temporary:
+            work = Path(temporary)
+            foreign = work / "foreign.bin"
+            foreign.write_bytes(content)
+            cache = work / "cache.qcow2"
+            cache.symlink_to(foreign)
+            target = work / "image.qcow2"
+            with self.assertRaisesRegex(ValueError, "symbolic link"):
+                download(source, target, cache_path=cache,
+                         opener=lambda *_args, **_kwargs: self.fail("Unexpected network access"))
+            self.assertFalse(target.exists())
+            self.assertEqual(foreign.read_bytes(), content)
+
     def report(self, expected="true"):
         source = {"sha256": "a" * 64, "definitionCount": 2, "definitionId": "oval:example:def:1", "cve": "CVE-2024-5535"}
         report = {"scanner": {"available": True, "evaluationPerformed": True, "exitCode": 0, "hostIdentity": {"id": "astra", "astraVersion": "1.8.1"},

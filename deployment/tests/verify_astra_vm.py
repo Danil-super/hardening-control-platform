@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
+import stat
 import signal
 import socket
 import subprocess
@@ -48,11 +50,69 @@ def run(argv, output=None, timeout=120, accepted=(0,), env=None):
     return result
 
 
-def download(source, target, opener=urllib.request.urlopen):
-    """Bound bytes and time and verify pinned publisher metadata before use."""
+def verified_pinned_file(path, source):
+    """A cache hit requires the exact bytes; GitHub cache keys alone have no authority."""
+    if path.is_symlink():
+        raise ValueError("Pinned cache contains a symbolic link")
+    try:
+        before = path.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(before.st_mode) or before.st_size != source["bytes"]:
+        return False
+    digest = hashlib.sha256()
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(str(path), flags)
+    try:
+        opened = os.fstat(fd)
+        if not stat.S_ISREG(opened.st_mode) or (opened.st_dev, opened.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("Pinned cache identity changed")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        final, current = os.fstat(fd), path.lstat()
+        keys = ("st_dev", "st_ino", "st_size", "st_mtime_ns", "st_ctime_ns")
+        if any(getattr(before, key) != getattr(final, key) or
+               getattr(final, key) != getattr(current, key) for key in keys):
+            raise ValueError("Pinned cache file changed while validating")
+    finally:
+        os.close(fd)
+    return digest.hexdigest() == source["sha256"]
+
+
+def download(source, target, opener=urllib.request.urlopen, max_seconds=600, cache_path=None):
+    """Stream a size/time bounded immutable HTTPS source; verify a cache hit by bytes.
+
+    A cached image is only an optimization: its contents MUST match the exact
+    pinned size and SHA-256 before copying into the private VM workspace.
+    """
     assert source["url"].startswith("https://")
-    start, count, digest = time.monotonic(), 0, hashlib.sha256()
+    assert isinstance(max_seconds, (int, float)) and 0 < max_seconds <= 3600
+    assert isinstance(source["bytes"], int) and 0 < source["bytes"] <= 2 * 1024**3
+    assert isinstance(source["sha256"], str) and re.fullmatch(r"[a-f0-9]{64}", source["sha256"])
+    target = Path(target)
     temporary = target.with_suffix(target.suffix + ".download")
+    cached = Path(cache_path) if cache_path is not None else None
+    if cached is not None and cached.is_symlink():
+        raise ValueError("Pinned cache is a symbolic link, refusing it")
+    if cached is not None and cached.exists():
+        if verified_pinned_file(cached, source):
+            print("Pinned image cache: verified exact size and SHA-256; reusing immutable bytes.", flush=True)
+            try:
+                with temporary.open("xb") as stream, cached.open("rb") as original:
+                    shutil.copyfileobj(original, stream, 1024 * 1024)
+                if not verified_pinned_file(temporary, source):
+                    raise ValueError("Copied cache image failed the pinned digest")
+                temporary.replace(target)
+                return
+            finally:
+                temporary.unlink(missing_ok=True)
+        print("Pinned image cache did not match expected bytes; fetching official source.", flush=True)
+        # Cache is only a performance optimization; do not trust corrupt bytes.
+        cached.unlink()
+
+    start, count, digest = time.monotonic(), 0, hashlib.sha256()
+    last_update = start
     try:
         with opener(source["url"], timeout=60) as response, temporary.open("xb") as stream:
             assert urllib.parse.urlsplit(response.geturl()).scheme == "https"
@@ -61,13 +121,37 @@ def download(source, target, opener=urllib.request.urlopen):
                 if not chunk:
                     break
                 count += len(chunk)
-                if count > source["bytes"] or time.monotonic() - start > 600:
-                    raise ValueError("Download exceeded pinned byte/time limit")
+                elapsed = time.monotonic() - start
+                if count > source["bytes"] or elapsed > max_seconds:
+                    raise ValueError("Download exceeded pinned byte/time limit "
+                                     "(received %d/%d bytes in %d sec, cap %d sec)" %
+                                     (count, source["bytes"], elapsed, max_seconds))
                 digest.update(chunk)
                 stream.write(chunk)
+                if elapsed - (last_update - start) >= 30:
+                    print("Official publisher download: %d/%d MiB received (elapsed %d sec)" %
+                          (count // (1024**2), source["bytes"] // (1024**2), elapsed),
+                          flush=True)
+                    last_update = time.monotonic()
         if count != source["bytes"] or digest.hexdigest() != source["sha256"]:
             raise ValueError("Publisher SHA-256 or byte count mismatch")
         temporary.replace(target)
+        if cached is not None:
+            cached.parent.mkdir(parents=True, exist_ok=True)
+            if not cached.exists():
+                try:
+                    with cached.open("xb") as output, target.open("rb") as source_file:
+                        shutil.copyfileobj(source_file, output, 1024 * 1024)
+                        output.flush()
+                        os.fsync(output.fileno())
+                    if not verified_pinned_file(cached, source):
+                        cached.unlink(missing_ok=True)
+                        raise ValueError("Cached image copy failed publisher digest")
+                except FileExistsError:
+                    # Never overwrite a concurrent cache writer; the current
+                    # private target has already passed independent SHA check.
+                    pass
+        print("Verified official source with exact pinned size and SHA-256.", flush=True)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -221,10 +305,19 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
         print("PASS: " + name, flush=True)
 
     write_json(artifacts / "protocol.json", protocol)
-    download(image, work / "source.qcow2")
+    cache_root_value = os.environ.get("HCP_ASTRA_IMAGE_CACHE_DIR", "")
+    cache_file = None
+    if cache_root_value:
+        # Never let a workflow/env error turn a cache optimization into an
+        # arbitrary filesystem read. Only runner-temp caches are supported.
+        cache_root = Path(cache_root_value).resolve()
+        runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve()
+        assert cache_root != runner_temp and cache_root.is_relative_to(runner_temp)
+        cache_file = cache_root / "source.qcow2"
+    download(image, work / "source.qcow2", max_seconds=2400, cache_path=cache_file)
     info = json.loads(run(["qemu-img", "info", "--output=json", str(work / "source.qcow2")]).stdout)
     assert info["format"] == "qcow2" and not info.get("backing-filename") and info["virtual-size"] <= 50 * 1024**3
-    download(oval, work / "vendor.xml")
+    download(oval, work / "vendor.xml", max_seconds=1200)
     verify_vendor_control(work / "vendor.xml", oval)
     checkpoint("Publisher images and full OVAL verified by SHA-256", {"imageBytes": image["bytes"], "ovalBytes": oval["bytes"]})
     for name in ("client", "server"):
@@ -337,6 +430,51 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
                 remote("sudo chmod " + shlex.quote(original_mode) + " /etc/passwd")
             assert states == ["pass", "fail", "pass"]
             checkpoint("Unmodified Astra baseline: native pass/fail/restored", states)
+
+            # Exercise the REAL source-bound experimental tool against the
+            # unchanged three native reports, not synthetic acceptance JSON.
+            # Their original raw bytes, native ARF and compiled datastreams
+            # remain available in the private artifact directory.
+            bound_dir = artifacts / "three-stage-bound-reports"
+            run(["node", str(ROOT / "deployment/tests/verify_astra_vm_three_stage_publication.mjs"),
+                 str(work / "asset-observation.json"), str(bound_dir),
+                 *(str(reports / (HOST + "-openscap-" + phase + ".json"))
+                   for phase in ("baseline", "violation", "restored"))],
+                output=artifacts / "three-stage-publication.log",
+                env={**os.environ, "HCP_REPORTS_DIR": str(work / "three-stage-reports"),
+                     "HCP_STATE_DIR": str(work / "three-stage-state")})
+            metrics = artifacts / "three-stage-metrics.json"
+            run(["python3", str(ROOT / "deployment/tests/measure_astra_baseline.py"),
+                 "--before", str(bound_dir / "baseline.json"),
+                 "--after", str(bound_dir / "violation.json"),
+                 "--restored", str(bound_dir / "restored.json"),
+                 "--output", str(metrics)],
+                output=artifacts / "three-stage-measure.log")
+            measured = json.loads(metrics.read_text(encoding="utf-8"))
+            assert measured["completeComparableRuleCount"] == 18
+            assert measured["scope"] == "astra-builtin-18-rule-three-observation-evidence-only"
+            assert measured["baselineToChanged"]["observedPassedToFailed"] == 1
+            assert measured["baselineToChanged"]["observedFailedToPassed"] == 0
+            assert measured["changedToRestored"]["observedFailedToPassed"] == 1
+            assert measured["changedToRestored"]["observedPassedToFailed"] == 0
+            assert measured["restorationMatchesBaseline18Rules"] is True
+            assert measured["observedChangeIn18Rules"] is True
+            assert measured["baselineToRestored"]["netFailedRuleChange"] == 0
+            assert len(measured["baselineToRestored"]["improvedRules"]) == 0
+            assert len(measured["baselineToRestored"]["regressedRules"]) == 0
+            for phase, key in (("baseline", "baselineSha256"),
+                               ("violation", "changedSha256"),
+                               ("restored", "restoredSha256")):
+                assert measured["source"][key] == hashlib.sha256(
+                    (bound_dir / (phase + ".json")).read_bytes()).hexdigest()
+            checkpoint("Genuine Astra 18-rule three-stage source-bound measurements",
+                       {"observedChange": measured["observedChangeIn18Rules"],
+                        "restoredSameRuleStates": measured["restorationMatchesBaseline18Rules"],
+                        "source": measured["source"],
+                        "beforeFailed": measured["baselineToChanged"]["beforeFailed"],
+                        "changedFailed": measured["baselineToChanged"]["afterFailed"],
+                        "restoredFailed": measured["changedToRestored"]["afterFailed"]})
+
             config = {"mode": "online", "url": oval["url"], "sha256": oval["sha256"], "releasePattern": "1.8.*", "architectures": ["amd64"], "maxAgeDays": 90, "sourceName": "Official Astra 1.8 amd64 OVAL", "sourceReference": oval["metadataUrl"], "sourceReviewedAt": sources["reviewedAt"]}
             playbook("astra-oval-audit", "vendor-cve", {"hcp_oval_config": config}, timeout=1800)
             report_id = HOST + "-astra-oval-vendor-cve"
