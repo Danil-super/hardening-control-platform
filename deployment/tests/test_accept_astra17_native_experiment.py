@@ -45,7 +45,7 @@ class Astra17NativeAcceptanceTests(unittest.TestCase):
             "assetBinding": dict(self.reports[0]["assetBinding"]),
             "partial": False,
             "scanner": {
-                "hostIdentity": {"id": "astra", "astraVersion": "1.7.6.15"},
+                "hostIdentity": {"id": "astra", "astraVersion": "1.7.6"},
                 "database": {"sha256": self.oval_sha, "checksumVerified": True},
                 "definitionCount": 2, "evaluatedDefinitionCount": 2,
                 "definitionResults": [{"id": "oval:astra:def:1", "result": "true"},
@@ -99,7 +99,12 @@ class Astra17NativeAcceptanceTests(unittest.TestCase):
             self.accept(IDENTITY.replace("0123456789abcdef0123456789abcdef",
                                          "fedcba9876543210fedcba9876543210"))
         with self.assertRaises(ValueError):
-            self.accept(IDENTITY.replace("RELEASE=1.7.6.15", "RELEASE=1.8.6"))
+            self.accept(IDENTITY.replace("RELEASE=1.7.6", "RELEASE=1.8.6"))
+        with self.assertRaises(ValueError):
+            self.accept(IDENTITY.replace("BUILD_VERSION=1.7.6.15",
+                                         "BUILD_VERSION=1.7.6.14"))
+        with self.assertRaises(ValueError):
+            self.accept(IDENTITY.replace("BUILD_VERSION=1.7.6.15\n", ""))
 
     def test_actual_full_oval_size_above_generic_32_mib_is_supported_safely(self):
         # A real full vendor OVAL HCP JSON can be 70+ MiB. This synthetic
