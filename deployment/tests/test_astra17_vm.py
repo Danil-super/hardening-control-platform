@@ -114,6 +114,40 @@ class NativeAstra17GateTests(unittest.TestCase):
                 with self.assertRaises(AssertionError):
                     vm.verify_native_oval_report(candidate, source, 3)
 
+    def test_cloud_init_diagnostics_only_expose_allowlisted_module_names(self):
+        raw = ("status: error\\nerrors:\\n - ('users_groups', "
+               "RuntimeError('secret-client-key SENSITIVE'))\\n"
+               " - ('ssh', RuntimeError('/etc/machine-id confidential'))\\n"
+               " - ('my_private_host_ssh_key', 'arbitrary data')\\n")
+        selected = vm.classify_private_cloud_init_errors(raw)
+        self.assertEqual(selected, ["ssh", "users_groups"])
+        self.assertNotIn("SENSITIVE", json.dumps(selected))
+        self.assertNotIn("machine-id", json.dumps(selected))
+
+    def test_public_failure_summary_discards_raw_guest_values_and_commands(self):
+        from summarize_astra17_ci_failure import summary
+        private = {
+            "status": "failed",
+            "checks": [
+                {"name": "Official fixed Astra 1.7.6.UU2 image bytes match source catalog",
+                 "detail": {"rawMachineId": "confidential-identity"}},
+                {"name": "Native guest cloud-init failure; no audit claimed",
+                 "detail": {"reportedModuleNames": ["users_groups", "secret-custom-stage"],
+                            "privateKey": "SENSITIVE"}},
+            ],
+            "error": {"type": "RuntimeError",
+                      "message": "ssh -i /secret/privatekey machine-id abc123"},
+        }
+        public = summary(private)
+        self.assertFalse(public["nativeAcceptancePassed"])
+        self.assertEqual(public["cloudInitFailingModuleNames"], ["users_groups"])
+        self.assertEqual(public["failureClass"], "RuntimeError")
+        self.assertEqual(public["completedSafeStageNames"],
+                         ["image_sha256_verified", "cloud_init_failed"])
+        self.assertNotIn("SENSITIVE", json.dumps(public))
+        self.assertNotIn("privatekey", json.dumps(public))
+        self.assertNotIn("confidential-identity", json.dumps(public))
+
     def test_no_public_artifacts_include_generated_native_identity(self):
         workflow = (vm.ROOT / ".github/workflows/astra17-vm.yml").read_text()
         self.assertIn("workflow_dispatch", workflow)
