@@ -62,13 +62,16 @@ export function selectHostAuditNextStep(input: HostAuditWorkflowInput): HostAudi
     detail: "Не удалось достоверно получить сводку доказательств. Проверьте историю отчётов и обновите данные; отсутствие сводки не означает, что проверок не было.",
     action: "Открыть историю", href: `/reports/agentless?host=${encodeURIComponent(alias)}`, tone: "attention" as const,
   };
+  // The fleet overview groups excluded identity history under "needs review".
+  // At the individual host level this condition has a more precise next action,
+  // even when none of the historical reports qualifies as a current audit.
+  if (count(risk?.auditCount) === 0 && count(risk?.identityExcludedCount) > 0) return {
+    id: "identity", title: "Уточните идентичность хоста",
+    detail: "Исторические отчёты исключены из сводки после изменения идентичности актива или подключения. Проверьте хост и соберите новые доказательства.",
+    action: "Проверить подключение", href: "#ansible-actions", tone: "attention",
+  };
   const assessment = describeHostAuditEvidence({ alias, riskSummary: risk });
   if (assessment.state === "no_audit") {
-    if (count(risk?.identityExcludedCount) > 0) return {
-      id: "identity", title: "Уточните идентичность хоста",
-      detail: "Исторические отчёты исключены из сводки после изменения идентичности актива или подключения. Проверьте хост и соберите новые доказательства.",
-      action: "Проверить подключение", href: "#ansible-actions", tone: "attention",
-    };
     return {
       id: "first_audit", title: "Запустите первый аудит безопасности",
       detail: "Сбор системных фактов и инвентаря не заменяет аудит. Выберите применимый профиль и инструмент; запуск выполняется только после вашего действия.",
