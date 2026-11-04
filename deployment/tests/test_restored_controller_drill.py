@@ -90,7 +90,7 @@ class RestoreDrillContractTests(unittest.TestCase):
     def test_sanitized_protocol_labels_are_bounded_to_disposable_lab(self):
         self.assertEqual(MODULE.RESTORED_URL, "http://127.0.0.1:3002")
         self.assertEqual(MODULE.SOURCE_URL, "http://127.0.0.1:3001")
-        self.assertIn("hcp-lab", MODULE.find_source_volume.__code__.co_consts)
+        self.assertIn("hcp-lab_", MODULE.find_source_volume.__code__.co_consts)
 
 
 if __name__ == "__main__":
