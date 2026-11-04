@@ -93,6 +93,8 @@ def download(source, target, opener=urllib.request.urlopen, max_seconds=600, cac
     target = Path(target)
     temporary = target.with_suffix(target.suffix + ".download")
     cached = Path(cache_path) if cache_path is not None else None
+    if cached is not None and cached.is_symlink():
+        raise ValueError("Pinned cache is a symbolic link, refusing it")
     if cached is not None and cached.exists():
         if verified_pinned_file(cached, source):
             print("Pinned image cache: verified exact size and SHA-256; reusing immutable bytes.", flush=True)
