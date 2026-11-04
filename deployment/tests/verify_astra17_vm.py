@@ -42,8 +42,7 @@ def classify_private_cloud_init_errors(output):
         "final_message", "phone_home", "ssh_import_id", "network",
         "write_files", "timezone", "locale",
     }
-    names = set(re.findall(r"['\\\"]([a-z][a-z0-9_]{1,70})['\\\"]\\s*,",
-                           output))
+    names = set(re.findall(r"'([a-z][a-z0-9_]{1,70})'\s*,", output))
     return sorted(names & accepted)
 
 
