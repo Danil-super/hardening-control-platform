@@ -291,6 +291,31 @@ def execute(args, work, artifacts, reports, sources, protocol):
                 time.sleep(3)
             else:
                 raise RuntimeError("Actual Astra 1.7 guest did not pass SSH readiness")
+            # Independently observe the actual booted guest BEFORE the
+            # cloud-init final-stage gate. A failing optional/vendor script
+            # must not prevent us from recording whether this was actually
+            # Astra SE 1.7.6.15. It still blocks release acceptance.
+            identity_command = (
+                "cat /etc/os-release; printf '\\nRELEASE='; cat /etc/astra_version; "
+                "printf '\\nKERNEL='; uname -r; printf 'MACHINE_ID='; "
+                "cat /etc/machine-id"
+            )
+            early_identity = remote(identity_command).stdout
+            assert ('ID=astra\\n' in early_identity or 'ID="astra"\\n' in early_identity)
+            assert re.search(r"^RELEASE=1\\.7\\.6\\.15$", early_identity, re.MULTILINE)
+            early_kernel = re.search(r"^KERNEL=(.+)$", early_identity, re.MULTILINE)
+            assert early_kernel and early_kernel.group(1) != os.uname().release
+            early_machine = re.search(
+                r"^MACHINE_ID=([a-f0-9]{32})$", early_identity, re.MULTILINE)
+            assert early_machine and early_machine.group(1) != "0" * 32
+            checkpoint("Native Astra 1.7.6.15 identity observed before final cloud-init", {
+                "releaseObserved": True,
+                "independentGuestKernelObserved": True,
+                "machineIdPresent": True,
+                "identityObservationSha256": hashlib.sha256(
+                    early_identity.encode()).hexdigest(),
+                "cloudInitCompletionNotYetVerified": True,
+            })
             # A genuine 1.7.6.UU2 guest has reached SSH. Cloud-init may
             # still fail one module, so collect only bounded, non-secret
             # module/stage diagnostics in private runner state before refusing
@@ -363,12 +388,10 @@ def execute(args, work, artifacts, reports, sources, protocol):
             checkpoint("Actual native guest cloud-init completed", {
                 "status": "done", "exitCode": 0,
             })
-            identity_command = (
-                "cat /etc/os-release; printf '\\nRELEASE='; cat /etc/astra_version; "
-                "printf '\\nKERNEL='; uname -r; printf 'MACHINE_ID='; "
-                "cat /etc/machine-id"
-            )
             identity = remote(identity_command).stdout
+            assert identity == early_identity, (
+                "Native guest identity changed during cloud-init completion"
+            )
             (work / "native-identity-private.txt").write_text(identity)
             assert ('ID=astra\n' in identity or 'ID="astra"\n' in identity)
             assert "RELEASE=1.7.6.15" in identity
