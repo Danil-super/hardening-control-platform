@@ -169,6 +169,8 @@ class NativeAstra17GateTests(unittest.TestCase):
             "checks": [
                 {"name": "Official fixed Astra 1.7.6.UU2 image bytes match source catalog",
                  "detail": {"rawMachineId": "confidential-identity"}},
+                {"name": "Native Astra 1.7.6.15 identity observed before final cloud-init",
+                 "detail": {"rawMachineId": "never-publish", "releaseObserved": True}},
                 {"name": "Native guest cloud-init failure; no audit claimed",
                  "detail": {"reportedModuleNames": ["users_groups", "secret-custom-stage"],
                             "perOnceDirectoryPresent": True,
@@ -192,7 +194,8 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertEqual(public["cloudInitFailureCategories"], ["permission_denied"])
         self.assertNotIn("secret_reason", json.dumps(public))
         self.assertEqual(public["completedSafeStageNames"],
-                         ["image_sha256_verified", "cloud_init_failed"])
+                         ["image_sha256_verified", "native_release_17_observed",
+                          "cloud_init_failed"])
         self.assertNotIn("SENSITIVE", json.dumps(public))
         self.assertNotIn("privatekey", json.dumps(public))
         self.assertNotIn("confidential-identity", json.dumps(public))
