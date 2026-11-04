@@ -8,6 +8,7 @@ import sys
 SAFE_CHECKS = {
     "Official fixed Astra 1.7.6.UU2 image bytes match source catalog": "image_sha256_verified",
     "Native guest cloud-init failure; no audit claimed": "cloud_init_failed",
+    "Native Astra 1.7.6.15 identity observed before final cloud-init": "native_release_17_observed",
     "Actual native guest cloud-init completed": "cloud_init_completed",
     "Genuine Astra SE 1.7.6.15 guest kernel and SSH key verified": "guest_identity_checked",
     "Real Astra 1.7 native facts and installed packages": "facts_collected",
