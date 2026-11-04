@@ -279,6 +279,18 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertNotIn("cloud-init single", commands[0])
         self.assertNotIn("cloud-init clean", commands[0])
         self.assertIn("cloud-init-output.log", GUEST_PROBE)
+        # The in-guest classifier must not call every PARSEC mention a denial.
+        clean_definitions = GUEST_PROBE.split('cloud_log = log_tail(', 1)[0]
+        probe_scope = {}
+        exec(compile(clean_definitions, "<read-only-probe-fixture>", "exec"),
+             probe_scope)
+        categories = probe_scope["categories"]
+        self.assertEqual(categories("PARSEC controls configured"),
+                         ["security_policy_referenced"])
+        self.assertEqual(categories("PARSEC: access denied"),
+                         ["security_policy_denied", "security_policy_referenced"])
+        self.assertEqual(categories("No route to host"),
+                         ["network_unavailable"])
         self.assertNotIn("print(cloud_log)", GUEST_PROBE)
         self.assertNotIn("print(output_log)", GUEST_PROBE)
         for altered in [

@@ -14,6 +14,7 @@ SAFE_CLASSES = frozenset({
     "script_process_failed", "network_unavailable", "name_resolution_failure",
     "package_repository_failure", "package_install_failure",
     "service_failure", "permission_denied", "security_policy_denied",
+    "security_policy_referenced",
     "missing_file", "missing_command", "read_only_file_system",
     "disk_full", "invalid_executable", "shell_syntax_error",
 })
@@ -34,7 +35,14 @@ PATTERNS = {
   "package_install_failure": r"Unable to locate package|Sub-process /usr/bin/dpkg returned an error code|dpkg: error processing",
   "service_failure": r"Failed to start|Failed to enable unit|Unit .{0,100} not found",
   "permission_denied": r"Permission denied|PermissionError|Operation not permitted",
-  "security_policy_denied": r"PARSEC|Mandatory Access Control|access denied by policy",
+  # A simple mention of PARSEC does NOT prove that any access was denied.
+  "security_policy_referenced": r"\bPARSEC\b|Mandatory Access Control",
+  "security_policy_denied": (
+      r"(?:PARSEC|Mandatory Access Control)[^\r\n]{0,120}"
+      r"(?:access denied|permission denied|отказано)"
+      r"|(?:access denied|отказано)[^\r\n]{0,120}(?:PARSEC|Mandatory Access Control)"
+      r"|access denied by (?:a )?policy"
+  ),
   "missing_file": r"FileNotFoundError|No such file or directory",
   "missing_command": r"command not found",
   "read_only_file_system": r"Read-only file system",
