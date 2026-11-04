@@ -130,6 +130,12 @@ def execute(args, work, artifacts, reports, sources, protocol):
             "ed25519_private": (work / "server").read_text(),
             "ed25519_public": (work / "server.pub").read_text(),
         },
+        # The upstream 1.7.6.UU2 image has reached SSH but cloud-init
+        # reported a failing scripts_per_once stage. Its documented runtime
+        # directory must exist even when user-data contains no per-once
+        # scripts. Only make the directory on our disposable CI guest:
+        # never disable, skip or rewrite the vendor's cloud-init modules.
+        "bootcmd": [["mkdir", "-p", "/var/lib/cloud/scripts/per-once"]],
         "growpart": {"mode": "auto", "devices": ["/"]},
         "resize_rootfs": True,
     }
