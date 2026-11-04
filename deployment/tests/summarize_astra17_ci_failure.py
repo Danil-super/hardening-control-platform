@@ -31,6 +31,7 @@ SAFE_FAILURE_CLASSES = {
     "script_process_failed", "permission_denied", "missing_file",
     "invalid_executable", "python_exception",
 }
+SAFE_INTERPRETERS = {"shell", "python", "other", "none", "unreadable"}
 
 
 def summary(private):
@@ -43,6 +44,8 @@ def summary(private):
     modules = []
     once_present = None
     once_count = None
+    once_executable = None
+    interpreter_types = []
     classes = []
     for item in checks[-30:]:
         if not isinstance(item, dict):
@@ -60,6 +63,14 @@ def summary(private):
                 once_present = presence if type(presence) is bool else None
                 count = detail.get("perOnceScriptCount")
                 once_count = count if type(count) is int and 0 <= count <= 1000 else None
+                executable_count = detail.get("perOnceExecutableCount")
+                once_executable = (executable_count if type(executable_count) is int
+                                   and 0 <= executable_count <= 1000 else None)
+                types = detail.get("perOnceInterpreterCategories")
+                if isinstance(types, list):
+                    interpreter_types = sorted({name for name in types
+                                               if isinstance(name, str)
+                                               and name in SAFE_INTERPRETERS})
                 provided = detail.get("failureClasses")
                 if isinstance(provided, list):
                     classes = sorted({x for x in provided
@@ -77,6 +88,8 @@ def summary(private):
         "cloudInitFailingModuleNames": modules,
         "cloudInitPerOnceDirectoryPresent": once_present,
         "cloudInitPerOnceScriptCount": once_count,
+        "cloudInitPerOnceExecutableCount": once_executable,
+        "cloudInitPerOnceInterpreterCategories": interpreter_types,
         "cloudInitFailureCategories": classes,
         "failureClass": error_type if error_type in SAFE_ERRORS else "unknown",
         "rawGuestOutputPublished": False,
