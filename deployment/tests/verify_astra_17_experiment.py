@@ -34,6 +34,8 @@ def read_identity(path):
     require(stat.S_ISREG(original.st_mode)
             and 0 < original.st_size <= MAX_IDENTITY_BYTES,
             "Native identity must be a bounded regular text file, not a symlink")
+    require(original.st_mode & 0o077 == 0,
+            "Native machine identity observation must not be accessible by group or other users")
     descriptor = os.open(str(path), os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
     try:
         first = os.fstat(descriptor)
