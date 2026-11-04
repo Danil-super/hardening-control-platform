@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Button, LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { errorMessage, readApiResponse } from "@/lib/client-api";
-import { summarizeDashboardEvidence } from "@/lib/dashboard-evidence-status";
+import { filterDashboardAssessments, summarizeDashboardEvidence, type DashboardFilter } from "@/lib/dashboard-evidence-status";
 
 type Health = {
   ansibleInstalled?: boolean;
@@ -22,7 +22,7 @@ type Host = {
   riskSummary?: {
     critical: number; high: number; medium: number; low: number; unknown: number;
     auditCount: number; freshCount: number; partialCount: number; staleCount: number;
-    identityExcludedCount?: number; maxAgeHours: number;
+    identityExcludedCount?: number; lastSecurityAuditAt?: string | null; maxAgeHours: number;
   };
 };
 
@@ -39,6 +39,7 @@ export function WorkspaceDashboard() {
   const [state, setState] = useState<DashboardState | null>(null);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [hostFilter, setHostFilter] = useState<DashboardFilter>("all");
 
   async function load() {
     setLoading(true);
@@ -72,6 +73,21 @@ export function WorkspaceDashboard() {
   }, [state]);
 
   const evidence = useMemo(() => summarizeDashboardEvidence(state?.hosts ?? []), [state]);
+  const filteredHosts = useMemo(() => filterDashboardAssessments(evidence.assessed, hostFilter), [evidence, hostFilter]);
+  const severityBars = [
+    { id: "critical", label: "Критические", count: evidence.severity.critical, color: "bg-red-500" },
+    { id: "high", label: "Высокие", count: evidence.severity.high, color: "bg-orange-500" },
+    { id: "medium", label: "Средние", count: evidence.severity.medium, color: "bg-amber-400" },
+    { id: "low", label: "Низкие", count: evidence.severity.low, color: "bg-sky-400" },
+    { id: "unknown", label: "Без оценки", count: evidence.severity.unknown, color: "bg-slate-400" },
+  ] as const;
+  const severityPeak = Math.max(0, ...severityBars.map(item => item.count));
+  const filterChoices = [
+    { id: "all", label: "Все", count: evidence.totalHosts },
+    { id: "fresh", label: "Свежие", count: evidence.freshEvidenceHosts },
+    { id: "review", label: "Требуют уточнения", count: evidence.needsReviewHosts },
+    { id: "no_fresh", label: "Без свежего аудита", count: evidence.noFreshEvidenceHosts },
+  ] as const;
   const controlReady = Boolean(state?.health.ansibleInstalled && state?.health.inventoryReady);
   const controlDetail = !state
     ? "Проверяем Ansible и inventory"
@@ -86,6 +102,8 @@ export function WorkspaceDashboard() {
       ? { title: "Подготовьте control node", text: "Ansible недоступен. Выполните шаг установки из инструкции, затем вернитесь сюда.", href: "/guide", label: "Открыть инструкцию" }
       : !summary.hosts.length
         ? { title: "Подключите первый хост", text: "Добавьте Astra или другой Linux-хост через безопасное SSH-подключение. Пароль используется один раз и не сохраняется.", href: "/hosts", label: "Добавить хост" }
+        : evidence.assessed.some(host => host.state === "unknown_evidence")
+          ? { title: "Уточните статус сохранённых проверок", text: "Не для всех хостов удалось достоверно получить сводку аудита. Откройте их историю и проверьте доказательства перед новым запуском или исправлением.", href: "/hosts", label: "Проверить хосты" }
         : !summary.audited.length
           ? { title: "Запустите основной аудит", text: "Выберите подключённый хост и профиль. Инвентаризация и сбор фактов сами по себе не являются аудитом безопасности.", href: "/hosts", label: "Перейти к аудиту" }
           : evidence.noFreshEvidenceHosts > 0
@@ -161,7 +179,45 @@ export function WorkspaceDashboard() {
             <p className="mt-1 text-2xl font-semibold text-white">{loading ? "…" : evidence.unknownSeverityFindings}</p>
           </div>
         </div>
-        {!loading && evidence.assessed.length ? (
+        <div className="mt-4 flex flex-wrap items-center gap-2" role="group" aria-label="Фильтр хостов по статусу аудита">
+          {filterChoices.map(choice => (
+            <Button key={choice.id} type="button" variant="secondary"
+              className={hostFilter === choice.id ? "border-sky-400/50 bg-sky-500/15 text-sky-100" : ""}
+              aria-pressed={hostFilter === choice.id} onClick={() => setHostFilter(choice.id)}>
+              {choice.label} <span className="tabular-nums text-xs text-slate-400">{choice.count}</span>
+            </Button>
+          ))}
+        </div>
+        <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+          <h3 className="text-sm font-semibold text-slate-200">Наблюдения по уровням критичности</h3>
+          <p className="mt-1 text-xs leading-5 text-slate-400">
+            Только текущие находки из доступных свежих источников, суммированные по хостам.
+            Это не число уникальных CVE в инфраструктуре и не оценка всех потенциальных угроз.
+          </p>
+          {severityPeak > 0 ? (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+              {severityBars.map(item => (
+                <div key={item.id} className="min-w-0">
+                  <div className="flex justify-between gap-2 text-xs text-slate-300">
+                    <span>{item.label}</span><strong className="tabular-nums">{item.count}</strong>
+                  </div>
+                  <div className="mt-2 h-2 overflow-hidden rounded-full bg-slate-800" role="img"
+                    aria-label={item.label + ": " + item.count + " наблюдений"}>
+                    <div className={"h-full rounded-full " + item.color}
+                      style={{ width: (100 * item.count / severityPeak) + "%" }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-3 text-xs text-slate-400">
+              {evidence.assessed.some(item => item.state === "has_fresh_evidence" || item.state === "needs_review")
+                ? "В текущих сводках нет зарегистрированных находок. Это не подтверждает отсутствие уязвимостей."
+                : "Нет подтверждённых свежих источников для распределения находок."}
+            </p>
+          )}
+        </div>
+        {!loading && evidence.assessed.length && filteredHosts.length ? (
           <div className="mt-4 overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
@@ -174,12 +230,12 @@ export function WorkspaceDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {evidence.assessed.slice(0, 10).map(host => (
+                {filteredHosts.slice(0, 10).map(host => (
                   <tr key={host.alias} className="border-b border-slate-800/70">
                     <td className="px-2 py-3 font-medium text-slate-200"><Link href={`/hosts?host=${encodeURIComponent(host.alias)}#host-audit-flow`} className="text-sky-200 underline-offset-4 hover:underline" aria-label={`Открыть маршрут проверки хоста ${host.alias}`}>{host.alias}</Link></td>
                     <td className="px-2 py-3">
                       <span className={host.state === "has_fresh_evidence" ? "text-emerald-200"
-                        : host.state === "needs_review" ? "text-amber-200" : "text-slate-300"}>
+                        : host.state === "needs_review" || host.state === "unknown_evidence" ? "text-amber-200" : "text-slate-300"}>
                         {host.stateLabel}
                       </span>
                       <p className="mt-1 max-w-sm text-xs leading-5 text-slate-500">{host.detail}</p>
@@ -191,11 +247,12 @@ export function WorkspaceDashboard() {
                 ))}
               </tbody>
             </table>
-            {evidence.assessed.length > 10 ? (
-              <p className="mt-3 text-sm text-slate-400">Показаны первые 10 хостов из {evidence.assessed.length}. Полный список — на странице «Хосты».</p>
+            {filteredHosts.length > 10 ? (
+              <p className="mt-3 text-sm text-slate-400">Показаны первые 10 хостов из {filteredHosts.length} по выбранному фильтру. Полный список — на странице «Хосты».</p>
             ) : null}
           </div>
-        ) : !loading ? <p className="mt-4 text-sm text-slate-400">Подключённых хостов пока нет.</p> : null}
+        ) : !loading ? <p className="mt-4 text-sm text-slate-400">{evidence.totalHosts
+          ? "По выбранному фильтру хостов нет." : "Подключённых хостов пока нет."}</p> : null}
       </section>
 
       <section className="rounded-2xl border border-sky-400/20 bg-[linear-gradient(135deg,rgba(14,116,144,.17),rgba(8,17,31,.92)_56%)] p-5 shadow-xl shadow-black/10 sm:p-6">

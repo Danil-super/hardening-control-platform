@@ -43,6 +43,14 @@ test("old reports excluded after identity change require checking the host again
     auditCount: 0, freshCount: 0, identityExcludedCount: 1,
   }) }));
   assert.equal(state.id, "identity");
+  assert.match(state.detail, /идентичности/);
+  assert.equal(state.href, "#ansible-actions");
+
+  // A current audit with an identity-excluded historical source still requires
+  // source coverage review, rather than claiming fully trusted evidence.
+  assert.equal(select(host({ riskSummary: risk({
+    auditCount: 2, freshCount: 2, identityExcludedCount: 1,
+  }) })).id, "coverage");
 });
 test("stale results, missing freshness, partial and counter conflicts cannot authorize triage", () => {
   for (const fields of [
