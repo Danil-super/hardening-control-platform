@@ -55,7 +55,7 @@ class RestoreDrillContractTests(unittest.TestCase):
         for networks, allowed in [
             ({"hcp-lab_lab": {}, "bridge": {}}, True),
             ({"production": {}}, False),
-            ({"hcp-lab_lab": {}, "hcp-lab-other": {}}, False),
+            ({"hcp-lab_lab": {}, "hcp-lab_secondary": {}}, False),
         ]:
             with mock.patch.object(MODULE, "docker", return_value=json.dumps(networks)):
                 if allowed:
