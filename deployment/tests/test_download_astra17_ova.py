@@ -152,7 +152,25 @@ class DownloadAstra17Test(unittest.TestCase):
         alias = self.root / "alias"
         alias.symlink_to(other, target_is_directory=True)
         with self.assertRaises((OSError, ValueError)):
-            self.run_download()
+            MODULE.download("base", alias, opener=self.opener, progress=lambda *_: None)
+
+    def test_mismatched_http_content_length_is_not_a_success(self):
+        def invalid_header(url, timeout=30):
+            if url.endswith(".sha256"):
+                return FakeResponse(self.sha.encode(), url)
+            return FakeResponse(self.data, url, advertised_length=str(len(self.data) + 1))
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            MODULE.download("base", self.root, opener=invalid_header, progress=lambda *_: None)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_bounded_transfer_duration_cleans_up_temp_files(self):
+        def advanced_clock():
+            self.now += 10
+            return self.now
+        with self.assertRaisesRegex(ValueError, "time budget"):
+            MODULE.download("base", self.root, opener=self.opener,
+                            progress=lambda *_: None, clock=advanced_clock, max_seconds=1)
+        self.assertEqual(list(self.root.iterdir()), [])
 
     def test_only_three_fixed_ova_names_and_no_user_controlled_url(self):
         for level in ("base", "adv", "max"):
