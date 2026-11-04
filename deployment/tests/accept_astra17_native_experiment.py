@@ -32,7 +32,8 @@ SHA = re.compile(r"^[a-f0-9]{64}$")
 MAX_SSH_BYTES = 128 * 1024
 MAX_OVAL_REPORT = 256 * 1024 * 1024
 REMOTE_OBSERVATION = (
-    "cat /etc/os-release; printf '\\nRELEASE='; cat /etc/astra_version; "
+    "set -eu; cat /etc/os-release; printf '\\nRELEASE='; cat /etc/astra_version; "
+    "printf '\\nBUILD_VERSION='; cat /etc/astra/build_version; "
     "printf '\\nKERNEL='; uname -r; printf 'MACHINE_ID='; "
     "cat /etc/machine-id"
 )
@@ -223,8 +224,8 @@ def check_oval(report, reference_sha, host_alias, expected_binding):
            "oval_database_sha256_does_not_match_pin")
     host = scanner.get("hostIdentity")
     demand(isinstance(host, dict) and host.get("id") == "astra"
-           and str(host.get("astraVersion", "")).startswith("1.7.6.15"),
-           "oval_wrong_native_release")
+           and host.get("astraVersion") == "1.7.6",
+           "oval_wrong_native_point_release")
     total, evaluated = scanner.get("definitionCount"), scanner.get("evaluatedDefinitionCount")
     demand(type(total) is int and type(evaluated) is int
            and total > 0 and total == evaluated
