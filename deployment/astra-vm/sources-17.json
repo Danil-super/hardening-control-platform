@@ -5,10 +5,10 @@
   "sourceTrust": "Source file digest and size observed in same public Astra Artifactory; not an independent publisher signature",
   "images": {
     "base": {
-      "url": "https://registry.astralinux.ru/artifactory/mg-generic/alse/cloudinit/alse-1.7.6.uu2-base-cloudinit-mg15.3.1-amd64.qcow2",
-      "metadataUrl": "https://registry.astralinux.ru/artifactory/api/storage/mg-generic/alse/cloudinit/alse-1.7.6.uu2-base-cloudinit-mg15.3.1-amd64.qcow2",
-      "bytes": 407673856,
-      "sha256": "654aae66598bb4e5e38efc4fc18e2c9cb53170713a31728ff502f04dabf1838e"
+      "url": "https://registry.astralinux.ru/artifactory/mg-generic/alse/cloudinit/alse-1.7.6uu2-base-cloudinit-mg15.1.0-amd64.qcow2",
+      "metadataUrl": "https://registry.astralinux.ru/artifactory/api/storage/mg-generic/alse/cloudinit/alse-1.7.6uu2-base-cloudinit-mg15.1.0-amd64.qcow2",
+      "bytes": 406853120,
+      "sha256": "debe159b568fb764d8c775aad245071943c5e43a7dcce27d87de400c5bbfaf54"
     },
     "adv": {
       "url": "https://registry.astralinux.ru/artifactory/mg-generic/alse/cloudinit/alse-1.7.6.uu2-adv-cloudinit-mg15.3.1-amd64.qcow2",

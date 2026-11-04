@@ -16,7 +16,8 @@ class NativeAstra17GateTests(unittest.TestCase):
         self.assertEqual(set(sources["images"]), {"base", "adv", "max"})
         self.assertEqual(sources["reviewedAt"], "2026-11-04")
         for level, image in sources["images"].items():
-            filename = "alse-1.7.6.uu2-%s-cloudinit-mg15.3.1-amd64.qcow2" % level
+            filename = ("alse-1.7.6uu2-base-cloudinit-mg15.1.0-amd64.qcow2" if level == "base"
+                        else "alse-1.7.6.uu2-%s-cloudinit-mg15.3.1-amd64.qcow2" % level)
             self.assertEqual(image["url"], "https://registry.astralinux.ru/artifactory/mg-generic/alse/cloudinit/" + filename)
             self.assertEqual(image["metadataUrl"], "https://registry.astralinux.ru/artifactory/api/storage/mg-generic/alse/cloudinit/" + filename)
             self.assertRegex(image["sha256"], r"^[0-9a-f]{64}$")
@@ -24,7 +25,7 @@ class NativeAstra17GateTests(unittest.TestCase):
             self.assertLess(image["bytes"], 500 * 1024 * 1024)
             self.assertNotIn("latest", image["url"])
         self.assertEqual(sources["images"]["base"]["sha256"],
-                         "654aae66598bb4e5e38efc4fc18e2c9cb53170713a31728ff502f04dabf1838e")
+                         "debe159b568fb764d8c775aad245071943c5e43a7dcce27d87de400c5bbfaf54")
         self.assertEqual(sources["images"]["adv"]["sha256"],
                          "03b72d0e058a7feabfb3e2e0b7636f7f4bd331f861f76ec8843cf9efad873c49")
         self.assertEqual(sources["images"]["max"]["sha256"],
