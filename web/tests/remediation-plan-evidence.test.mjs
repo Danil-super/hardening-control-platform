@@ -155,8 +155,17 @@ test("every failed OpenSCAP instance must remain covered and pass before a group
   }
 });
 
+// Synthetic fixtures must now supply the SAME verified full-source evidence
+// contract that production Astra OVAL actually writes. Missing evidence is not
+// proof of remediation and should not be accepted merely to keep a test green.
 const ovalSource = (id, result = "true", digest = "c".repeat(64)) => ({ mode: "astra-oval", profileId: "astra-oval", scanner: {
-  available: true, partial: false, evaluationPerformed: true, database: { sha256: digest },
+  available: true, partial: result === "unknown", evaluationPerformed: true,
+  partialReasons: result === "unknown" ? ["synthetic unresolved native definition"] : [],
+  exitCode: result === "true" ? 2 : 0,
+  database: { sha256: digest, checksumVerified: true },
+  resultSha256: "b".repeat(64),
+  definitionCount: 1, evaluatedDefinitionCount: 1,
+  resultCounts: { [result]: 1 },
   definitionResults: [{ id, class: "vulnerability", result, vendorSeverity: "critical", platformApplicability: { status: "astra_named" } }],
 } });
 test("Astra OVAL false proves resolution only for the evaluated original definition and pinned source", async () => {
@@ -173,7 +182,7 @@ test("Astra OVAL false proves resolution only for the evaluated original definit
     const item = await completed(host, original, ovalSource(id));
     const reportId = writeReport(host, "after", [], extra);
     if (succeeds) assert.equal(confirm(item, reportId).status, "confirmed");
-    else assert.throws(() => confirm(item, reportId), /совпадение|не содержит доказанного/);
+    else assert.throws(() => confirm(item, reportId), /совпадение|не содержит доказанного|полный свежий/);
   }
 });
 

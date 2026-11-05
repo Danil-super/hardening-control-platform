@@ -185,8 +185,12 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
   const latestNmap = reports.filter((report) => report.mode === "nmap" && report.reportTimeValid)
     .sort((a, b) => reportTime(b) - reportTime(a))[0]
     ?? reports.find((report) => report.mode === "nmap");
+  const latestAstraOval = reports.filter((report) => report.mode === "astra-oval" && report.reportTimeValid)
+    .sort((a, b) => reportTime(b) - reportTime(a))[0]
+    ?? reports.find((report) => report.mode === "astra-oval");
   const isCurrent = (report: AnsibleReportSummary) => report.mode === "openscap" ? report.id === latestOpenScap?.id
-    : report.mode !== "nmap" || report.id === latestNmap?.id;
+    : report.mode === "astra-oval" ? report.id === latestAstraOval?.id
+      : report.mode !== "nmap" || report.id === latestNmap?.id;
   const lostCoverage: LostCoverage[] = [];
   const details = new Map<string, ReturnType<typeof readAnsibleReport>>();
   const detailFor = (report: AnsibleReportSummary) => {
@@ -220,6 +224,25 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
           reason: "rules_missing", ruleIds: [...new Set(missing.map((value) => value.rule))],
           findingIds: missing.map((value) => value.findingId) });
       }
+    }
+  }
+
+  // A changed Astra vendor XML is a NEW source scope, not evidence that
+  // earlier CVEs were fixed. Preserve the old scope as explicitly lost, while
+  // evaluating only the latest native result for the current assessment.
+  if (latestAstraOval) {
+    for (const previous of latestByKind.values()) {
+      if (previous.mode !== "astra-oval" || previous.id === latestAstraOval.id
+          || !previous.reportTimeValid) continue;
+      lostCoverage.push({
+        reportId: previous.id, replacedByReportId: latestAstraOval.id,
+        profileId: previous.profileId, contentId: previous.contentId ?? null,
+        scopeKey: reportKey(previous), mode: "astra-oval",
+        reason: previous.scopeKnown && latestAstraOval.scopeKnown ? "scope_changed" : "scope_unknown",
+        ruleIds: [], findingIds: (detailFor(previous)?.findings ?? [])
+          .filter((finding) => finding.status === "failed" || finding.status === "manual")
+          .map((finding) => finding.id),
+      });
     }
   }
 
@@ -258,7 +281,9 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
     portCoverage: report.portCoverage ?? null,
     coverageComplete: report.coverageComplete ?? null,
     current: isCurrent(report),
-    supersededBy: isCurrent(report) || !report.reportTimeValid ? null : (report.mode === "nmap" ? latestNmap?.id : latestOpenScap?.id) ?? null,
+    supersededBy: isCurrent(report) || !report.reportTimeValid ? null
+      : (report.mode === "nmap" ? latestNmap?.id
+        : report.mode === "astra-oval" ? latestAstraOval?.id : latestOpenScap?.id) ?? null,
     coverageIssues: [
       ...(report.assetBinding?.status === "unknown" ? ["asset_identity_unverified"] : []),
       ...(!isCurrent(report) ? [report.reportTimeValid ? "scope_superseded" : "invalid_time"] : []),
