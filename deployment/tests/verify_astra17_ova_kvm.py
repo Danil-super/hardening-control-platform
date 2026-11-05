@@ -133,8 +133,7 @@ def trusted_local_scan(raw, port):
     return " ".join(parts[:3]) + "\n"
 
 
-def experiment(work, protocol, *, native_hcp_three_stage=False,
-               native_vendor_oval=False):
+def experiment(work, protocol, *, native_hcp_three_stage=False):
     fixed = work / FILENAMES["base"]
     origin = download(
         "base", work, opener=urllib.request.build_opener(NoRedirect()).open,
@@ -244,14 +243,9 @@ def experiment(work, protocol, *, native_hcp_three_stage=False,
                     work, protocol, port=port, known_hosts=known,
                     ssh_options=options, password=pwd,
                     original_identity=second, observation=observation,
-                    safe_command=run, parse_identity=observed_native_identity,
-                    native_vendor_oval=native_vendor_oval)
+                    safe_command=run, parse_identity=observed_native_identity)
                 protocol["realNative18RuleThreeStageObserved"] = True
-                protocol["status"] = (
-                    "native-astra17-ova-hcp-and-full-oval-scope"
-                    if native_vendor_oval
-                    else "native-astra17-ova-hcp-three-stage-only"
-                )
+                protocol["status"] = "native-astra17-ova-hcp-three-stage-only"
             else:
                 protocol["status"] = "genuine-astra17-ova-ssh-preflight-only"
         finally:
@@ -269,11 +263,7 @@ def main():
     parser.add_argument("--public-protocol", required=True)
     parser.add_argument("--native-hcp-three-stage", action="store_true",
                         help="Run real HCP audit only on own disposable CI VM")
-    parser.add_argument("--native-vendor-oval", action="store_true",
-                        help="Require complete original Astra 1.7 OVAL on that same guest")
     args = parser.parse_args()
-    require(not args.native_vendor_oval or args.native_hcp_three_stage,
-            "full_oval_requires_native_hcp_three_stage")
     require(os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
             "unsafe_runner")
@@ -291,8 +281,6 @@ def main():
         "checks": [], "fullNative18RuleAcceptance": False,
         "realNative18RuleThreeStageObserved": False,
         "realHcpNativeExperimentRequested": args.native_hcp_three_stage,
-        "nativeVendorOval17Requested": args.native_vendor_oval,
-        "nativeVendorOval17Evaluated": False,
         "ovalEvaluationPerformed": False, "hardenedProdReady": False,
         "publisherSignatureIndependentlyVerified": False,
         "limitations": [
@@ -304,12 +292,7 @@ def main():
         ],
     }
     try:
-        experiment(work, report,
-                   native_hcp_three_stage=args.native_hcp_three_stage,
-                   native_vendor_oval=args.native_vendor_oval)
-        report["nativeVendorOval17Evaluated"] = bool(
-            args.native_vendor_oval
-            and report.get("nativeHcp", {}).get("fullOvalEvaluated") is True)
+        experiment(work, report, native_hcp_three_stage=args.native_hcp_three_stage)
     except BaseException as exc:
         allowed = {
             "ova_member_count_invalid", "ova_member_name_unsafe",
@@ -338,24 +321,6 @@ def main():
             "passwd_original_mode_not_restored",
             "native_asset_identity_changed_after_restore",
             "source_bundle_not_stable",
-            "full_oval_requires_native_hcp_three_stage",
-            "oval_source_id_invalid_or_duplicate",
-            "oval_source_too_many_definitions", "oval_source_has_no_definitions",
-            "oval_original_source_digest_invalid",
-            "native_oval_report_scope_invalid", "native_oval_scanner_metadata_missing",
-            "native_oval_wrong_observed_guest", "native_oval_source_sha_missing_or_mismatch",
-            "native_oval_scanner_not_completed", "native_oval_partial_or_unavailable",
-            "native_oval_unresolved_partial_reasons",
-            "oval_source_definition_count_mismatch",
-            "oval_evaluated_definition_count_mismatch",
-            "native_oval_definition_results_incomplete",
-            "native_oval_definition_result_invalid",
-            "native_oval_unknown_or_duplicate_definition",
-            "native_oval_unrecognized_result",
-            "native_oval_definition_unresolved_or_error",
-            "native_oval_source_result_set_differs",
-            "native_oval_raw_results_sha_missing",
-            "native_oval_fabricated_security_score",
             "subprocess_unavailable_or_timeout", "subprocess_output_unbounded",
         }
         reason = str(exc) if isinstance(exc, RuntimeError) else ""

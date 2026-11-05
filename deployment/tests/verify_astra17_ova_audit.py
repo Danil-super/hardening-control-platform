@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import stat
 
@@ -163,15 +164,32 @@ def check_ansible_runtime_support(native_ssh, protocol):
             text=True, check=False, timeout=20)
     except (OSError, UnicodeError, subprocess.TimeoutExpired):
         raise RuntimeError("ansible_controller_version_unavailable")
-    match = re.search(r"ansible-playbook\s+\[core\s+2\.(\d{1,2})(?:\.\d+)?\]",
+    match = re.search(r"ansible-playbook\s+\[core\s+(2\.\d{1,2}(?:\.\d+)?)\]",
                       result.stdout[:2048])
     demand(result.returncode == 0 and match is not None,
            "ansible_controller_version_invalid")
-    core_minor = int(match.group(1))
+    observed_core_version = match.group(1)
+    core_minor = int(observed_core_version.split(".")[1])
+    lab_pin = os.environ.get("HCP_ASTRA17_CI_ANSIBLE_PIN")
+    if lab_pin is not None:
+        demand(lab_pin == "2.17.14" and
+               os.environ.get("GITHUB_ACTIONS") == "true" and
+               os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+               "lab_only_ansible_pin_context_invalid")
+        path = shutil.which("ansible-playbook")
+        expected = (Path(os.environ["RUNNER_TEMP"]) /
+                    "hcp-astra17-ansible217/bin/ansible-playbook")
+        demand(path is not None and Path(path).resolve() == expected.resolve(),
+               "lab_ansible_binary_not_isolated")
+        demand(observed_core_version == lab_pin,
+               "lab_ansible_version_not_pinned")
     bounds = upstream_ansible_target_range(core_minor)
     proof = {
         "targetPython": python_version,
         "ansibleCore": "2.%d" % core_minor,
+        "ansibleCoreExactVersion": observed_core_version,
+        "isolatedLabAnsibleVersionPinVerified": bool(lab_pin),
+        "labOnlyUnsupportedAnsibleEol": bool(lab_pin and core_minor == 17),
         "upstreamTargetPythonRangeRecognized": bounds is not None,
         "targetWithinUpstreamSupportedRange": (
             bounds is not None and bounds[0] <= python_minor <= bounds[1]),

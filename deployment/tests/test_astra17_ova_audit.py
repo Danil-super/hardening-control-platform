@@ -123,6 +123,42 @@ class NativeAstra17AuditTests(unittest.TestCase):
                     lambda *_a, **_k: "3.5\\n".replace("\\n", "\n"),
                     {"nativeHcp": {}})
 
+    def test_lab_only_pinned_controller_bypasses_no_python_or_identity_gate(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        fake = SimpleNamespace(returncode=0,
+                               stdout="ansible-playbook [core 2.17.14]\n")
+        pin_env = {"HCP_ASTRA17_CI_ANSIBLE_PIN": "2.17.14",
+                   "GITHUB_ACTIONS": "true",
+                   "RUNNER_ENVIRONMENT": "github-hosted",
+                   "RUNNER_TEMP": "/runner-owned"}
+        with patch.dict(os.environ, pin_env), \
+             patch.object(audit.subprocess, "run", return_value=fake), \
+             patch.object(audit.shutil, "which", return_value="/runner-owned/hcp-astra17-ansible217/bin/ansible-playbook"):
+            target = {"nativeHcp": {}}
+            result = audit.check_ansible_runtime_support(
+                lambda *_a, **_k: "3.7\n", target)
+            self.assertTrue(result["targetWithinUpstreamSupportedRange"])
+            self.assertTrue(result["isolatedLabAnsibleVersionPinVerified"])
+            self.assertTrue(result["labOnlyUnsupportedAnsibleEol"])
+            self.assertEqual(result["ansibleCoreExactVersion"], "2.17.14")
+            with self.assertRaisesRegex(RuntimeError, "target_python_outside"):
+                audit.check_ansible_runtime_support(
+                    lambda *_a, **_k: "3.5\n", {"nativeHcp": {}})
+        with patch.dict(os.environ, {**pin_env, "RUNNER_ENVIRONMENT": "self-hosted"}), \
+             patch.object(audit.subprocess, "run", return_value=fake):
+            with self.assertRaisesRegex(RuntimeError, "lab_only_ansible_pin_context_invalid"):
+                audit.check_ansible_runtime_support(
+                    lambda *_a, **_k: "3.7\n", {"nativeHcp": {}})
+
+    def test_native_workflows_only_isolate_legacy_ansible_on_ephemeral_runner(self):
+        workflow = (audit.ROOT / ".github/workflows/astra17-ova-hcp.yml").read_text()
+        self.assertIn("ansible-core==2.17.14", workflow)
+        self.assertIn("test \"$RUNNER_ENVIRONMENT\" = github-hosted", workflow)
+        self.assertIn("HCP_ASTRA17_CI_ANSIBLE_PIN=2.17.14", workflow)
+        self.assertIn("RUNNER_TEMP/hcp-astra17-ansible217", workflow)
+        self.assertNotIn("sudo pip install", workflow)
+
     def test_nonzero_raw_probe_cannot_skip_to_native_scanner(self):
         from types import SimpleNamespace
         from unittest.mock import patch
