@@ -186,6 +186,60 @@ class NativeAstra17AuditTests(unittest.TestCase):
             self.assertNotIn("private-key", json.dumps(protocol))
 
 
+    def test_target_sds_probe_codes_and_component_hints_never_expose_private_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            report = folder / "normalized-private.json"
+            secret = "SENSITIVE_PRIVATE_GUEST_NAME_DO_NOT_SHARE"
+            report.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {
+                    "available": True,
+                    "partial": True,
+                    "scannerExitCode": 1,
+                    "reason": ("No such file or directory astra-platform-oval.xml; "
+                               "target_info_rc=1; target_schema_rc=0; "
+                               "check.py " + secret),
+                },
+                "findings": [],
+            }))
+            observed = audit.native_openscap_failure_observation(
+                folder / "absent-arf", folder / "missing-datastream", report)
+            self.assertEqual(
+                observed["targetReadOnlySdsProbeExitCodes"],
+                {"oscap_info": 1, "oscap_schema": 0},
+            )
+            self.assertEqual(
+                observed["componentReferenceCategories"],
+                ["oval_component_referenced_in_error",
+                 "sce_script_referenced_in_error"],
+            )
+            self.assertIn("openscap_missing_file", observed["reasonCategories"])
+            self.assertNotIn(secret, json.dumps(observed))
+            self.assertNotIn(str(folder), json.dumps(observed))
+            self.assertNotIn("astra-platform-oval.xml", json.dumps(observed))
+            self.assertEqual(
+                observed["status"], "native-openscap-original-evidence-incomplete")
+
+    def test_target_sds_inspection_is_read_only_and_additional_to_schema_gate(self):
+        playbook = (
+            audit.ROOT / "ansible/playbooks/openscap-audit.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "Inspect controller-validated SDS on target using read-only oscap info",
+            playbook)
+        self.assertIn(
+            "Check controller-validated SDS schema with the target OpenSCAP engine",
+            playbook)
+        self.assertIn("openscap_target_sds_info.rc", playbook)
+        self.assertIn("openscap_target_sds_validate.rc", playbook)
+        self.assertIn("oscap, info", playbook)
+        self.assertIn("oscap, ds, sds-validate", playbook)
+        self.assertIn(
+            "openscap_evaluated_content.stat.checksum == "
+            "openscap_controller_built_file.stat.checksum", playbook)
+        self.assertNotIn("--skip-validation", playbook)
+
     def test_failed_scap_report_is_diagnosed_only_as_allowlisted_aggregate(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
