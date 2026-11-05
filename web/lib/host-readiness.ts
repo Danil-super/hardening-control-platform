@@ -36,27 +36,39 @@ type Probe = {
   errors: string[];
 };
 
-/** Target Python support from the Ansible core support matrix (2026-10-30).
- * Unknown future core releases require an actual module probe, not a guess.
+/** Managed-node Python support and upstream lifecycle (snapshot: 2026-11-05).
+ * A technical module compatibility match NEVER certifies production security.
+ * Ansible source: https://docs.ansible.com/projects/ansible/latest/reference_appendices/release_and_maintenance.html
  */
 export function assessTargetPython(version: string | null, coreVersion: string | null) {
+  const branch = coreVersion?.match(/^(2\.\d+)(?:\.\d+)?$/)?.[1];
+  const eol = new Set(["2.12", "2.13", "2.14", "2.15", "2.16", "2.17", "2.18"]);
+  const currentAsOfSnapshot = new Set(["2.20", "2.21", "2.22"]);
+  const upstreamEol = branch && eol.has(branch) ? true
+    : branch && currentAsOfSnapshot.has(branch) ? false : null;
+  const limitations = { upstreamEol, productionAccepted: false };
   const python = version?.match(/^(\d+)\.(\d+)\.(\d+)$/);
-  if (!python) return { compatible: false, message: "Не удалось определить настроенный Python на хосте. Установите Python из репозитория своего выпуска ОС и задайте ansible_python_interpreter." };
+  if (!python) return { ...limitations, compatible: false, message: "Не удалось определить настроенный Python на хосте. Установите Python из репозитория своего выпуска ОС и задайте ansible_python_interpreter." };
   const major = Number(python[1]);
   const minor = Number(python[2]);
-  if (major !== 3 || minor < 5) return { compatible: false, message: `Обнаружен Python ${version}. Удалённым скриптам HCP требуется Python 3.5 или новее из репозитория вашего выпуска ОС.` };
-  const branch = coreVersion?.match(/^(2\.\d+)(?:\.\d+)?$/)?.[1];
+  if (major !== 3 || minor < 5) return { ...limitations, compatible: false, message: `Обнаружен Python ${version}. Удалённым скриптам HCP требуется Python 3.5 или новее из репозитория своего выпуска ОС.` };
   const ranges: Record<string, [number, number]> = {
     "2.12": [5, 10], "2.13": [5, 10], "2.14": [5, 11], "2.15": [5, 11],
     "2.16": [6, 12], "2.17": [7, 12], "2.18": [8, 13], "2.19": [8, 13],
-    "2.20": [9, 14], "2.21": [9, 14],
+    "2.20": [9, 14], "2.21": [9, 14], "2.22": [9, 15],
   };
   const range = branch ? ranges[branch] : undefined;
-  if (!range) return { compatible: null, message: `Python ${version}; совместимость с установленным Ansible проверяется запуском модуля.` };
+  if (!range) return { ...limitations, compatible: null, message: `Python ${version}; совместимость с установленным Ansible проверяется запуском модуля, поддержка upstream неизвестна.` };
   const compatible = minor >= range[0] && minor <= range[1];
-  return { compatible, message: compatible
-    ? `Python ${version}; ansible-core ${coreVersion}: версии совместимы, требуется проверка выполнения модуля.`
-    : `Python ${version} не входит в диапазон 3.${range[0]}–3.${range[1]} установленного ansible-core ${coreVersion}. Выберите совместимый control node; не заменяйте системный Python хоста пакетами другой ОС.` };
+  const technical = compatible
+    ? `Python ${version}; ansible-core ${coreVersion}: версии технически совместимы, требуется реальная проверка модуля.`
+    : `Python ${version} не входит в диапазон 3.${range[0]}–3.${range[1]} установленного ansible-core ${coreVersion}. Выберите совместимый control node; не заменяйте системный Python хоста пакетами другой ОС.`;
+  const lifecycle = upstreamEol === true
+    ? " Внимание: сопровождение этой ветки Ansible завершено (EOL). Техническая совместимость не означает безопасность или разрешение production-эксплуатации."
+    : upstreamEol === null
+      ? " Срок сопровождения данной ветки не подтверждён; проверьте его отдельно."
+      : "";
+  return { ...limitations, compatible, message: technical + lifecycle };
 }
 
 /** Readiness describes prerequisites only; it is never a security assessment. */
