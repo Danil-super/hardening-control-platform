@@ -1,0 +1,47 @@
+name: Genuine Astra SE 1.7.6.15 HCP three-stage 18-rule experiment
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/astra17-ova-hcp.yml
+      - deployment/tests/verify_astra17_ova_audit.py
+      - deployment/tests/test_astra17_ova_audit.py
+      - deployment/tests/verify_astra17_ova_kvm.py
+      - ansible/scap/astra/**
+      - ansible/playbooks/collect-facts.yml
+      - ansible/playbooks/package-inventory.yml
+      - ansible/playbooks/openscap-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-astra17-hcp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and Ansible for disposable native controller
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client sshpass ansible-core
+          if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+      - name: Offline negative tests of strict 18-rule evidence contract
+        run: python3 -m unittest discover -s deployment/tests -p test_astra17_ova_audit.py -v
+      - name: Boot actual pinned 1.7.6.15 OVA and exercise HCP Ansible and original OpenSCAP
+        run: |
+          python3 deployment/tests/verify_astra17_ova_kvm.py \
+            --work-dir "$RUNNER_TEMP/hcp-real-astra17-ova-hcp-private" \
+            --public-protocol "$RUNNER_TEMP/hcp-real-astra17-hcp-public.json" \
+            --native-hcp-three-stage
+      - name: Upload safe outcome only (no guest logs, image, SSH keys or raw ARF)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra17-real-hcp-18-rule-status-only
+          path: ${{ runner.temp }}/hcp-real-astra17-hcp-public.json
+          retention-days: 14
+          if-no-files-found: warn

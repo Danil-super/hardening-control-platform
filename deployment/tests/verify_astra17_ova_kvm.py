@@ -133,7 +133,7 @@ def trusted_local_scan(raw, port):
     return " ".join(parts[:3]) + "\n"
 
 
-def experiment(work, protocol):
+def experiment(work, protocol, *, native_hcp_three_stage=False):
     fixed = work / FILENAMES["base"]
     origin = download(
         "base", work, opener=urllib.request.build_opener(NoRedirect()).open,
@@ -236,7 +236,18 @@ def experiment(work, protocol):
             require(first == observed_native_identity(second),
                     "fresh_ssh_guest_identity_changed")
             protocol["checks"].append("fresh_pinned_ssh_identity_stable")
-            protocol["status"] = "genuine-astra17-ova-ssh-preflight-only"
+            if native_hcp_three_stage:
+                # Deliberate CI-only extension on the owned disposable guest.
+                from verify_astra17_ova_audit import run_native_audit
+                run_native_audit(
+                    work, protocol, port=port, known_hosts=known,
+                    ssh_options=options, password=pwd,
+                    original_identity=second, observation=observation,
+                    safe_command=run, parse_identity=observed_native_identity)
+                protocol["realNative18RuleThreeStageObserved"] = True
+                protocol["status"] = "native-astra17-ova-hcp-three-stage-only"
+            else:
+                protocol["status"] = "genuine-astra17-ova-ssh-preflight-only"
         finally:
             process.terminate()
             try:
@@ -250,6 +261,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--public-protocol", required=True)
+    parser.add_argument("--native-hcp-three-stage", action="store_true",
+                        help="Run real HCP audit only on own disposable CI VM")
     args = parser.parse_args()
     require(os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
@@ -266,6 +279,8 @@ def main():
         "experiment": "exact-native-Astra17-OVA-SSH-only",
         "observedAtUtc": datetime.now(timezone.utc).isoformat(),
         "checks": [], "fullNative18RuleAcceptance": False,
+        "realNative18RuleThreeStageObserved": False,
+        "realHcpNativeExperimentRequested": args.native_hcp_three_stage,
         "ovalEvaluationPerformed": False, "hardenedProdReady": False,
         "publisherSignatureIndependentlyVerified": False,
         "limitations": [
@@ -277,7 +292,7 @@ def main():
         ],
     }
     try:
-        experiment(work, report)
+        experiment(work, report, native_hcp_three_stage=args.native_hcp_three_stage)
     except BaseException as exc:
         allowed = {
             "ova_member_count_invalid", "ova_member_name_unsafe",
@@ -293,6 +308,19 @@ def main():
             "local_vm_host_key_ambiguous", "local_vm_host_key_invalid",
             "fresh_ssh_guest_identity_changed", "unsafe_runner",
             "private_paths_invalid", "subprocess_failed",
+            "native_identity_changed_after_key_enrollment",
+            "native_ssh_asset_identity_unverified",
+            "new_ephemeral_public_key_invalid",
+            "native_ansible_facts_not_astra",
+            "native_installed_packages_missing",
+            "original_report_missing_or_unbounded",
+            "ansible_execution_unavailable", "ansible_playbook_failed",
+            "native_openscap_original_evidence_missing",
+            "incomplete_native_18_rule_scope", "native_rules_partial_or_unknown",
+            "passwd_mode_not_suitable_for_safe_control",
+            "passwd_original_mode_not_restored",
+            "native_asset_identity_changed_after_restore",
+            "source_bundle_not_stable",
             "subprocess_unavailable_or_timeout", "subprocess_output_unbounded",
         }
         reason = str(exc) if isinstance(exc, RuntimeError) else ""
