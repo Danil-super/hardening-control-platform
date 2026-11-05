@@ -294,10 +294,36 @@
           register: openscap_standalone_target_validation
           changed_when: false
           failed_when: false
+          no_log: true
           when:
             - openscap_builtin_astra | bool
             - openscap_standalone_on_target | bool
             - openscap_prepared | bool
+
+        - name: Retain bounded target XML schema errors in private controller diagnostics only
+          ansible.builtin.copy:
+            content: "{{ {'schemaVersion': 1, 'validators': [
+                {'kind': 'xccdf', 'exitCode': openscap_standalone_target_validation.results[0].rc | default(none),
+                 'stdout': (openscap_standalone_target_validation.results[0].stdout | default(''))[:2048],
+                 'stderr': (openscap_standalone_target_validation.results[0].stderr | default(''))[:2048]},
+                {'kind': 'oval', 'exitCode': openscap_standalone_target_validation.results[1].rc | default(none),
+                 'stdout': (openscap_standalone_target_validation.results[1].stdout | default(''))[:2048],
+                 'stderr': (openscap_standalone_target_validation.results[1].stderr | default(''))[:2048]},
+                {'kind': 'cpe', 'exitCode': openscap_standalone_target_validation.results[2].rc | default(none),
+                 'stdout': (openscap_standalone_target_validation.results[2].stdout | default(''))[:2048],
+                 'stderr': (openscap_standalone_target_validation.results[2].stderr | default(''))[:2048]}
+              ]} | to_nice_json }}"
+            dest: "{{ openscap_raw_report }}.standalone-diagnostics.json"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_standalone_on_target | bool
+            - hcp_openscap_keep_arf | default(false) | bool
+            - openscap_standalone_target_validation is defined
+            - openscap_standalone_target_validation.results | default([]) | length == 3
 
         - name: Hash all unchanged authored standalone components on the controller
           ansible.builtin.stat:

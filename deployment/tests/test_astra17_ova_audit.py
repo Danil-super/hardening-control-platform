@@ -334,6 +334,113 @@ class NativeAstra17AuditTests(unittest.TestCase):
         self.assertIn('evaluated-xccdf.xml', code)
         self.assertIn('native_openscap_evaluation_form_misrepresented', code)
 
+    def test_private_native_xccdf_oval_cpe_error_classes_are_sanitized(self):
+        import stat
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "private-schema-diagnostics.json"
+            secret = "TOP_SECRET_REAL_GUEST_HOST_SHOULD_NOT_LEAK"
+            record = {
+                "schemaVersion": 1,
+                "validators": [
+                    {"kind": "xccdf", "exitCode": 1,
+                     "stdout": "Usage: oscap xccdf validate ... " + secret,
+                     "stderr": "Unknown command validate " + secret},
+                    {"kind": "oval", "exitCode": 1,
+                     "stdout": "",
+                     "stderr": "XML schema version unsupported; No such file or directory "
+                               + secret},
+                    {"kind": "cpe", "exitCode": 1,
+                     "stdout": "",
+                     "stderr": "Failed to load schema /hidden/private/secret.xsd "
+                               + secret},
+                ],
+            }
+            path.write_text(json.dumps(record), encoding="utf-8")
+            path.chmod(0o600)
+            classified = audit.classify_private_standalone_xml_validator_logs(path)
+            self.assertTrue(classified["available"])
+            self.assertEqual(
+                list(classified["validators"]), ["xccdf", "oval", "cpe"])
+            self.assertEqual(
+                classified["validators"]["xccdf"]["diagnosticClasses"],
+                ["validator_command_not_supported"])
+            self.assertIn(
+                "unsupported_xml_schema_version",
+                classified["validators"]["oval"]["diagnosticClasses"])
+            self.assertIn(
+                "required_schema_missing",
+                classified["validators"]["cpe"]["diagnosticClasses"])
+            self.assertFalse(
+                classified["validators"]["oval"]["nativeSchemaValidationSucceeded"])
+            self.assertNotIn(secret, json.dumps(classified))
+            self.assertNotIn("/hidden/private/", json.dumps(classified))
+            self.assertNotIn("stderr", json.dumps(classified))
+            self.assertNotIn("stdout", json.dumps(classified))
+            report = root / "partial.json"
+            report.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {"available": False, "partial": True,
+                            "reason": "standalone_rcs=1,1,1"},
+                "findings": [],
+            }), encoding="utf-8")
+            summary = audit.native_openscap_failure_observation(
+                root / "absent-ARF", root / "absent-XCCDF", report,
+                evaluation_form="original-standalone-xccdf",
+                standalone_private_diagnostics=path)
+            self.assertTrue(
+                summary["standaloneXmlPrivateErrorClassification"]["available"])
+            self.assertEqual(
+                summary["standaloneXmlSchemaExitCodes"],
+                {"xccdf": 1, "oval": 1, "cpe": 1})
+            self.assertNotIn(secret, json.dumps(summary))
+            self.assertEqual(
+                summary["status"], "native-openscap-original-evidence-incomplete")
+
+            path.chmod(0o644)
+            self.assertFalse(
+                audit.classify_private_standalone_xml_validator_logs(path)["available"])
+            path.chmod(0o600)
+            link = root / "linked-diagnostics.json"
+            link.symlink_to(path)
+            self.assertFalse(
+                audit.classify_private_standalone_xml_validator_logs(link)["available"])
+            record["validators"][1]["kind"] = "xccdf"
+            path.write_text(json.dumps(record), encoding="utf-8")
+            self.assertFalse(
+                audit.classify_private_standalone_xml_validator_logs(path)["available"])
+            path.write_text("{" * 32769, encoding="utf-8")
+            self.assertFalse(
+                audit.classify_private_standalone_xml_validator_logs(path)["available"])
+
+    def test_native_oscap_version_is_numeric_only(self):
+        self.assertEqual(audit.extract_safe_openscap_version(
+            "OpenSCAP command line tool (oscap) 1.2.17\nOther info SECRET"),
+            "1.2.17")
+        self.assertEqual(audit.extract_safe_openscap_version(
+            "OpenSCAP command line tool (oscap) 1.3.9"), "1.3.9")
+        self.assertIsNone(audit.extract_safe_openscap_version(
+            "Error parsing unknown privileged SECRET info"))
+        self.assertIsNone(audit.extract_safe_openscap_version(
+            "OpenSCAP executable doesn't provide a numeric version"))
+
+    def test_real_validation_logs_stay_private_and_no_log(self):
+        source = (audit.ROOT / "ansible/playbooks/openscap-audit.yml").read_text()
+        self.assertIn(
+            "Retain bounded target XML schema errors in private controller diagnostics only",
+            source)
+        self.assertIn('".standalone-diagnostics.json"', source)
+        self.assertIn('no_log: true', source)
+        self.assertIn('mode: "0600"', source)
+        self.assertIn("oscap_standalone_target_validation.results[0].stderr", source)
+        self.assertIn("oscap_standalone_target_validation.results[1].stderr", source)
+        self.assertIn("oscap_standalone_target_validation.results[2].stderr", source)
+        self.assertNotIn("console.log", source)
+        runner = Path(audit.__file__).read_text()
+        self.assertIn(
+            "classify_private_standalone_xml_validator_logs", runner)
+        self.assertIn("observedNativeOpenScapCliVersion", runner)
+
     def test_exact_three_original_xml_schema_codes_cannot_be_replaced_by_raw_log(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
