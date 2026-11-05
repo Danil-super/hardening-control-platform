@@ -432,9 +432,9 @@ class NativeAstra17AuditTests(unittest.TestCase):
         self.assertIn(".standalone-diagnostics.json", source)
         self.assertIn('no_log: true', source)
         self.assertIn('mode: "0600"', source)
-        self.assertIn("oscap_standalone_target_validation.results[0].stderr", source)
-        self.assertIn("oscap_standalone_target_validation.results[1].stderr", source)
-        self.assertIn("oscap_standalone_target_validation.results[2].stderr", source)
+        self.assertIn("openscap_standalone_target_validation.results[0].stderr", source)
+        self.assertIn("openscap_standalone_target_validation.results[1].stderr", source)
+        self.assertIn("openscap_standalone_target_validation.results[2].stderr", source)
         self.assertNotIn("console.log", source)
         runner = Path(audit.__file__).read_text()
         self.assertIn(
