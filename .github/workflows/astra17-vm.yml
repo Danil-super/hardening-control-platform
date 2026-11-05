@@ -1,0 +1,137 @@
+name: Real native Astra SE 1.7.6.15 acceptance
+
+on:
+  workflow_dispatch:
+    inputs:
+      level:
+        description: Exact protected mode of original official 1.7.6.UU2 cloud image
+        required: true
+        default: base
+        type: choice
+        options: [base, adv, max]
+  pull_request:
+    paths:
+      - .github/workflows/astra17-vm.yml
+      - deployment/astra-vm/sources-17.json
+      - deployment/tests/verify_astra17_vm.py
+      - deployment/tests/astra17_cloud_init_forensics.py
+      - deployment/tests/verify_astra17_vm_normalization.mjs
+      - deployment/tests/test_astra17_vm.py
+      - deployment/tests/measure_astra_baseline.py
+      - deployment/tests/verify_astra_vm.py
+      - deployment/tests/verify_astra_vm_three_stage_publication.mjs
+      - ansible/scap/astra/**
+      - ansible/playbooks/openscap-audit.yml
+      - ansible/playbooks/astra-oval-audit.yml
+      - ansible/playbooks/collect-facts.yml
+      - ansible/playbooks/package-inventory.yml
+      - ansible/scripts/hcp-oval-audit.py
+      - ansible/scripts/hcp-controller-scan.py
+      - web/lib/ansible-reports.ts
+      - web/lib/asset-report-publication.ts
+
+permissions:
+  contents: read
+
+jobs:
+  genuine-astra17:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install production report normalization dependencies
+        working-directory: web
+        run: npm ci --ignore-scripts
+      - name: Install native VM and controller scanner tools
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils ansible-core openscap-scanner
+          if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+      - name: Validate source manifest and fail-closed report guards
+        run: python3 -m unittest discover -s deployment/tests -p test_astra17_vm.py -v
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-image-cache/${{ inputs.level || 'base' }}
+          key: hcp-astra17-official-${{ inputs.level || 'base' }}-${{ hashFiles('deployment/astra-vm/sources-17.json') }}
+      - name: Boot exact pinned native Astra 1.7.6.15, scan and verify restoration
+        env:
+          HCP_ASTRA17_IMAGE_CACHE_DIR: ${{ runner.temp }}/hcp-astra17-image-cache/${{ inputs.level || 'base' }}
+        run: |
+          set -euo pipefail
+          python3 deployment/tests/verify_astra17_vm.py \
+            --level '${{ inputs.level || 'base' }}' \
+            --work-dir "$RUNNER_TEMP/hcp-native-astra17"
+      # A large official image can be safely reused after a failed *guest*
+      # check. Verify the entire image against the reviewed manifest BEFORE
+      # allowing a cache write; never cache private VM disks, SSH or seed.
+      - name: Verify reusable official base image cache after native attempt
+        id: verified_image_cache
+        if: always()
+        env:
+          HCP_ASTRA17_IMAGE_CACHE_DIR: ${{ runner.temp }}/hcp-astra17-image-cache/${{ inputs.level || 'base' }}
+          HCP_ASTRA17_LEVEL: ${{ inputs.level || 'base' }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          import sys
+          sys.path.insert(0, 'deployment/tests')
+          from verify_astra_vm import verified_pinned_file
+          manifest = json.loads(Path('deployment/astra-vm/sources-17.json').read_text())
+          level = os.environ['HCP_ASTRA17_LEVEL']
+          target = Path(os.environ['HCP_ASTRA17_IMAGE_CACHE_DIR']) / 'source.qcow2'
+          try:
+              valid = verified_pinned_file(target, manifest['images'][level])
+          except (OSError, ValueError):
+              valid = False
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as stream:
+              stream.write('verified=' + ('true' if valid else 'false') + '\n')
+          print('Publisher-pinned cache verified:', bool(valid))
+          PY
+      - name: Cache only fully verified official image after guest failure
+        if: always() && steps.verified_image_cache.outputs.verified == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-image-cache/${{ inputs.level || 'base' }}
+          key: hcp-astra17-official-${{ inputs.level || 'base' }}-${{ hashFiles('deployment/astra-vm/sources-17.json') }}
+      - name: Create privacy-sanitized failure report
+        if: failure()
+        run: |
+          if test -f "$RUNNER_TEMP/hcp-native-astra17/artifacts/protocol.json"; then
+            python3 deployment/tests/summarize_astra17_ci_failure.py \
+              "$RUNNER_TEMP/hcp-native-astra17/artifacts/protocol.json" \
+              "$RUNNER_TEMP/hcp-astra17-public-failure.json"
+          fi
+      - name: Upload only scrubbed failure metadata (no guest logs or keys)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-astra17-${{ inputs.level || 'base' }}-failed-stage
+          path: ${{ runner.temp }}/hcp-astra17-public-failure.json
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Publish only successful native non-secret result evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-astra17-${{ inputs.level || 'base' }}-audit
+          path: |
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/protocol.json
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/baseline.arf.xml
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/violation.arf.xml
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/restored.arf.xml
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/baseline.datastream.xml
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/violation.datastream.xml
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/restored.datastream.xml
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/three-stage-metrics.json
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/oval-normalization.json
+            ${{ runner.temp }}/hcp-native-astra17/artifacts/three-stage-bound-reports/*.json
+          retention-days: 14
+          if-no-files-found: error
