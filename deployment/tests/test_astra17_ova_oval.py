@@ -31,6 +31,9 @@ class OriginalVendorOvaSourceTests(unittest.TestCase):
                     {"id": "oval:astra:def:20", "result": "unknown"},
                 ],
                 "resultSha256": "a" * 64,
+                "evidenceProjection": "bounded",
+                "fullDefinitionIdSetPreserved": True,
+                "auxiliaryDetailsOmitted": True,
             },
         }
         return original, {"oval:astra:def:10", "oval:astra:def:20"}
@@ -132,6 +135,32 @@ class OriginalVendorOvaSourceTests(unittest.TestCase):
             with self.subTest(case=index):
                 with self.assertRaises(RuntimeError):
                     oval.validate_original_native_oval(candidate, definitions)
+
+    def test_native_report_preflight_distinguishes_bounded_empty_and_oversized(self):
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            p = root / 'normalized.json'
+            state = {"nativeHcp": {}}
+            with self.assertRaisesRegex(RuntimeError, 'native_oval_normalized_report_missing'):
+                oval.load_scoped_normalized_report(p, state, limit=100)
+            self.assertEqual(state["nativeHcp"]["normalizedOvalReportPreflight"]["result"], "missing")
+            p.write_bytes(b'')
+            with self.assertRaisesRegex(RuntimeError, 'native_oval_normalized_report_empty'):
+                oval.load_scoped_normalized_report(p, state, limit=100)
+            p.write_bytes(b'X' * 101)
+            with self.assertRaisesRegex(RuntimeError, 'native_oval_normalized_report_oversized'):
+                oval.load_scoped_normalized_report(p, state, limit=100)
+            self.assertEqual(state["nativeHcp"]["normalizedOvalReportPreflight"]["sizeBytes"], 101)
+            p.unlink()
+            p.symlink_to(root / "nonexistent")
+            with self.assertRaisesRegex(RuntimeError, 'native_oval_normalized_report_unsafe_type'):
+                oval.load_scoped_normalized_report(p, state, limit=100)
+            p.unlink()
+            p.write_text('{"result":"private-but-valid"}')
+            doc = oval.load_scoped_normalized_report(p, state, limit=100)
+            self.assertEqual(doc["result"], "private-but-valid")
+            self.assertEqual(state["nativeHcp"]["normalizedOvalReportPreflight"]["result"], "within_bound")
 
     def test_real_execution_requires_original_hcp_18_rule_completion_first(self):
         main = (oval.VENDOR["url"])

@@ -11,6 +11,7 @@ import hashlib
 import os
 from pathlib import Path
 import re
+import stat
 import urllib.request
 import xml.etree.ElementTree as ET
 
@@ -70,6 +71,10 @@ def validate_original_native_oval(report, source_ids):
     demand(scanner.get("partial") is False
            and report.get("partial") is not True,
            "native_oval_partial_or_unavailable")
+    demand(scanner.get("evidenceProjection") == "bounded"
+           and scanner.get("fullDefinitionIdSetPreserved") is True
+           and scanner.get("auxiliaryDetailsOmitted") is True,
+           "native_oval_bounded_projection_not_attested")
     reasons = scanner.get("partialReasons")
     demand(reasons is None or reasons == [],
            "native_oval_unresolved_partial_reasons")
@@ -117,6 +122,31 @@ def validate_original_native_oval(report, source_ids):
     }
 
 
+
+def load_scoped_normalized_report(path, protocol, limit=256 * 1024 * 1024):
+    """Classify missing/oversized/unsafe normalized output without leaking data."""
+    stage = {"result": "not_observed", "upperBoundBytes": limit}
+    protocol["nativeHcp"]["normalizedOvalReportPreflight"] = stage
+    try:
+        observed = path.lstat()
+    except OSError:
+        stage["result"] = "missing"
+        demand(False, "native_oval_normalized_report_missing")
+    if stat.S_ISLNK(observed.st_mode) or not stat.S_ISREG(observed.st_mode):
+        stage["result"] = "unsafe_type"
+        demand(False, "native_oval_normalized_report_unsafe_type")
+    if observed.st_size == 0:
+        stage["result"] = "empty"
+        demand(False, "native_oval_normalized_report_empty")
+    if observed.st_size > limit:
+        stage["result"] = "oversized"
+        stage["sizeBytes"] = observed.st_size
+        demand(False, "native_oval_normalized_report_oversized")
+    stage["result"] = "within_bound"
+    stage["sizeBytes"] = observed.st_size
+    return load_private_json(path, limit=limit)
+
+
 def evaluate_native_vendor_oval(work, reports, protocol, run_playbook):
     """Use the SAME real guest and same private inventory as completed HCP."""
     protocol["nativeHcp"]["stage"] = "vendor_oval_source_bytes"
@@ -136,13 +166,14 @@ def evaluate_native_vendor_oval(work, reports, protocol, run_playbook):
         "sourceName": "Official Astra 1.7 OVAL exact snapshot",
         "sourceReference": VENDOR["metadataUrl"],
         "sourceReviewedAt": "2026-11-04",
+        "evidenceProjection": "bounded",
     }
     protocol["nativeHcp"]["stage"] = "native_real_oval_evaluation"
     print("NATIVE HCP STAGE: run real native OVAL source via HCP playbook", flush=True)
     run_playbook(work, reports, "astra-oval-audit", "vendor-oval",
                  {"hcp_oval_config": policy}, protocol, timeout_seconds=2700)
     original_report = reports / (HOST + "-astra-oval-vendor-oval.json")
-    parsed = load_private_json(original_report, limit=256 * 1024 * 1024)
+    parsed = load_scoped_normalized_report(original_report, protocol)
     proof = validate_original_native_oval(parsed, ids)
     protocol["nativeHcp"]["sourceBoundVendorOval"] = {
         **proof, "normalizedOriginalJsonSha256": file_sha256(original_report),
