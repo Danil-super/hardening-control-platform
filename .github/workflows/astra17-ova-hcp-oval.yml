@@ -48,7 +48,14 @@ jobs:
           "$RUNNER_TEMP/hcp-astra17-ansible217/bin/ansible-playbook" --version
           printf '%s\n' "$RUNNER_TEMP/hcp-astra17-ansible217/bin" >> "$GITHUB_PATH"
           printf '%s\n' 'HCP_ASTRA17_CI_ANSIBLE_PIN=2.17.14' >> "$GITHUB_ENV"
+      - name: Cache only exact verified original public Astra OVA
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-public-ova-cache
+          key: hcp-astra17-public-ova-72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e
       - name: Real Astra 1.7 OVA SSH, HCP Ansible 18 rules and full vendor OVAL
+        env:
+          HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR: ${{ runner.temp }}/hcp-astra17-public-ova-cache
         run: |
           python3 deployment/tests/verify_astra17_ova_kvm.py \
             --work-dir "$RUNNER_TEMP/hcp-real-astra17-full-private" \

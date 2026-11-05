@@ -12,13 +12,16 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import socket
+import stat
 import subprocess
 import tarfile
 import time
 import urllib.request
 
 from download_astra17_ova import download, FILENAMES, NoRedirect
+from verify_astra_vm import verified_pinned_file
 
 EXPECTED_BYTES = 427995648
 EXPECTED_SHA256 = "72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e"
@@ -133,13 +136,59 @@ def trusted_local_scan(raw, port):
     return " ".join(parts[:3]) + "\n"
 
 
+def exact_pinned_original_ova(work, opener, progress, fetch=download):
+    """Cache only immutable *public* official OVA, never guest state.
+
+    A cache hit is fully rehashed and the exclusive 0600 private copy is
+    independently rehashed. The checksum originates from the same vendor,
+    not an independent publisher signature.
+    """
+    original = work / FILENAMES["base"]
+    cache_arg = os.environ.get("HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR")
+    pin = {"bytes": EXPECTED_BYTES, "sha256": EXPECTED_SHA256}
+    cached = None
+    if cache_arg:
+        require(os.environ.get("GITHUB_ACTIONS") == "true" and
+                os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+                "ova_cache_only_allowed_on_owned_ci")
+        cache_dir = Path(cache_arg)
+        root = Path(os.environ["RUNNER_TEMP"]).resolve()
+        canonical = cache_dir.resolve()
+        require(canonical != root and root in canonical.parents and
+                not cache_dir.is_symlink(), "ova_cache_path_invalid")
+        cache_dir.mkdir(mode=0o700, exist_ok=True)
+        st = cache_dir.lstat()
+        require(stat.S_ISDIR(st.st_mode) and not (st.st_mode & 0o077),
+                "ova_cache_permissions_invalid")
+        cached = cache_dir / FILENAMES["base"]
+        if cached.exists() or cached.is_symlink():
+            require(verified_pinned_file(cached, pin),
+                    "ova_cached_sha256_not_exact")
+            with cached.open("rb") as source:
+                fd = os.open(original, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as destination:
+                    shutil.copyfileobj(source, destination, 1048576)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+            require(verified_pinned_file(original, pin),
+                    "ova_copied_sha256_not_exact")
+            return {"sha256": EXPECTED_SHA256, "bytes": EXPECTED_BYTES,
+                    "publisherSignatureVerified": False, "cacheReused": True}
+    observed = fetch("base", work, opener=opener, progress=progress,
+                     max_seconds=2400, expected_sha256=EXPECTED_SHA256,
+                     expected_bytes=EXPECTED_BYTES)
+    require(verified_pinned_file(original, pin), "ova_downloaded_sha256_not_exact")
+    if cached is not None:
+        os.link(original, cached, follow_symlinks=False)
+    return {**observed, "cacheReused": False}
+
+
 def experiment(work, protocol, *, native_hcp_three_stage=False,
                native_vendor_oval=False):
     fixed = work / FILENAMES["base"]
-    origin = download(
-        "base", work, opener=urllib.request.build_opener(NoRedirect()).open,
-        progress=lambda *_: None, max_seconds=2400,
-        expected_sha256=EXPECTED_SHA256, expected_bytes=EXPECTED_BYTES)
+    origin = exact_pinned_original_ova(
+        work, opener=urllib.request.build_opener(NoRedirect()).open,
+        progress=lambda *_: None)
     require(fixed.is_file() and origin["sha256"] == EXPECTED_SHA256
             and origin["bytes"] == EXPECTED_BYTES, "official_ova_digest_mismatch")
     protocol["checks"].append("official_ova_exact_sha256_and_bytes")
@@ -147,6 +196,7 @@ def experiment(work, protocol, *, native_hcp_three_stage=False,
         "filename": FILENAMES["base"], "sha256": EXPECTED_SHA256,
         "bytes": EXPECTED_BYTES, "publisherSignatureVerified": False,
         "origin": "same_vendor_artifactory_not_independent_signature",
+        "cachedPublicSourceByteVerified": origin["cacheReused"],
     }
     vmdk = work / "source.vmdk"
     protocol["originalImage"]["vmdkBytes"] = extract_vmdk(fixed, vmdk)

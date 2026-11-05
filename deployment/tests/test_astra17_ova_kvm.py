@@ -28,6 +28,45 @@ def synthetic_tar(items):
 
 
 class OvaNativePreflightTests(unittest.TestCase):
+
+    def test_original_ova_cache_rehashes_before_and_after_copy(self):
+        import hashlib
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "public-cache"
+            cache.mkdir(mode=0o700)
+            original = b"FAKE OVA synthetic bytes, not Astra!" * 85
+            cache_image = cache / smoke.FILENAMES["base"]
+            cache_image.write_bytes(original)
+            cache_image.chmod(0o600)
+            work = root / "isolated-work"
+            work.mkdir(mode=0o700)
+            env = {"HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR": str(cache),
+                   "RUNNER_TEMP": str(root), "GITHUB_ACTIONS": "true",
+                   "RUNNER_ENVIRONMENT": "github-hosted"}
+            with patch.dict(os.environ, env), \
+                 patch.object(smoke, "EXPECTED_BYTES", len(original)), \
+                 patch.object(smoke, "EXPECTED_SHA256", hashlib.sha256(original).hexdigest()):
+                result = smoke.exact_pinned_original_ova(
+                    work, opener=None, progress=lambda *_: None)
+                self.assertTrue(result["cacheReused"])
+                target = work / smoke.FILENAMES["base"]
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                target.unlink()
+                cache_image.write_bytes(original + b"CORRUPT")
+                with self.assertRaises((RuntimeError, ValueError)):
+                    smoke.exact_pinned_original_ova(
+                        work, opener=None, progress=lambda *_: None)
+            with patch.dict(os.environ, {**env,
+                     "HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR": str(root.parent)}):
+                with self.assertRaises(RuntimeError):
+                    smoke.exact_pinned_original_ova(
+                        work, opener=None, progress=lambda *_: None)
+
+
     def test_source_pins_and_security_claims_are_fixed(self):
         self.assertEqual(smoke.EXPECTED_BYTES, 427995648)
         self.assertEqual(smoke.EXPECTED_SHA256,
