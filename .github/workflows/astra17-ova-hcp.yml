@@ -42,7 +42,8 @@ jobs:
           printf '%s\n' "$RUNNER_TEMP/hcp-astra17-ansible217/bin" >> "$GITHUB_PATH"
           printf '%s\n' 'HCP_ASTRA17_CI_ANSIBLE_PIN=2.17.14' >> "$GITHUB_ENV"
       - name: Cache only original public SHA-pinned Astra OVA (verified independently on every hit)
-        uses: actions/cache@v4
+        id: public-ova-cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/hcp-astra17-public-ova-cache
           key: hcp-astra17-public-ova-72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e
@@ -54,6 +55,23 @@ jobs:
             --work-dir "$RUNNER_TEMP/hcp-real-astra17-ova-hcp-private" \
             --public-protocol "$RUNNER_TEMP/hcp-real-astra17-hcp-public.json" \
             --native-hcp-three-stage
+      - name: Verify exact immutable public image for cache after scanner job
+        if: always()
+        id: verified-public-ova
+        run: |
+          set -euo pipefail
+          image="$RUNNER_TEMP/hcp-astra17-public-ova-cache/alse-1.7.6.uu2-base-virtualbox-mg15.3.1-amd64.ova"
+          if test -f "$image" && test ! -L "$image" \
+              && test "$(stat -c %s "$image")" -eq 427995648 \
+              && printf '%s  %s\n' '72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e' "$image" | sha256sum --check --strict --status; then
+            printf '%s\n' 'verified=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save only byte-verified ORIGINAL public OVA even if scanner fails
+        if: always() && steps.verified-public-ova.outputs.verified == 'true' && steps.public-ova-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-public-ova-cache
+          key: hcp-astra17-public-ova-72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e
       - name: Upload safe outcome only (no guest logs, image, SSH keys or raw ARF)
         if: always()
         uses: actions/upload-artifact@v4

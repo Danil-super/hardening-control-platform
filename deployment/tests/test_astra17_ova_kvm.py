@@ -28,6 +28,22 @@ def synthetic_tar(items):
 
 
 class OvaNativePreflightTests(unittest.TestCase):
+    def test_ci_caches_only_exact_vendor_public_ova_even_when_scan_fails(self):
+        workflow = (Path(__file__).resolve().parents[2] /
+                    ".github/workflows/astra17-ova-hcp.yml").read_text()
+        self.assertIn("actions/cache/restore@v4", workflow)
+        self.assertIn("actions/cache/save@v4", workflow)
+        self.assertIn("id: verified-public-ova", workflow)
+        self.assertIn("if: always()", workflow)
+        self.assertIn("sha256sum --check --strict --status", workflow)
+        self.assertIn("test ! -L", workflow)
+        self.assertIn("test -f", workflow)
+        self.assertIn('test "$(stat -c %s "$image")" -eq 427995648', workflow)
+        self.assertIn("steps.verified-public-ova.outputs.verified == 'true'", workflow)
+        self.assertIn("steps.public-ova-cache.outputs.cache-hit != 'true'", workflow)
+        self.assertNotIn("hcp-real-astra17-ova-hcp-private\n          key:", workflow)
+
+
 
     def test_original_ova_cache_rehashes_before_and_after_copy(self):
         import hashlib
