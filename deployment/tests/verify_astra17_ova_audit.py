@@ -82,7 +82,7 @@ def validate_native_three_stage(results):
     }
 
 
-def run_playbook(work, reports, name, phase, variables, protocol):
+def run_playbook(work, reports, name, phase, variables, protocol, *, timeout_seconds=1200):
     protocol["nativeHcp"]["stage"] = name + ":" + phase
     args = work / ("private-vars-" + phase + ".json")
     args.write_text(json.dumps({
@@ -97,7 +97,7 @@ def run_playbook(work, reports, name, phase, variables, protocol):
         try:
             task = subprocess.run(
                 command, stdout=sink, stderr=subprocess.STDOUT,
-                check=False, timeout=1200,
+                check=False, timeout=timeout_seconds,
                 env={**os.environ, "ANSIBLE_HOST_KEY_CHECKING": "True"})
         except (OSError, subprocess.TimeoutExpired):
             raise RuntimeError("ansible_execution_unavailable")
@@ -106,7 +106,7 @@ def run_playbook(work, reports, name, phase, variables, protocol):
 
 def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
                      password, original_identity, observation,
-                     safe_command, parse_identity):
+                     safe_command, parse_identity, native_vendor_oval=False):
     """Uses actual HCP playbooks and original scanner outputs on the owned VM."""
     protocol["nativeHcp"] = {
         "stage": "initial", "status": "running",
@@ -295,3 +295,9 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
     })
     protocol["checks"].append("native_astra17_hcp_three_stage_18_rule_measured")
     print("NATIVE HCP STAGE: complete original 18-rule observation", flush=True)
+    if native_vendor_oval:
+        from verify_astra17_ova_oval import evaluate_native_vendor_oval
+        evaluate_native_vendor_oval(work, reports, protocol, run_playbook)
+        protocol["checks"].append("native_astra17_full_original_vendor_oval_source_evaluated")
+        protocol["nativeHcp"]["status"] = "native-hcp-18-rule-and-exact-oval-scope-observed"
+

@@ -1,0 +1,49 @@
+name: Genuine native Astra 1.7.6.15 HCP 18-rule plus full vendor OVAL acceptance
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/astra17-ova-hcp-oval.yml
+      - deployment/tests/verify_astra17_ova_kvm.py
+      - deployment/tests/verify_astra17_ova_audit.py
+      - deployment/tests/verify_astra17_ova_oval.py
+      - deployment/tests/test_astra17_ova_oval.py
+      - ansible/playbooks/astra-oval-audit.yml
+      - ansible/scripts/hcp-oval-audit.py
+      - ansible/scap/astra/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-astra17-complete-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install disposable QEMU native scanner and SSH tools
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client sshpass ansible-core openscap-scanner
+          if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+      - name: Strict offline full-source and report multiset regression tests
+        run: |
+          python3 -m unittest discover -s deployment/tests -p test_astra17_ova_audit.py -v
+          python3 -m unittest discover -s deployment/tests -p test_astra17_ova_oval.py -v
+      - name: Real Astra 1.7 OVA SSH, HCP Ansible 18 rules and full vendor OVAL
+        run: |
+          python3 deployment/tests/verify_astra17_ova_kvm.py \
+            --work-dir "$RUNNER_TEMP/hcp-real-astra17-full-private" \
+            --public-protocol "$RUNNER_TEMP/hcp-astra17-full-public-result.json" \
+            --native-hcp-three-stage --native-vendor-oval
+      - name: Publish only allowlisted evidence metadata and counts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-astra17-full-oval-source-status-only
+          path: ${{ runner.temp }}/hcp-astra17-full-public-result.json
+          retention-days: 14
+          if-no-files-found: warn
