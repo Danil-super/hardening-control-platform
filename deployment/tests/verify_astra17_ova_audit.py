@@ -491,6 +491,7 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
         bool(re.search(r"\bSCE\b|Script Check Engine", oscap_about,
                        re.IGNORECASE)))
 
+    protocol["nativeHcp"]["controllerSideSdsSchemaValidationRequested"] = True
     stage("18_rule_three_stage_experiment")
     original = native_ssh("stat -c '%a' /etc/passwd", timeout=25).strip()
     demand(re.fullmatch(r"[0-7]{3,4}", original)
@@ -511,6 +512,10 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
                 "hcp_openscap_profile": PROFILE,
                 "hcp_openscap_policy_group": "ci-real-astra17-ova",
                 "hcp_openscap_keep_arf": True,
+                # Source composition and strict XSD validation happen on the
+                # controller, not on this older Astra OpenSCAP build. The
+                # *exact* compiled bytes must match target SHA before eval.
+                "hcp_openscap_compose_on_controller": True,
             }, protocol)
             raw = reports / ("." + HOST + "-openscap-" + phase + ".xml")
             datastream = Path(str(raw) + ".datastream.xml")

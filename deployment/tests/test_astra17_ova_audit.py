@@ -249,6 +249,16 @@ class NativeAstra17AuditTests(unittest.TestCase):
             # This is only diagnostic. Real acceptance requires raw_results()
             # and verify_baseline_report() checks in production-derived runner.
 
+    def test_opt_in_controller_composition_never_bypasses_schema_validation(self):
+        source = (audit.ROOT / "ansible/playbooks/openscap-audit.yml").read_text()
+        self.assertIn("openscap_compose_on_controller", source)
+        self.assertIn("controller source checksum differs", source.lower())
+        self.assertIn("sds-validate", source)
+        self.assertIn("openscap_controller_built_file.stat.checksum", source)
+        self.assertIn("openscap_evaluated_content.stat.checksum", source)
+        self.assertIn("- not (openscap_compose_on_controller | bool)", source)
+        self.assertIn("controllerSideSdsSchemaValidationRequested", Path(audit.__file__).read_text())
+
     def test_real_hcp_playbook_and_evidence_paths_are_bound_to_fixed_repository(self):
         content = Path(audit.__file__).read_text(encoding="utf-8")
         self.assertIn('run_playbook(work, reports, "collect-facts"', content)
