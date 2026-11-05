@@ -179,6 +179,9 @@ export function reportTimestamp(report: Pick<AnsibleReportSummary, "createdAt" |
  * legacy scopes remain individually identifiable but are never compatible. */
 export function reportScopeKey(report: Pick<AnsibleReportSummary, "mode" | "profileId" | "id" | "contentId" | "scanScope">) {
   if (report.mode === "nmap") return report.scanScope ? `nmap:${report.scanScope}` : `nmap:unknown:${report.id}`;
+  if (report.mode === "astra-oval") return report.contentId
+    ? `astra-oval:${encodeURIComponent(report.profileId ?? "astra-oval")}:${report.contentId}`
+    : `astra-oval:unknown:${report.id}`;
   if (report.mode !== "openscap") return `${report.mode}:${report.profileId ?? "default"}`;
   return report.profileId && report.profileId !== "openscap" && report.contentId
     ? `openscap:${encodeURIComponent(report.profileId)}:${report.contentId}`
