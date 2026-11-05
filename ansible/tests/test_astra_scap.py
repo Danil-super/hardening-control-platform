@@ -42,6 +42,53 @@ class AstraBaselineTests(unittest.TestCase):
                     self.assertEqual(observed, expected, (str(location), identity))
                 location.unlink()
 
+    def test_controller_composition_is_explicit_schema_validated_and_sha_bound(self):
+        # The controller-side preparatory mode exists ONLY as opt-in;
+        # it keeps the exact original 18-rule/SCE/OVAL/CPE content.
+        playbook = (CONTENT.parents[1] / "playbooks/openscap-audit.yml").read_text()
+        self.assertIn("hcp_openscap_compose_on_controller | default(false)", playbook)
+        self.assertIn("Compose the exact HCP Astra XCCDF/SCE source on the controller", playbook)
+        self.assertIn("Require complete source datastream schema validation on the controller", playbook)
+        self.assertIn("oscap, ds, sds-validate", playbook)
+        self.assertIn("Refuse to evaluate controller content changed in transit", playbook)
+        self.assertIn("openscap_evaluated_content.stat.checksum == openscap_controller_built_file.stat.checksum", playbook)
+        self.assertIn("not (openscap_compose_on_controller | bool)", playbook)
+        self.assertIn("openscap_controller_dir.path", playbook)
+        self.assertIn("Remove temporary precomposed source directory from control node", playbook)
+
+    @unittest.skipUnless(shutil.which("oscap"), "Real controller OpenSCAP is required")
+    def test_real_controller_sds_compose_add_cpe_and_validate_original_18_rules(self):
+        # Run the ORIGINAL unchanged authored XCCDF/SCE/OVAL/CPE through
+        # real oscap. This is controller-side source preparation, NOT a
+        # substitute for execution of 18 rules on native Astra 1.7.
+        with tempfile.TemporaryDirectory(prefix="hcp-original-controller-sds-") as directory:
+            root = Path(directory)
+            for name in ("astra-baseline.xml", "check.py",
+                         "astra-platform-oval.xml", "astra-cpe-dictionary.xml"):
+                shutil.copyfile(CONTENT / name, root / name)
+            (root / "check.py").chmod(0o700)
+            def checked(args):
+                run = subprocess.run(["oscap", *args], cwd=root,
+                                     capture_output=True, text=True,
+                                     timeout=120, check=False)
+                self.assertEqual(run.returncode, 0,
+                                 "Real original OpenSCAP content preparation rejected: "
+                                 + " ".join(args[:2]) + " (rc="
+                                 + str(run.returncode) + ")")
+            checked(["ds", "sds-compose", "astra-baseline.xml", "astra-baseline-ds.xml"])
+            checked(["ds", "sds-add", "astra-cpe-dictionary.xml", "astra-baseline-ds.xml"])
+            checked(["ds", "sds-validate", "astra-baseline-ds.xml"])
+            compiled = root / "astra-baseline-ds.xml"
+            self.assertTrue(compiled.is_file())
+            self.assertGreater(compiled.stat().st_size, 1000)
+            datastream = ET.parse(compiled).getroot()
+            ids = [rule.get("id") for rule in datastream.findall(".//" + X + "Rule")]
+            source_ids = [rule.get("id") for rule in ET.parse(
+                CONTENT / "astra-baseline.xml").getroot().findall(X + "Rule")]
+            self.assertEqual(len(ids), 18)
+            self.assertEqual(set(ids), set(source_ids))
+            self.assertEqual(len(set(ids)), 18)
+
     def test_every_selected_rule_has_readonly_check_and_stdout_evidence(self):
         root = ET.parse(CONTENT / "astra-baseline.xml").getroot()
         rules = root.findall(X + "Rule")
