@@ -1,6 +1,7 @@
 """Offline contract/negative checks; actual Astra 1.7 CI is separate."""
 from copy import deepcopy
 import json
+import os
 import tempfile
 from pathlib import Path
 import unittest
@@ -59,6 +60,39 @@ class NativeAstra17AuditTests(unittest.TestCase):
             with self.subTest(stage=json.dumps(list(mutant))):
                 with self.assertRaises(RuntimeError):
                     audit.validate_native_three_stage(mutant)
+
+    def test_native_ansible_ssh_options_precede_repository_known_hosts_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            known = Path(d) / "known_hosts"
+            known.write_text("[127.0.0.1]:2222 ssh-ed25519 " + "A" * 70 + "\n")
+            os.chmod(known, 0o600)
+            args = audit.safe_ansible_ssh_args(known)
+            self.assertIn("StrictHostKeyChecking=yes", args)
+            self.assertIn("UserKnownHostsFile=", args)
+            self.assertIn(str(known), args)
+            self.assertIn("GlobalKnownHostsFile=/dev/null", args)
+            self.assertIn("HostKeyAlgorithms=ssh-ed25519", args)
+            self.assertNotIn("StrictHostKeyChecking=no", args)
+            self.assertNotIn("~/.ssh/known_hosts", args)
+            os.chmod(known, 0o644)
+            with self.assertRaises(RuntimeError):
+                audit.safe_ansible_ssh_args(known)
+            known.unlink()
+            known.symlink_to(Path(d) / "elsewhere")
+            with self.assertRaises((RuntimeError, FileNotFoundError)):
+                audit.safe_ansible_ssh_args(known)
+
+    def test_private_ansible_failure_diagnostics_allow_only_known_categories(self):
+        with tempfile.TemporaryDirectory() as d:
+            private_log = Path(d) / "ansible-private.log"
+            private_log.write_text(
+                "UNREACHABLE! Host key verification failed:\\n"
+                "SENSITIVE_MACHINE_ID=abc-private-host\\n")
+            result = audit.classify_ansible_failure(private_log)
+            self.assertEqual(result,
+                             ["ssh_host_key_verification", "ssh_unreachable"])
+            self.assertNotIn("abc-private-host", json.dumps(result))
+            self.assertNotIn("SENSITIVE_MACHINE_ID", json.dumps(result))
 
     def test_real_hcp_playbook_and_evidence_paths_are_bound_to_fixed_repository(self):
         content = Path(audit.__file__).read_text(encoding="utf-8")
