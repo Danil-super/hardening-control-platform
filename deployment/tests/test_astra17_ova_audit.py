@@ -111,13 +111,17 @@ class NativeAstra17AuditTests(unittest.TestCase):
             return "3.7\\n".replace("\\n", "\n")
         fake = SimpleNamespace(returncode=0,
                                stdout="ansible-playbook [core 2.16.3]\\n".replace("\\n", "\n"))
-        with patch.object(audit.subprocess, "run", return_value=fake):
+        # This test verifies support-matrix parsing independent of the CI
+        # pin; it intentionally mocks 2.16 while the real CI requires 2.17.
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(audit.subprocess, "run", return_value=fake):
             supported = audit.check_ansible_runtime_support(ssh, probe)
         self.assertTrue(supported["targetWithinUpstreamSupportedRange"])
         self.assertEqual(supported["targetPython"], "3.7")
         self.assertEqual(supported["ansibleCore"], "2.16")
         self.assertNotIn("private", json.dumps(supported))
-        with patch.object(audit.subprocess, "run", return_value=fake):
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(audit.subprocess, "run", return_value=fake):
             with self.assertRaisesRegex(RuntimeError, "target_python_outside"):
                 audit.check_ansible_runtime_support(
                     lambda *_a, **_k: "3.5\\n".replace("\\n", "\n"),

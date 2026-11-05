@@ -29,6 +29,10 @@ jobs:
           sudo apt-get update -o Acquire::Retries=2
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client sshpass python3-venv openscap-scanner
           if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+      - name: Strict offline full-source and report multiset regression tests
+        run: |
+          python3 -m unittest discover -s deployment/tests -p test_astra17_ova_audit.py -v
+          python3 -m unittest discover -s deployment/tests -p test_astra17_ova_oval.py -v
       - name: Isolated lab-only Ansible supporting original guest Python 3.7
         run: |
           set -euo pipefail
@@ -39,10 +43,6 @@ jobs:
           "$RUNNER_TEMP/hcp-astra17-ansible217/bin/ansible-playbook" --version
           printf '%s\n' "$RUNNER_TEMP/hcp-astra17-ansible217/bin" >> "$GITHUB_PATH"
           printf '%s\n' 'HCP_ASTRA17_CI_ANSIBLE_PIN=2.17.14' >> "$GITHUB_ENV"
-      - name: Strict offline full-source and report multiset regression tests
-        run: |
-          python3 -m unittest discover -s deployment/tests -p test_astra17_ova_audit.py -v
-          python3 -m unittest discover -s deployment/tests -p test_astra17_ova_oval.py -v
       - name: Real Astra 1.7 OVA SSH, HCP Ansible 18 rules and full vendor OVAL
         run: |
           python3 deployment/tests/verify_astra17_ova_kvm.py \
