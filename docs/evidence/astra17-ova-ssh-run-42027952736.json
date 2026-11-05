@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "status": "genuine-astra17-ova-ssh-preflight-only",
+  "experiment": "exact-native-Astra17-OVA-SSH-only",
+  "observedAtUtc": "2026-11-05T12:32:23.560450+00:00",
+  "checks": [
+    "official_ova_exact_sha256_and_bytes",
+    "safe_ova_tar_member_validation",
+    "qemu_source_conversion_and_private_overlay",
+    "real_guest_astra_point_build_and_ssh_observed",
+    "fresh_pinned_ssh_identity_stable"
+  ],
+  "fullNative18RuleAcceptance": false,
+  "ovalEvaluationPerformed": false,
+  "hardenedProdReady": false,
+  "publisherSignatureIndependentlyVerified": false,
+  "limitations": [
+    "Only official base OVA and temporary local SSH smoke test",
+    "No OpenSCAP/OVAL baseline, no rollback, no real HCP host enrollment",
+    "Factory-password bootstrap is prohibited in production",
+    "Same-vendor checksum does not cryptographically attest publisher",
+    "Raw machine identity, guest disks and private logs remain on runner"
+  ],
+  "originalImage": {
+    "filename": "alse-1.7.6.uu2-base-virtualbox-mg15.3.1-amd64.ova",
+    "sha256": "72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e",
+    "bytes": 427995648,
+    "publisherSignatureVerified": false,
+    "origin": "same_vendor_artifactory_not_independent_signature",
+    "vmdkBytes": 427984384
+  },
+  "acceleration": "kvm",
+  "nativeGuest": {
+    "osId": "astra",
+    "pointRelease": "1.7.6",
+    "fullBuild": "1.7.6.15",
+    "architecture": "x86_64",
+    "kernelObserved": true,
+    "machineIdObserved": true,
+    "privateIdentitySha256": "c45b2ef3faf4a664f6e0817aafd90f0a1d8ad435548c149f2db9b547090b3674",
+    "sshHostKeyLineSha256": "38a6ac5be6e571f3fa90e7d6001d3a84aaa0b288d3cc97f2d7d635fced85f955",
+    "sshTrustModel": "isolated_disposable_guest_tofu",
+    "hcpEnrollmentVerified": false
+  }
+}
