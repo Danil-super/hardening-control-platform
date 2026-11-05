@@ -329,6 +329,29 @@
           changed_when: false
           when: not (openscap_evaluated_content.stat.isreg | default(false) | bool) or not (openscap_prepared | bool)
 
+
+        - name: Inspect controller-validated SDS on target using read-only oscap info
+          ansible.builtin.command:
+            argv: [oscap, info, "{{ openscap_evaluation_content }}"]
+          register: openscap_target_sds_info
+          changed_when: false
+          failed_when: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+            - openscap_prepared | bool
+
+        - name: Check controller-validated SDS schema with the target OpenSCAP engine
+          ansible.builtin.command:
+            argv: [oscap, ds, sds-validate, "{{ openscap_evaluation_content }}"]
+          register: openscap_target_sds_validate
+          changed_when: false
+          failed_when: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+            - openscap_prepared | bool
+
         - name: Evaluate the complete selected profile without remediation
           ansible.builtin.command:
             argv:
@@ -388,7 +411,7 @@
               - --exit-code
               - "{{ openscap_run.rc | default(1) | string }}"
               - --reason
-              - "{{ (openscap_run.stderr | default(''))[:2000] }}"
+              - "{{ (openscap_run.stderr | default(''))[:1400] ~ (('; target_info_rc=' ~ (openscap_target_sds_info.rc | default('unknown') | string) ~ '; target_schema_rc=' ~ (openscap_target_sds_validate.rc | default('unknown') | string)) if (openscap_compose_on_controller | bool) else '') }}"
               - --profile
               - "{{ openscap_profile }}"
               - --datastream

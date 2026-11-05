@@ -108,6 +108,8 @@ def native_openscap_failure_observation(raw_arf, datastream, normalized):
         "reportedScannerExitCode": None,
         "normalizedFindingCount": None,
         "preparationExitCodes": {},
+        "targetReadOnlySdsProbeExitCodes": {},
+        "componentReferenceCategories": [],
         "reasonCategories": [],
         "status": "native-openscap-original-evidence-incomplete",
     }
@@ -156,6 +158,26 @@ def native_openscap_failure_observation(raw_arf, datastream, normalized):
             value = int(match.group(1))
             if -1 <= value <= 255:
                 observation["preparationExitCodes"][key] = value
+    for variable, name in (("target_info_rc", "oscap_info"),
+                           ("target_schema_rc", "oscap_schema")):
+        match = re.search(r"(?:^|[^A-Za-z_])" + variable +
+                          r"=(-?[0-9]{1,3})\b", joined)
+        if match:
+            code = int(match.group(1))
+            if -1 <= code <= 255:
+                observation["targetReadOnlySdsProbeExitCodes"][name] = code
+    # Named components are only hints, never proof that a file was missing.
+    hints = {
+        "sce_script_referenced_in_error": r"check\.py",
+        "oval_component_referenced_in_error": r"astra-platform-oval\.xml",
+        "cpe_dictionary_referenced_in_error": r"astra-cpe-dictionary\.xml",
+        "compiled_sds_referenced_in_error": r"astra-baseline-ds\.xml",
+        "sce_shared_library_referenced_in_error": r"libopenscap_sce[^\s]{0,20}",
+        "arf_output_referenced_in_error": r"results\.arf\.xml",
+    }
+    observation["componentReferenceCategories"] = sorted(
+        key for key, pattern in hints.items()
+        if re.search(pattern, joined, re.IGNORECASE))
     patterns = {
         "sds_compose_failed": r"(?:compose=[1-9]|sds-compose|sds compose)",
         "sds_dictionary_failed": r"(?:dictionary=[1-9]|sds-add)",
@@ -168,6 +190,8 @@ def native_openscap_failure_observation(raw_arf, datastream, normalized):
         "openscap_profile_missing": r"(?:Profile[^.\n]{0,100}(?:not found|unknown|не найден))",
         "openscap_missing_binary": r"(?:oscap не установлен|oscap: command not found)",
         "openscap_report_partial": r"(?:unable to parse ARF|не удалось прочитать XML|ошибка OpenSCAP|OpenSCAP.*error)",
+        "openscap_datastream_resolution_failure": r"(?:Failed to resolve|unresolved component|Could not resolve|Failed to import component|Component.*not found)",
+        "openscap_sce_execution_failure": r"(?:SCE.*failed to execute|Script check engine.*failed|SCE script.*failed|SCE plugin.*not loaded)",
     }
     observation["reasonCategories"] = sorted(
         key for key, expression in patterns.items()
