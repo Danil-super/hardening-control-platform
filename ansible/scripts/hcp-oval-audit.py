@@ -76,6 +76,9 @@ def parse_config(raw):
     config.setdefault('sourceName', '')
     config.setdefault('sourceReference', '')
     config.setdefault('sourceReviewedAt', None)
+    config.setdefault('evidenceProjection', 'detailed')
+    if config['evidenceProjection'] not in ('detailed', 'bounded'):
+        raise ValueError('Проекция доказательств OVAL должна быть detailed или bounded.')
     if config['mode'] not in ('local', 'online'):
         raise ValueError('Источник OVAL должен быть local или online.')
     for name in ('path', 'url', 'sha256', 'releasePattern', 'sourceName', 'sourceReference'):
@@ -690,7 +693,7 @@ def finish(report):
     return report
 
 
-def parse_results(root, definitions, report):
+def parse_results(root, definitions, report, evidence_projection='detailed'):
     if root.tag != '{' + RESULTS_NS + '}oval_results':
         raise ValueError('OpenSCAP не вернул документ oval_results.')
     results = root.find('{' + RESULTS_NS + '}results')
@@ -709,6 +712,21 @@ def parse_results(root, definitions, report):
                 raise ValueError('Множественные экземпляры внешних переменных не поддерживаются.')
             mapped[identifier] = node
     scanner = report['scanner']
+    if evidence_projection not in ('detailed', 'bounded'):
+        raise ValueError('Неизвестная проекция OVAL.')
+    bounded = evidence_projection == 'bounded'
+    scanner['evidenceProjection'] = evidence_projection
+    scanner['fullDefinitionIdSetPreserved'] = True
+    scanner['auxiliaryDetailsOmitted'] = bounded
+    if bounded:
+        # Full source and result ID sets are still evaluated and preserved.
+        # The verbose XML source tests, per-definition criteria and raw result
+        # test/item trees already exist in the pinned XML and the raw scanner
+        # result (SHA-256), and must not be duplicated into the normalized JSON.
+        scanner['omittedAuxiliarySections'] = [
+            'definitionTests', 'packagePredicates',
+            'resultCriteria', 'testResults', 'packageItems',
+        ]
     counts, positive_cves = {}, set()
     vulnerability_count = 0
     evaluated_vulnerability_count = 0
@@ -723,8 +741,23 @@ def parse_results(root, definitions, report):
             vulnerability_count += 1
             if status in ('true', 'false') and not foreign_platform:
                 evaluated_vulnerability_count += 1
-        entry['resultCriteria'] = xml_evidence(child(result, 'criteria')) if result is not None else None
-        scanner['definitionResults'].append(entry)
+        entry['resultCriteria'] = (
+            xml_evidence(child(result, 'criteria')) if result is not None and not bounded else None
+        )
+        if bounded:
+            # Each unique definition ID and exact native state survives.
+            # Rich finding descriptions are still generated for positive
+            # vulnerability results, but source XML is never re-embedded here.
+            scanner['definitionResults'].append({
+                'id': identifier,
+                'result': status,
+                'class': entry['class'],
+                'cveIds': entry['cveIds'],
+                'vendorSeverity': entry['vendorSeverity'],
+                'platformApplicability': entry['platformApplicability']['status'],
+            })
+        else:
+            scanner['definitionResults'].append(entry)
         counts[status] = counts.get(status, 0) + 1
         if status not in ('true', 'false', 'not applicable'):
             scanner['partialReasons'].append('Не завершено определение ' + identifier + ': ' + status)
@@ -768,17 +801,18 @@ def parse_results(root, definitions, report):
     # Preserve package evidence and result references, excluding arbitrary
     # collected file contents, environment values, passwords and shadow data.
     scanner['testResults'] = []
-    tests = child(system, 'tests')
-    if tests is not None:
-        for test in tests:
-            scanner['testResults'].append({'attributes': dict(test.attrib),
-                'testedItems': [dict(n.attrib) for n in test if local_name(n.tag) == 'tested_item']})
     scanner['packageItems'] = []
-    for node in system.iter():
-        if local_name(node.tag) in ('dpkginfo_item', 'rpminfo_item'):
-            allowed = ('name', 'epoch', 'version', 'release', 'arch', 'evr', 'extended_name')
-            scanner['packageItems'].append({'attributes': dict(node.attrib),
-                'type': local_name(node.tag), 'values': dict((local_name(n.tag), node_text(n)) for n in node if local_name(n.tag) in allowed)})
+    if not bounded:
+        tests = child(system, 'tests')
+        if tests is not None:
+            for test in tests:
+                scanner['testResults'].append({'attributes': dict(test.attrib),
+                    'testedItems': [dict(n.attrib) for n in test if local_name(n.tag) == 'tested_item']})
+        for node in system.iter():
+            if local_name(node.tag) in ('dpkginfo_item', 'rpminfo_item'):
+                allowed = ('name', 'epoch', 'version', 'release', 'arch', 'evr', 'extended_name')
+                scanner['packageItems'].append({'attributes': dict(node.attrib),
+                    'type': local_name(node.tag), 'values': dict((local_name(n.tag), node_text(n)) for n in node if local_name(n.tag) in allowed)})
     scanner['evaluationPerformed'] = True
 
 
@@ -798,9 +832,14 @@ def evaluate(args):
         root = safe_xml(raw)
         definitions = source_definitions(root)
         scanner['database'], warnings = source_metadata(root, raw, config)
-        scanner['definitionTests'] = [xml_evidence(n) for n in (child(root, 'tests') or [])]
-        scanner['packagePredicates'] = [xml_evidence(n) for n in root.iter()
-            if local_name(n.tag) in ('dpkginfo_object', 'dpkginfo_state', 'rpminfo_object', 'rpminfo_state')]
+        bounded = config['evidenceProjection'] == 'bounded'
+        scanner['definitionTests'] = (
+            [] if bounded else [xml_evidence(n) for n in (child(root, 'tests') or [])]
+        )
+        scanner['packagePredicates'] = (
+            [] if bounded else [xml_evidence(n) for n in root.iter()
+                if local_name(n.tag) in ('dpkginfo_object', 'dpkginfo_state', 'rpminfo_object', 'rpminfo_state')]
+        )
         scanner['partialReasons'].extend(warnings)
         binary = shutil.which('oscap')
         scanner['available'] = bool(binary)
@@ -829,7 +868,8 @@ def evaluate(args):
                 scanner['partialReasons'].append('OpenSCAP завершился с ошибкой: ' + str(code) + '; ' + detail)
             result_raw = read_regular(result_path, MAX_RESULT_BYTES)
             scanner['resultSha256'] = hashlib.sha256(result_raw).hexdigest()
-            parse_results(safe_xml(result_raw), definitions, report)
+            parse_results(safe_xml(result_raw), definitions, report,
+                          evidence_projection=config['evidenceProjection'])
     except (OSError, ValueError, ET.ParseError, UnicodeError, subprocess.SubprocessError) as error:
         scanner['partialReasons'].append(str(error))
     return finish(report)

@@ -377,6 +377,49 @@ class OvalAuditTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 oval.parse_results(oval.safe_xml(value), defs, oval.empty_report(arguments()))
 
+    def test_bounded_vendor_projection_preserves_all_id_states_without_nested_xml_duplication(self):
+        raw = source(('vulnerability', 'patch', 'inventory'))
+        extra = ('<tests><test test_id="oval:test:tst:1" result="true">'
+                 '<tested_item item_id="7" result="true"/></test></tests>'
+                 '<oval_system_characteristics><system_data><dpkginfo_item id="7">'
+                 '<name>example</name><version>1.2-astra1</version></dpkginfo_item>'
+                 '</system_data></oval_system_characteristics>')
+        root = oval.safe_xml(raw)
+        detailed = oval.empty_report(arguments())
+        bounded = oval.empty_report(arguments())
+        original = oval.safe_xml(results(('true', 'false', 'not evaluated'), extra))
+        oval.parse_results(original, oval.source_definitions(root), detailed)
+        oval.parse_results(oval.safe_xml(results(('true', 'false', 'not evaluated'), extra)),
+                           oval.source_definitions(root), bounded, evidence_projection='bounded')
+        full = detailed['scanner']
+        compact = bounded['scanner']
+        self.assertEqual(
+            [(x['id'], x['result']) for x in compact['definitionResults']],
+            [(x['id'], x['result']) for x in full['definitionResults']])
+        self.assertEqual(compact['definitionCount'], 3)
+        self.assertEqual(compact['evaluatedDefinitionCount'], 3)
+        self.assertEqual(compact['resultCounts'], full['resultCounts'])
+        self.assertEqual(compact['evidenceProjection'], 'bounded')
+        self.assertTrue(compact['fullDefinitionIdSetPreserved'])
+        self.assertTrue(compact['auxiliaryDetailsOmitted'])
+        self.assertTrue(compact['omittedAuxiliarySections'])
+        self.assertNotIn('criteria', compact['definitionResults'][0])
+        self.assertNotIn('description', compact['definitionResults'][0])
+        self.assertEqual(compact['testResults'], [])
+        self.assertEqual(compact['packageItems'], [])
+        self.assertTrue(detailed['scanner']['testResults'])
+        self.assertTrue(detailed['scanner']['packageItems'])
+        self.assertTrue(oval.finish(bounded)['scanner']['partial'])
+        self.assertEqual(len([f for f in bounded['findings'] if f['status'] == 'failed']), 1)
+
+    def test_bounded_projection_is_opt_in_and_cannot_be_unrecognized(self):
+        self.assertEqual(config()['evidenceProjection'], 'detailed')
+        self.assertEqual(config(evidenceProjection='bounded')['evidenceProjection'], 'bounded')
+        for bad in ('compressed', 'lite', None, {}, True):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    config(evidenceProjection=bad)
+
     def test_test_references_and_packages_preserved_without_shadow_contents(self):
         extra = '''<tests><test test_id="oval:test:tst:1" result="true"><tested_item item_id="7" result="true"/></test></tests>
         <oval_system_characteristics><system_data>
