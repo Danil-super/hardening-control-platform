@@ -157,6 +157,73 @@ def extract_safe_openscap_version(raw):
     return matched.group(1) if matched else None
 
 
+
+ORIGINAL_AUTHOR_SCHEMAS = (
+    ("xccdf", "/usr/share/openscap/schemas/xccdf/1.2/xccdf_1.2.xsd"),
+    ("oval", "/usr/share/openscap/schemas/oval/5.11.1/oval-definitions-schema.xsd"),
+    ("cpe", "/usr/share/openscap/schemas/cpe/2.0/cpe-dictionary_2.0.xsd"),
+)
+
+
+def native_guest_scap_schema_presence(native_ssh):
+    """Read-only exact schema observation from genuine guest."""
+    paths = tuple(path for _name, path in ORIGINAL_AUTHOR_SCHEMAS)
+    script = (
+        "from pathlib import Path; "
+        "paths = " + repr(paths) + "; "
+        "print(','.join('1' if Path(name).is_file() else '0' for name in paths))"
+    )
+    raw = native_ssh("python3 -c " + shlex.quote(script), timeout=30).strip()
+    demand(re.fullmatch(r"[01],[01],[01]", raw),
+           "native_oscap_schema_probe_unparseable")
+    return dict(zip((name for name, _path in ORIGINAL_AUTHOR_SCHEMAS),
+                    (digit == "1" for digit in raw.split(","))))
+
+
+def provision_missing_scap_schemas_on_disposable_guest(native_ssh, protocol):
+    """Only official guest-repository openscap-common on disposable KVM.
+
+    No user host, no cross-distro packages, no disabling schema validation.
+    A package presence alone never constitutes a successful scanner run.
+    """
+    before = native_guest_scap_schema_presence(native_ssh)
+    protocol["nativeHcp"]["originalScapSchemasPresentBefore"] = before
+    protocol["nativeHcp"]["vendorOpenScapCommonInstalledForTest"] = False
+    if all(before.values()):
+        protocol["nativeHcp"]["originalScapSchemasPresentAfter"] = before
+        return before
+    demand(os.environ.get("GITHUB_ACTIONS") == "true"
+           and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+           "native_scap_schema_provision_forbidden_outside_ci")
+    try:
+        installed = (
+            native_ssh("dpkg-query -W -f='${Status}' openscap-common",
+                       timeout=30).strip() == "install ok installed")
+    except RuntimeError:
+        installed = False
+    protocol["nativeHcp"]["vendorOpenScapCommonPreviouslyInstalled"] = installed
+    demand(not installed,
+           "native_scap_required_schema_missing_despite_installed_package")
+    native_ssh(
+        "sudo -n apt-get update -o Acquire::Retries=2 "
+        "-o Acquire::http::Timeout=35 -o Acquire::https::Timeout=35",
+        timeout=900)
+    try:
+        native_ssh("apt-cache show openscap-common >/dev/null", timeout=30)
+    except RuntimeError:
+        raise RuntimeError("native_vendor_scap_schema_package_unavailable")
+    native_ssh(
+        "sudo -n apt-get install -y --no-install-recommends "
+        "--no-upgrade openscap-common",
+        timeout=900)
+    protocol["nativeHcp"]["vendorOpenScapCommonInstalledForTest"] = True
+    after = native_guest_scap_schema_presence(native_ssh)
+    protocol["nativeHcp"]["originalScapSchemasPresentAfter"] = after
+    demand(all(after.values()),
+           "native_required_scap_schema_still_missing_after_vendor_install")
+    return after
+
+
 def native_openscap_failure_observation(raw_arf, datastream, normalized, *,
                                        evaluation_form="validated-source-datastream",
                                        standalone_private_diagnostics=None):
@@ -614,6 +681,9 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
     protocol["nativeHcp"]["sceMentionedInOpenScapAbout"] = (
         bool(re.search(r"\bSCE\b|Script Check Engine", oscap_about,
                        re.IGNORECASE)))
+
+    stage("native_openscap_original_schema_dependencies")
+    provision_missing_scap_schemas_on_disposable_guest(native_ssh, protocol)
 
     protocol["nativeHcp"]["controllerSideSdsSchemaValidationRequested"] = True
     protocol["nativeHcp"]["originalStandaloneXccdfFormRequested"] = True

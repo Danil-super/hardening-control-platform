@@ -372,6 +372,11 @@ def main():
             "passwd_original_mode_not_restored",
             "native_asset_identity_changed_after_restore",
             "source_bundle_not_stable",
+            "native_oscap_schema_probe_unparseable",
+            "native_scap_schema_provision_forbidden_outside_ci",
+            "native_scap_required_schema_missing_despite_installed_package",
+            "native_vendor_scap_schema_package_unavailable",
+            "native_required_scap_schema_still_missing_after_vendor_install",
             "native_openscap_evaluation_form_misrepresented",
             "subprocess_unavailable_or_timeout", "subprocess_output_unbounded",
         }

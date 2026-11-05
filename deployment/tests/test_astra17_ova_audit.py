@@ -508,6 +508,94 @@ class NativeAstra17AuditTests(unittest.TestCase):
             self.assertEqual(actual["status"], "native-openscap-original-evidence-incomplete")
             self.assertNotIn("SECRET", json.dumps(actual))
 
+    def test_native_standard_schema_files_are_measured_on_real_guest(self):
+        observed = []
+        def guest(command, timeout=30):
+            observed.append(command)
+            self.assertIn("python3 -c", command)
+            self.assertIn("xccdf_1.2.xsd", command)
+            self.assertIn("oval-definitions-schema.xsd", command)
+            self.assertIn("cpe-dictionary_2.0.xsd", command)
+            return "1,0,1\n"
+        out = audit.native_guest_scap_schema_presence(guest)
+        self.assertEqual(out, {"xccdf": True, "oval": False, "cpe": True})
+        self.assertEqual(len(observed), 1)
+        with self.assertRaisesRegex(RuntimeError, "native_oscap_schema_probe_unparseable"):
+            audit.native_guest_scap_schema_presence(
+                lambda *_a, **_k: "guest-private-path-UNKNOWN\n")
+
+    def test_schema_dependency_only_installs_vendor_package_in_disposable_ci(self):
+        from unittest.mock import patch
+        queries = []
+        readings = iter(["0,0,0\n", "1,1,1\n"])
+        def guest(command, timeout=30):
+            queries.append(command)
+            if command.startswith("python3 -c "):
+                return next(readings)
+            if command.startswith("dpkg-query "):
+                raise RuntimeError("not installed")
+            if command.startswith("apt-cache show openscap-common"):
+                return ""
+            if command.startswith("sudo -n apt-get update "):
+                return ""
+            if command.startswith("sudo -n apt-get install "):
+                self.assertIn("--no-install-recommends", command)
+                self.assertIn("--no-upgrade", command)
+                self.assertIn("openscap-common", command)
+                return ""
+            raise AssertionError("Unexpected executable or user-host action: " + command)
+        proof = {"nativeHcp": {}}
+        with patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "RUNNER_ENVIRONMENT": "github-hosted",
+        }):
+            after = audit.provision_missing_scap_schemas_on_disposable_guest(
+                guest, proof)
+        self.assertEqual(after, {"xccdf": True, "oval": True, "cpe": True})
+        self.assertEqual(proof["nativeHcp"]["originalScapSchemasPresentBefore"],
+                         {"xccdf": False, "oval": False, "cpe": False})
+        self.assertTrue(proof["nativeHcp"]["vendorOpenScapCommonInstalledForTest"])
+        self.assertFalse(proof["nativeHcp"]["vendorOpenScapCommonPreviouslyInstalled"])
+        self.assertEqual(len([q for q in queries if "apt-get install" in q]), 1)
+        self.assertNotIn("user host", json.dumps(proof))
+        self.assertNotIn("http://", json.dumps(proof))
+        self.assertNotIn("https://", json.dumps(proof))
+
+    def test_schema_dependency_probe_does_not_install_if_present(self):
+        calls = []
+        def guest(command, timeout=30):
+            calls.append(command)
+            if command.startswith("python3 -c "):
+                return "1,1,1\n"
+            raise AssertionError("No package management allowed with all required XSD files")
+        state = {"nativeHcp": {}}
+        result = audit.provision_missing_scap_schemas_on_disposable_guest(
+            guest, state)
+        self.assertEqual(result, {"xccdf": True, "oval": True, "cpe": True})
+        self.assertFalse(state["nativeHcp"]["vendorOpenScapCommonInstalledForTest"])
+        self.assertEqual(len(calls), 1)
+
+    def test_missing_schema_package_never_bypasses_validation(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                                     "RUNNER_ENVIRONMENT": "self-hosted"}):
+            with self.assertRaisesRegex(RuntimeError,
+                                        "native_scap_schema_provision_forbidden_outside_ci"):
+                audit.provision_missing_scap_schemas_on_disposable_guest(
+                    lambda *_a, **_k: "0,0,0\n", {"nativeHcp": {}})
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                                     "RUNNER_ENVIRONMENT": "github-hosted"}):
+            def installed(command, timeout=30):
+                if command.startswith("python3 -c "):
+                    return "0,0,0\n"
+                if command.startswith("dpkg-query "):
+                    return "install ok installed"
+                raise AssertionError("Unsafe unexpected package upgrade")
+            with self.assertRaisesRegex(RuntimeError,
+                                        "native_scap_required_schema_missing_despite_installed_package"):
+                audit.provision_missing_scap_schemas_on_disposable_guest(
+                    installed, {"nativeHcp": {}})
+
     def test_real_hcp_playbook_and_evidence_paths_are_bound_to_fixed_repository(self):
         content = Path(audit.__file__).read_text(encoding="utf-8")
         self.assertIn('run_playbook(work, reports, "collect-facts"', content)
