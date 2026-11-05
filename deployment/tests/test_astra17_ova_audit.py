@@ -313,6 +313,48 @@ class NativeAstra17AuditTests(unittest.TestCase):
         self.assertIn("- not (openscap_compose_on_controller | bool)", source)
         self.assertIn("controllerSideSdsSchemaValidationRequested", Path(audit.__file__).read_text())
 
+    def test_standalone_native_xccdf_requires_original_components_and_real_validation(self):
+        playbook = (audit.ROOT / "ansible/playbooks/openscap-audit.yml").read_text()
+        for name in ("astra-baseline.xml", "check.py",
+                     "astra-platform-oval.xml", "astra-cpe-dictionary.xml"):
+            self.assertIn(name, playbook)
+        self.assertIn("hcp_openscap_standalone_on_target | default(false)", playbook)
+        self.assertIn("Refuse an unverified standalone evaluation mode", playbook)
+        self.assertIn("Check exact HCP authored standalone XML schemas", playbook)
+        self.assertIn("Prove four original standalone components are unchanged in transit", playbook)
+        self.assertIn("openscap_standalone_target_validation.results", playbook)
+        self.assertIn("openscap_standalone_controller_hashes.results", playbook)
+        self.assertIn("openscap_standalone_target_hashes.results", playbook)
+        self.assertIn("original-standalone-xccdf", playbook)
+        self.assertIn("--cpe", playbook)
+        self.assertIn("openscap_standalone_on_target | bool", playbook)
+        self.assertNotIn("--skip-validation", playbook)
+        code = Path(audit.__file__).read_text()
+        self.assertIn('"hcp_openscap_standalone_on_target": True', code)
+        self.assertIn('evaluated-xccdf.xml', code)
+        self.assertIn('native_openscap_evaluation_form_misrepresented', code)
+
+    def test_standalone_diagnostics_never_claim_that_unaccepted_sds_was_evaluated(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            source = root / "evaluated-xccdf.xml"
+            source.write_text("synthetic component")
+            report = root / "partial.json"
+            report.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {"available": True, "partial": True,
+                            "scannerExitCode": 1, "reason": "Cannot open check.py SECRET"},
+                "findings": [],
+            }))
+            actual = audit.native_openscap_failure_observation(
+                root / "missing.arf", source, report,
+                evaluation_form="original-standalone-xccdf")
+            self.assertTrue(actual["originalStandaloneXccdfPresent"])
+            self.assertFalse(actual["executedDatastreamPresent"])
+            self.assertEqual(actual["evaluationFormRequested"], "original-standalone-xccdf")
+            self.assertEqual(actual["status"], "native-openscap-original-evidence-incomplete")
+            self.assertNotIn("SECRET", json.dumps(actual))
+
     def test_real_hcp_playbook_and_evidence_paths_are_bound_to_fixed_repository(self):
         content = Path(audit.__file__).read_text(encoding="utf-8")
         self.assertIn('run_playbook(work, reports, "collect-facts"', content)

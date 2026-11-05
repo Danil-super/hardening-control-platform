@@ -243,6 +243,25 @@ class ScannerAdaptersTest(unittest.TestCase):
         self.assertEqual(report["summary"]["high"], 850)
         self.assertFalse(report["scanner"]["partial"])
 
+    def test_native_original_standalone_form_is_explicit_not_fabricated_sds_success(self):
+        xml = ('<TestResult xmlns="http://checklists.nist.gov/xccdf/1.2">'
+               '<rule-result idref="rule"><result>pass</result></rule-result>'
+               '</TestResult>')
+        standalone = self.parse_file(
+            xml, scanner.openscap_arf,
+            evaluation_form="original-standalone-xccdf",
+            datastream="/__hcp_builtin__/astra-baseline.xml")
+        self.assertEqual(standalone["scanner"]["evaluationForm"],
+                         "original-standalone-xccdf")
+        self.assertEqual(standalone["scanner"]["datastream"],
+                         "/__hcp_builtin__/astra-baseline.xml")
+        sds = self.parse_file(
+            xml, scanner.openscap_arf,
+            evaluation_form="validated-source-datastream")
+        self.assertEqual(sds["scanner"]["evaluationForm"],
+                         "validated-source-datastream")
+        self.assertNotIn("publisherSignatureVerified", standalone["scanner"])
+
     def test_openscap_error_exit_keeps_existing_results_but_marks_partial(self):
         report = self.parse_file('<TestResult><rule-result idref="rule"><result>pass</result></rule-result></TestResult>', scanner.openscap_arf, exit_code=1)
         self.assertTrue(report["scanner"]["partial"])

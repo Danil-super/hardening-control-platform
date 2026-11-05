@@ -372,6 +372,7 @@ def main():
             "passwd_original_mode_not_restored",
             "native_asset_identity_changed_after_restore",
             "source_bundle_not_stable",
+            "native_openscap_evaluation_form_misrepresented",
             "subprocess_unavailable_or_timeout", "subprocess_output_unbounded",
         }
         reason = str(exc) if isinstance(exc, RuntimeError) else ""

@@ -654,6 +654,7 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
             datastreamLastModified=args.datastream_mtime or None,
             datastreamChecksum=args.datastream_checksum or None,
             contentIdentity=getattr(args, "content_id", None) or args.datastream_checksum or None,
+            evaluationForm=getattr(args, "evaluation_form", None),
             scannerExitCode=args.exit_code,
         )
 
@@ -755,6 +756,7 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
         datastreamLastModified=args.datastream_mtime or None,
         datastreamChecksum=args.datastream_checksum or None,
         contentIdentity=getattr(args, "content_id", None) or args.datastream_checksum or None,
+        evaluationForm=getattr(args, "evaluation_form", None),
         scannerExitCode=args.exit_code,
     )
 
@@ -983,6 +985,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-group")
     parser.add_argument("--datastream-mtime")
     parser.add_argument("--datastream-checksum")
+    parser.add_argument("--evaluation-form", choices=("validated-source-datastream", "original-standalone-xccdf"),
+                        help="Actual OpenSCAP input type; does not alter its validation results.")
     parser.add_argument("--reason")
     args = parser.parse_args()
     if args.mode in {"ssh-audit", "nmap", "greenbone-report"} and not args.host:

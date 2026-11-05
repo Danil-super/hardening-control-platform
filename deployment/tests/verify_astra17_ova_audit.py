@@ -85,7 +85,8 @@ def validate_native_three_stage(results):
 
 
 
-def native_openscap_failure_observation(raw_arf, datastream, normalized):
+def native_openscap_failure_observation(raw_arf, datastream, normalized, *,
+                                       evaluation_form="validated-source-datastream"):
     """Classify HCP/OpenSCAP prerequisites without exposing private evidence.
 
     The actual 1.7 guest can return a successful *playbook* whose own report
@@ -102,7 +103,13 @@ def native_openscap_failure_observation(raw_arf, datastream, normalized):
     report_exists = regular(normalized, 32 * 1024 * 1024)
     observation = {
         "rawArfPresent": regular(raw_arf, 64 * 1024 * 1024),
-        "executedDatastreamPresent": regular(datastream, 64 * 1024 * 1024),
+        "executedDatastreamPresent": (
+            evaluation_form == "validated-source-datastream"
+            and regular(datastream, 64 * 1024 * 1024)),
+        "originalStandaloneXccdfPresent": (
+            evaluation_form == "original-standalone-xccdf"
+            and regular(datastream, 64 * 1024 * 1024)),
+        "evaluationFormRequested": evaluation_form,
         "normalizedReportPresent": report_exists,
         "reportedScannerAvailable": None, "reportedPartial": None,
         "reportedScannerExitCode": None,
@@ -516,6 +523,9 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
                        re.IGNORECASE)))
 
     protocol["nativeHcp"]["controllerSideSdsSchemaValidationRequested"] = True
+    protocol["nativeHcp"]["originalStandaloneXccdfFormRequested"] = True
+    protocol["nativeHcp"]["compiledSdsValidatedOnControllerOnly"] = True
+    protocol["nativeHcp"]["targetSdsSchemaAcceptanceClaimed"] = False
     stage("18_rule_three_stage_experiment")
     original = native_ssh("stat -c '%a' /etc/passwd", timeout=25).strip()
     demand(re.fullmatch(r"[0-7]{3,4}", original)
@@ -540,26 +550,33 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
                 # controller, not on this older Astra OpenSCAP build. The
                 # *exact* compiled bytes must match target SHA before eval.
                 "hcp_openscap_compose_on_controller": True,
+                "hcp_openscap_standalone_on_target": True,
             }, protocol)
             raw = reports / ("." + HOST + "-openscap-" + phase + ".xml")
-            datastream = Path(str(raw) + ".datastream.xml")
+            evaluated = Path(str(raw) + ".evaluated-xccdf.xml")
             report_file = reports / (HOST + "-openscap-" + phase + ".json")
-            if not (raw.is_file() and datastream.is_file()
+            if not (raw.is_file() and evaluated.is_file()
                     and report_file.is_file()):
                 protocol["nativeHcp"]["failedNativeStage"] = (
                     "original_hcp_openscap_" + phase)
                 protocol["nativeHcp"]["openscapFailureObservation"] = (
                     native_openscap_failure_observation(
-                        raw, datastream, report_file))
+                        raw, evaluated, report_file,
+                        evaluation_form="original-standalone-xccdf"))
                 raise RuntimeError("native_openscap_original_evidence_missing")
             xccdf, sce = raw_results(raw)
             normal = load_private_json(report_file)
             verify_baseline_report(
-                normal, xccdf, sce, file_sha256(datastream))
+                normal, xccdf, sce, file_sha256(evaluated))
+            demand(normal.get("scanner", {}).get("evaluationForm")
+                   == "original-standalone-xccdf",
+                   "native_openscap_evaluation_form_misrepresented")
             observed_rules[phase] = xccdf
             evidence[phase] = {
                 "rawArfSha256": file_sha256(raw),
-                "executedDatastreamSha256": file_sha256(datastream),
+                "evaluatedOriginalXccdfSha256": file_sha256(evaluated),
+                "actualEvaluationForm": "original-standalone-xccdf",
+                "targetSdsValidatedSuccessfully": False,
                 "normalizedJsonSha256": file_sha256(report_file),
                 "sourceBundleIdentity": normal["scanner"].get("contentIdentity"),
             }
