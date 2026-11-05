@@ -33,13 +33,19 @@ jobs:
         run: python3 -m unittest discover -s deployment/tests -p 'test_firewalld_cleanup.py' -v
 
       - name: Install firewalld, SSH and Ansible without enabling a firewall
-        timeout-minutes: 5
+        timeout-minutes: 7
         run: |
           set -euo pipefail
           test "$RUNNER_ENVIRONMENT" = "github-hosted"
           sudo systemctl mask firewalld.service
-          sudo apt-get update -o Acquire::Retries=2
-          sudo apt-get install -y --no-install-recommends firewalld openssh-server ansible iproute2
+          sudo apt-get update -o Acquire::Retries=2 -o Acquire::http::Timeout=35 -o Acquire::https::Timeout=35
+          # All tested HCP playbooks use ansible.builtin modules. Avoid
+          # downloading the 16+ MB ansible collections metapackage on each CI
+          # run; the Ubuntu native ansible-core package is sufficient.
+          sudo apt-get install -y --no-install-recommends -o Acquire::Retries=2 \
+            -o Acquire::http::Timeout=35 -o Acquire::https::Timeout=35 \
+            firewalld openssh-server ansible-core iproute2
+          ansible-playbook --version
           sudo systemctl unmask firewalld.service
 
       - name: Verify real traffic, SSH protection, preview, deny and rollback

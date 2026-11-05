@@ -70,5 +70,18 @@ class FirewalldCleanupRaceTests(unittest.TestCase):
                 self.assertFalse(json.loads((work / "artifacts/cleanup.json").read_text())["ok"])
                 self.assertFalse(json.loads((work / "recovery.json").read_text())["cleaned"])
 
+class FirewalldWorkflowBootstrapTests(unittest.TestCase):
+    def test_only_builtin_ansible_core_is_installed_and_cleanup_runs_always(self):
+        workflow = (ROOT.parents[1] / ".github/workflows/firewalld.yml").read_text()
+        self.assertIn("firewalld openssh-server ansible-core iproute2", workflow)
+        self.assertNotIn("openssh-server ansible iproute2", workflow)
+        self.assertIn("Acquire::http::Timeout=35", workflow)
+        self.assertIn("Acquire::https::Timeout=35", workflow)
+        self.assertIn("sudo systemctl mask firewalld.service", workflow)
+        self.assertIn("sudo systemctl unmask firewalld.service", workflow)
+        self.assertIn("name: Restore original services and remove the isolated SSH target", workflow)
+        self.assertIn("if: always()", workflow)
+
+
 if __name__ == "__main__":
     unittest.main()
