@@ -80,10 +80,27 @@ HCP **не** является сертифицированным универс�
 
 Этот вариант не выключает защиту и не зависит от успешной инициализации
 прошлого *cloud-init*-образа. Он пытается установить настоящую версию через
-SSH, используя приватный overlay-диск. **На момент данного среза результат
-нативного CI ещё не принят.** Даже успешный SSH-smoke не заменяет
-проверку 18 правил, OVAL, HCP enrollment и rollback.
-[Подробный контракт](astra-17-ova-native-kvm-experiment.md).
+SSH, используя приватный overlay-диск. **Дополнение от 5 ноября:**
+[настоящий run #42027952736](https://github.com/Danil-super/hardening-control-platform/actions/runs/42027952736)
+завершился success. Реальная Astra 1.7.6.15 подтверждена через
+оригинальный OVA/SSH, а PR #69 после всех 5 green CI объединён с main.
+[Оригинальный очищенный JSON и его SHA-256](astra-17-ova-native-evidence-2026-11-05.md)
+сохранены отдельно от истекающего GitHub artifact.
+**Это SSH-прогон, не OpenSCAP/OVAL**: 18 правил, вендорский OVAL,
+HCP enrollment и rollback не были выполнены. Новый опыт —
+[PR #72](https://github.com/Danil-super/hardening-control-platform/pull/72)
+с настоящим HCP Ansible/18-rule; до его успешного нативного CI
+никаких результатов 1.7 не приписывать.
+[Подробный исходный контракт](astra-17-ova-native-kvm-experiment.md).
+
+**Дополнительное независимое подтверждение (5.11):** [PR #71](https://github.com/Danil-super/hardening-control-platform/pull/71)
+прошёл **все пять exact-head CI** и объединён с main.
+[Настоящий QEMU/KVM run #42030781198](https://github.com/Danil-super/hardening-control-platform/actions/runs/42030781198)
+также подтвердил Astra 1.7.6.15 через два SSH без конвертации OVA.
+Его оригинальный санитизированный JSON и SHA сохранены
+[в доказательном протоколе](astra-17-ova-native-evidence-2026-11-05.md).
+**Оба успеха доказывают только нативную загрузку/SSH**, а не завершённый OpenSCAP/OVAL.
+
 
 Нельзя называть исходный SHA цифровой подписью изготовителя:
 он получен из того же Artifactory, что и образ.
