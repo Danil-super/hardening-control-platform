@@ -218,6 +218,41 @@ def record_native_hcp_three_stage_success(protocol):
     ]
 
 
+def record_selected_vendor_oval_success(protocol):
+    """Publish a real full SELECTED-source evaluation, never universal CVE trust.
+
+    This follows the original HCP 18-rule gate and the independent exact XML
+    definition-ID multiset check. It is not production enrollment or signing.
+    """
+    from verify_astra17_ova_oval import VENDOR
+    native = protocol.get("nativeHcp")
+    scoped = native.get("sourceBoundVendorOval") if isinstance(native, dict) else None
+    states = scoped.get("observedResultStates") if isinstance(scoped, dict) else None
+    count = scoped.get("definitionCountFromExactVendorXml") if isinstance(scoped, dict) else None
+    require(
+        protocol.get("realNative18RuleThreeStageObserved") is True
+        and isinstance(native, dict)
+        and native.get("fullOvalEvaluated") is True
+        and isinstance(scoped, dict)
+        and scoped.get("fullSelectedSourceEvaluated") is True
+        and type(count) is int and count > 0
+        and type(scoped.get("evaluatedDefinitions")) is int
+        and scoped["evaluatedDefinitions"] == count
+        and scoped.get("sourceSha256") == VENDOR["sha256"]
+        and isinstance(states, dict) and bool(states)
+        and all(type(value) is int and value >= 0 for value in states.values())
+        and sum(states.values()) == count
+        and isinstance(scoped.get("rawOvalsResultsSha256"), str)
+        and re.fullmatch(r"[a-f0-9]{64}", scoped["rawOvalsResultsSha256"])
+        and scoped.get("independentPublisherSignatureVerified") is False
+        and scoped.get("generalAllCveRecallVerified") is False
+        and scoped.get("reportCannotProveNoVulnerabilities") is True,
+        "native_oval_full_selected_scope_not_verified",
+    )
+    protocol["nativeVendorOval17Evaluated"] = True
+    protocol["ovalEvaluationPerformed"] = True
+
+
 def experiment(work, protocol, *, native_hcp_three_stage=False,
                native_vendor_oval=False):
     fixed = work / FILENAMES["base"]
@@ -333,8 +368,7 @@ def experiment(work, protocol, *, native_hcp_three_stage=False,
                     native_vendor_oval=native_vendor_oval)
                 record_native_hcp_three_stage_success(protocol)
                 if native_vendor_oval:
-                    require(protocol.get("nativeHcp", {}).get("fullOvalEvaluated") is True,
-                            "native_oval_full_selected_scope_not_verified")
+                    record_selected_vendor_oval_success(protocol)
                     protocol["status"] = "native-astra17-ova-hcp-and-full-oval-scope"
                     protocol["experiment"] = (
                         "exact-native-Astra17-HCP-18-rule-and-selected-vendor-OVAL-only"
@@ -403,9 +437,6 @@ def main():
         experiment(work, report,
                    native_hcp_three_stage=args.native_hcp_three_stage,
                    native_vendor_oval=args.native_vendor_oval)
-        report["nativeVendorOval17Evaluated"] = bool(
-            args.native_vendor_oval
-            and report.get("nativeHcp", {}).get("fullOvalEvaluated") is True)
     except BaseException as exc:
         allowed = {
             "ova_member_count_invalid", "ova_member_name_unsafe",

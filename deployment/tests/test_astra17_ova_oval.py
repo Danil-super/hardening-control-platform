@@ -171,6 +171,64 @@ class OriginalVendorOvaSourceTests(unittest.TestCase):
         self.assertIn("native_oval_bounded_projection_not_attested", runner)
         self.assertIn('"nativeVendorOval17Evaluated": False', runner)
 
+    def test_top_level_oval_success_only_after_original_full_scope_proof(self):
+        import verify_astra17_ova_kvm as smoke
+        expected = {
+            "fullSelectedSourceEvaluated": True,
+            "definitionCountFromExactVendorXml": 2,
+            "evaluatedDefinitions": 2,
+            "sourceSha256": oval.VENDOR["sha256"],
+            "observedResultStates": {"true": 1, "false": 1},
+            "rawOvalsResultsSha256": "a" * 64,
+            "independentPublisherSignatureVerified": False,
+            "generalAllCveRecallVerified": False,
+            "reportCannotProveNoVulnerabilities": True,
+        }
+        base = {
+            "realNative18RuleThreeStageObserved": True,
+            "nativeVendorOval17Evaluated": False,
+            "ovalEvaluationPerformed": False,
+            "fullNative18RuleAcceptance": False,
+            "hardenedProdReady": False,
+            "publisherSignatureIndependentlyVerified": False,
+            "nativeHcp": {"fullOvalEvaluated": True,
+                          "sourceBoundVendorOval": deepcopy(expected)},
+        }
+        accepted = deepcopy(base)
+        smoke.record_selected_vendor_oval_success(accepted)
+        self.assertTrue(accepted["nativeVendorOval17Evaluated"])
+        self.assertTrue(accepted["ovalEvaluationPerformed"])
+        self.assertFalse(accepted["fullNative18RuleAcceptance"])
+        self.assertFalse(accepted["hardenedProdReady"])
+        self.assertFalse(accepted["publisherSignatureIndependentlyVerified"])
+        for broken in ("missing_scope", "incomplete", "wrong_source", "wrong_counts",
+                       "fabricated_signature", "raw_result_sha_missing",
+                       "not_native_three_stage", "scanner_not_completed"):
+            with self.subTest(case=broken):
+                candidate = deepcopy(base)
+                detail = candidate["nativeHcp"]["sourceBoundVendorOval"]
+                if broken == "missing_scope":
+                    del candidate["nativeHcp"]["sourceBoundVendorOval"]
+                elif broken == "incomplete":
+                    detail["fullSelectedSourceEvaluated"] = False
+                elif broken == "wrong_source":
+                    detail["sourceSha256"] = "b" * 64
+                elif broken == "wrong_counts":
+                    detail["observedResultStates"] = {"true": 2, "false": 1}
+                elif broken == "fabricated_signature":
+                    detail["independentPublisherSignatureVerified"] = True
+                elif broken == "raw_result_sha_missing":
+                    detail["rawOvalsResultsSha256"] = None
+                elif broken == "not_native_three_stage":
+                    candidate["realNative18RuleThreeStageObserved"] = False
+                elif broken == "scanner_not_completed":
+                    candidate["nativeHcp"]["fullOvalEvaluated"] = False
+                with self.assertRaisesRegex(
+                        RuntimeError, "native_oval_full_selected_scope_not_verified"):
+                    smoke.record_selected_vendor_oval_success(candidate)
+                self.assertFalse(candidate["nativeVendorOval17Evaluated"])
+                self.assertFalse(candidate["ovalEvaluationPerformed"])
+
     def test_real_execution_requires_original_hcp_18_rule_completion_first(self):
         main = (oval.VENDOR["url"])
         self.assertTrue(main.startswith("https://dl.astralinux.ru/artifactory/"))
