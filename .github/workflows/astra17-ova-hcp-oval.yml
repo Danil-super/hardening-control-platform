@@ -29,6 +29,11 @@ jobs:
           sudo apt-get update -o Acquire::Retries=2
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client sshpass python3-venv openscap-scanner
           if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+      - name: Verify native OVAL source/test entrypoints are present before any CI download
+        run: |
+          test -s deployment/tests/verify_astra17_ova_oval.py
+          test -s deployment/tests/test_astra17_ova_oval.py
+          grep -q 'native_vendor_oval' deployment/tests/verify_astra17_ova_kvm.py
       - name: Strict offline full-source and report multiset regression tests
         run: |
           python3 -m unittest discover -s deployment/tests -p test_astra17_ova_audit.py -v
