@@ -52,6 +52,37 @@ test("target Python is checked against the installed controller before modules r
   assert.equal(assessTargetPython("3.11.2", null).compatible, null);
 });
 
+test("target Python compatibility is not Ansible security-maintenance or production approval", () => {
+  const legacy = assessTargetPython("3.7.3", "2.17.14");
+  assert.equal(legacy.compatible, true);
+  assert.equal(legacy.upstreamEol, true);
+  assert.equal(legacy.productionAccepted, false);
+  assert.match(legacy.message, /EOL/);
+  assert.match(legacy.message, /production/);
+  const legacyDebian = assessTargetPython("3.7.3", "2.14.18");
+  assert.equal(legacyDebian.compatible, true);
+  assert.equal(legacyDebian.upstreamEol, true);
+  assert.equal(legacyDebian.productionAccepted, false);
+  const wrongModern = assessTargetPython("3.7.3", "2.21.5");
+  assert.equal(wrongModern.compatible, false);
+  assert.equal(wrongModern.upstreamEol, false);
+  assert.equal(wrongModern.productionAccepted, false);
+  const recentlyCurrent = assessTargetPython("3.11.5", "2.21.5");
+  assert.equal(recentlyCurrent.compatible, true);
+  assert.equal(recentlyCurrent.upstreamEol, false);
+  assert.equal(recentlyCurrent.productionAccepted, false);
+  assert.equal(assessTargetPython("3.13.0", "2.22.0").compatible, true);
+  assert.equal(assessTargetPython("3.8.10", "2.22.0").compatible, false);
+  const ambiguous = assessTargetPython("3.11.5", "2.19.7");
+  assert.equal(ambiguous.compatible, true);
+  assert.equal(ambiguous.upstreamEol, null);
+  assert.match(ambiguous.message, /не подтверждён/);
+  const future = assessTargetPython("3.11.5", "2.99.0");
+  assert.equal(future.compatible, null);
+  assert.equal(future.upstreamEol, null);
+  assert.equal(future.productionAccepted, false);
+});
+
 test("unknown firewall, competing managers and containers do not get readiness", () => {
   const probe = baseline();
   assert.equal(state(assessHostReadiness(probe), "firewall"), "ready");
