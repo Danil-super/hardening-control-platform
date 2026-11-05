@@ -85,8 +85,81 @@ def validate_native_three_stage(results):
 
 
 
+
+def classify_private_standalone_xml_validator_logs(path):
+    """Classify real guest XCCDF/OVAL/CPE errors; NEVER return raw strings.
+
+    GitHub-hosted runner private, 0600 controller file, <= 32768 bytes.
+    Empty/missing evidence cannot be a pass. Observed error classes are
+    hints, not a verified root cause or a weakened acceptance gate.
+    """
+    empty = {"available": False, "validators": {}}
+    try:
+        file = Path(path)
+        info = file.lstat()
+        if (not stat.S_ISREG(info.st_mode) or file.is_symlink()
+                or info.st_mode & 0o077 or not (0 < info.st_size <= 32768)):
+            return empty
+        content = json.loads(file.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        return empty
+    if (type(content) is not dict or content.get("schemaVersion") != 1
+            or type(content.get("validators")) is not list
+            or len(content["validators"]) != 3):
+        return empty
+    output = {}
+    safe = {
+        "validator_command_not_supported":
+            r"unknown command|unrecognized command|invalid command|unrecognized option|unknown option|invalid option|not a valid option|usage:\s*oscap",
+        "required_schema_missing":
+            r"schema.*(?:not found|missing|unable to load)|(?:cannot|could not|failed to)\s*(?:load|locate|open).*\.xsd",
+        "xml_schema_rejected":
+            r"does not validate|invalid xml|schema validation failed|not valid according to|schema validation error",
+        "unsupported_xml_schema_version":
+            r"unsupported.*(?:schema|version)|schema version.*(?:not supported|unsupported)",
+        "source_or_dependency_file_missing":
+            r"no such file or directory|file not found|cannot open file|could not open|failed to open|failed to resolve|unresolved component",
+        "permission_denied":
+            r"permission denied|operation not permitted|отказано в доступе",
+        "xml_parse_error":
+            r"xml.*(?:parser error|parse error|syntax error)|error parsing xml",
+        "sce_engine_missing":
+            r"sce.*(?:not installed|not found|not available|plugin unavailable|missing)",
+    }
+    for index, expected in enumerate(("xccdf", "oval", "cpe")):
+        entry = content["validators"][index]
+        if type(entry) is not dict or entry.get("kind") != expected:
+            return empty
+        rc = entry.get("exitCode")
+        if type(rc) is not int or not (0 <= rc <= 255):
+            return empty
+        fragments = [entry.get("stdout"), entry.get("stderr")]
+        if any(type(v) is not str or len(v) > 2048 for v in fragments):
+            return empty
+        observed = "\n".join(fragments)
+        output[expected] = {
+            "exitCode": rc,
+            "diagnosticClasses": sorted(
+                category for category, pattern in safe.items()
+                if re.search(pattern, observed, re.IGNORECASE)),
+            "nativeSchemaValidationSucceeded": rc == 0,
+        }
+    return {"available": True, "validators": output}
+
+
+def extract_safe_openscap_version(raw):
+    """Report only numeric CLI version, never arbitrary --version output."""
+    if type(raw) is not str or len(raw) > 131072:
+        return None
+    matched = re.search(
+        r"(?:OpenSCAP(?:\s+command\s+line\s+tool)?(?:\s+\(oscap\))?|^oscap)\s*(?:version\s*)?v?(\d{1,2}\.\d{1,2}\.\d{1,3})\b",
+        raw, re.IGNORECASE | re.MULTILINE)
+    return matched.group(1) if matched else None
+
+
 def native_openscap_failure_observation(raw_arf, datastream, normalized, *,
-                                       evaluation_form="validated-source-datastream"):
+                                       evaluation_form="validated-source-datastream",
+                                       standalone_private_diagnostics=None):
     """Classify HCP/OpenSCAP prerequisites without exposing private evidence.
 
     The actual 1.7 guest can return a successful *playbook* whose own report
@@ -116,11 +189,16 @@ def native_openscap_failure_observation(raw_arf, datastream, normalized, *,
         "normalizedFindingCount": None,
         "preparationExitCodes": {},
         "standaloneXmlSchemaExitCodes": {},
+        "standaloneXmlPrivateErrorClassification": {"available": False, "validators": {}},
         "targetReadOnlySdsProbeExitCodes": {},
         "componentReferenceCategories": [],
         "reasonCategories": [],
         "status": "native-openscap-original-evidence-incomplete",
     }
+    if standalone_private_diagnostics is not None:
+        observation["standaloneXmlPrivateErrorClassification"] = (
+            classify_private_standalone_xml_validator_logs(
+                standalone_private_diagnostics))
     if not report_exists:
         return observation
     try:
@@ -529,6 +607,8 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
             timeout=900)
     oscap_about = native_ssh("oscap --version", timeout=30)
     protocol["nativeHcp"]["nativeOpenScapBinaryVerified"] = True
+    protocol["nativeHcp"]["observedNativeOpenScapCliVersion"] = (
+        extract_safe_openscap_version(oscap_about))
     # Informative only: the engine string varies between native packages.
     # Missing wording must not be treated as evidence of disabled SCE.
     protocol["nativeHcp"]["sceMentionedInOpenScapAbout"] = (
@@ -575,7 +655,9 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
                 protocol["nativeHcp"]["openscapFailureObservation"] = (
                     native_openscap_failure_observation(
                         raw, evaluated, report_file,
-                        evaluation_form="original-standalone-xccdf"))
+                        evaluation_form="original-standalone-xccdf",
+                        standalone_private_diagnostics=Path(
+                            str(raw) + ".standalone-diagnostics.json")))
                 raise RuntimeError("native_openscap_original_evidence_missing")
             xccdf, sce = raw_results(raw)
             normal = load_private_json(report_file)
