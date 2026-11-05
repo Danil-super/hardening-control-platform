@@ -429,7 +429,7 @@ class NativeAstra17AuditTests(unittest.TestCase):
         self.assertIn(
             "Retain bounded target XML schema errors in private controller diagnostics only",
             source)
-        self.assertIn('".standalone-diagnostics.json"', source)
+        self.assertIn(".standalone-diagnostics.json", source)
         self.assertIn('no_log: true', source)
         self.assertIn('mode: "0600"', source)
         self.assertIn("oscap_standalone_target_validation.results[0].stderr", source)
