@@ -14,6 +14,7 @@ from pathlib import Path
 import re
 import shlex
 import subprocess
+import stat
 
 from verify_astra_vm import PROFILE, RULE, raw_results, verify_baseline_report
 
@@ -82,7 +83,56 @@ def validate_native_three_stage(results):
     }
 
 
-def run_playbook(work, reports, name, phase, variables, protocol, *, timeout_seconds=1200):
+def safe_ansible_ssh_args(pinned_hosts):
+    """Preserve Git-managed host trust even when ansible.cfg sets ssh_args.
+
+    OpenSSH honours the FIRST occurrence of many -o settings. HCP's
+    ansible.cfg may otherwise choose ~/.ssh/known_hosts before the per-host
+    ansible_ssh_common_args, making pinned local disposable SSH fail.
+    """
+    pinned_hosts = Path(pinned_hosts)
+    info = pinned_hosts.lstat()
+    demand(stat.S_ISREG(info.st_mode) and not pinned_hosts.is_symlink()
+           and not (info.st_mode & 0o077), "ansible_ssh_pin_unsafe")
+    return shlex.join([
+        "-F", "/dev/null",
+        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=yes",
+        "-o", "UserKnownHostsFile=" + str(pinned_hosts),
+        "-o", "GlobalKnownHostsFile=/dev/null",
+        "-o", "UpdateHostKeys=no",
+        "-o", "HostKeyAlgorithms=ssh-ed25519",
+        "-o", "ConnectTimeout=10",
+    ])
+
+
+def classify_ansible_failure(log):
+    """Bounded, fixed-code diagnostic. Never return raw Ansible log text."""
+    patterns = {
+        "ssh_host_key_verification": r"Host key verification failed|REMOTE HOST IDENTIFICATION HAS CHANGED",
+        "ssh_authentication_failed": r"Permission denied \(publickey|Authentication failed",
+        "ssh_unreachable": r"UNREACHABLE!|Connection timed out|Connection refused|No route to host",
+        "sudo_escalation_failed": r"sudo: a password is required|Missing sudo password|Incorrect sudo password|Failed to become",
+        "target_python_unavailable": r"Python interpreter discovery|/usr/bin/python3: not found|ModuleNotFoundError",
+        "remote_ansible_module_failed": r"MODULE FAILURE|FAILED!|FAILED! =>|module_stdout",
+        "controller_ansible_config_failed": r"ERROR!|Unable to parse|AnsibleError",
+    }
+    try:
+        path = Path(log)
+        meta = path.lstat()
+        if not stat.S_ISREG(meta.st_mode) or meta.st_size > 16 * 1024 * 1024:
+            return ["private_ansible_log_unavailable"]
+        with path.open("rb") as stream:
+            stream.seek(max(0, meta.st_size - 131072))
+            data = stream.read(131072).decode("utf-8", "replace")
+    except (OSError, UnicodeError):
+        return ["private_ansible_log_unavailable"]
+    return sorted(k for k, regex in patterns.items()
+                  if re.search(regex, data, re.IGNORECASE))
+
+
+def run_playbook(work, reports, name, phase, variables, protocol, *,
+                 timeout_seconds=1200):
     protocol["nativeHcp"]["stage"] = name + ":" + phase
     args = work / ("private-vars-" + phase + ".json")
     args.write_text(json.dumps({
@@ -93,15 +143,24 @@ def run_playbook(work, reports, name, phase, variables, protocol, *, timeout_sec
                str(ROOT / "ansible" / "playbooks" / (name + ".yml")),
                "-e", "@" + str(args)]
     logs = work / ("private-ansible-" + phase + ".log")
+    # Explicit early SSH option prevents ansible.cfg's ~/.ssh/known_hosts
+    # from overriding this private, first-connected disposable guest pin.
+    args_ssh = safe_ansible_ssh_args(work / "known_hosts")
     with logs.open("wb") as sink:
         try:
             task = subprocess.run(
                 command, stdout=sink, stderr=subprocess.STDOUT,
                 check=False, timeout=timeout_seconds,
-                env={**os.environ, "ANSIBLE_HOST_KEY_CHECKING": "True"})
+                env={**os.environ,
+                     "ANSIBLE_HOST_KEY_CHECKING": "True",
+                     "ANSIBLE_SSH_ARGS": args_ssh})
         except (OSError, subprocess.TimeoutExpired):
             raise RuntimeError("ansible_execution_unavailable")
-    demand(task.returncode == 0, "ansible_playbook_failed")
+    if task.returncode != 0:
+        protocol["nativeHcp"]["ansibleFailureClass"] = classify_ansible_failure(logs)
+        protocol["nativeHcp"]["ansibleFailedStep"] = name
+        # Never upload/echo raw ansible commands, stdout, stderr or IPs.
+        raise RuntimeError("ansible_playbook_failed")
 
 
 def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
