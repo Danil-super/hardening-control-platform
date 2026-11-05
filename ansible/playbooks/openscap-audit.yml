@@ -12,10 +12,28 @@
     openscap_datastream: "{{ hcp_openscap_datastream | default(lookup('env', 'HCP_OPENSCAP_DATASTREAM'), true) }}"
     openscap_profile: "{{ hcp_openscap_profile | default(lookup('env', 'HCP_OPENSCAP_PROFILE'), true) }}"
     openscap_builtin_astra: "{{ openscap_datastream == '/__hcp_builtin__/astra-baseline.xml' }}"
+    # Opt-in for older managed OpenSCAP engines that can evaluate a
+    # source datastream but cannot assemble the same HCP source bundle.
+    # Always compose + validate with oscap on the control node, then
+    # compare the target's received SHA-256 before any evaluation.
+    openscap_compose_on_controller: "{{ hcp_openscap_compose_on_controller | default(false) | bool }}"
+    # Older target OpenSCAP may reject a modern controller-built SDS even
+    # though the original XCCDF/OVAL/CPE files are schema-supported.
+    # Explicit standalone evaluation still uses the unmodified 18 rules,
+    # schema validation on BOTH controller and guest, and SHA256 per file.
+    openscap_standalone_on_target: "{{ hcp_openscap_standalone_on_target | default(false) | bool }}"
     openscap_policy_group: "{{ hcp_openscap_policy_group | default('environment', true) }}"
     openscap_raw_report: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-openscap-{{ report_suffix }}.xml"
 
   tasks:
+    - name: Refuse an unverified standalone evaluation mode
+      ansible.builtin.assert:
+        that:
+          - openscap_builtin_astra | bool
+          - openscap_compose_on_controller | bool
+        fail_msg: "Standalone form requires exact authored Astra content and controller-validated full SDS."
+      when: openscap_standalone_on_target | bool
+
     - name: Ensure local report directory exists
       ansible.builtin.file:
         path: "{{ scanner_report_dir }}"
@@ -130,6 +148,73 @@
           changed_when: false
           when: openscap_builtin_astra | bool
 
+        - name: Allocate an isolated control-node directory for precomposed Astra content
+          ansible.builtin.tempfile:
+            state: directory
+            prefix: hcp-astra-sds-controller-
+          register: openscap_controller_dir
+          delegate_to: localhost
+          become: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+
+        - name: Copy unchanged HCP baseline and SCE/OVAL dependencies into controller build directory
+          ansible.builtin.copy:
+            src: "{{ playbook_dir }}/../scap/astra/{{ item.name }}"
+            dest: "{{ openscap_controller_dir.path }}/{{ item.name }}"
+            mode: "{{ item.mode }}"
+          loop:
+            - {name: astra-baseline.xml, mode: "0600"}
+            - {name: check.py, mode: "0700"}
+            - {name: astra-platform-oval.xml, mode: "0600"}
+            - {name: astra-cpe-dictionary.xml, mode: "0600"}
+          delegate_to: localhost
+          become: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+
+        - name: Compose the exact HCP Astra XCCDF/SCE source on the controller
+          ansible.builtin.command:
+            argv: [oscap, ds, sds-compose, "{{ openscap_controller_dir.path }}/astra-baseline.xml", "{{ openscap_controller_dir.path }}/astra-baseline-ds.xml"]
+          register: openscap_controller_bundle
+          delegate_to: localhost
+          become: false
+          failed_when: false
+          changed_when: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+
+        - name: Add the original HCP Astra applicability CPE dictionary on the controller
+          ansible.builtin.command:
+            argv: [oscap, ds, sds-add, astra-cpe-dictionary.xml, astra-baseline-ds.xml]
+            chdir: "{{ openscap_controller_dir.path }}"
+          register: openscap_controller_dictionary
+          delegate_to: localhost
+          become: false
+          failed_when: false
+          changed_when: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+            - (openscap_controller_bundle.rc | default(1)) == 0
+
+        - name: Require complete source datastream schema validation on the controller
+          ansible.builtin.command:
+            argv: [oscap, ds, sds-validate, "{{ openscap_controller_dir.path }}/astra-baseline-ds.xml"]
+          register: openscap_controller_validation
+          delegate_to: localhost
+          become: false
+          failed_when: false
+          changed_when: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+            - (openscap_controller_bundle.rc | default(1)) == 0
+            - (openscap_controller_dictionary.rc | default(1)) == 0
+
         - name: Bundle the actual XCCDF and SCE script into one evaluated datastream
           ansible.builtin.command:
             argv:
@@ -141,7 +226,9 @@
           changed_when: false
           failed_when: false
           register: openscap_bundle
-          when: openscap_builtin_astra | bool
+          when:
+            - openscap_builtin_astra | bool
+            - not (openscap_compose_on_controller | bool)
 
         - name: Add the native Astra family applicability dictionary
           ansible.builtin.command:
@@ -152,6 +239,7 @@
           register: openscap_dictionary
           when:
             - openscap_builtin_astra | bool
+            - not (openscap_compose_on_controller | bool)
             - (openscap_bundle.rc | default(1)) == 0
 
         - name: Require schema validation of the complete native OVAL and SCE datastream
@@ -162,16 +250,134 @@
           register: openscap_bundle_validation
           when:
             - openscap_builtin_astra | bool
+            - not (openscap_compose_on_controller | bool)
             - (openscap_bundle.rc | default(1)) == 0
             - (openscap_dictionary.rc | default(1)) == 0
 
         - name: Record whether all content preparation gates passed
           ansible.builtin.set_fact:
-            openscap_prepared: "{{ not (openscap_builtin_astra | bool) or ((openscap_bundle.rc | default(1)) == 0 and (openscap_dictionary.rc | default(1)) == 0 and (openscap_bundle_validation.rc | default(1)) == 0) }}"
+            openscap_prepared: "{{ not (openscap_builtin_astra | bool) or ((((openscap_compose_on_controller | bool) and (openscap_controller_bundle.rc | default(1)) == 0 and (openscap_controller_dictionary.rc | default(1)) == 0 and (openscap_controller_validation.rc | default(1)) == 0)) or ((not (openscap_compose_on_controller | bool)) and (openscap_bundle.rc | default(1)) == 0 and (openscap_dictionary.rc | default(1)) == 0 and (openscap_bundle_validation.rc | default(1)) == 0)) }}"
+
+        - name: Hash the source datastream already validated on the controller
+          ansible.builtin.stat:
+            path: "{{ openscap_controller_dir.path }}/astra-baseline-ds.xml"
+            checksum_algorithm: sha256
+          register: openscap_controller_built_file
+          delegate_to: localhost
+          become: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+            - openscap_prepared | bool
+
+        - name: Transfer only the schema-validated, original controller datastream to Astra
+          ansible.builtin.copy:
+            src: "{{ openscap_controller_dir.path }}/astra-baseline-ds.xml"
+            dest: "{{ openscap_remote_dir.path }}/astra-baseline-ds.xml"
+            owner: root
+            group: root
+            mode: "0600"
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+            - openscap_prepared | bool
+            - openscap_controller_built_file.stat.isreg | default(false) | bool
+
+
+        - name: Check exact HCP authored standalone XML schemas on the actual target
+          ansible.builtin.command:
+            argv: [oscap, "{{ item.engine }}", validate, "{{ openscap_remote_dir.path }}/{{ item.source }}"]
+          loop:
+            - {engine: xccdf, source: astra-baseline.xml}
+            - {engine: oval, source: astra-platform-oval.xml}
+            - {engine: cpe, source: astra-cpe-dictionary.xml}
+          register: openscap_standalone_target_validation
+          changed_when: false
+          failed_when: false
+          no_log: true
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_standalone_on_target | bool
+            - openscap_prepared | bool
+
+        - name: Retain bounded target XML schema errors in private controller diagnostics only
+          ansible.builtin.copy:
+            content: "{{ {'schemaVersion': 1, 'validators': [
+                {'kind': 'xccdf', 'exitCode': openscap_standalone_target_validation.results[0].rc | default(none),
+                 'stdout': (openscap_standalone_target_validation.results[0].stdout | default(''))[:2048],
+                 'stderr': (openscap_standalone_target_validation.results[0].stderr | default(''))[:2048]},
+                {'kind': 'oval', 'exitCode': openscap_standalone_target_validation.results[1].rc | default(none),
+                 'stdout': (openscap_standalone_target_validation.results[1].stdout | default(''))[:2048],
+                 'stderr': (openscap_standalone_target_validation.results[1].stderr | default(''))[:2048]},
+                {'kind': 'cpe', 'exitCode': openscap_standalone_target_validation.results[2].rc | default(none),
+                 'stdout': (openscap_standalone_target_validation.results[2].stdout | default(''))[:2048],
+                 'stderr': (openscap_standalone_target_validation.results[2].stderr | default(''))[:2048]}
+              ]} | to_nice_json }}"
+            dest: "{{ openscap_raw_report }}.standalone-diagnostics.json"
+            mode: "0600"
+          delegate_to: localhost
+          become: false
+          no_log: true
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_standalone_on_target | bool
+            - hcp_openscap_keep_arf | default(false) | bool
+            - openscap_standalone_target_validation is defined
+            - openscap_standalone_target_validation.results | default([]) | length == 3
+
+        - name: Hash all unchanged authored standalone components on the controller
+          ansible.builtin.stat:
+            path: "{{ playbook_dir }}/../scap/astra/{{ item }}"
+            checksum_algorithm: sha256
+          loop:
+            - astra-baseline.xml
+            - check.py
+            - astra-platform-oval.xml
+            - astra-cpe-dictionary.xml
+          register: openscap_standalone_controller_hashes
+          delegate_to: localhost
+          become: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_standalone_on_target | bool
+            - openscap_prepared | bool
+
+        - name: Hash all copied authored standalone components on the target
+          ansible.builtin.stat:
+            path: "{{ openscap_remote_dir.path }}/{{ item }}"
+            checksum_algorithm: sha256
+          loop:
+            - astra-baseline.xml
+            - check.py
+            - astra-platform-oval.xml
+            - astra-cpe-dictionary.xml
+          register: openscap_standalone_target_hashes
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_standalone_on_target | bool
+            - openscap_prepared | bool
+
+        - name: Prove four original standalone components are unchanged in transit
+          ansible.builtin.assert:
+            that:
+              - openscap_standalone_controller_hashes.results | length == 4
+              - openscap_standalone_target_hashes.results | length == 4
+              - openscap_standalone_controller_hashes.results | selectattr('stat.isreg', 'equalto', true) | list | length == 4
+              - openscap_standalone_target_hashes.results | selectattr('stat.isreg', 'equalto', true) | list | length == 4
+              - openscap_standalone_controller_hashes.results | map(attribute='stat.checksum') | list == openscap_standalone_target_hashes.results | map(attribute='stat.checksum') | list
+            fail_msg: "One or more original XCCDF/SCE/OVAL/CPE SHA-256 values differ; evaluation refused."
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_standalone_on_target | bool
+            - openscap_prepared | bool
+
+        - name: Require native schema acceptance for every standalone XML source
+          ansible.builtin.set_fact:
+            openscap_prepared: "{{ (openscap_prepared | bool) and (not (openscap_standalone_on_target | bool) or ((openscap_standalone_target_validation.results | default([]) | selectattr('rc', 'equalto', 0) | list | length) == 3)) }}"
 
         - name: Select the actual evaluation content
           ansible.builtin.set_fact:
-            openscap_evaluation_content: "{{ openscap_remote_dir.path ~ '/astra-baseline-ds.xml' if (openscap_builtin_astra | bool) else openscap_datastream }}"
+            openscap_evaluation_content: "{{ (openscap_remote_dir.path ~ '/astra-baseline.xml') if (openscap_standalone_on_target | bool) else ((openscap_remote_dir.path ~ '/astra-baseline-ds.xml') if (openscap_builtin_astra | bool) else openscap_datastream) }}"
 
         - name: Fingerprint the actual content including bundled SCE code
           ansible.builtin.stat:
@@ -179,10 +385,23 @@
             checksum_algorithm: sha256
           register: openscap_evaluated_content
 
+        - name: Refuse to evaluate controller content changed in transit or absent on guest
+          ansible.builtin.assert:
+            that:
+              - openscap_evaluated_content.stat.isreg | default(false) | bool
+              - openscap_controller_built_file.stat.isreg | default(false) | bool
+              - openscap_evaluated_content.stat.checksum == openscap_controller_built_file.stat.checksum
+            fail_msg: "Schema-validated controller source checksum differs from guest. No OpenSCAP evaluation was performed."
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+            - not (openscap_standalone_on_target | bool)
+            - openscap_prepared | bool
+
         - name: Retain the exact compiled content only for explicitly requested audit evidence
           ansible.builtin.fetch:
             src: "{{ openscap_evaluation_content }}"
-            dest: "{{ openscap_raw_report }}.datastream.xml"
+            dest: "{{ openscap_raw_report }}{{ '.evaluated-xccdf.xml' if (openscap_standalone_on_target | bool) else '.datastream.xml' }}"
             flat: true
           no_log: true
           when:
@@ -202,7 +421,7 @@
               - --run-id
               - "{{ report_suffix }}"
               - --reason
-              - "{{ 'Не удалось подготовить встроенный профиль Astra: compose=' ~ (openscap_bundle.rc | default('unknown') | string) ~ ', dictionary=' ~ (openscap_dictionary.rc | default('unknown') | string) ~ ', validation=' ~ (openscap_bundle_validation.rc | default('unknown') | string) ~ '; ' ~ (((openscap_bundle.stderr | default('')) ~ (openscap_dictionary.stderr | default('')) ~ (openscap_bundle_validation.stderr | default('')))[:2000]) }}"
+              - "{{ 'Не удалось подготовить встроенный профиль Astra: compose=' ~ ((openscap_controller_bundle.rc | default('unknown') | string) if (openscap_compose_on_controller | bool) else (openscap_bundle.rc | default('unknown') | string)) ~ ', dictionary=' ~ ((openscap_controller_dictionary.rc | default('unknown') | string) if (openscap_compose_on_controller | bool) else (openscap_dictionary.rc | default('unknown') | string)) ~ ', validation=' ~ ((openscap_controller_validation.rc | default('unknown') | string) if (openscap_compose_on_controller | bool) else (openscap_bundle_validation.rc | default('unknown') | string)) ~ '; ' ~ (((openscap_controller_bundle.stderr | default('')) ~ (openscap_controller_dictionary.stderr | default('')) ~ (openscap_controller_validation.stderr | default('')))[:2000] if (openscap_compose_on_controller | bool) else (((openscap_bundle.stderr | default('')) ~ (openscap_dictionary.stderr | default('')) ~ (openscap_bundle_validation.stderr | default('')))[:2000])) ~ (('; standalone_rcs=' ~ (openscap_standalone_target_validation.results | default([]) | selectattr('rc', 'defined') | map(attribute='rc') | join(','))) if (openscap_standalone_on_target | bool) else '') }}"
               - --profile
               - "{{ openscap_profile }}"
               - --datastream
@@ -216,7 +435,30 @@
           changed_when: false
           when: not (openscap_evaluated_content.stat.isreg | default(false) | bool) or not (openscap_prepared | bool)
 
-        - name: Evaluate the complete selected profile without remediation
+
+        - name: Inspect controller-validated SDS on target using read-only oscap info
+          ansible.builtin.command:
+            argv: [oscap, info, "{{ openscap_remote_dir.path }}/astra-baseline-ds.xml"]
+          register: openscap_target_sds_info
+          changed_when: false
+          failed_when: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+            - openscap_prepared | bool
+
+        - name: Check controller-validated SDS schema with the target OpenSCAP engine
+          ansible.builtin.command:
+            argv: [oscap, ds, sds-validate, "{{ openscap_remote_dir.path }}/astra-baseline-ds.xml"]
+          register: openscap_target_sds_validate
+          changed_when: false
+          failed_when: false
+          when:
+            - openscap_builtin_astra | bool
+            - openscap_compose_on_controller | bool
+            - openscap_prepared | bool
+
+        - name: Evaluate normal complete SDS profile without remediation
           ansible.builtin.command:
             argv:
               - oscap
@@ -229,10 +471,36 @@
               - "{{ openscap_evaluation_content }}"
           changed_when: false
           failed_when: false
-          register: openscap_run
+          register: openscap_run_sds
           when:
+            - not (openscap_standalone_on_target | bool)
             - openscap_evaluated_content.stat.isreg | default(false) | bool
             - openscap_prepared | bool
+
+        - name: Evaluate the unchanged XCCDF profile with original CPE/OVAL/SCE sidecars on old OpenSCAP
+          ansible.builtin.command:
+            argv:
+              - oscap
+              - xccdf
+              - eval
+              - --cpe
+              - "{{ openscap_remote_dir.path }}/astra-cpe-dictionary.xml"
+              - --profile
+              - "{{ openscap_profile }}"
+              - --results-arf
+              - "{{ openscap_remote_dir.path }}/results.arf.xml"
+              - "{{ openscap_evaluation_content }}"
+          changed_when: false
+          failed_when: false
+          register: openscap_run_standalone
+          when:
+            - openscap_standalone_on_target | bool
+            - openscap_evaluated_content.stat.isreg | default(false) | bool
+            - openscap_prepared | bool
+
+        - name: Select actual OpenSCAP run record without inventing missing evaluations
+          ansible.builtin.set_fact:
+            openscap_run: "{{ openscap_run_standalone if (openscap_standalone_on_target | bool) else openscap_run_sds }}"
 
         - name: Check OpenSCAP ARF result
           ansible.builtin.stat:
@@ -275,7 +543,7 @@
               - --exit-code
               - "{{ openscap_run.rc | default(1) | string }}"
               - --reason
-              - "{{ (openscap_run.stderr | default(''))[:2000] }}"
+              - "{{ (openscap_run.stderr | default(''))[:1400] ~ (('; target_info_rc=' ~ (openscap_target_sds_info.rc | default('unknown') | string) ~ '; target_schema_rc=' ~ (openscap_target_sds_validate.rc | default('unknown') | string)) if (openscap_compose_on_controller | bool) else '') }}"
               - --profile
               - "{{ openscap_profile }}"
               - --datastream
@@ -286,6 +554,9 @@
               - "{{ openscap_evaluated_content.stat.mtime | default('') | string }}"
               - --datastream-checksum
               - "{{ 'sha256:' ~ openscap_evaluated_content.stat.checksum if openscap_evaluated_content.stat.checksum is defined else '' }}"
+              - --evaluation-form
+              - "{{ 'original-standalone-xccdf' if (openscap_standalone_on_target | bool) else 'validated-source-datastream' }}"
+
               - --content-id
               - "{{ openscap_bundle_identity.stdout | default('') if openscap_builtin_astra | bool else '' }}"
               - --output
@@ -300,6 +571,16 @@
             path: "{{ openscap_remote_dir.path }}"
             state: absent
           when: openscap_remote_dir is defined and openscap_remote_dir.path is defined
+
+        - name: Remove temporary precomposed source directory from control node
+          ansible.builtin.file:
+            path: "{{ openscap_controller_dir.path }}"
+            state: absent
+          delegate_to: localhost
+          become: false
+          when:
+            - openscap_controller_dir is defined
+            - openscap_controller_dir.path is defined
 
         - name: Remove transient ARF from control node
           ansible.builtin.file:

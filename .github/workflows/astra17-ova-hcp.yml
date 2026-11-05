@@ -1,0 +1,82 @@
+name: Genuine Astra SE 1.7.6.15 HCP three-stage 18-rule experiment
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/astra17-ova-hcp.yml
+      - deployment/tests/verify_astra17_ova_audit.py
+      - deployment/tests/test_astra17_ova_audit.py
+      - deployment/tests/verify_astra17_ova_kvm.py
+      - ansible/scap/astra/**
+      - ansible/playbooks/collect-facts.yml
+      - ansible/playbooks/package-inventory.yml
+      - ansible/playbooks/openscap-audit.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-astra17-hcp:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and Ansible for disposable native controller
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client sshpass python3-venv openscap-scanner
+          if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+      - name: Offline negative tests of strict 18-rule evidence contract
+        run: python3 -m unittest discover -s deployment/tests -p test_astra17_ova_audit.py -v
+      - name: Use isolated Python-3.7-compatible ansible-core only on disposable CI controller
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          python3 -m venv "$RUNNER_TEMP/hcp-astra17-ansible217"
+          "$RUNNER_TEMP/hcp-astra17-ansible217/bin/python" -m pip install --no-cache-dir --only-binary=:all: 'ansible-core==2.17.14'
+          "$RUNNER_TEMP/hcp-astra17-ansible217/bin/ansible-playbook" --version
+          printf '%s\n' "$RUNNER_TEMP/hcp-astra17-ansible217/bin" >> "$GITHUB_PATH"
+          printf '%s\n' 'HCP_ASTRA17_CI_ANSIBLE_PIN=2.17.14' >> "$GITHUB_ENV"
+      - name: Cache only original public SHA-pinned Astra OVA (verified independently on every hit)
+        id: public-ova-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-public-ova-cache
+          key: hcp-astra17-public-ova-72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e
+      - name: Boot actual pinned 1.7.6.15 OVA and exercise HCP Ansible and original OpenSCAP
+        env:
+          HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR: ${{ runner.temp }}/hcp-astra17-public-ova-cache
+        run: |
+          python3 deployment/tests/verify_astra17_ova_kvm.py \
+            --work-dir "$RUNNER_TEMP/hcp-real-astra17-ova-hcp-private" \
+            --public-protocol "$RUNNER_TEMP/hcp-real-astra17-hcp-public.json" \
+            --native-hcp-three-stage
+      - name: Verify exact immutable public image for cache after scanner job
+        if: always()
+        id: verified-public-ova
+        run: |
+          set -euo pipefail
+          image="$RUNNER_TEMP/hcp-astra17-public-ova-cache/alse-1.7.6.uu2-base-virtualbox-mg15.3.1-amd64.ova"
+          if test -f "$image" && test ! -L "$image" \
+              && test "$(stat -c %s "$image")" -eq 427995648 \
+              && printf '%s  %s\n' '72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e' "$image" | sha256sum --check --strict --status; then
+            printf '%s\n' 'verified=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save only byte-verified ORIGINAL public OVA even if scanner fails
+        if: always() && steps.verified-public-ova.outputs.verified == 'true' && steps.public-ova-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-public-ova-cache
+          key: hcp-astra17-public-ova-72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e
+      - name: Upload safe outcome only (no guest logs, image, SSH keys or raw ARF)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra17-real-hcp-18-rule-status-only
+          path: ${{ runner.temp }}/hcp-real-astra17-hcp-public.json
+          retention-days: 14
+          if-no-files-found: warn

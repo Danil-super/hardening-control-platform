@@ -1,0 +1,636 @@
+"""Offline contract/negative checks; actual Astra 1.7 CI is separate."""
+from copy import deepcopy
+import json
+import os
+import tempfile
+from pathlib import Path
+import unittest
+
+from verify_astra_vm import RULE
+import verify_astra17_ova_audit as audit
+
+
+class NativeAstra17AuditTests(unittest.TestCase):
+    def fixture(self):
+        before = {"xccdf_org.hcp_rule_sample_" + str(i): "pass" for i in range(17)}
+        before[RULE] = "pass"
+        after = deepcopy(before)
+        after[RULE] = "fail"
+        return {"baseline": before, "violation": after,
+                "restored": deepcopy(before)}
+
+    def test_exactly_one_observed_rule_and_restoration_are_required(self):
+        actual = audit.validate_native_three_stage(self.fixture())
+        self.assertEqual(actual["testedRules"], 18)
+        self.assertEqual(actual["counts"]["baseline"]["failed"], 0)
+        self.assertEqual(actual["counts"]["violation"]["failed"], 1)
+        self.assertEqual(actual["counts"]["restored"]["failed"], 0)
+        self.assertTrue(actual["restoredMatchesBaseline18Rules"])
+        self.assertFalse(actual["fullOsRollbackProven"])
+        self.assertFalse(actual["cveCoverageProven"])
+
+    def test_unknown_missing_duplicate_changed_and_extra_rule_rejected(self):
+        original = self.fixture()
+        variations = []
+        case = deepcopy(original)
+        case["baseline"].pop(RULE)
+        variations.append(case)
+        case = deepcopy(original)
+        case["restored"][RULE] = "manual"
+        variations.append(case)
+        case = deepcopy(original)
+        case["restored"][RULE] = "fail"
+        variations.append(case)
+        case = deepcopy(original)
+        case["violation"][RULE] = "pass"
+        variations.append(case)
+        case = deepcopy(original)
+        case["violation"]["xccdf_org.hcp_rule_sample_0"] = "fail"
+        variations.append(case)
+        case = deepcopy(original)
+        case["restored"]["xccdf_org.hcp_rule_sample_0"] = "fail"
+        variations.append(case)
+        case = deepcopy(original)
+        case["violation"]["foreign_rule"] = "pass"
+        variations.append(case)
+        case = deepcopy(original)
+        case["extra"] = case["baseline"]
+        variations.append(case)
+        for mutant in variations:
+            with self.subTest(stage=json.dumps(list(mutant))):
+                with self.assertRaises(RuntimeError):
+                    audit.validate_native_three_stage(mutant)
+
+    def test_native_ansible_ssh_options_precede_repository_known_hosts_config(self):
+        with tempfile.TemporaryDirectory() as d:
+            known = Path(d) / "known_hosts"
+            known.write_text("[127.0.0.1]:2222 ssh-ed25519 " + "A" * 70 + "\n")
+            os.chmod(known, 0o600)
+            args = audit.safe_ansible_ssh_args(known)
+            self.assertIn("StrictHostKeyChecking=yes", args)
+            self.assertIn("UserKnownHostsFile=", args)
+            self.assertIn(str(known), args)
+            self.assertIn("GlobalKnownHostsFile=/dev/null", args)
+            self.assertIn("HostKeyAlgorithms=ssh-ed25519", args)
+            self.assertNotIn("StrictHostKeyChecking=no", args)
+            self.assertNotIn("~/.ssh/known_hosts", args)
+            os.chmod(known, 0o644)
+            with self.assertRaises(RuntimeError):
+                audit.safe_ansible_ssh_args(known)
+            known.unlink()
+            known.symlink_to(Path(d) / "elsewhere")
+            with self.assertRaises((RuntimeError, FileNotFoundError)):
+                audit.safe_ansible_ssh_args(known)
+
+    def test_private_ansible_failure_diagnostics_allow_only_known_categories(self):
+        with tempfile.TemporaryDirectory() as d:
+            private_log = Path(d) / "ansible-private.log"
+            private_log.write_text(
+                "UNREACHABLE! Host key verification failed:\\n"
+                "SENSITIVE_MACHINE_ID=abc-private-host\\n")
+            result = audit.classify_ansible_failure(private_log)
+            self.assertEqual(result,
+                             ["ssh_host_key_verification", "ssh_unreachable"])
+            self.assertNotIn("abc-private-host", json.dumps(result))
+            self.assertNotIn("SENSITIVE_MACHINE_ID", json.dumps(result))
+
+    def test_upstream_python_ansible_support_bounds_do_not_claim_compatibility(self):
+        self.assertEqual(audit.upstream_ansible_target_range(15), (5, 11))
+        self.assertEqual(audit.upstream_ansible_target_range(16), (6, 12))
+        self.assertEqual(audit.upstream_ansible_target_range(17), (7, 12))
+        self.assertEqual(audit.upstream_ansible_target_range(19), (8, 13))
+        self.assertEqual(audit.upstream_ansible_target_range(21), (9, 14))
+        self.assertIsNone(audit.upstream_ansible_target_range(99))
+
+    def test_runtime_preflight_checks_actual_guest_python_and_controller_ansible(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        probe = {"nativeHcp": {}}
+        def ssh(command, timeout=30):
+            self.assertIn("python3 -c", command)
+            return "3.7\\n".replace("\\n", "\n")
+        fake = SimpleNamespace(returncode=0,
+                               stdout="ansible-playbook [core 2.16.3]\\n".replace("\\n", "\n"))
+        # This test verifies support-matrix parsing independent of the CI
+        # pin; it intentionally mocks 2.16 while the real CI requires 2.17.
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(audit.subprocess, "run", return_value=fake):
+            supported = audit.check_ansible_runtime_support(ssh, probe)
+        self.assertTrue(supported["targetWithinUpstreamSupportedRange"])
+        self.assertEqual(supported["targetPython"], "3.7")
+        self.assertEqual(supported["ansibleCore"], "2.16")
+        self.assertNotIn("private", json.dumps(supported))
+        with patch.dict(os.environ, {}, clear=True), \
+             patch.object(audit.subprocess, "run", return_value=fake):
+            with self.assertRaisesRegex(RuntimeError, "target_python_outside"):
+                audit.check_ansible_runtime_support(
+                    lambda *_a, **_k: "3.5\\n".replace("\\n", "\n"),
+                    {"nativeHcp": {}})
+
+    def test_lab_only_pinned_controller_bypasses_no_python_or_identity_gate(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        fake = SimpleNamespace(returncode=0,
+                               stdout="ansible-playbook [core 2.17.14]\n")
+        pin_env = {"HCP_ASTRA17_CI_ANSIBLE_PIN": "2.17.14",
+                   "GITHUB_ACTIONS": "true",
+                   "RUNNER_ENVIRONMENT": "github-hosted",
+                   "RUNNER_TEMP": "/runner-owned"}
+        with patch.dict(os.environ, pin_env), \
+             patch.object(audit.subprocess, "run", return_value=fake), \
+             patch.object(audit.shutil, "which", return_value="/runner-owned/hcp-astra17-ansible217/bin/ansible-playbook"):
+            target = {"nativeHcp": {}}
+            result = audit.check_ansible_runtime_support(
+                lambda *_a, **_k: "3.7\n", target)
+            self.assertTrue(result["targetWithinUpstreamSupportedRange"])
+            self.assertTrue(result["isolatedLabAnsibleVersionPinVerified"])
+            self.assertTrue(result["labOnlyUnsupportedAnsibleEol"])
+            self.assertEqual(result["ansibleCoreExactVersion"], "2.17.14")
+            with self.assertRaisesRegex(RuntimeError, "target_python_outside"):
+                audit.check_ansible_runtime_support(
+                    lambda *_a, **_k: "3.5\n", {"nativeHcp": {}})
+        with patch.dict(os.environ, {**pin_env, "RUNNER_ENVIRONMENT": "self-hosted"}), \
+             patch.object(audit.subprocess, "run", return_value=fake):
+            with self.assertRaisesRegex(RuntimeError, "lab_only_ansible_pin_context_invalid"):
+                audit.check_ansible_runtime_support(
+                    lambda *_a, **_k: "3.7\n", {"nativeHcp": {}})
+
+    def test_native_workflows_only_isolate_legacy_ansible_on_ephemeral_runner(self):
+        workflow = (audit.ROOT / ".github/workflows/astra17-ova-hcp.yml").read_text()
+        self.assertIn("ansible-core==2.17.14", workflow)
+        self.assertIn("test \"$RUNNER_ENVIRONMENT\" = github-hosted", workflow)
+        self.assertIn("HCP_ASTRA17_CI_ANSIBLE_PIN=2.17.14", workflow)
+        self.assertIn("RUNNER_TEMP/hcp-astra17-ansible217", workflow)
+        self.assertNotIn("sudo pip install", workflow)
+
+    def test_nonzero_raw_probe_cannot_skip_to_native_scanner(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            known = root / "known_hosts"
+            known.write_text("pinned-key\\n")
+            os.chmod(known, 0o600)
+            def failed(args, **kwargs):
+                self.assertEqual(args[0], "ansible")
+                self.assertIn("ANSIBLE_SSH_ARGS", kwargs["env"])
+                kwargs["stdout"].write(b"fatal host: private-key omitted")
+                return SimpleNamespace(returncode=2)
+            protocol = {"nativeHcp": {}}
+            with patch.object(audit.subprocess, "run", side_effect=failed):
+                with self.assertRaisesRegex(RuntimeError, "ansible_transport_probe_failed"):
+                    audit.native_ansible_transport_preflight(root, protocol)
+            self.assertEqual(protocol["nativeHcp"]["ansibleTransportFailedAt"], "ssh_raw")
+            self.assertEqual(protocol["nativeHcp"]["ansibleTransportStages"], [])
+            self.assertEqual(protocol["nativeHcp"]["ansibleFailureReturnCode"], 2)
+            self.assertNotIn("private-key", json.dumps(protocol))
+
+
+    def test_target_sds_probe_codes_and_component_hints_never_expose_private_text(self):
+        with tempfile.TemporaryDirectory() as d:
+            folder = Path(d)
+            report = folder / "normalized-private.json"
+            secret = "SENSITIVE_PRIVATE_GUEST_NAME_DO_NOT_SHARE"
+            report.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {
+                    "available": True,
+                    "partial": True,
+                    "scannerExitCode": 1,
+                    "reason": ("No such file or directory astra-platform-oval.xml; "
+                               "target_info_rc=1; target_schema_rc=0; "
+                               "check.py " + secret),
+                },
+                "findings": [],
+            }))
+            observed = audit.native_openscap_failure_observation(
+                folder / "absent-arf", folder / "missing-datastream", report)
+            self.assertEqual(
+                observed["targetReadOnlySdsProbeExitCodes"],
+                {"oscap_info": 1, "oscap_schema": 0},
+            )
+            self.assertEqual(
+                observed["componentReferenceCategories"],
+                ["oval_component_referenced_in_error",
+                 "sce_script_referenced_in_error"],
+            )
+            self.assertIn("openscap_missing_file", observed["reasonCategories"])
+            self.assertNotIn(secret, json.dumps(observed))
+            self.assertNotIn(str(folder), json.dumps(observed))
+            self.assertNotIn("astra-platform-oval.xml", json.dumps(observed))
+            self.assertEqual(
+                observed["status"], "native-openscap-original-evidence-incomplete")
+
+    def test_target_sds_inspection_is_read_only_and_additional_to_schema_gate(self):
+        playbook = (
+            audit.ROOT / "ansible/playbooks/openscap-audit.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "Inspect controller-validated SDS on target using read-only oscap info",
+            playbook)
+        self.assertIn(
+            "Check controller-validated SDS schema with the target OpenSCAP engine",
+            playbook)
+        self.assertIn("openscap_target_sds_info.rc", playbook)
+        self.assertIn("openscap_target_sds_validate.rc", playbook)
+        self.assertIn("oscap, info", playbook)
+        self.assertIn("oscap, ds, sds-validate", playbook)
+        self.assertIn(
+            "openscap_evaluated_content.stat.checksum == "
+            "openscap_controller_built_file.stat.checksum", playbook)
+        self.assertNotIn("--skip-validation", playbook)
+
+    def test_failed_scap_report_is_diagnosed_only_as_allowlisted_aggregate(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            raw = root / ".native.arf.xml"
+            stream = root / ".native.arf.xml.datastream.xml"
+            report = root / "native-openscap.json"
+            private_secret = "REDACT_THIS_RANDOM_PRIVATE_USER_VALUE"
+            report.write_text(json.dumps({
+                "mode": "openscap", "partial": True,
+                "scanner": {
+                    "available": False, "partial": True,
+                    "reason": "Не удалось подготовить встроенный профиль Astra: "
+                              "compose=1, dictionary=1, validation=1; "
+                              "SCE plugin not available " + private_secret,
+                    "partialReasons": ["Invalid option; /hidden/path " + private_secret],
+                    "scannerExitCode": 2,
+                },
+                "findings": [{"description": "Profile not found " + private_secret}],
+            }))
+            result = audit.native_openscap_failure_observation(raw, stream, report)
+            self.assertFalse(result["rawArfPresent"])
+            self.assertFalse(result["executedDatastreamPresent"])
+            self.assertTrue(result["normalizedReportPresent"])
+            self.assertFalse(result["reportedScannerAvailable"])
+            self.assertTrue(result["reportedPartial"])
+            self.assertEqual(result["reportedScannerExitCode"], 2)
+            self.assertEqual(result["normalizedFindingCount"], 1)
+            self.assertEqual(result["preparationExitCodes"],
+                             {"compose": 1, "dictionary": 1, "validation": 1})
+            self.assertIn("sce_plugin_unavailable", result["reasonCategories"])
+            self.assertIn("openscap_unsupported_command", result["reasonCategories"])
+            self.assertIn("openscap_profile_missing", result["reasonCategories"])
+            self.assertNotIn(private_secret, json.dumps(result))
+            self.assertNotIn("/hidden/path", json.dumps(result))
+            self.assertNotIn(str(root), json.dumps(result))
+            # Missing source file never becomes PASS even with normalized JSON.
+            self.assertEqual(result["status"],
+                             "native-openscap-original-evidence-incomplete")
+
+    def test_native_openscap_complete_artifacts_still_require_full_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            raw, datastream, normalized = (
+                root / "raw.arf", root / "bundle.xml", root / "normalized.json")
+            raw.write_text("fake ARF fixture -- not evidence")
+            datastream.write_text("fake datastream fixture")
+            normalized.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {"available": True, "partial": False,
+                            "scannerExitCode": 0},
+                "findings": [],
+            }))
+            result = audit.native_openscap_failure_observation(
+                raw, datastream, normalized)
+            self.assertTrue(result["rawArfPresent"])
+            self.assertTrue(result["executedDatastreamPresent"])
+            self.assertTrue(result["normalizedReportPresent"])
+            self.assertEqual(result["status"],
+                             "native-openscap-original-evidence-incomplete")
+            self.assertFalse(result["reportedPartial"])
+            # This is only diagnostic. Real acceptance requires raw_results()
+            # and verify_baseline_report() checks in production-derived runner.
+
+    def test_opt_in_controller_composition_never_bypasses_schema_validation(self):
+        source = (audit.ROOT / "ansible/playbooks/openscap-audit.yml").read_text()
+        self.assertIn("openscap_compose_on_controller", source)
+        self.assertIn("controller source checksum differs", source.lower())
+        self.assertIn("sds-validate", source)
+        self.assertIn("openscap_controller_built_file.stat.checksum", source)
+        self.assertIn("openscap_evaluated_content.stat.checksum", source)
+        self.assertIn("- not (openscap_compose_on_controller | bool)", source)
+        self.assertIn("controllerSideSdsSchemaValidationRequested", Path(audit.__file__).read_text())
+
+    def test_standalone_native_xccdf_requires_original_components_and_real_validation(self):
+        playbook = (audit.ROOT / "ansible/playbooks/openscap-audit.yml").read_text()
+        for name in ("astra-baseline.xml", "check.py",
+                     "astra-platform-oval.xml", "astra-cpe-dictionary.xml"):
+            self.assertIn(name, playbook)
+        self.assertIn("hcp_openscap_standalone_on_target | default(false)", playbook)
+        self.assertIn("Refuse an unverified standalone evaluation mode", playbook)
+        self.assertIn("Check exact HCP authored standalone XML schemas", playbook)
+        self.assertIn("Prove four original standalone components are unchanged in transit", playbook)
+        self.assertIn("openscap_standalone_target_validation.results", playbook)
+        self.assertIn("openscap_standalone_controller_hashes.results", playbook)
+        self.assertIn("openscap_standalone_target_hashes.results", playbook)
+        self.assertIn("original-standalone-xccdf", playbook)
+        self.assertIn("--cpe", playbook)
+        self.assertIn("openscap_standalone_on_target | bool", playbook)
+        self.assertNotIn("--skip-validation", playbook)
+        code = Path(audit.__file__).read_text()
+        self.assertIn('"hcp_openscap_standalone_on_target": True', code)
+        self.assertIn('evaluated-xccdf.xml', code)
+        self.assertIn('native_openscap_evaluation_form_misrepresented', code)
+
+    def test_private_native_xccdf_oval_cpe_error_classes_are_sanitized(self):
+        import stat
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "private-schema-diagnostics.json"
+            secret = "TOP_SECRET_REAL_GUEST_HOST_SHOULD_NOT_LEAK"
+            record = {
+                "schemaVersion": 1,
+                "validators": [
+                    {"kind": "xccdf", "exitCode": 1,
+                     "stdout": "Usage: oscap xccdf validate ... " + secret,
+                     "stderr": "Unknown command validate " + secret},
+                    {"kind": "oval", "exitCode": 1,
+                     "stdout": "",
+                     "stderr": "XML schema version unsupported; No such file or directory "
+                               + secret},
+                    {"kind": "cpe", "exitCode": 1,
+                     "stdout": "",
+                     "stderr": "Failed to load schema /hidden/private/secret.xsd "
+                               + secret},
+                ],
+            }
+            path.write_text(json.dumps(record), encoding="utf-8")
+            path.chmod(0o600)
+            classified = audit.classify_private_standalone_xml_validator_logs(path)
+            self.assertTrue(classified["available"])
+            self.assertEqual(
+                list(classified["validators"]), ["xccdf", "oval", "cpe"])
+            self.assertEqual(
+                classified["validators"]["xccdf"]["diagnosticClasses"],
+                ["validator_command_not_supported"])
+            self.assertIn(
+                "unsupported_xml_schema_version",
+                classified["validators"]["oval"]["diagnosticClasses"])
+            self.assertIn(
+                "required_schema_missing",
+                classified["validators"]["cpe"]["diagnosticClasses"])
+            self.assertFalse(
+                classified["validators"]["oval"]["nativeSchemaValidationSucceeded"])
+            self.assertNotIn(secret, json.dumps(classified))
+            self.assertNotIn("/hidden/private/", json.dumps(classified))
+            self.assertNotIn("stderr", json.dumps(classified))
+            self.assertNotIn("stdout", json.dumps(classified))
+            report = root / "partial.json"
+            report.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {"available": False, "partial": True,
+                            "reason": "standalone_rcs=1,1,1"},
+                "findings": [],
+            }), encoding="utf-8")
+            summary = audit.native_openscap_failure_observation(
+                root / "absent-ARF", root / "absent-XCCDF", report,
+                evaluation_form="original-standalone-xccdf",
+                standalone_private_diagnostics=path)
+            self.assertTrue(
+                summary["standaloneXmlPrivateErrorClassification"]["available"])
+            self.assertEqual(
+                summary["standaloneXmlSchemaExitCodes"],
+                {"xccdf": 1, "oval": 1, "cpe": 1})
+            self.assertNotIn(secret, json.dumps(summary))
+            self.assertEqual(
+                summary["status"], "native-openscap-original-evidence-incomplete")
+
+            path.chmod(0o644)
+            self.assertFalse(
+                audit.classify_private_standalone_xml_validator_logs(path)["available"])
+            path.chmod(0o600)
+            link = root / "linked-diagnostics.json"
+            link.symlink_to(path)
+            self.assertFalse(
+                audit.classify_private_standalone_xml_validator_logs(link)["available"])
+            record["validators"][1]["kind"] = "xccdf"
+            path.write_text(json.dumps(record), encoding="utf-8")
+            self.assertFalse(
+                audit.classify_private_standalone_xml_validator_logs(path)["available"])
+            path.write_text("{" * 32769, encoding="utf-8")
+            self.assertFalse(
+                audit.classify_private_standalone_xml_validator_logs(path)["available"])
+
+    def test_native_oscap_version_is_numeric_only(self):
+        self.assertEqual(audit.extract_safe_openscap_version(
+            "OpenSCAP command line tool (oscap) 1.2.17\nOther info SECRET"),
+            "1.2.17")
+        self.assertEqual(audit.extract_safe_openscap_version(
+            "OpenSCAP command line tool (oscap) 1.3.9"), "1.3.9")
+        self.assertIsNone(audit.extract_safe_openscap_version(
+            "Error parsing unknown privileged SECRET info"))
+        self.assertIsNone(audit.extract_safe_openscap_version(
+            "OpenSCAP executable doesn't provide a numeric version"))
+
+    def test_real_validation_logs_stay_private_and_no_log(self):
+        source = (audit.ROOT / "ansible/playbooks/openscap-audit.yml").read_text()
+        self.assertIn(
+            "Retain bounded target XML schema errors in private controller diagnostics only",
+            source)
+        self.assertIn(".standalone-diagnostics.json", source)
+        self.assertIn('no_log: true', source)
+        self.assertIn('mode: "0600"', source)
+        self.assertIn("openscap_standalone_target_validation.results[0].stderr", source)
+        self.assertIn("openscap_standalone_target_validation.results[1].stderr", source)
+        self.assertIn("openscap_standalone_target_validation.results[2].stderr", source)
+        self.assertNotIn("console.log", source)
+        runner = Path(audit.__file__).read_text()
+        self.assertIn(
+            "classify_private_standalone_xml_validator_logs", runner)
+        self.assertIn("observedNativeOpenScapCliVersion", runner)
+
+    def test_exact_three_original_xml_schema_codes_cannot_be_replaced_by_raw_log(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            src = root / "private-normalized.json"
+            secret = "SECRET_NATIVE_GUEST_VALUE"
+            src.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {
+                    "available": False, "partial": True,
+                    "reason": (
+                        "compose=0, dictionary=0, validation=0; "
+                        "standalone_rcs=0,1,0; "
+                        "secret path /home/hidden/" + secret),
+                },
+                "findings": [],
+            }))
+            result = audit.native_openscap_failure_observation(
+                root / "arf-not-created", root / "sds-not-evaluated", src,
+                evaluation_form="original-standalone-xccdf")
+            self.assertEqual(result["standaloneXmlSchemaExitCodes"],
+                             {"xccdf": 0, "oval": 1, "cpe": 0})
+            self.assertEqual(result["preparationExitCodes"],
+                             {"compose": 0, "dictionary": 0, "validation": 0})
+            self.assertNotIn(secret, json.dumps(result))
+            self.assertNotIn("/home/hidden", json.dumps(result))
+            self.assertFalse(result["rawArfPresent"])
+            self.assertEqual(result["status"], "native-openscap-original-evidence-incomplete")
+            for damaged in (
+                    "standalone_rcs=0,0",
+                    "standalone_rcs=0,0,0,0",
+                    "standalone_rcs=-1,0,0",
+                    "standalone_rcs=0,900,0",
+                    "standalone_rcs=private,0,0",
+                    "standalone_rcs=unknown",
+                    "standalone_rcs=0,0,0secret",
+            ):
+                with self.subTest(case=damaged):
+                    src.write_text(json.dumps({
+                        "mode": "openscap",
+                        "scanner": {"available": False, "partial": True,
+                                    "reason": damaged},
+                        "findings": []}))
+                    unknown = audit.native_openscap_failure_observation(
+                        root / "arf", root / "source", src)
+                    self.assertEqual(unknown["standaloneXmlSchemaExitCodes"], {})
+
+    def test_standalone_diagnostics_never_claim_that_unaccepted_sds_was_evaluated(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            source = root / "evaluated-xccdf.xml"
+            source.write_text("synthetic component")
+            report = root / "partial.json"
+            report.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {"available": True, "partial": True,
+                            "scannerExitCode": 1, "reason": "Cannot open check.py SECRET"},
+                "findings": [],
+            }))
+            actual = audit.native_openscap_failure_observation(
+                root / "missing.arf", source, report,
+                evaluation_form="original-standalone-xccdf")
+            self.assertTrue(actual["originalStandaloneXccdfPresent"])
+            self.assertFalse(actual["executedDatastreamPresent"])
+            self.assertEqual(actual["evaluationFormRequested"], "original-standalone-xccdf")
+            self.assertEqual(actual["status"], "native-openscap-original-evidence-incomplete")
+            self.assertNotIn("SECRET", json.dumps(actual))
+
+    def test_native_standard_schema_files_are_measured_on_real_guest(self):
+        observed = []
+        def guest(command, timeout=30):
+            observed.append(command)
+            self.assertIn("python3 -c", command)
+            self.assertIn("xccdf_1.2.xsd", command)
+            self.assertIn("oval-definitions-schema.xsd", command)
+            self.assertIn("cpe-dictionary_2.0.xsd", command)
+            return "1,0,1\n"
+        out = audit.native_guest_scap_schema_presence(guest)
+        self.assertEqual(out, {"xccdf": True, "oval": False, "cpe": True})
+        self.assertEqual(len(observed), 1)
+        with self.assertRaisesRegex(RuntimeError, "native_oscap_schema_probe_unparseable"):
+            audit.native_guest_scap_schema_presence(
+                lambda *_a, **_k: "guest-private-path-UNKNOWN\n")
+
+    def test_schema_dependency_only_installs_vendor_package_in_disposable_ci(self):
+        from unittest.mock import patch
+        queries = []
+        readings = iter(["0,0,0\n", "1,1,1\n"])
+        def guest(command, timeout=30):
+            queries.append(command)
+            if command.startswith("python3 -c "):
+                return next(readings)
+            if command.startswith("dpkg-query "):
+                raise RuntimeError("not installed")
+            if command.startswith("apt-cache show openscap-common"):
+                return ""
+            if command.startswith("sudo -n apt-get update "):
+                return ""
+            if command.startswith("sudo -n apt-get install "):
+                self.assertIn("--no-install-recommends", command)
+                self.assertIn("--no-upgrade", command)
+                self.assertIn("openscap-common", command)
+                return ""
+            raise AssertionError("Unexpected executable or user-host action: " + command)
+        proof = {"nativeHcp": {}}
+        with patch.dict(os.environ, {
+            "GITHUB_ACTIONS": "true",
+            "RUNNER_ENVIRONMENT": "github-hosted",
+        }):
+            after = audit.provision_missing_scap_schemas_on_disposable_guest(
+                guest, proof)
+        self.assertEqual(after, {"xccdf": True, "oval": True, "cpe": True})
+        self.assertEqual(proof["nativeHcp"]["originalScapSchemasPresentBefore"],
+                         {"xccdf": False, "oval": False, "cpe": False})
+        self.assertTrue(proof["nativeHcp"]["vendorOpenScapCommonInstalledForTest"])
+        self.assertFalse(proof["nativeHcp"]["vendorOpenScapCommonPreviouslyInstalled"])
+        self.assertEqual(len([q for q in queries if "apt-get install" in q]), 1)
+        self.assertNotIn("user host", json.dumps(proof))
+        self.assertNotIn("http://", json.dumps(proof))
+        self.assertNotIn("https://", json.dumps(proof))
+
+    def test_schema_dependency_probe_does_not_install_if_present(self):
+        calls = []
+        def guest(command, timeout=30):
+            calls.append(command)
+            if command.startswith("python3 -c "):
+                return "1,1,1\n"
+            raise AssertionError("No package management allowed with all required XSD files")
+        state = {"nativeHcp": {}}
+        result = audit.provision_missing_scap_schemas_on_disposable_guest(
+            guest, state)
+        self.assertEqual(result, {"xccdf": True, "oval": True, "cpe": True})
+        self.assertFalse(state["nativeHcp"]["vendorOpenScapCommonInstalledForTest"])
+        self.assertEqual(len(calls), 1)
+
+    def test_missing_schema_package_never_bypasses_validation(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                                     "RUNNER_ENVIRONMENT": "self-hosted"}):
+            with self.assertRaisesRegex(RuntimeError,
+                                        "native_scap_schema_provision_forbidden_outside_ci"):
+                audit.provision_missing_scap_schemas_on_disposable_guest(
+                    lambda *_a, **_k: "0,0,0\n", {"nativeHcp": {}})
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                                     "RUNNER_ENVIRONMENT": "github-hosted"}):
+            def installed(command, timeout=30):
+                if command.startswith("python3 -c "):
+                    return "0,0,0\n"
+                if command.startswith("dpkg-query "):
+                    return "install ok installed"
+                raise AssertionError("Unsafe unexpected package upgrade")
+            with self.assertRaisesRegex(RuntimeError,
+                                        "native_scap_required_schema_missing_despite_installed_package"):
+                audit.provision_missing_scap_schemas_on_disposable_guest(
+                    installed, {"nativeHcp": {}})
+
+    def test_real_hcp_playbook_and_evidence_paths_are_bound_to_fixed_repository(self):
+        content = Path(audit.__file__).read_text(encoding="utf-8")
+        self.assertIn('run_playbook(work, reports, "collect-facts"', content)
+        self.assertIn('run_playbook(work, reports, "package-inventory"', content)
+        self.assertIn('run_playbook(work, reports, "openscap-audit"', content)
+        self.assertIn('verify_baseline_report(', content)
+        self.assertIn('"hcp_openscap_keep_arf": True', content)
+        self.assertIn('finally:', content)
+        self.assertNotIn("shell=True", content)
+        self.assertNotIn("StrictHostKeyChecking=no", content)
+        self.assertIn('"fullOvalEvaluated": False', content)
+
+    def test_original_report_reader_rejects_symlinks_and_oversized_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            folder = Path(tmp)
+            report = folder / "report.json"
+            report.write_text(json.dumps({"real": True}))
+            self.assertEqual(audit.load_private_json(report), {"real": True})
+            linked = folder / "linked.json"
+            linked.symlink_to(report)
+            with self.assertRaises(RuntimeError):
+                audit.load_private_json(linked)
+            with self.assertRaises(RuntimeError):
+                audit.load_private_json(report, limit=2)
+            with self.assertRaises((RuntimeError, FileNotFoundError)):
+                audit.load_private_json(folder / "missing.json")
+
+    def test_original_smoke_path_default_still_remains_separate(self):
+        smoke = (audit.ROOT / "deployment/tests/verify_astra17_ova_kvm.py").read_text()
+        self.assertIn("native_hcp_three_stage=False", smoke)
+        self.assertIn('"realNative18RuleThreeStageObserved": False', smoke)
+        self.assertIn('"fullNative18RuleAcceptance": False', smoke)
+        self.assertIn("original_identity=second", smoke)
+        self.assertIn("native_hcp_three_stage=args.native_hcp_three_stage", smoke)
+
+
+if __name__ == "__main__":
+    unittest.main()

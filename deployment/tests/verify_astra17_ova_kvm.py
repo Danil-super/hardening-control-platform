@@ -12,13 +12,16 @@ import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+import shutil
 import socket
+import stat
 import subprocess
 import tarfile
 import time
 import urllib.request
 
 from download_astra17_ova import download, FILENAMES, NoRedirect
+from verify_astra_vm import verified_pinned_file
 
 EXPECTED_BYTES = 427995648
 EXPECTED_SHA256 = "72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e"
@@ -133,12 +136,93 @@ def trusted_local_scan(raw, port):
     return " ".join(parts[:3]) + "\n"
 
 
-def experiment(work, protocol):
+
+def exact_pinned_original_ova(work, opener, progress, fetch=download):
+    """Cache only immutable *public* official OVA, never guest state.
+
+    A cache hit is fully rehashed and the exclusive 0600 private copy is
+    independently rehashed. The checksum originates from the same vendor,
+    not an independent publisher signature.
+    """
+    original = work / FILENAMES["base"]
+    cache_arg = os.environ.get("HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR")
+    pin = {"bytes": EXPECTED_BYTES, "sha256": EXPECTED_SHA256}
+    cached = None
+    if cache_arg:
+        require(os.environ.get("GITHUB_ACTIONS") == "true" and
+                os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+                "ova_cache_only_allowed_on_owned_ci")
+        cache_dir = Path(cache_arg)
+        root = Path(os.environ["RUNNER_TEMP"]).resolve()
+        canonical = cache_dir.resolve()
+        require(canonical != root and root in canonical.parents and
+                not cache_dir.is_symlink(), "ova_cache_path_invalid")
+        cache_dir.mkdir(mode=0o700, exist_ok=True)
+        st = cache_dir.lstat()
+        require(stat.S_ISDIR(st.st_mode) and not (st.st_mode & 0o077),
+                "ova_cache_permissions_invalid")
+        cached = cache_dir / FILENAMES["base"]
+        if cached.exists() or cached.is_symlink():
+            require(verified_pinned_file(cached, pin),
+                    "ova_cached_sha256_not_exact")
+            with cached.open("rb") as source:
+                fd = os.open(original, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as destination:
+                    shutil.copyfileobj(source, destination, 1048576)
+                    destination.flush()
+                    os.fsync(destination.fileno())
+            require(verified_pinned_file(original, pin),
+                    "ova_copied_sha256_not_exact")
+            return {"sha256": EXPECTED_SHA256, "bytes": EXPECTED_BYTES,
+                    "publisherSignatureVerified": False, "cacheReused": True}
+    observed = fetch("base", work, opener=opener, progress=progress,
+                     max_seconds=2400, expected_sha256=EXPECTED_SHA256,
+                     expected_bytes=EXPECTED_BYTES)
+    require(verified_pinned_file(original, pin), "ova_downloaded_sha256_not_exact")
+    if cached is not None:
+        os.link(original, cached, follow_symlinks=False)
+    return {**observed, "cacheReused": False}
+
+
+def record_native_hcp_three_stage_success(protocol):
+    """Mark native success only after the real evidence contract has passed.
+
+    A one-file restoration is not a whole-OS rollback, complete vendor OVAL
+    evaluation, host enrollment, or production acceptance.
+    """
+    native = protocol.get("nativeHcp")
+    measurements = native.get("ruleMeasurements") if isinstance(native, dict) else None
+    require(
+        isinstance(native, dict)
+        and native.get("realFactsCollected") is True
+        and native.get("realPackageInventoryCollected") is True
+        and native.get("real18RuleThreeStageObserved") is True
+        and native.get("originalModeRestoredVerified") is True
+        and native.get("freshSshSameGuestAfterRestore") is True
+        and isinstance(measurements, dict)
+        and type(measurements.get("testedRules")) is int
+        and measurements["testedRules"] == 18
+        and measurements.get("restoredMatchesBaseline18Rules") is True,
+        "native_three_stage_public_claim_unverified",
+    )
+    protocol["realNative18RuleThreeStageObserved"] = True
+    protocol["status"] = "native-astra17-ova-hcp-three-stage-only"
+    protocol["experiment"] = "exact-native-Astra17-OVA-HCP-18-rule-three-stage-only"
+    protocol["limitations"] = [
+        "Only one official disposable Astra 1.7.6.15 base OVA, not adv/max or production enrollment",
+        "Real original OpenSCAP 18-rule baseline, controlled /etc/passwd violation and one-file restoration only; not a whole-OS/firewall rollback",
+        "Full original Astra 1.7 vendor OVAL/CVE evaluation not performed in this experiment",
+        "Factory-password bootstrap is prohibited in production",
+        "Same-vendor checksum does not cryptographically attest publisher",
+        "Raw machine identity, guest disks and private logs remain on runner",
+    ]
+
+
+def experiment(work, protocol, *, native_hcp_three_stage=False):
     fixed = work / FILENAMES["base"]
-    origin = download(
-        "base", work, opener=urllib.request.build_opener(NoRedirect()).open,
-        progress=lambda *_: None, max_seconds=2400,
-        expected_sha256=EXPECTED_SHA256, expected_bytes=EXPECTED_BYTES)
+    origin = exact_pinned_original_ova(
+        work, opener=urllib.request.build_opener(NoRedirect()).open,
+        progress=lambda *_: None)
     require(fixed.is_file() and origin["sha256"] == EXPECTED_SHA256
             and origin["bytes"] == EXPECTED_BYTES, "official_ova_digest_mismatch")
     protocol["checks"].append("official_ova_exact_sha256_and_bytes")
@@ -146,6 +230,7 @@ def experiment(work, protocol):
         "filename": FILENAMES["base"], "sha256": EXPECTED_SHA256,
         "bytes": EXPECTED_BYTES, "publisherSignatureVerified": False,
         "origin": "same_vendor_artifactory_not_independent_signature",
+        "cachedPublicSourceByteVerified": origin["cacheReused"],
     }
     vmdk = work / "source.vmdk"
     protocol["originalImage"]["vmdkBytes"] = extract_vmdk(fixed, vmdk)
@@ -236,7 +321,17 @@ def experiment(work, protocol):
             require(first == observed_native_identity(second),
                     "fresh_ssh_guest_identity_changed")
             protocol["checks"].append("fresh_pinned_ssh_identity_stable")
-            protocol["status"] = "genuine-astra17-ova-ssh-preflight-only"
+            if native_hcp_three_stage:
+                # Deliberate CI-only extension on the owned disposable guest.
+                from verify_astra17_ova_audit import run_native_audit
+                run_native_audit(
+                    work, protocol, port=port, known_hosts=known,
+                    ssh_options=options, password=pwd,
+                    original_identity=second, observation=observation,
+                    safe_command=run, parse_identity=observed_native_identity)
+                record_native_hcp_three_stage_success(protocol)
+            else:
+                protocol["status"] = "genuine-astra17-ova-ssh-preflight-only"
         finally:
             process.terminate()
             try:
@@ -250,6 +345,8 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--work-dir", required=True)
     parser.add_argument("--public-protocol", required=True)
+    parser.add_argument("--native-hcp-three-stage", action="store_true",
+                        help="Run real HCP audit only on own disposable CI VM")
     args = parser.parse_args()
     require(os.environ.get("GITHUB_ACTIONS") == "true"
             and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
@@ -266,6 +363,8 @@ def main():
         "experiment": "exact-native-Astra17-OVA-SSH-only",
         "observedAtUtc": datetime.now(timezone.utc).isoformat(),
         "checks": [], "fullNative18RuleAcceptance": False,
+        "realNative18RuleThreeStageObserved": False,
+        "realHcpNativeExperimentRequested": args.native_hcp_three_stage,
         "ovalEvaluationPerformed": False, "hardenedProdReady": False,
         "publisherSignatureIndependentlyVerified": False,
         "limitations": [
@@ -277,7 +376,7 @@ def main():
         ],
     }
     try:
-        experiment(work, report)
+        experiment(work, report, native_hcp_three_stage=args.native_hcp_three_stage)
     except BaseException as exc:
         allowed = {
             "ova_member_count_invalid", "ova_member_name_unsafe",
@@ -293,6 +392,26 @@ def main():
             "local_vm_host_key_ambiguous", "local_vm_host_key_invalid",
             "fresh_ssh_guest_identity_changed", "unsafe_runner",
             "private_paths_invalid", "subprocess_failed",
+            "native_identity_changed_after_key_enrollment",
+            "native_ssh_asset_identity_unverified",
+            "new_ephemeral_public_key_invalid",
+            "native_ansible_facts_not_astra",
+            "native_installed_packages_missing",
+            "original_report_missing_or_unbounded",
+            "ansible_execution_unavailable", "ansible_playbook_failed",
+            "native_openscap_original_evidence_missing",
+            "incomplete_native_18_rule_scope", "native_rules_partial_or_unknown",
+            "passwd_mode_not_suitable_for_safe_control",
+            "passwd_original_mode_not_restored",
+            "native_asset_identity_changed_after_restore",
+            "source_bundle_not_stable",
+            "native_three_stage_public_claim_unverified",
+            "native_oscap_schema_probe_unparseable",
+            "native_scap_schema_provision_forbidden_outside_ci",
+            "native_scap_required_schema_missing_despite_installed_package",
+            "native_vendor_scap_schema_package_unavailable",
+            "native_required_scap_schema_still_missing_after_vendor_install",
+            "native_openscap_evaluation_form_misrepresented",
             "subprocess_unavailable_or_timeout", "subprocess_output_unbounded",
         }
         reason = str(exc) if isinstance(exc, RuntimeError) else ""

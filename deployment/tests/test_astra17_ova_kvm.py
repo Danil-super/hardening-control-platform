@@ -28,6 +28,61 @@ def synthetic_tar(items):
 
 
 class OvaNativePreflightTests(unittest.TestCase):
+    def test_ci_caches_only_exact_vendor_public_ova_even_when_scan_fails(self):
+        workflow = (Path(__file__).resolve().parents[2] /
+                    ".github/workflows/astra17-ova-hcp.yml").read_text()
+        self.assertIn("actions/cache/restore@v4", workflow)
+        self.assertIn("actions/cache/save@v4", workflow)
+        self.assertIn("id: verified-public-ova", workflow)
+        self.assertIn("if: always()", workflow)
+        self.assertIn("sha256sum --check --strict --status", workflow)
+        self.assertIn("test ! -L", workflow)
+        self.assertIn("test -f", workflow)
+        self.assertIn('test "$(stat -c %s "$image")" -eq 427995648', workflow)
+        self.assertIn("steps.verified-public-ova.outputs.verified == 'true'", workflow)
+        self.assertIn("steps.public-ova-cache.outputs.cache-hit != 'true'", workflow)
+        self.assertNotIn("hcp-real-astra17-ova-hcp-private\n          key:", workflow)
+
+
+
+    def test_original_ova_cache_rehashes_before_and_after_copy(self):
+        import hashlib
+        import os
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "public-cache"
+            cache.mkdir(mode=0o700)
+            original = b"FAKE OVA synthetic bytes, not Astra!" * 85
+            cache_image = cache / smoke.FILENAMES["base"]
+            cache_image.write_bytes(original)
+            cache_image.chmod(0o600)
+            work = root / "isolated-work"
+            work.mkdir(mode=0o700)
+            env = {"HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR": str(cache),
+                   "RUNNER_TEMP": str(root), "GITHUB_ACTIONS": "true",
+                   "RUNNER_ENVIRONMENT": "github-hosted"}
+            with patch.dict(os.environ, env), \
+                 patch.object(smoke, "EXPECTED_BYTES", len(original)), \
+                 patch.object(smoke, "EXPECTED_SHA256", hashlib.sha256(original).hexdigest()):
+                result = smoke.exact_pinned_original_ova(
+                    work, opener=None, progress=lambda *_: None)
+                self.assertTrue(result["cacheReused"])
+                target = work / smoke.FILENAMES["base"]
+                self.assertEqual(target.read_bytes(), original)
+                self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+                target.unlink()
+                cache_image.write_bytes(original + b"CORRUPT")
+                with self.assertRaises((RuntimeError, ValueError)):
+                    smoke.exact_pinned_original_ova(
+                        work, opener=None, progress=lambda *_: None)
+            with patch.dict(os.environ, {**env,
+                     "HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR": str(root.parent)}):
+                with self.assertRaises(RuntimeError):
+                    smoke.exact_pinned_original_ova(
+                        work, opener=None, progress=lambda *_: None)
+
+
     def test_source_pins_and_security_claims_are_fixed(self):
         self.assertEqual(smoke.EXPECTED_BYTES, 427995648)
         self.assertEqual(smoke.EXPECTED_SHA256,
@@ -39,6 +94,51 @@ class OvaNativePreflightTests(unittest.TestCase):
         self.assertIn('"ovalEvaluationPerformed": False', text)
         self.assertIn('"hardenedProdReady": False', text)
         self.assertNotIn("tar.extractall(", text)
+
+    def test_native_hcp_protocol_scope_requires_original_verified_three_stage(self):
+        from copy import deepcopy
+        expected = {
+            "realFactsCollected": True,
+            "realPackageInventoryCollected": True,
+            "real18RuleThreeStageObserved": True,
+            "originalModeRestoredVerified": True,
+            "freshSshSameGuestAfterRestore": True,
+            "ruleMeasurements": {
+                "testedRules": 18,
+                "restoredMatchesBaseline18Rules": True,
+            },
+        }
+        protocol = {
+            "nativeHcp": expected,
+            "fullNative18RuleAcceptance": False,
+            "ovalEvaluationPerformed": False,
+            "hardenedProdReady": False,
+        }
+        smoke.record_native_hcp_three_stage_success(protocol)
+        self.assertTrue(protocol["realNative18RuleThreeStageObserved"])
+        self.assertEqual(protocol["status"],
+                         "native-astra17-ova-hcp-three-stage-only")
+        self.assertIn("HCP-18-rule-three-stage-only", protocol["experiment"])
+        self.assertNotIn("No OpenSCAP/OVAL baseline",
+                         " ".join(protocol["limitations"]))
+        self.assertIn("not a whole-OS/firewall rollback",
+                      " ".join(protocol["limitations"]))
+        self.assertFalse(protocol["fullNative18RuleAcceptance"])
+        self.assertFalse(protocol["ovalEvaluationPerformed"])
+        self.assertFalse(protocol["hardenedProdReady"])
+        for field in expected:
+            with self.subTest(missing=field):
+                incomplete = {"nativeHcp": deepcopy(expected)}
+                del incomplete["nativeHcp"][field]
+                with self.assertRaisesRegex(
+                        RuntimeError, "native_three_stage_public_claim_unverified"):
+                    smoke.record_native_hcp_three_stage_success(incomplete)
+                self.assertNotIn("experiment", incomplete)
+        incomplete = {"nativeHcp": deepcopy(expected)}
+        incomplete["nativeHcp"]["ruleMeasurements"]["testedRules"] = 17
+        with self.assertRaisesRegex(
+                RuntimeError, "native_three_stage_public_claim_unverified"):
+            smoke.record_native_hcp_three_stage_success(incomplete)
 
     def test_safe_tar_one_vmdk_and_ovf(self):
         fixture = synthetic_tar([
