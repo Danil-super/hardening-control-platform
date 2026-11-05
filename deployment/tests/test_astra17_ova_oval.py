@@ -162,6 +162,15 @@ class OriginalVendorOvaSourceTests(unittest.TestCase):
             self.assertEqual(doc["result"], "private-but-valid")
             self.assertEqual(state["nativeHcp"]["normalizedOvalReportPreflight"]["result"], "within_bound")
 
+    def test_child_oval_experiment_preserves_parent_three_stage_truthfulness(self):
+        runner = (Path(oval.__file__).with_name("verify_astra17_ova_kvm.py")
+                  .read_text(encoding="utf-8"))
+        self.assertIn("record_native_hcp_three_stage_success(protocol)", runner)
+        self.assertIn("native_oval_full_selected_scope_not_verified", runner)
+        self.assertIn("native_oval_normalized_report_oversized", runner)
+        self.assertIn("native_oval_bounded_projection_not_attested", runner)
+        self.assertIn('"nativeVendorOval17Evaluated": False', runner)
+
     def test_real_execution_requires_original_hcp_18_rule_completion_first(self):
         main = (oval.VENDOR["url"])
         self.assertTrue(main.startswith("https://dl.astralinux.ru/artifactory/"))

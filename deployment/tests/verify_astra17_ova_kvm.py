@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Strict exploratory SSH identity smoke test for official Astra 1.7.6.UU2 OVA.
+"""Official Astra 1.7.6.UU2 OVA SSH and explicitly selected native HCP audit.
 
-Only on an owned disposable GitHub Actions QEMU guest. This does NOT establish
-native OpenSCAP/OVAL coverage, production SSH trust or publisher attestation.
+Smoke-only is the default. Optional genuine OpenSCAP/OVAL experiments run
+solely on a disposable GitHub Actions VM and cannot establish production
+readiness, universal CVE coverage, or publisher attestation.
 No raw guest logs, disk, credentials or machine-id leave private runner paths.
 """
 import argparse
@@ -183,6 +184,40 @@ def exact_pinned_original_ova(work, opener, progress, fetch=download):
     return {**observed, "cacheReused": False}
 
 
+def record_native_hcp_three_stage_success(protocol):
+    """Mark native success only after the real evidence contract has passed.
+
+    A one-file restoration is not a whole-OS rollback, complete vendor OVAL
+    evaluation, host enrollment, or production acceptance.
+    """
+    native = protocol.get("nativeHcp")
+    measurements = native.get("ruleMeasurements") if isinstance(native, dict) else None
+    require(
+        isinstance(native, dict)
+        and native.get("realFactsCollected") is True
+        and native.get("realPackageInventoryCollected") is True
+        and native.get("real18RuleThreeStageObserved") is True
+        and native.get("originalModeRestoredVerified") is True
+        and native.get("freshSshSameGuestAfterRestore") is True
+        and isinstance(measurements, dict)
+        and type(measurements.get("testedRules")) is int
+        and measurements["testedRules"] == 18
+        and measurements.get("restoredMatchesBaseline18Rules") is True,
+        "native_three_stage_public_claim_unverified",
+    )
+    protocol["realNative18RuleThreeStageObserved"] = True
+    protocol["status"] = "native-astra17-ova-hcp-three-stage-only"
+    protocol["experiment"] = "exact-native-Astra17-OVA-HCP-18-rule-three-stage-only"
+    protocol["limitations"] = [
+        "Only one official disposable Astra 1.7.6.15 base OVA, not adv/max or production enrollment",
+        "Real original OpenSCAP 18-rule baseline, controlled /etc/passwd violation and one-file restoration only; not a whole-OS/firewall rollback",
+        "Full original Astra 1.7 vendor OVAL/CVE evaluation not performed in this experiment",
+        "Factory-password bootstrap is prohibited in production",
+        "Same-vendor checksum does not cryptographically attest publisher",
+        "Raw machine identity, guest disks and private logs remain on runner",
+    ]
+
+
 def experiment(work, protocol, *, native_hcp_three_stage=False,
                native_vendor_oval=False):
     fixed = work / FILENAMES["base"]
@@ -296,12 +331,23 @@ def experiment(work, protocol, *, native_hcp_three_stage=False,
                     original_identity=second, observation=observation,
                     safe_command=run, parse_identity=observed_native_identity,
                     native_vendor_oval=native_vendor_oval)
-                protocol["realNative18RuleThreeStageObserved"] = True
-                protocol["status"] = (
-                    "native-astra17-ova-hcp-and-full-oval-scope"
-                    if native_vendor_oval
-                    else "native-astra17-ova-hcp-three-stage-only"
-                )
+                record_native_hcp_three_stage_success(protocol)
+                if native_vendor_oval:
+                    require(protocol.get("nativeHcp", {}).get("fullOvalEvaluated") is True,
+                            "native_oval_full_selected_scope_not_verified")
+                    protocol["status"] = "native-astra17-ova-hcp-and-full-oval-scope"
+                    protocol["experiment"] = (
+                        "exact-native-Astra17-HCP-18-rule-and-selected-vendor-OVAL-only"
+                    )
+                    protocol["limitations"] = [
+                        "Only official disposable Astra 1.7.6.15 base OVA, not adv/max or production enrollment",
+                        "Original 18-rule three-stage experiment, not a whole-OS/firewall rollback",
+                        "Full exact selected vendor OVAL definition scope only; universal CVE recall and applicability not established",
+                        "Normalized OVAL report omits verbose auxiliary XML evidence explicitly, preserving all raw definition IDs and states",
+                        "Factory-password bootstrap is prohibited in production",
+                        "Same-vendor checksum does not authenticate publisher independently",
+                        "Raw machine identity, guest disks and private logs remain on runner",
+                    ]
             else:
                 protocol["status"] = "genuine-astra17-ova-ssh-preflight-only"
         finally:
@@ -388,6 +434,13 @@ def main():
             "passwd_original_mode_not_restored",
             "native_asset_identity_changed_after_restore",
             "source_bundle_not_stable",
+            "native_three_stage_public_claim_unverified",
+            "native_oval_full_selected_scope_not_verified",
+            "native_oval_normalized_report_missing",
+            "native_oval_normalized_report_empty",
+            "native_oval_normalized_report_unsafe_type",
+            "native_oval_normalized_report_oversized",
+            "native_oval_bounded_projection_not_attested",
             "native_oscap_schema_probe_unparseable",
             "native_scap_schema_provision_forbidden_outside_ci",
             "native_scap_required_schema_missing_despite_installed_package",
