@@ -84,6 +84,97 @@ def validate_native_three_stage(results):
     }
 
 
+
+def native_openscap_failure_observation(raw_arf, datastream, normalized):
+    """Classify HCP/OpenSCAP prerequisites without exposing private evidence.
+
+    The actual 1.7 guest can return a successful *playbook* whose own report
+    says unavailable/partial; never treat an absent ARF as native acceptance.
+    Only strictly known enums, booleans and small numeric return codes leave
+    the runner. No scanner reason, stderr, raw XML or paths are returned.
+    """
+    def regular(path, limit):
+        try:
+            st = path.lstat()
+            return stat.S_ISREG(st.st_mode) and st.st_size > 0 and st.st_size <= limit
+        except OSError:
+            return False
+    report_exists = regular(normalized, 32 * 1024 * 1024)
+    observation = {
+        "rawArfPresent": regular(raw_arf, 64 * 1024 * 1024),
+        "executedDatastreamPresent": regular(datastream, 64 * 1024 * 1024),
+        "normalizedReportPresent": report_exists,
+        "reportedScannerAvailable": None, "reportedPartial": None,
+        "reportedScannerExitCode": None,
+        "normalizedFindingCount": None,
+        "preparationExitCodes": {},
+        "reasonCategories": [],
+        "status": "native-openscap-original-evidence-incomplete",
+    }
+    if not report_exists:
+        return observation
+    try:
+        report = load_private_json(normalized)
+    except (OSError, ValueError, UnicodeError, RuntimeError):
+        observation["reasonCategories"] = ["normalized_report_unreadable"]
+        return observation
+    if type(report) is not dict or report.get("mode") != "openscap":
+        observation["reasonCategories"] = ["report_scope_invalid"]
+        return observation
+    scanner = report.get("scanner")
+    if type(scanner) is not dict:
+        observation["reasonCategories"] = ["scanner_metadata_missing"]
+        return observation
+    for origin, target in (("available", "reportedScannerAvailable"),
+                           ("partial", "reportedPartial")):
+        if type(scanner.get(origin)) is bool:
+            observation[target] = scanner[origin]
+    code = scanner.get("scannerExitCode")
+    if type(code) is int and -1 <= code <= 255:
+        observation["reportedScannerExitCode"] = code
+    findings = report.get("findings")
+    if type(findings) is list and len(findings) <= 1000:
+        observation["normalizedFindingCount"] = len(findings)
+    # Read private reasons transiently; classify on the runner with fixed
+    # patterns. Never return original strings/hostnames/URLs/commands.
+    candidates = []
+    for entry in (scanner.get("reason"), scanner.get("partialReasons")):
+        if type(entry) is str:
+            candidates.append(entry[:4096])
+        elif type(entry) is list:
+            candidates.extend(s[:2048] for s in entry[:8] if type(s) is str)
+    for item in findings[:8] if type(findings) is list else []:
+        if type(item) is dict:
+            for key in ("description", "evidence"):
+                value = item.get(key)
+                if type(value) is str:
+                    candidates.append(value[:1024])
+    joined = "\n".join(candidates)[:16000]
+    for key in ("compose", "dictionary", "validation"):
+        match = re.search(r"(?:^|[^A-Za-z])" + key + r"=(-?[0-9]{1,3})\b", joined)
+        if match:
+            value = int(match.group(1))
+            if -1 <= value <= 255:
+                observation["preparationExitCodes"][key] = value
+    patterns = {
+        "sds_compose_failed": r"(?:compose=[1-9]|sds-compose|sds compose)",
+        "sds_dictionary_failed": r"(?:dictionary=[1-9]|sds-add)",
+        "sds_validation_failed": r"(?:validation=[1-9]|sds-validate|schema validation)",
+        "sce_plugin_unavailable": r"(?:SCE[^.\n]{0,100}(?:not available|not found|missing|disabled|не найден|отсутств)|script check engine[^.\n]{0,80}(?:not|missing))",
+        "openscap_unsupported_command": r"(?:Unknown command|Unrecognized option|Invalid option|Unknown option|unsupported operation)",
+        "openscap_xml_invalid": r"(?:invalid XML|XML validation|schema.*failed|not valid according to)",
+        "openscap_missing_file": r"(?:No such file or directory|cannot open file|file not found)",
+        "openscap_permission_issue": r"(?:Permission denied|Operation not permitted|отказано в доступе)",
+        "openscap_profile_missing": r"(?:Profile[^.\n]{0,100}(?:not found|unknown|не найден))",
+        "openscap_missing_binary": r"(?:oscap не установлен|oscap: command not found)",
+        "openscap_report_partial": r"(?:unable to parse ARF|не удалось прочитать XML|ошибка OpenSCAP|OpenSCAP.*error)",
+    }
+    observation["reasonCategories"] = sorted(
+        key for key, expression in patterns.items()
+        if re.search(expression, joined, re.IGNORECASE))
+    return observation
+
+
 def safe_ansible_ssh_args(pinned_hosts):
     """Preserve Git-managed host trust even when ansible.cfg sets ssh_args.
 
@@ -392,8 +483,13 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
             "then sudo -n apt-get install -y --no-install-recommends openscap-scanner; "
             "else sudo -n apt-get install -y --no-install-recommends libopenscap8; fi",
             timeout=900)
-    native_ssh("oscap --version", timeout=30)
+    oscap_about = native_ssh("oscap --version", timeout=30)
     protocol["nativeHcp"]["nativeOpenScapBinaryVerified"] = True
+    # Informative only: the engine string varies between native packages.
+    # Missing wording must not be treated as evidence of disabled SCE.
+    protocol["nativeHcp"]["sceMentionedInOpenScapAbout"] = (
+        bool(re.search(r"\bSCE\b|Script Check Engine", oscap_about,
+                       re.IGNORECASE)))
 
     stage("18_rule_three_stage_experiment")
     original = native_ssh("stat -c '%a' /etc/passwd", timeout=25).strip()
@@ -419,8 +515,14 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
             raw = reports / ("." + HOST + "-openscap-" + phase + ".xml")
             datastream = Path(str(raw) + ".datastream.xml")
             report_file = reports / (HOST + "-openscap-" + phase + ".json")
-            demand(raw.is_file() and datastream.is_file()
-                   and report_file.is_file(), "native_openscap_original_evidence_missing")
+            if not (raw.is_file() and datastream.is_file()
+                    and report_file.is_file()):
+                protocol["nativeHcp"]["failedNativeStage"] = (
+                    "original_hcp_openscap_" + phase)
+                protocol["nativeHcp"]["openscapFailureObservation"] = (
+                    native_openscap_failure_observation(
+                        raw, datastream, report_file))
+                raise RuntimeError("native_openscap_original_evidence_missing")
             xccdf, sce = raw_results(raw)
             normal = load_private_json(report_file)
             verify_baseline_report(
@@ -436,7 +538,11 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
         # If the guest is unavailable this raises and the entire CI remains
         # FAIL. No return path claims restoration from a failed SSH operation.
         stage("restore_original_passwd_mode")
+        protocol["nativeHcp"]["originalModeRestoreAttempted"] = True
         native_ssh("sudo -n chmod " + shlex.quote(original) + " /etc/passwd")
+        restored_mode = native_ssh("stat -c '%a' /etc/passwd").strip()
+        demand(restored_mode == original, "passwd_original_mode_not_restored")
+        protocol["nativeHcp"]["originalModeRestoredVerified"] = True
 
     stage("source_scope_and_restoration_verification")
     actual_mode = native_ssh("stat -c '%a' /etc/passwd").strip()

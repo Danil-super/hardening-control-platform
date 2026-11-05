@@ -185,6 +185,70 @@ class NativeAstra17AuditTests(unittest.TestCase):
             self.assertEqual(protocol["nativeHcp"]["ansibleFailureReturnCode"], 2)
             self.assertNotIn("private-key", json.dumps(protocol))
 
+
+    def test_failed_scap_report_is_diagnosed_only_as_allowlisted_aggregate(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            raw = root / ".native.arf.xml"
+            stream = root / ".native.arf.xml.datastream.xml"
+            report = root / "native-openscap.json"
+            private_secret = "REDACT_THIS_RANDOM_PRIVATE_USER_VALUE"
+            report.write_text(json.dumps({
+                "mode": "openscap", "partial": True,
+                "scanner": {
+                    "available": False, "partial": True,
+                    "reason": "Не удалось подготовить встроенный профиль Astra: "
+                              "compose=1, dictionary=1, validation=1; "
+                              "SCE plugin not available " + private_secret,
+                    "partialReasons": ["Invalid option; /hidden/path " + private_secret],
+                    "scannerExitCode": 2,
+                },
+                "findings": [{"description": "Profile not found " + private_secret}],
+            }))
+            result = audit.native_openscap_failure_observation(raw, stream, report)
+            self.assertFalse(result["rawArfPresent"])
+            self.assertFalse(result["executedDatastreamPresent"])
+            self.assertTrue(result["normalizedReportPresent"])
+            self.assertFalse(result["reportedScannerAvailable"])
+            self.assertTrue(result["reportedPartial"])
+            self.assertEqual(result["reportedScannerExitCode"], 2)
+            self.assertEqual(result["normalizedFindingCount"], 1)
+            self.assertEqual(result["preparationExitCodes"],
+                             {"compose": 1, "dictionary": 1, "validation": 1})
+            self.assertIn("sce_plugin_unavailable", result["reasonCategories"])
+            self.assertIn("openscap_unsupported_command", result["reasonCategories"])
+            self.assertIn("openscap_profile_missing", result["reasonCategories"])
+            self.assertNotIn(private_secret, json.dumps(result))
+            self.assertNotIn("/hidden/path", json.dumps(result))
+            self.assertNotIn(str(root), json.dumps(result))
+            # Missing source file never becomes PASS even with normalized JSON.
+            self.assertEqual(result["status"],
+                             "native-openscap-original-evidence-incomplete")
+
+    def test_native_openscap_complete_artifacts_still_require_full_validation(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            raw, datastream, normalized = (
+                root / "raw.arf", root / "bundle.xml", root / "normalized.json")
+            raw.write_text("fake ARF fixture -- not evidence")
+            datastream.write_text("fake datastream fixture")
+            normalized.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {"available": True, "partial": False,
+                            "scannerExitCode": 0},
+                "findings": [],
+            }))
+            result = audit.native_openscap_failure_observation(
+                raw, datastream, normalized)
+            self.assertTrue(result["rawArfPresent"])
+            self.assertTrue(result["executedDatastreamPresent"])
+            self.assertTrue(result["normalizedReportPresent"])
+            self.assertEqual(result["status"],
+                             "native-openscap-original-evidence-incomplete")
+            self.assertFalse(result["reportedPartial"])
+            # This is only diagnostic. Real acceptance requires raw_results()
+            # and verify_baseline_report() checks in production-derived runner.
+
     def test_real_hcp_playbook_and_evidence_paths_are_bound_to_fixed_repository(self):
         content = Path(audit.__file__).read_text(encoding="utf-8")
         self.assertIn('run_playbook(work, reports, "collect-facts"', content)
