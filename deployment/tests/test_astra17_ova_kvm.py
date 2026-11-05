@@ -95,6 +95,51 @@ class OvaNativePreflightTests(unittest.TestCase):
         self.assertIn('"hardenedProdReady": False', text)
         self.assertNotIn("tar.extractall(", text)
 
+    def test_native_hcp_protocol_scope_requires_original_verified_three_stage(self):
+        from copy import deepcopy
+        expected = {
+            "realFactsCollected": True,
+            "realPackageInventoryCollected": True,
+            "real18RuleThreeStageObserved": True,
+            "originalModeRestoredVerified": True,
+            "freshSshSameGuestAfterRestore": True,
+            "ruleMeasurements": {
+                "testedRules": 18,
+                "restoredMatchesBaseline18Rules": True,
+            },
+        }
+        protocol = {
+            "nativeHcp": expected,
+            "fullNative18RuleAcceptance": False,
+            "ovalEvaluationPerformed": False,
+            "hardenedProdReady": False,
+        }
+        smoke.record_native_hcp_three_stage_success(protocol)
+        self.assertTrue(protocol["realNative18RuleThreeStageObserved"])
+        self.assertEqual(protocol["status"],
+                         "native-astra17-ova-hcp-three-stage-only")
+        self.assertIn("HCP-18-rule-three-stage-only", protocol["experiment"])
+        self.assertNotIn("No OpenSCAP/OVAL baseline",
+                         " ".join(protocol["limitations"]))
+        self.assertIn("not a whole-OS/firewall rollback",
+                      " ".join(protocol["limitations"]))
+        self.assertFalse(protocol["fullNative18RuleAcceptance"])
+        self.assertFalse(protocol["ovalEvaluationPerformed"])
+        self.assertFalse(protocol["hardenedProdReady"])
+        for field in expected:
+            with self.subTest(missing=field):
+                incomplete = {"nativeHcp": deepcopy(expected)}
+                del incomplete["nativeHcp"][field]
+                with self.assertRaisesRegex(
+                        RuntimeError, "native_three_stage_public_claim_unverified"):
+                    smoke.record_native_hcp_three_stage_success(incomplete)
+                self.assertNotIn("experiment", incomplete)
+        incomplete = {"nativeHcp": deepcopy(expected)}
+        incomplete["nativeHcp"]["ruleMeasurements"]["testedRules"] = 17
+        with self.assertRaisesRegex(
+                RuntimeError, "native_three_stage_public_claim_unverified"):
+            smoke.record_native_hcp_three_stage_success(incomplete)
+
     def test_safe_tar_one_vmdk_and_ovf(self):
         fixture = synthetic_tar([
             ("one.ovf", "file", b"synthetic ovf"),
