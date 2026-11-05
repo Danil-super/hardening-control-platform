@@ -1,0 +1,42 @@
+name: Native Astra 1.7.6.15 official VirtualBox OVA SSH smoke (exploratory)
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/astra17-ova-kvm.yml
+      - deployment/tests/verify_astra17_ova_kvm.py
+      - deployment/tests/test_astra17_ova_kvm.py
+      - deployment/tests/download_astra17_ova.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native-ova-ssh:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 65
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and isolated SSH tools
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client sshpass
+          if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+      - name: Offline negative source and guest identity tests
+        run: python3 -m unittest discover -s deployment/tests -p test_astra17_ova_kvm.py -v
+      - name: Real official exact-pinned Astra 1.7.6.UU2 guest SSH proof
+        run: |
+          python3 deployment/tests/verify_astra17_ova_kvm.py \
+            --work-dir "$RUNNER_TEMP/hcp-native-astra17-ova-private" \
+            --public-protocol "$RUNNER_TEMP/hcp-astra17-ova-public-result.json"
+      - name: Upload sanitized OVA smoke protocol only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-astra17-ova-ssh-only
+          path: ${{ runner.temp }}/hcp-astra17-ova-public-result.json
+          retention-days: 14
+          if-no-files-found: warn
