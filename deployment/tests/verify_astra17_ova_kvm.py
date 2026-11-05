@@ -388,6 +388,7 @@ def main():
             "passwd_original_mode_not_restored",
             "native_asset_identity_changed_after_restore",
             "source_bundle_not_stable",
+            "native_openscap_evaluation_form_misrepresented",
             "full_oval_requires_native_hcp_three_stage",
             "oval_source_id_invalid_or_duplicate",
             "oval_source_too_many_definitions", "oval_source_has_no_definitions",
