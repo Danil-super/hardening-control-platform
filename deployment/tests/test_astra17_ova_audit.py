@@ -334,6 +334,52 @@ class NativeAstra17AuditTests(unittest.TestCase):
         self.assertIn('evaluated-xccdf.xml', code)
         self.assertIn('native_openscap_evaluation_form_misrepresented', code)
 
+    def test_exact_three_original_xml_schema_codes_cannot_be_replaced_by_raw_log(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            src = root / "private-normalized.json"
+            secret = "SECRET_NATIVE_GUEST_VALUE"
+            src.write_text(json.dumps({
+                "mode": "openscap",
+                "scanner": {
+                    "available": False, "partial": True,
+                    "reason": (
+                        "compose=0, dictionary=0, validation=0; "
+                        "standalone_rcs=0,1,0; "
+                        "secret path /home/hidden/" + secret),
+                },
+                "findings": [],
+            }))
+            result = audit.native_openscap_failure_observation(
+                root / "arf-not-created", root / "sds-not-evaluated", src,
+                evaluation_form="original-standalone-xccdf")
+            self.assertEqual(result["standaloneXmlSchemaExitCodes"],
+                             {"xccdf": 0, "oval": 1, "cpe": 0})
+            self.assertEqual(result["preparationExitCodes"],
+                             {"compose": 0, "dictionary": 0, "validation": 0})
+            self.assertNotIn(secret, json.dumps(result))
+            self.assertNotIn("/home/hidden", json.dumps(result))
+            self.assertFalse(result["rawArfPresent"])
+            self.assertEqual(result["status"], "native-openscap-original-evidence-incomplete")
+            for damaged in (
+                    "standalone_rcs=0,0",
+                    "standalone_rcs=0,0,0,0",
+                    "standalone_rcs=-1,0,0",
+                    "standalone_rcs=0,900,0",
+                    "standalone_rcs=private,0,0",
+                    "standalone_rcs=unknown",
+                    "standalone_rcs=0,0,0secret",
+            ):
+                with self.subTest(case=damaged):
+                    src.write_text(json.dumps({
+                        "mode": "openscap",
+                        "scanner": {"available": False, "partial": True,
+                                    "reason": damaged},
+                        "findings": []}))
+                    unknown = audit.native_openscap_failure_observation(
+                        root / "arf", root / "source", src)
+                    self.assertEqual(unknown["standaloneXmlSchemaExitCodes"], {})
+
     def test_standalone_diagnostics_never_claim_that_unaccepted_sds_was_evaluated(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)

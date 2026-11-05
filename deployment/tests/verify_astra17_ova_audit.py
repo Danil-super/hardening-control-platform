@@ -115,6 +115,7 @@ def native_openscap_failure_observation(raw_arf, datastream, normalized, *,
         "reportedScannerExitCode": None,
         "normalizedFindingCount": None,
         "preparationExitCodes": {},
+        "standaloneXmlSchemaExitCodes": {},
         "targetReadOnlySdsProbeExitCodes": {},
         "componentReferenceCategories": [],
         "reasonCategories": [],
@@ -165,6 +166,18 @@ def native_openscap_failure_observation(raw_arf, datastream, normalized, *,
             value = int(match.group(1))
             if -1 <= value <= 255:
                 observation["preparationExitCodes"][key] = value
+    # The native target's original XML schema validators run in fixed order:
+    # xccdf, oval, cpe. Only an exactly complete bounded triple is accepted.
+    # Missing/skipped validators remain unknown; never call their schema PASS.
+    validation_codes = re.search(
+        r"(?:^|[;\s])standalone_rcs=([0-9]{1,3}),([0-9]{1,3}),([0-9]{1,3})(?:$|[;\s])",
+        joined,
+    )
+    if validation_codes:
+        values = [int(value) for value in validation_codes.groups()]
+        if all(0 <= code <= 255 for code in values):
+            observation["standaloneXmlSchemaExitCodes"] = dict(
+                zip(("xccdf", "oval", "cpe"), values))
     for variable, name in (("target_info_rc", "oscap_info"),
                            ("target_schema_rc", "oscap_schema")):
         match = re.search(r"(?:^|[^A-Za-z_])" + variable +
