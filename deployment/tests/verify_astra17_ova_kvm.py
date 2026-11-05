@@ -352,6 +352,7 @@ def main():
             "native_oval_definition_result_invalid",
             "native_oval_unknown_or_duplicate_definition",
             "native_oval_unrecognized_result",
+            "native_oval_definition_unresolved_or_error",
             "native_oval_source_result_set_differs",
             "native_oval_raw_results_sha_missing",
             "native_oval_fabricated_security_score",

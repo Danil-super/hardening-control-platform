@@ -118,6 +118,10 @@ class OriginalVendorOvaSourceTests(unittest.TestCase):
         a = deepcopy(base)
         a["scanner"]["definitionResults"][0]["result"] = "not-supported"
         corrupt.append(a)
+        for not_completed in ("error", "not evaluated"):
+            a = deepcopy(base)
+            a["scanner"]["definitionResults"][1]["result"] = not_completed
+            corrupt.append(a)
         a = deepcopy(base)
         a["summary"]["score"] = 100
         corrupt.append(a)

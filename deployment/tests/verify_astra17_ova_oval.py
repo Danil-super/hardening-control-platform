@@ -91,6 +91,11 @@ def validate_original_native_oval(report, source_ids):
                "native_oval_unknown_or_duplicate_definition")
         demand(type(value) is str and value in VALID_STATES,
                "native_oval_unrecognized_result")
+        # A result entry exists for each definition, but error or
+        # not-evaluated is NOT a completed evaluation. Do not call this
+        # a full source-scope acceptance with silently unresolved tests.
+        demand(value not in ("error", "not evaluated"),
+               "native_oval_definition_unresolved_or_error")
         matched.add(name)
         results[value] += 1
     demand(matched == source_ids, "native_oval_source_result_set_differs")
