@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "status": "native-astra17-qemu-ssh-only",
+  "checks": [
+    "original_qcow2_sha256_and_image_structure_verified",
+    "native_astra_17_identity_observed_over_ssh",
+    "fresh_pinned_ssh_identity_identical"
+  ],
+  "source": {
+    "url": "https://registry.astralinux.ru/artifactory/mg-generic/alse/qemu/alse-1.7.6.uu2-base-qemu-mg15.3.1-amd64.qcow2",
+    "metadataUrl": "https://registry.astralinux.ru/artifactory/api/storage/mg-generic/alse/qemu/alse-1.7.6.uu2-base-qemu-mg15.3.1-amd64.qcow2",
+    "bytes": 402259968,
+    "sha256": "75d247c79beecd468ab9da777c1c90ca273f20ece748dc2575e7d091eb3e87b4",
+    "publisherSignatureVerified": false,
+    "fullCveRecallVerified": false
+  },
+  "recordedAtUtc": "2026-11-05T12:53:13.404868+00:00",
+  "scope": "isolated_native_Astra17_base_QEMU_SSH_only",
+  "nativeOpenScap18RulesVerified": false,
+  "nativeOval17Evaluated": false,
+  "nativeRollbackVerified": false,
+  "operatorProductionAccepted": false,
+  "limitations": [
+    "One exactly pinned official QEMU base image; no adv/max guarantee.",
+    "SHA-256 from vendor Artifactory, not an independently authenticated signature.",
+    "Factory SSH credentials used only for isolated bootstrapping, never HCP production.",
+    "No 18-rule, OVAL, CVE recall, rollback or production-readiness claim."
+  ],
+  "acceleration": "kvm",
+  "nativeGuest": {
+    "osId": "astra",
+    "pointRelease": "1.7.6",
+    "fullBuild": "1.7.6.15",
+    "architecture": "x86_64",
+    "realKernelObserved": true,
+    "privateMachineIdObserved": true,
+    "privateIdentityNotExported": true,
+    "sshHostKeyLineSha256": "9b718ee02f52813ea0c3a307dc9a40252fe68967b572aa60b1b144dc755f909a",
+    "sshTrustModel": "disposable_QEMU_bootstrap_only",
+    "hcpHostEnrollmentPerformed": false
+  }
+}

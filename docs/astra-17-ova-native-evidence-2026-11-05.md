@@ -48,3 +48,27 @@ SHA-256: `ba0cbce8203fd2c23b531c1f9cb3aad85bddb21d8ebd5eb3189a69d2650de2fb`.
 и исходного OpenSCAP 18-rule трёхэтапного эксперимента.
 Её результат следует проверять отдельно, не переписывая этот
 успешный узкий SSH-протокол.
+
+## Второе независимое подлинное подтверждение — прямой QEMU/KVM
+
+После успешного OVA повторён эксперимент на **другом оригинальном образе,
+созданном специально для QEMU**. [GitHub Actions #42030781198](https://github.com/Danil-super/hardening-control-platform/actions/runs/42030781198)
+завершился `success`, [PR #71](https://github.com/Danil-super/hardening-control-platform/pull/71)
+объединён с main (squash `94ee340744cd825d0c93f46fef68dd668008a068`).
+
+Образ `alse-1.7.6.uu2-base-qemu-mg15.3.1-amd64.qcow2`, ровно
+**402259968 байт**, SHA-256
+`75d247c79beecd468ab9da777c1c90ca273f20ece748dc2575e7d091eb3e87b4`.
+
+Его **второй оригинальный очищенный JSON**, `hcp-astra17-qemu-public.json`
+из artifact ID `13416449272`, сохранён в
+[evidence/astra17-qemu-ssh-run-42030781198.json](evidence/astra17-qemu-ssh-run-42030781198.json)
+в точности **1779 байт**, SHA-256
+`620a9b17eb9435d9dbeb070e42659f990b3cdaff3d684c9caf69379785eb236f`.
+
+Отдельно подтверждены реальные `ID=astra`, point `1.7.6`, full build
+`1.7.6.15`, `x86_64`, kernel/machine ID presence, неизменённое
+повторное SSH. **Это тоже только нативный SSH-smoke**, а не OpenSCAP,
+OVAL, полный HCP или operator sign-off. Публиковать исходный machine-id,
+пароли, raw VM логи или заводскую учётную запись как рекомендуемый способ
+production-подключения запрещено.

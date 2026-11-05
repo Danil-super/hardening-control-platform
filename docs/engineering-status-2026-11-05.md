@@ -93,6 +93,15 @@ HCP enrollment и rollback не были выполнены. Новый опыт
 никаких результатов 1.7 не приписывать.
 [Подробный исходный контракт](astra-17-ova-native-kvm-experiment.md).
 
+**Дополнительное независимое подтверждение (5.11):** [PR #71](https://github.com/Danil-super/hardening-control-platform/pull/71)
+прошёл **все пять exact-head CI** и объединён с main.
+[Настоящий QEMU/KVM run #42030781198](https://github.com/Danil-super/hardening-control-platform/actions/runs/42030781198)
+также подтвердил Astra 1.7.6.15 через два SSH без конвертации OVA.
+Его оригинальный санитизированный JSON и SHA сохранены
+[в доказательном протоколе](astra-17-ova-native-evidence-2026-11-05.md).
+**Оба успеха доказывают только нативную загрузку/SSH**, а не завершённый OpenSCAP/OVAL.
+
+
 Нельзя называть исходный SHA цифровой подписью изготовителя:
 он получен из того же Artifactory, что и образ.
 

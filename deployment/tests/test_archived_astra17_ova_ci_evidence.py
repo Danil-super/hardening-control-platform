@@ -31,6 +31,27 @@ class GenuineAstra17ArchivedProofTests(unittest.TestCase):
                          "72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e")
         self.assertEqual(evidence["checks"][-1], "fresh_pinned_ssh_identity_stable")
 
+    def test_exact_original_native_qemu_source_artifact_and_scope(self):
+        other = ROOT / "docs/evidence/astra17-qemu-ssh-run-42030781198.json"
+        raw = other.read_bytes()
+        self.assertEqual(len(raw), 1779)
+        self.assertEqual(hashlib.sha256(raw).hexdigest(),
+                         "620a9b17eb9435d9dbeb070e42659f990b3cdaff3d684c9caf69379785eb236f")
+        data = json.loads(raw)
+        self.assertEqual(data["status"], "native-astra17-qemu-ssh-only")
+        self.assertEqual(data["nativeGuest"]["osId"], "astra")
+        self.assertEqual(data["nativeGuest"]["pointRelease"], "1.7.6")
+        self.assertEqual(data["nativeGuest"]["fullBuild"], "1.7.6.15")
+        self.assertEqual(data["nativeGuest"]["architecture"], "x86_64")
+        self.assertEqual(data["source"]["bytes"], 402259968)
+        self.assertEqual(data["source"]["sha256"],
+                         "75d247c79beecd468ab9da777c1c90ca273f20ece748dc2575e7d091eb3e87b4")
+        self.assertFalse(data["nativeOpenScap18RulesVerified"])
+        self.assertFalse(data["nativeOval17Evaluated"])
+        self.assertFalse(data["operatorProductionAccepted"])
+        self.assertFalse(data["source"]["publisherSignatureVerified"])
+        self.assertNotIn("machineId", data["nativeGuest"])
+
     def test_no_full_scanner_or_vendor_attestation_claim(self):
         evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
         self.assertFalse(evidence["fullNative18RuleAcceptance"])
