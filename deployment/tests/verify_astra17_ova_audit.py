@@ -116,6 +116,11 @@ def classify_ansible_failure(log):
         "target_python_unavailable": r"Python interpreter discovery|/usr/bin/python3: not found|ModuleNotFoundError",
         "remote_ansible_module_failed": r"MODULE FAILURE|FAILED!|FAILED! =>|module_stdout",
         "controller_ansible_config_failed": r"ERROR!|Unable to parse|AnsibleError",
+        "python_syntax_or_version_failure": r"SyntaxError|invalid syntax|future feature|requires Python",
+        "ansible_remote_tmp_failure": r"Failed to create temporary directory|remote_tmp|Failed to transfer file|Could not create remote file",
+        "ansible_remote_command_failed": r"fatal: \[|FAILED\s*=>|Failed to execute",
+        "ansible_module_payload_failure": r"Failed to import|No module named|AnsiballZ|Module result deserialization failed",
+        "ansible_empty_module_response": r"No start of json char found|No JSON object could be decoded",
     }
     try:
         path = Path(log)
@@ -129,6 +134,89 @@ def classify_ansible_failure(log):
         return ["private_ansible_log_unavailable"]
     return sorted(k for k, regex in patterns.items()
                   if re.search(regex, data, re.IGNORECASE))
+
+
+def upstream_ansible_target_range(core_minor):
+    """Documented managed-node Python3 support, not a heuristic OS version."""
+    return {
+        12: (5, 10), 13: (5, 10), 14: (5, 11), 15: (5, 11),
+        16: (6, 12), 17: (7, 12), 18: (8, 13), 19: (8, 13),
+        20: (9, 14), 21: (9, 14),
+    }.get(core_minor)
+
+
+def check_ansible_runtime_support(native_ssh, protocol):
+    """Only report numeric versions; fail closed outside published support."""
+    cmd = ("python3 -c " +
+           shlex.quote("import sys; print('%d.%d' % sys.version_info[:2])"))
+    try:
+        python_version = native_ssh(cmd, timeout=30).strip()
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        raise RuntimeError("native_guest_python_version_unavailable")
+    demand(re.fullmatch(r"3\.(?:[0-9]|1[0-9])", python_version),
+           "native_guest_python_version_invalid")
+    match = re.fullmatch(r"3\.(\d{1,2})", python_version)
+    python_minor = int(match.group(1))
+    try:
+        result = subprocess.run(
+            ["ansible-playbook", "--version"], capture_output=True,
+            text=True, check=False, timeout=20)
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        raise RuntimeError("ansible_controller_version_unavailable")
+    match = re.search(r"ansible-playbook\s+\[core\s+2\.(\d{1,2})(?:\.\d+)?\]",
+                      result.stdout[:2048])
+    demand(result.returncode == 0 and match is not None,
+           "ansible_controller_version_invalid")
+    core_minor = int(match.group(1))
+    bounds = upstream_ansible_target_range(core_minor)
+    proof = {
+        "targetPython": python_version,
+        "ansibleCore": "2.%d" % core_minor,
+        "upstreamTargetPythonRangeRecognized": bounds is not None,
+        "targetWithinUpstreamSupportedRange": (
+            bounds is not None and bounds[0] <= python_minor <= bounds[1]),
+        "upstreamMatrixIsNotRuntimeSuccessProof": True,
+    }
+    protocol["nativeHcp"]["pythonAnsibleCompatibility"] = proof
+    demand(bounds is not None, "unsupported_ansible_core_version_unknown")
+    demand(bounds[0] <= python_minor <= bounds[1],
+           "target_python_outside_upstream_ansible_support")
+    return proof
+
+
+def native_ansible_transport_preflight(work, protocol):
+    """Separate SSH, Python-module and sudo stages without raw-log disclosure."""
+    inventory = str(work / "private-inventory.json")
+    opts = safe_ansible_ssh_args(work / "known_hosts")
+    stages = (
+        ("ssh_raw", "ansible.builtin.raw", "true", False),
+        ("python_module", "ansible.builtin.ping", "", False),
+        ("privileged_python_module", "ansible.builtin.ping", "", True),
+    )
+    protocol["nativeHcp"]["ansibleTransportStages"] = []
+    for stage, module, args, become in stages:
+        cmd = ["ansible", "-i", inventory, HOST, "-m", module,
+               "-e", "ansible_become=" + ("true" if become else "false")]
+        if args:
+            cmd.extend(["-a", args])
+        logfile = work / ("private-transport-" + stage + ".log")
+        with logfile.open("wb") as sink:
+            try:
+                result = subprocess.run(
+                    cmd, stdout=sink, stderr=subprocess.STDOUT, timeout=90,
+                    check=False, env={**os.environ,
+                        "ANSIBLE_HOST_KEY_CHECKING": "True",
+                        "ANSIBLE_SSH_ARGS": opts})
+            except (OSError, subprocess.TimeoutExpired):
+                protocol["nativeHcp"]["ansibleTransportFailedAt"] = stage
+                raise RuntimeError("ansible_transport_probe_unavailable")
+        if result.returncode != 0:
+            protocol["nativeHcp"]["ansibleTransportFailedAt"] = stage
+            protocol["nativeHcp"]["ansibleFailureClass"] = classify_ansible_failure(logfile)
+            protocol["nativeHcp"]["ansibleFailureReturnCode"] = result.returncode
+            raise RuntimeError("ansible_transport_probe_failed")
+        protocol["nativeHcp"]["ansibleTransportStages"].append(stage)
+    protocol["nativeHcp"]["ansibleTransportComplete"] = True
 
 
 def run_playbook(work, reports, name, phase, variables, protocol):
@@ -158,6 +246,7 @@ def run_playbook(work, reports, name, phase, variables, protocol):
     if task.returncode != 0:
         protocol["nativeHcp"]["ansibleFailureClass"] = classify_ansible_failure(logs)
         protocol["nativeHcp"]["ansibleFailedStep"] = name
+        protocol["nativeHcp"]["ansibleFailureReturnCode"] = task.returncode
         # Never upload/echo raw ansible commands, stdout, stderr or IPs.
         raise RuntimeError("ansible_playbook_failed")
 
@@ -243,6 +332,10 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
     reports = work / "private-native-reports"
     reports.mkdir(mode=0o700)
 
+    stage("native_ansible_and_python_compatibility")
+    check_ansible_runtime_support(native_ssh, protocol)
+    stage("native_ansible_ssh_module_and_sudo_transport")
+    native_ansible_transport_preflight(work, protocol)
     stage("real_ansible_facts")
     run_playbook(work, reports, "collect-facts", "facts", {}, protocol)
     facts_file = reports / (HOST + "-facts-facts.json")

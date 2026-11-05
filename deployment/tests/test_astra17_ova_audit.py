@@ -94,6 +94,57 @@ class NativeAstra17AuditTests(unittest.TestCase):
             self.assertNotIn("abc-private-host", json.dumps(result))
             self.assertNotIn("SENSITIVE_MACHINE_ID", json.dumps(result))
 
+    def test_upstream_python_ansible_support_bounds_do_not_claim_compatibility(self):
+        self.assertEqual(audit.upstream_ansible_target_range(15), (5, 11))
+        self.assertEqual(audit.upstream_ansible_target_range(16), (6, 12))
+        self.assertEqual(audit.upstream_ansible_target_range(17), (7, 12))
+        self.assertEqual(audit.upstream_ansible_target_range(19), (8, 13))
+        self.assertEqual(audit.upstream_ansible_target_range(21), (9, 14))
+        self.assertIsNone(audit.upstream_ansible_target_range(99))
+
+    def test_runtime_preflight_checks_actual_guest_python_and_controller_ansible(self):
+        from unittest.mock import patch
+        from types import SimpleNamespace
+        probe = {"nativeHcp": {}}
+        def ssh(command, timeout=30):
+            self.assertIn("python3 -c", command)
+            return "3.7\\n".replace("\\n", "\n")
+        fake = SimpleNamespace(returncode=0,
+                               stdout="ansible-playbook [core 2.16.3]\\n".replace("\\n", "\n"))
+        with patch.object(audit.subprocess, "run", return_value=fake):
+            supported = audit.check_ansible_runtime_support(ssh, probe)
+        self.assertTrue(supported["targetWithinUpstreamSupportedRange"])
+        self.assertEqual(supported["targetPython"], "3.7")
+        self.assertEqual(supported["ansibleCore"], "2.16")
+        self.assertNotIn("private", json.dumps(supported))
+        with patch.object(audit.subprocess, "run", return_value=fake):
+            with self.assertRaisesRegex(RuntimeError, "target_python_outside"):
+                audit.check_ansible_runtime_support(
+                    lambda *_a, **_k: "3.5\\n".replace("\\n", "\n"),
+                    {"nativeHcp": {}})
+
+    def test_nonzero_raw_probe_cannot_skip_to_native_scanner(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            known = root / "known_hosts"
+            known.write_text("pinned-key\\n")
+            os.chmod(known, 0o600)
+            def failed(args, **kwargs):
+                self.assertEqual(args[0], "ansible")
+                self.assertIn("ANSIBLE_SSH_ARGS", kwargs["env"])
+                kwargs["stdout"].write(b"fatal host: private-key omitted")
+                return SimpleNamespace(returncode=2)
+            protocol = {"nativeHcp": {}}
+            with patch.object(audit.subprocess, "run", side_effect=failed):
+                with self.assertRaisesRegex(RuntimeError, "ansible_transport_probe_failed"):
+                    audit.native_ansible_transport_preflight(root, protocol)
+            self.assertEqual(protocol["nativeHcp"]["ansibleTransportFailedAt"], "ssh_raw")
+            self.assertEqual(protocol["nativeHcp"]["ansibleTransportStages"], [])
+            self.assertEqual(protocol["nativeHcp"]["ansibleFailureReturnCode"], 2)
+            self.assertNotIn("private-key", json.dumps(protocol))
+
     def test_real_hcp_playbook_and_evidence_paths_are_bound_to_fixed_repository(self):
         content = Path(audit.__file__).read_text(encoding="utf-8")
         self.assertIn('run_playbook(work, reports, "collect-facts"', content)
