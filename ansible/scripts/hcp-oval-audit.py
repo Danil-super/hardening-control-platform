@@ -33,7 +33,9 @@ MAX_SOURCE_BYTES = 192 * 1024 * 1024
 MAX_RESULT_BYTES = 384 * 1024 * 1024
 MAX_XML_NODES = 2400000
 MAX_DEFINITIONS = 30000
-DOWNLOAD_TIMEOUT = 900
+# Allow the 135 MB vendor feed to finish over a slow, progressing connection.
+# The web executor still enforces its separate 40-minute overall job limit.
+DOWNLOAD_TIMEOUT = 1200
 UTC = datetime.timezone.utc
 # Local, read-only probes only. SQL objects could open network connections.
 LOCAL_OBJECTS = frozenset(('dpkginfo', 'rpminfo', 'family', 'uname', 'textfilecontent',

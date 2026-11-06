@@ -107,7 +107,7 @@ class OvalAuditTests(unittest.TestCase):
                     if index == 0: self.assertEqual(stock[0], 0)
                     elif index < 5: self.assertNotEqual(stock[0], 0)
 
-    def test_slow_download_is_allowed_past_five_minutes_and_keeps_its_deadline(self):
+    def test_slow_download_is_allowed_past_fifteen_minutes_and_keeps_its_deadline(self):
         raw = source(timestamp=oval.now().isoformat())
         class Response(io.BytesIO):
             headers = {'Content-Length': str(len(raw))}
@@ -115,7 +115,11 @@ class OvalAuditTests(unittest.TestCase):
             def getcode(self): return 200
         class Opener:
             def open(self, request, timeout): return Response(raw)
-        for times, success in (([0, 301, 302], True), ([0, 0, oval.DOWNLOAD_TIMEOUT + 1], False)):
+        # The real 135 MB vendor feed reached 125 MB after 900 seconds.
+        # A slow but progressing download may finish at sixteen minutes;
+        # it must still fail closed when the total download deadline expires.
+        for times, success in (([0, 301, 302], True), ([0, 960, 961], True),
+                               ([0, 0, oval.DOWNLOAD_TIMEOUT + 1], False)):
             with tempfile.TemporaryDirectory() as directory, patch.object(urllib.request, 'build_opener', return_value=Opener()), patch.object(oval.time, 'monotonic', side_effect=times):
                 target = Path(directory) / 'source.xml'
                 settings = config(raw, mode='online', url='https://mirror.example/db.xml')
