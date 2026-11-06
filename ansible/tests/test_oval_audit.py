@@ -399,6 +399,8 @@ class OvalAuditTests(unittest.TestCase):
         self.assertEqual(compact['definitionCount'], 3)
         self.assertEqual(compact['evaluatedDefinitionCount'], 3)
         self.assertEqual(compact['resultCounts'], full['resultCounts'])
+        self.assertEqual(compact['definitionResults'][0]['platformApplicability'],
+                         full['definitionResults'][0]['platformApplicability'])
         self.assertEqual(compact['evidenceProjection'], 'bounded')
         self.assertTrue(compact['fullDefinitionIdSetPreserved'])
         self.assertTrue(compact['auxiliaryDetailsOmitted'])

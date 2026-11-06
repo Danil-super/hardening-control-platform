@@ -754,7 +754,7 @@ def parse_results(root, definitions, report, evidence_projection='detailed'):
                 'class': entry['class'],
                 'cveIds': entry['cveIds'],
                 'vendorSeverity': entry['vendorSeverity'],
-                'platformApplicability': entry['platformApplicability']['status'],
+                'platformApplicability': entry['platformApplicability'],
             })
         else:
             scanner['definitionResults'].append(entry)

@@ -787,4 +787,3 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
         evaluate_native_vendor_oval(work, reports, protocol, run_playbook)
         protocol["checks"].append("native_astra17_full_original_vendor_oval_source_evaluated")
         protocol["nativeHcp"]["status"] = "native-hcp-18-rule-and-exact-oval-scope-observed"
-

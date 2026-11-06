@@ -9,6 +9,7 @@ export type AstraOvalConfig = {
   sourceName: string;
   sourceReference: string;
   sourceReviewedAt: string | null;
+  evidenceProjection: "bounded" | "detailed";
 };
 
 function isAstraBrowserUrl(url: string) {
@@ -32,6 +33,10 @@ export function astraOvalApplicabilityIssue(config: AstraOvalConfig, release: st
 export function validateAstraOvalConfig(value: unknown): AstraOvalConfig {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Укажите настройки OVAL-базы.");
   const input = value as Record<string, unknown>;
+  const evidenceProjection = input.evidenceProjection === undefined ? "bounded" : input.evidenceProjection;
+  if (evidenceProjection !== "bounded" && evidenceProjection !== "detailed") {
+    throw new Error("Представление доказательств OVAL должно быть bounded или detailed.");
+  }
   const text = (key: string) => typeof input[key] === "string" ? input[key].trim() : "";
   if (input.mode !== "local" && input.mode !== "online") throw new Error("Выберите локальную или сетевую OVAL-базу.");
   const file = text("path");
@@ -70,7 +75,7 @@ export function validateAstraOvalConfig(value: unknown): AstraOvalConfig {
   }
   return { mode: input.mode, path: input.mode === "local" ? file : "", url: input.mode === "online" ? url : "", sha256,
     releasePattern, architectures: [...new Set(input.architectures as string[])], maxAgeDays, sourceName, sourceReference,
-    sourceReviewedAt: sourceReviewedAt ? new Date(sourceReviewedAt).toISOString() : null };
+    sourceReviewedAt: sourceReviewedAt ? new Date(sourceReviewedAt).toISOString() : null, evidenceProjection };
 }
 
 export function assertAstraOvalProvenance(config: AstraOvalConfig) {

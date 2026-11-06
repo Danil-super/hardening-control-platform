@@ -21,6 +21,8 @@ const preflightFixture = path.join(temporary, "preflight-case");
 mkdirSync(fixtureBin);
 copyFileSync(path.join(webDir, "tests/fixtures/ansible-preflight.mjs"), path.join(fixtureBin, "ansible"));
 chmodSync(path.join(fixtureBin, "ansible"), 0o700);
+copyFileSync(path.join(webDir, "tests/fixtures/ansible-oval-launch.mjs"), path.join(fixtureBin, "ansible-playbook"));
+chmodSync(path.join(fixtureBin, "ansible-playbook"), 0o700);
 writeFileSync(preflightFixture, "ok");
 const reports = path.join(temporary, "reports");
 const sshKey = path.join(temporary, "fixture-key");
@@ -316,10 +318,29 @@ try {
   await request("/hosts");
   await request("/data-sources");
   await request("/policies");
+  const ovalConfig = { mode: "local", path: "/fixture/selected.xml", url: "", sha256: "a".repeat(64),
+    releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "Synthetic HTTP fixture",
+    sourceReference: "FIXTURE-NOT-A-VENDOR-SOURCE", evidenceProjection: "bounded" };
+  await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "linux_hosts", config: ovalConfig } });
+  await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "linux_hosts", config: { ...ovalConfig, evidenceProjection: "lite" } }, status: 400 });
   await stop();
   await start();
   const persisted = await (await request("/api/settings/vulnerability-data")).json();
   assert.equal(persisted.database.mode, "online");
+  const reloadedOval = await (await request("/api/settings/astra-oval")).json();
+  assert.equal(reloadedOval.policies[0].config.evidenceProjection, "bounded");
+  const unconfirmedOval = await (await request("/api/ansible/run", { method: "POST", body: { action: "astraOvalAudit", limit: guardedIdentity.alias }, status: 400 })).json();
+  assert.equal(unconfirmedOval.error, "confirmation_required");
+  assert.equal(existsSync(`${preflightFixture}.oval-config`), false);
+  const ovalRun = await (await request("/api/ansible/run", { method: "POST", body: { action: "astraOvalAudit", limit: guardedIdentity.alias, confirmAudit: true, sudoPassword: "fixture-oval-sudo" } })).json();
+  assert.equal(ovalRun.ok, true, JSON.stringify(ovalRun));
+  assert.equal(ovalRun.partial, false, JSON.stringify(ovalRun));
+  assert.equal(JSON.parse(readFileSync(`${preflightFixture}.oval-config`, "utf8")).evidenceProjection, "bounded");
+  const publishedOval = await (await request(`/api/ansible/reports/${ovalRun.reportId}`)).json();
+  assert.equal(publishedOval.report.assetBinding.status, "verified");
+  assert.equal(publishedOval.report.partial, false);
+  assert.equal(publishedOval.report.raw.scanner.evidenceProjection, "bounded");
+  assert.equal(publishedOval.report.raw.scanner.definitionResults.length, 1);
   await request(`/api/ansible/reports/${reportId}`);
   await request("/reports/agentless");
   const logout = await request("/api/ansible/auth/logout", { method: "POST" });

@@ -10,7 +10,7 @@ import type { AstraOvalConfig } from "@/lib/astra-oval-config";
 
 type Policy = { groupName: string; config: AstraOvalConfig; updatedAt: string };
 type Payload = { ok?: boolean; message?: string; inventoryGroups?: string[]; policies?: Policy[] };
-const initial: AstraOvalConfig = { mode: "online", path: "/usr/share/oval/db.xml", url: "", sha256: "", releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "", sourceReference: "", sourceReviewedAt: null };
+const initial: AstraOvalConfig = { mode: "online", path: "/usr/share/oval/db.xml", url: "", sha256: "", releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "", sourceReference: "", sourceReviewedAt: null, evidenceProjection: "bounded" };
 const inputClass = "mt-1 w-full min-w-0 rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-sky-300";
 
 export function AstraOvalClient() {

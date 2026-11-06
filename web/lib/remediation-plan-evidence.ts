@@ -68,8 +68,12 @@ function ovalDefinitionResolved(report: AnsibleReportDetail, original: Finding) 
   const scanner = record(record(report.raw).scanner);
   if (scanner.evaluationPerformed !== true || !Array.isArray(scanner.definitionResults)) return false;
   const definitions = scanner.definitionResults.map(record).filter((definition) => definition.id === original.id);
+  const applicability = definitions[0]?.platformApplicability;
+  // Early bounded reports used a string; current projections share the object
+  // contract. Neither form can turn foreign/unknown applicability into proof.
+  const platformStatus = typeof applicability === "string" ? applicability : record(applicability).status;
   return definitions.length === 1 && definitions[0].class === "vulnerability" && definitions[0].result === "false"
-    && ["astra_named", "not_verified"].includes(String(record(definitions[0].platformApplicability).status));
+    && ["astra_named", "not_verified"].includes(String(platformStatus));
 }
 
 /** Absence is evidence only when the adapter proved coverage of a new full inventory. */
@@ -110,7 +114,9 @@ function trivyAbsenceResolved(item: RemediationPlanItem, report: AnsibleReportDe
 
 export function assertPlanVerification(item: RemediationPlanItem, report: AnsibleReportDetail) {
   if (targetAliasFromReport(report) !== item.hostAlias) throw new Error("Повторный отчёт не относится к этому хосту.");
-  if (currentAssetBinding(item.hostAlias) && report.assetBinding?.status !== "verified") throw new Error("Идентичность машины в повторном отчёте не подтверждена. Исторический импорт или неаутентифицированный сетевой скан не подтверждает устранение на этом активе.");
+  const current = currentAssetBinding(item.hostAlias);
+  if (current && (report.assetBinding?.status !== "verified" || report.assetBinding.assetId !== current.assetId
+    || report.assetBinding.generation !== current.generation)) throw new Error("Идентичность машины в повторном отчёте не подтверждена для текущего актива и поколения подключения. Исторический импорт или неаутентифицированный сетевой скан не подтверждает устранение на этом активе.");
   const timestamp = reportTimestamp(report);
   if (report.partial || !report.available || !report.reportTimeValid || !report.createdAt
     || timestamp <= Date.parse(item.updatedAt) || timestamp < Date.now() - correlationMaxAgeHours() * 3_600_000) {
@@ -125,7 +131,9 @@ export function assertPlanVerification(item: RemediationPlanItem, report: Ansibl
   }
 
   const candidates = item.evidence.map(originalEvidenceReader(item))
-    .filter((source) => source !== null && reportScopesCompatible(source.report, report));
+    .filter((source) => source !== null && reportScopesCompatible(source.report, report)
+      && (source.report.assetBinding?.status !== "verified" || report.assetBinding?.status === "verified"
+        && source.report.assetBinding.generation === report.assetBinding.generation));
   if (!candidates.length) {
     throw new Error("Не подтверждено совпадение исходного контроля, профиля и содержимого проверки. Нужен повторный отчёт той же области и неизменённое исходное доказательство.");
   }
