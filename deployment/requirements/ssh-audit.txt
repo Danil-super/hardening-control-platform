@@ -1,0 +1,13 @@
+# Fully pinned controller tool environment, including its installer.
+# Allowed PyPI wheels: CPython 3.11/3.13 on glibc Linux amd64/arm64 and pure Python.
+# A wheel hash allows these bytes; it does not attest platform acceptance.
+# Install with --require-hashes --only-binary=:all: and dependency resolution enabled.
+
+pip==26.2.2 \
+    --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
+
+setuptools==84.2.1 \
+    --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
+
+ssh-audit==3.3.0 \
+    --hash=sha256:8d2b22b7bb7c20c9d84452c9f13408015ec76eb025379cc70335e5315e4378d6

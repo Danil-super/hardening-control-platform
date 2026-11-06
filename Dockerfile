@@ -1,27 +1,31 @@
+ARG NODE_IMAGE=node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b260140cab4a23d467074295b42163d553
+ARG PYTHON_IMAGE=python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
 ARG TRIVY_IMAGE=aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
 FROM ${TRIVY_IMAGE} AS trivy
 
-FROM python:3.13-slim-bookworm AS ansible-modern
+FROM ${PYTHON_IMAGE} AS ansible-modern
 
 # Separate controller Python supports current targets without replacing either
 # the Debian Python used by ReportLab or Python on any audited server.
+COPY deployment/requirements/ansible-modern.txt /opt/hcp-tools/requirements/ansible-modern.txt
 RUN python3.13 -m venv /opt/hcp-tools/ansible-modern \
-  && /opt/hcp-tools/ansible-modern/bin/pip install --no-cache-dir --only-binary=:all: ansible-core==2.21.5
+  && /opt/hcp-tools/ansible-modern/bin/python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/hcp-tools/requirements/ansible-modern.txt \
+  && /opt/hcp-tools/ansible-modern/bin/python -m pip check
 
-FROM node:24-bookworm-slim AS dependencies
+FROM ${NODE_IMAGE} AS dependencies
 
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 
-FROM node:24-bookworm-slim AS build
+FROM ${NODE_IMAGE} AS build
 
 WORKDIR /app
 COPY --from=dependencies /app/web/node_modules ./web/node_modules
 COPY web ./web
 RUN cd web && npm run build
 
-FROM node:24-bookworm-slim AS runtime
+FROM ${NODE_IMAGE} AS runtime
 
 # Disable the inherited APT retry path until its security update is installed.
 # Explicit base packages are refreshed even when the base image is cached.
@@ -39,6 +43,7 @@ COPY --from=ansible-modern /usr/local/bin/python3.13 /usr/local/bin/python3.13
 COPY --from=ansible-modern /usr/local/lib/python3.13 /usr/local/lib/python3.13
 COPY --from=ansible-modern /usr/local/lib/libpython3.13.so.1.0 /usr/local/lib/libpython3.13.so.1.0
 COPY --from=ansible-modern /opt/hcp-tools/ansible-modern /opt/hcp-tools/ansible-modern
+COPY deployment/requirements /opt/hcp-tools/requirements
 RUN ldconfig \
   && /opt/hcp-tools/ansible-modern/bin/ansible --version \
   && /usr/bin/python3 -c "import reportlab"
@@ -46,7 +51,8 @@ RUN ldconfig \
 # Debian bookworm packages ssh-audit 2.5, whose JSON omits recommendations and
 # lacks --skip-rate-test. Keep the supported scanner isolated from system Python.
 RUN python3 -m venv /opt/hcp-tools/ssh-audit \
-  && /opt/hcp-tools/ssh-audit/bin/pip install --no-cache-dir --only-binary=:all: ssh-audit==3.3.0 \
+  && /opt/hcp-tools/ssh-audit/bin/python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/hcp-tools/requirements/ssh-audit.txt \
+  && /opt/hcp-tools/ssh-audit/bin/python -m pip check \
   && ln -s /opt/hcp-tools/ssh-audit/bin/ssh-audit /usr/local/bin/ssh-audit \
   && ssh-audit --help
 
@@ -54,7 +60,8 @@ RUN python3 -m venv /opt/hcp-tools/ssh-audit \
 # runtime translation never sends host reports to a third-party service.
 COPY deployment/install-description-model.py /opt/hcp-tools/install-description-model.py
 RUN python3 -m venv /opt/hcp-tools/translation \
-  && /opt/hcp-tools/translation/bin/pip install --no-cache-dir --only-binary=:all: ctranslate2==4.6.0 sentencepiece==0.2.1 \
+  && /opt/hcp-tools/translation/bin/python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/hcp-tools/requirements/translation.txt \
+  && /opt/hcp-tools/translation/bin/python -m pip check \
   && python3 /opt/hcp-tools/install-description-model.py --destination /opt/hcp-tools/translation/model
 
 ENV NODE_ENV=production \
