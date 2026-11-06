@@ -55,3 +55,20 @@ test("direct requests require a matching Origin or a valid matching Referer", ()
     assert.equal(hasTrustedOrigin(request(headers)), false);
   }
 });
+
+test("production HTTP backend ignores a scheme already rewritten by Next from forwarded proto", () => {
+  const previousMode = process.env.NODE_ENV;
+  delete process.env.HCP_TRUSTED_TLS_PROXY;
+  process.env.NODE_ENV = "production";
+  try {
+    const rewritten = (origin) => ({
+      headers: new Headers({ host: "localhost:3000", "x-forwarded-proto": "https", origin }),
+      nextUrl: { origin: "https://localhost:3000" },
+    });
+    assert.equal(hasTrustedOrigin(rewritten("https://localhost:3000")), false);
+    assert.equal(hasTrustedOrigin(rewritten("http://localhost:3000")), true);
+  } finally {
+    if (previousMode === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previousMode;
+  }
+});

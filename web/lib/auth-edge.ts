@@ -27,9 +27,15 @@ export function hasTrustedOrigin(request: {
   const forwardedProtocol = trustedProxy ? request.headers.get("x-forwarded-proto") : null;
   let expectedOrigin: string;
   try {
-    const protocol = forwardedProtocol ?? new URL(request.nextUrl.origin).protocol.replace(/:$/, "");
-    if (!["http", "https"].includes(protocol) || (host !== null && /[\s,/@\\?#]/.test(host))) return false;
-    expectedOrigin = host ? new URL(`${protocol}://${host}`).origin : new URL(request.nextUrl.origin).origin;
+    const url = new URL(request.nextUrl.origin);
+    // HCP's production `next start` listener is HTTP; TLS terminates at the
+    // explicitly trusted proxy. Next can already have copied forwarded proto
+    // into nextUrl, so that URL cannot prove the listener's transport.
+    const directProtocol = process.env.NODE_ENV === "production" ? "http" : url.protocol.replace(/:$/, "");
+    const protocol = trustedProxy ? forwardedProtocol ?? url.protocol.replace(/:$/, "") : directProtocol;
+    const authority = host ?? url.host;
+    if (!["http", "https"].includes(protocol) || !authority || /[\s,/@\\?#]/.test(authority)) return false;
+    expectedOrigin = new URL(`${protocol}://${authority}`).origin;
   } catch {
     return false;
   }

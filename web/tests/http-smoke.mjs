@@ -64,7 +64,7 @@ let output = "";
 let cookie = "";
 let checks = 0;
 
-async function start() {
+async function start(trustedProxy = false) {
   child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd: webDir, stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1",
@@ -74,7 +74,7 @@ async function start() {
       HCP_AUDIT_HMAC_KEY: "http-smoke-ledger-key", HCP_SCHEDULE_API_KEY: "http-smoke-schedule-key",
       HCP_TRIVY_MODE: "offline", HCP_TRIVY_CACHE_DIR: path.join(temporary, "trivy-cache"),
       HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_KNOWN_HOSTS_PATH: knownHosts, HCP_PRODUCTION_MODE: "true",
-      HCP_TRUSTED_TLS_PROXY: "false" },
+      HCP_TRUSTED_TLS_PROXY: String(trustedProxy) },
   });
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (value) => { output = (output + value).slice(-12000); });
   for (let attempt = 0; attempt < 160; attempt++) {
@@ -299,6 +299,8 @@ try {
   await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid", body: {}, status: 403 });
   await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid",
     headers: { "X-Forwarded-Host": "foreign.invalid", "X-Forwarded-Proto": "https" }, body: {}, status: 403 });
+  await request("/api/settings/astra-oval", { method: "POST", origin: base.replace("http:", "https:"),
+    headers: { "X-Forwarded-Proto": "https" }, body: {}, status: 403 });
   await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "nonexistent-smoke-group", config: {} }, status: 400 });
   const ovalPage = await (await request(`/reports/agentless/${ovalReportId}`)).text();
   assert.match(ovalPage, /Результат OVAL-аудита Astra/);
@@ -365,6 +367,13 @@ try {
   cookie = relogin.headers.get("set-cookie").split(";", 1)[0];
   assert.notEqual(cookie, oldCookie, "each login must create a distinct session");
   await request("/api/ansible/session");
+  await stop();
+  await start(true);
+  const proxyHeaders = { "X-Forwarded-Host": "hcp.example", "X-Forwarded-Proto": "https" };
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://hcp.example",
+    headers: proxyHeaders, body: {}, status: 400 });
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid",
+    headers: proxyHeaders, body: {}, status: 403 });
   const sessionDatabase = new DatabaseSync(path.join(temporary, "hcp.sqlite"));
   sessionDatabase.prepare("UPDATE admin_sessions SET expires_at = ?").run(Date.now() - 1);
   sessionDatabase.close();
