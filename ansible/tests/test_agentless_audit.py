@@ -404,6 +404,22 @@ class AgentlessAuditTest(unittest.TestCase):
         self.assertTrue(findings["firewall_active"]["evidence"].startswith("backend=ufw;"))
         self.assertNotIn("firewall_active", report["scanner"]["incompleteChecks"])
 
+    def test_manager_readiness_is_recorded_without_promoting_opaque_nft_filtering(self):
+        for code, output, error, state in [(0, "Status: active", "", "active"),
+                                           (1, "", "Permission denied", "unknown"),
+                                           (127, "", "not found", "missing")]:
+            with self.subTest(state=state):
+                report, findings = self.execute_audit({
+                    ("ufw", "status"): (code, output, error),
+                    ("nft", "-j", "list", "ruleset"): (0, nft_input(expressions=[[{"xt": None}, {"accept": None}]]), ""),
+                })
+                self.assertEqual(report["agentless"]["firewallManagers"], [
+                    {"backend": "ufw", "state": state}, {"backend": "firewalld", "state": "inactive"},
+                ])
+                self.assertEqual(findings["firewall_active"]["status"], "manual")
+                self.assertTrue(report["scanner"]["partial"])
+                self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+
     def test_supported_firewalld_style_nft_jump_keeps_the_manager_identity(self):
         data = json.loads(nft_input(policy="accept", expressions=[[{"jump": {"target": "public"}}]]))
         data["nftables"].extend([

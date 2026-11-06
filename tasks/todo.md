@@ -153,13 +153,19 @@ read-only mount только для этого пути инструмента, 
   OpenSCAP 18 правил / 14 pass / 4 fail, те же assetId/generation/connection;
   оригинальные JSON/ARF/source и все native ID/состояния сверены.
 - [ ] Подключение через мастер, fingerprint, assetId/generation, inventory.
-- [ ] 18 правил: before / controlled change / restored с оригиналами и SHA.
-- [ ] Полная выбранная OVAL через сохранённую конфигурацию сайта; raw JSON/XML.
-  Полный source с pin получен, но на 2 ГиБ сканер завершился -9 без results.
-  На 4 ГиБ первая попытка прервана TLS EOF до обращения к гостю; положительный
-  результат ещё не принят. Потеря ссылки на уже сохранённый partial JSON
-  воспроизведена и исправлена локально: 570/570 web, typecheck, build,
-  79 HTTP-проверок и mutation передачи run ID. Новому фиксу ещё нужны собственный CI и установка.
+- [x] 18 правил: before / controlled change / restored с оригиналами и SHA.
+  14/4 → 13/5 → 14/4, только owner-execute `/etc/passwd` на 48 секунд;
+  восстановлены mode/bytes/owner/inode. Один bundle identity и все 18 ARF состояний.
+  Холодный снимок создан, но его полное восстановление не испытывалось.
+- [x] Полная выбранная OVAL через сохранённую конфигурацию сайта; raw JSON/XML.
+  19 527 определений: 4 134 true / 15 393 false, 4 068 CVE; partial=false.
+  Все ID/статусы и source CVE сверены, полные XML сохранены 0600 с SHA.
+  UI desktop/mobile и PDF 113 страниц / 27 источников проверены.
+- [x] `342306c` (ссылка на partial JSON после ошибки child): 20/20 workflow,
+  28/28 checks. На панели пока a46f045; следующая установка объединит фиксы.
+- [ ] Новый gate firewall: отдельная готовность UFW/firewalld без повышения
+  manual packet-аудита до passed. Локально 572 web, 351 Python/Ansible,
+  typecheck/build/79 HTTP и mutation прошли; CI/установка/live rollback ожидаются.
 - [ ] UI/API/архив/PDF и manifest сохраняют полноту и неопределённость.
   На восстановленной Ubuntu проверена историческая часть: JSON одного отчёта,
   PDF и manifest 15 исходников, 22 HTTP; ещё 31 HTTP — архивы, возврат,

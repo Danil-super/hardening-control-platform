@@ -1004,8 +1004,7 @@
               except (ValueError, KeyError, IndexError):
                   return "unknown", "iptables", evidence
 
-          def detect_firewall():
-              managers = [ufw_firewall_state(), firewalld_firewall_state()]
+          def detect_firewall(managers):
               proofs = {"nftables": {}, "iptables": {}}
               filters = [nftables_firewall_state(proofs["nftables"]), iptables_firewall_state(proofs["iptables"])]
               states = managers + filters
@@ -1212,7 +1211,8 @@
                   "checked_ports=" + ",".join("{}/{}".format(rule.get("protocol", "tcp"), rule["port"]) for rule in dangerous_ports),
               ))
 
-          firewall_active, firewall_known, firewall_evidence = detect_firewall()
+          firewall_managers = [ufw_firewall_state(), firewalld_firewall_state()]
+          firewall_active, firewall_known, firewall_evidence = detect_firewall(firewall_managers)
           if not firewall_known:
               incomplete_checks.append("firewall_active")
           findings.append(finding(
@@ -1600,6 +1600,7 @@
                   "openSockets": open_sockets,
                   "serviceManager": service_manager,
                   "serviceManagerEvidence": service_manager_evidence,
+                  "firewallManagers": [{"backend": item[1], "state": item[0]} for item in firewall_managers],
                   "serviceObservations": [{"service": name, "state": "active" if value[0] is True else "inactive" if value[0] is False else "unknown", "evidence": value[1]}
                                           for name, value in sorted(service_cache.items())],
               },
