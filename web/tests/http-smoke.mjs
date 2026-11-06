@@ -69,6 +69,9 @@ async function start(trustedProxy = false) {
     cwd: webDir, stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1",
       PATH: `${fixtureBin}${path.delimiter}${process.env.PATH}`, HCP_PREFLIGHT_FIXTURE: preflightFixture,
+      // These subprocess fixtures model one legacy controller. An inherited
+      // absolute modern runtime would bypass them and require real SSH output.
+      HCP_ANSIBLE_MODERN_BIN_DIR: "",
       HCP_STATE_DIR: temporary, HCP_REPORTS_DIR: reports,
       HCP_ADMIN_PASSWORD: "http-smoke-password", HCP_AUTH_SECRET: "http-smoke-session-key",
       HCP_AUDIT_HMAC_KEY: "http-smoke-ledger-key", HCP_SCHEDULE_API_KEY: "http-smoke-schedule-key",
