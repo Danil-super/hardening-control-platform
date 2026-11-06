@@ -24,6 +24,8 @@ chmodSync(path.join(fixtureBin, "ansible"), 0o700);
 copyFileSync(path.join(webDir, "tests/fixtures/ansible-oval-launch.mjs"), path.join(fixtureBin, "ansible-playbook"));
 chmodSync(path.join(fixtureBin, "ansible-playbook"), 0o700);
 writeFileSync(preflightFixture, "ok");
+writeFileSync(`${preflightFixture}.source.xml`, "<synthetic-source/>");
+writeFileSync(`${preflightFixture}.results.xml`, "<synthetic-oval-results/>");
 const reports = path.join(temporary, "reports");
 const sshKey = path.join(temporary, "fixture-key");
 execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", sshKey], { stdio: "ignore" });
@@ -318,7 +320,7 @@ try {
   await request("/hosts");
   await request("/data-sources");
   await request("/policies");
-  const ovalConfig = { mode: "local", path: "/fixture/selected.xml", url: "", sha256: "a".repeat(64),
+  const ovalConfig = { mode: "local", path: "/fixture/selected.xml", url: "", sha256: createHash("sha256").update(readFileSync(`${preflightFixture}.source.xml`)).digest("hex"),
     releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "Synthetic HTTP fixture",
     sourceReference: "FIXTURE-NOT-A-VENDOR-SOURCE", evidenceProjection: "bounded" };
   await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "linux_hosts", config: ovalConfig } });
@@ -341,6 +343,11 @@ try {
   assert.equal(publishedOval.report.partial, false);
   assert.equal(publishedOval.report.raw.scanner.evidenceProjection, "bounded");
   assert.equal(publishedOval.report.raw.scanner.definitionResults.length, 1);
+  assert.equal(publishedOval.report.raw.rawEvidence.complete, true);
+  for (const artifact of publishedOval.report.raw.rawEvidence.artifacts) {
+    const bytes = readFileSync(path.join(reports, artifact.path));
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), artifact.sha256);
+  }
   await request(`/api/ansible/reports/${reportId}`);
   await request("/reports/agentless");
   const logout = await request("/api/ansible/auth/logout", { method: "POST" });

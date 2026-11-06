@@ -527,7 +527,15 @@ class OvalAuditTests(unittest.TestCase):
             target.write_bytes(raw)
             with patch.object(oval, 'host_identity', return_value={'id': 'astra', 'astraVersion': '1.8', 'architecture': 'x86_64'}), \
                     patch.object(oval.shutil, 'which', return_value='/usr/bin/oscap'), patch.object(oval, 'run_oscap', side_effect=execute):
-                report = oval.evaluate(arguments(config=json.dumps(config(raw, path=str(target)))))
+                raw_source = Path(directory) / 'original-source.xml'
+                raw_results = Path(directory) / 'original-results.xml'
+                report = oval.evaluate(arguments(config=json.dumps(config(raw, path=str(target))),
+                    raw_source_output=str(raw_source), raw_results_output=str(raw_results)))
+                self.assertEqual(raw_source.read_bytes(), raw)
+                self.assertEqual(raw_results.read_bytes(), results())
+                self.assertEqual(report['scanner']['resultSha256'], hashlib.sha256(raw_results.read_bytes()).hexdigest())
+                self.assertEqual(raw_source.stat().st_mode & 0o077, 0)
+                self.assertEqual(raw_results.stat().st_mode & 0o077, 0)
         self.assertTrue(report['scanner']['evaluationPerformed'])
         self.assertTrue(report['scanner']['partial'])
         self.assertEqual(report['scanner']['uniqueCveCount'], 1)

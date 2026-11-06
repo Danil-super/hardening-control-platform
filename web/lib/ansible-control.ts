@@ -266,6 +266,7 @@ export async function runAnsiblePlaybook({
   let assetExecution: Awaited<ReturnType<typeof prepareAssetExecution>> | null = null;
   let reportStage = "";
   const expectedReports = new Map<string, AssetBinding>();
+  const preserveRaw = action === "openScapAudit" || action === "astraOvalAudit";
   try {
     const repoRoot = getRepoRoot();
     const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
@@ -299,6 +300,7 @@ export async function runAnsiblePlaybook({
     if (Object.keys(extraVars).length) {
       args.push("-e", ansibleLiteralExtraVars(extraVars));
     }
+    if (preserveRaw) args.push("-e", ansibleLiteralExtraVars({ hcp_preserve_raw_evidence: true }));
     if (limit) {
       args.push("--limit", limit);
     }
@@ -325,7 +327,7 @@ export async function runAnsiblePlaybook({
     if (!executionDispatched && error instanceof Error) Object.assign(error, { remoteOutcome: "not_started" });
     throw error;
   } finally {
-    try { if (reportStage) publishCapturedAssetReports(reportStage, expectedReports); }
+    try { if (reportStage) publishCapturedAssetReports(reportStage, expectedReports, { preserveRaw }); }
     finally {
       if (reportStage) rmSync(reportStage, { recursive: true, force: true });
       assetExecution?.release();

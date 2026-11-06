@@ -849,6 +849,8 @@ def evaluate(args):
             source_path = os.path.join(directory, 'definitions.xml')
             result_path = os.path.join(directory, 'results.xml')
             write_bytes(source_path, raw)
+            if getattr(args, 'raw_source_output', ''):
+                write_bytes(args.raw_source_output, raw)
             version_code, version_text = run_oscap([binary, '--version'], directory, 10, capture_stdout=True)
             scanner['version'] = version_text.splitlines()[0][:300] if version_code == 0 and version_text else None
             controller_validated = use_controller_validation(args, config, hashlib.sha256(raw).hexdigest(), scanner)
@@ -868,6 +870,8 @@ def evaluate(args):
                 scanner['partialReasons'].append('OpenSCAP завершился с ошибкой: ' + str(code) + '; ' + detail)
             result_raw = read_regular(result_path, MAX_RESULT_BYTES)
             scanner['resultSha256'] = hashlib.sha256(result_raw).hexdigest()
+            if getattr(args, 'raw_results_output', ''):
+                write_bytes(args.raw_results_output, result_raw)
             parse_results(safe_xml(result_raw), definitions, report,
                           evidence_projection=config['evidenceProjection'])
     except (OSError, ValueError, ET.ParseError, UnicodeError, subprocess.SubprocessError) as error:
@@ -882,6 +886,8 @@ def main():
     parser.add_argument('--input', default='')
     parser.add_argument('--validate', action='store_true')
     parser.add_argument('--source-validation', default='{}')
+    parser.add_argument('--raw-source-output', default='')
+    parser.add_argument('--raw-results-output', default='')
     parser.add_argument('--output', required=True)
     parser.add_argument('--inventory-host', default='localhost')
     parser.add_argument('--run-id', default='manual')

@@ -94,6 +94,10 @@
               - "{{ report_suffix }}"
               - --output
               - "{{ oval_target_dir.path }}/report.json"
+              - --raw-source-output
+              - "{{ (oval_target_dir.path ~ '/original-source.xml') if (hcp_preserve_raw_evidence | default(false) | bool) else '' }}"
+              - --raw-results-output
+              - "{{ (oval_target_dir.path ~ '/original-results.xml') if (hcp_preserve_raw_evidence | default(false) | bool) else '' }}"
           changed_when: false
 
         - name: Fetch normalized OVAL report including incomplete outcomes
@@ -101,6 +105,28 @@
             src: "{{ oval_target_dir.path }}/report.json"
             dest: "{{ oval_report_path }}"
             flat: true
+          no_log: true
+
+        - name: Inspect original OVAL evidence before private retrieval
+          ansible.builtin.stat:
+            path: "{{ oval_target_dir.path }}/{{ item.file }}"
+            get_checksum: false
+          loop:
+            - { file: original-source.xml, kind: source }
+            - { file: original-results.xml, kind: oval-results }
+          register: oval_original_files
+          when: hcp_preserve_raw_evidence | default(false) | bool
+          no_log: true
+
+        - name: Retrieve original OVAL source and native result for evidence publication
+          ansible.builtin.fetch:
+            src: "{{ item.stat.path }}"
+            dest: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-astra-oval-{{ report_suffix }}.{{ item.item.kind }}.xml"
+            flat: true
+          loop: "{{ oval_original_files.results | default([]) }}"
+          when:
+            - hcp_preserve_raw_evidence | default(false) | bool
+            - item.stat.exists | default(false) | bool
           no_log: true
 
       rescue:
