@@ -73,7 +73,8 @@ async function start() {
       HCP_ADMIN_PASSWORD: "http-smoke-password", HCP_AUTH_SECRET: "http-smoke-session-key",
       HCP_AUDIT_HMAC_KEY: "http-smoke-ledger-key", HCP_SCHEDULE_API_KEY: "http-smoke-schedule-key",
       HCP_TRIVY_MODE: "offline", HCP_TRIVY_CACHE_DIR: path.join(temporary, "trivy-cache"),
-      HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_KNOWN_HOSTS_PATH: knownHosts, HCP_PRODUCTION_MODE: "true" },
+      HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_KNOWN_HOSTS_PATH: knownHosts, HCP_PRODUCTION_MODE: "true",
+      HCP_TRUSTED_TLS_PROXY: "false" },
   });
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (value) => { output = (output + value).slice(-12000); });
   for (let attempt = 0; attempt < 160; attempt++) {
@@ -92,9 +93,9 @@ async function stop() {
   if (child.exitCode === null) { child.kill("SIGKILL"); await exited; }
 }
 
-async function request(endpoint, { method = "GET", body, auth = true, origin = base, status = 200 } = {}) {
+async function request(endpoint, { method = "GET", body, auth = true, origin = base, headers = {}, status = 200 } = {}) {
   const response = await fetch(base + endpoint, {
-    method, redirect: "manual", headers: { "Content-Type": "application/json", Origin: origin, ...(auth && cookie ? { Cookie: cookie } : {}) },
+    method, redirect: "manual", headers: { "Content-Type": "application/json", Origin: origin, ...(auth && cookie ? { Cookie: cookie } : {}), ...headers },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   assert.equal(response.status, status, `${method} ${endpoint}\n${response.status !== status ? output : ""}`);
@@ -296,6 +297,8 @@ try {
   const ovalSettings = await (await request("/api/settings/astra-oval")).json();
   assert.deepEqual(ovalSettings.policies, []);
   await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid", body: {}, status: 403 });
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid",
+    headers: { "X-Forwarded-Host": "foreign.invalid", "X-Forwarded-Proto": "https" }, body: {}, status: 403 });
   await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "nonexistent-smoke-group", config: {} }, status: 400 });
   const ovalPage = await (await request(`/reports/agentless/${ovalReportId}`)).text();
   assert.match(ovalPage, /Результат OVAL-аудита Astra/);

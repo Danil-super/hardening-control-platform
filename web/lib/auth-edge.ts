@@ -19,11 +19,20 @@ export function hasTrustedOrigin(request: {
   headers: Headers;
   nextUrl: { origin: string };
 }) {
-  const host = request.headers.get("x-forwarded-host") ?? request.headers.get("host");
-  const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-  const expectedOrigin = host
-    ? `${forwardedProtocol ?? new URL(request.nextUrl.origin).protocol.replace(/:$/, "")}://${host}`
-    : request.nextUrl.origin;
+  // The same explicit proxy boundary used for credential transport applies here.
+  // A directly connected client must not choose the authority we trust.
+  const trustedProxy = process.env.HCP_TRUSTED_TLS_PROXY === "true";
+  const host = (trustedProxy ? request.headers.get("x-forwarded-host") : null)
+    ?? request.headers.get("host");
+  const forwardedProtocol = trustedProxy ? request.headers.get("x-forwarded-proto") : null;
+  let expectedOrigin: string;
+  try {
+    const protocol = forwardedProtocol ?? new URL(request.nextUrl.origin).protocol.replace(/:$/, "");
+    if (!["http", "https"].includes(protocol) || (host !== null && /[\s,/@\\?#]/.test(host))) return false;
+    expectedOrigin = host ? new URL(`${protocol}://${host}`).origin : new URL(request.nextUrl.origin).origin;
+  } catch {
+    return false;
+  }
   const origin = request.headers.get("origin");
   const referer = request.headers.get("referer");
   if (origin) {
