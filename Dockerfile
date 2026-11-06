@@ -1,4 +1,4 @@
-ARG TRIVY_IMAGE=aquasec/trivy:0.74.0
+ARG TRIVY_IMAGE=aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
 FROM ${TRIVY_IMAGE} AS trivy
 
 FROM python:3.13-slim-bookworm AS ansible-modern
@@ -23,9 +23,17 @@ RUN cd web && npm run build
 
 FROM node:24-bookworm-slim AS runtime
 
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends ansible ca-certificates fonts-dejavu-core iproute2 iputils-ping lynis nmap openscap-scanner openssh-client python3 python3-paramiko python3-reportlab python3-venv util-linux \
+# Disable the inherited APT retry path until its security update is installed.
+# Explicit base packages are refreshed even when the base image is cached.
+RUN apt-get -o Acquire::Retries=0 update \
+  && apt-get -o Acquire::Retries=0 install -y --no-install-recommends apt libpcre2-8-0 liblzma5 tzdata ansible ca-certificates fonts-dejavu-core iproute2 iputils-ping lynis nmap openscap-scanner openssh-client python3 python3-paramiko python3-reportlab python3-venv util-linux \
+  && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge 2.6.2 \
   && rm -rf /var/lib/apt/lists/*
+
+# The global CLI has its own advisories outside the application's lockfile.
+# Keep its update pinned and include it in the separate whole-image scan.
+RUN npm install --global --ignore-scripts --no-fund npm@12.2.2 \
+  && npm --version
 
 COPY --from=ansible-modern /usr/local/bin/python3.13 /usr/local/bin/python3.13
 COPY --from=ansible-modern /usr/local/lib/python3.13 /usr/local/lib/python3.13

@@ -18,7 +18,7 @@ const { values } = parseArgs({ options: {
   output: { type: "string", default: ".lab/trivy-matching-acceptance" },
   binary: { type: "string", default: process.env.HCP_TRIVY_BIN || "trivy" },
   "cache-dir": { type: "string", default: process.env.HCP_TRIVY_CACHE_DIR },
-  "expected-version": { type: "string", default: "0.74.0" },
+  "expected-version": { type: "string", default: "0.76.2" },
   refresh: { type: "boolean", default: false },
 } });
 const webDir = path.resolve(values["web-dir"]);
