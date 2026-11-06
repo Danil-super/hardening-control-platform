@@ -5,6 +5,7 @@ import path from "node:path";
 import test, { after } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { compileServerModules } from "./_typescript-loader.mjs";
 
 const compiled = compileServerModules(["remediation-plan", "project-report"]);
@@ -17,6 +18,7 @@ const plans = await import(compiled.url("remediation-plan"));
 const store = await import(compiled.url("state-store"));
 const correlation = await import(compiled.url("audit-correlation"));
 const pdf = await import(compiled.url("project-report"));
+const assets = await import(compiled.url("asset-binding"));
 after(() => {
   delete process.env.HCP_STATE_DIR;
   delete process.env.HCP_REPORTS_DIR;
@@ -36,7 +38,9 @@ function writeReport(host, name, findings, extra = {}) {
 }
 async function completed(host, original = finding(), extra = {}) {
   const originalReportId = writeReport(host, "before", Array.isArray(original) ? original : [original], extra);
-  const item = plans.addCorrelatedFindingToPlan(host, correlation.buildHostCorrelation(host).findings[0].id);
+  const initial = correlation.buildHostCorrelation(host);
+  assert.ok(initial.findings[0], JSON.stringify(initial));
+  const item = plans.addCorrelatedFindingToPlan(host, initial.findings[0].id);
   plans.advanceRemediationPlanItem({ id: item.id, status: "proposed", note: "Apply reviewed fixture change." });
   plans.advanceRemediationPlanItem({ id: item.id, status: "agreed", note: "Approved through fixture ticket.",
     owner: "Fixture owner", dueAt: new Date(Date.now() + 86400000).toISOString(), approvalReference: "FIXTURE-1" });
@@ -155,8 +159,17 @@ test("every failed OpenSCAP instance must remain covered and pass before a group
   }
 });
 
+// Synthetic fixtures must now supply the SAME verified full-source evidence
+// contract that production Astra OVAL actually writes. Missing evidence is not
+// proof of remediation and should not be accepted merely to keep a test green.
 const ovalSource = (id, result = "true", digest = "c".repeat(64)) => ({ mode: "astra-oval", profileId: "astra-oval", scanner: {
-  available: true, partial: false, evaluationPerformed: true, database: { sha256: digest },
+  available: true, partial: result === "unknown", evaluationPerformed: true,
+  partialReasons: result === "unknown" ? ["synthetic unresolved native definition"] : [],
+  exitCode: result === "true" ? 2 : 0,
+  database: { sha256: digest, checksumVerified: true },
+  resultSha256: "b".repeat(64),
+  definitionCount: 1, evaluatedDefinitionCount: 1,
+  resultCounts: { [result]: 1 },
   definitionResults: [{ id, class: "vulnerability", result, vendorSeverity: "critical", platformApplicability: { status: "astra_named" } }],
 } });
 test("Astra OVAL false proves resolution only for the evaluated original definition and pinned source", async () => {
@@ -173,8 +186,72 @@ test("Astra OVAL false proves resolution only for the evaluated original definit
     const item = await completed(host, original, ovalSource(id));
     const reportId = writeReport(host, "after", [], extra);
     if (succeeds) assert.equal(confirm(item, reportId).status, "confirmed");
-    else assert.throws(() => confirm(item, reportId), /совпадение|не содержит доказанного/);
+    else assert.throws(() => confirm(item, reportId), /совпадение|не содержит доказанного|полный свежий/);
   }
+});
+
+test("OVAL confirmation accepts historical compact applicability but rejects another asset or generation", async (t) => {
+  const id = "oval:fixture:def:1";
+  const original = finding({ id, profileId: "astra-oval", source: "openscap", title: "CVE-2026-10101: fixture" });
+  for (const [name, applicability, identityChange, succeeds] of [
+    ["legacy-compact", "astra_named", null, true],
+    ["legacy-unverified", "not_verified", null, true],
+    ["legacy-foreign", "foreign_platform", null, false],
+    ["unknown-platform", "unknown", null, false],
+    ["new-generation", { status: "astra_named" }, "generation", false],
+    ["new-asset", { status: "astra_named" }, "asset", false],
+    ["stale-current-generation", { status: "astra_named" }, "current", false],
+  ]) {
+    await t.test(name, async () => {
+      const host = `proof-compact-${name}`;
+      const observation = { machineIdSha256: "1".repeat(64), sshHostKeyFingerprint: "SHA256:" + "a".repeat(43), observedAt: new Date().toISOString() };
+      const binding = { version: 1, status: "verified", alias: host, generation: 1,
+        assetId: assets.assetIdForObservation(observation), machineIdSha256: observation.machineIdSha256,
+        sshHostKeyFingerprint: observation.sshHostKeyFingerprint, verifiedAt: observation.observedAt, connectionId: "3".repeat(64) };
+      const item = await completed(host, original, { ...ovalSource(id), assetBinding: binding });
+      if (identityChange === "current") {
+        store.recordAssetObservation({ alias: host, connectionId: binding.connectionId, observation });
+        store.recordAssetObservation({ alias: host, connectionId: "4".repeat(64), observation });
+      }
+      const nextBinding = { ...binding };
+      if (identityChange === "generation") nextBinding.generation++;
+      if (identityChange === "asset") {
+        nextBinding.machineIdSha256 = "2".repeat(64);
+        nextBinding.assetId = assets.assetIdForObservation({ ...observation, machineIdSha256: nextBinding.machineIdSha256 });
+      }
+      const after = ovalSource(id, "false");
+      after.scanner.definitionResults[0].platformApplicability = applicability;
+      const reportId = writeReport(host, "after", [], { ...after, assetBinding: nextBinding });
+      if (succeeds) assert.equal(confirm(item, reportId).status, "confirmed", name);
+      else assert.throws(() => confirm(item, reportId), /совпадение|не содержит доказанного|текущего актива и поколения/, name);
+    });
+  }
+});
+
+test("actual Python bounded producer feeds plan confirmation without reshaping definition results", async () => {
+  // Synthetic XML exercises the real producer/consumer seam, not native Astra.
+  const pair = JSON.parse(execFileSync("python3", ["-c", `
+import hashlib, importlib.util, json, sys
+spec = importlib.util.spec_from_file_location('fixture', sys.argv[1])
+fixture = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(fixture)
+oval, reports = fixture.oval, []
+for result in ('true', 'false'):
+    report = oval.empty_report(fixture.arguments())
+    raw = fixture.results((result,))
+    oval.parse_results(oval.safe_xml(raw), oval.source_definitions(oval.safe_xml(fixture.source())), report, evidence_projection='bounded')
+    report['scanner'].update(available=True, exitCode=0, database={'sha256': 'c' * 64, 'checksumVerified': True}, resultSha256=hashlib.sha256(raw).hexdigest())
+    reports.append(oval.finish(report))
+print(json.dumps(reports))
+`, fileURLToPath(new URL("../../ansible/tests/test_oval_audit.py", import.meta.url))], { encoding: "utf8" }));
+  const [before, afterReport] = pair;
+  const original = before.findings.find((entry) => entry.status === "failed");
+  assert.ok(original);
+  assert.equal(typeof afterReport.scanner.definitionResults[0].platformApplicability, "object");
+  const host = "python-bounded-contract";
+  const item = await completed(host, original, { mode: before.mode, profileId: before.profileId, scanner: before.scanner });
+  const reportId = writeReport(host, "after", afterReport.findings, { mode: afterReport.mode, profileId: afterReport.profileId, scanner: afterReport.scanner });
+  assert.equal(confirm(item, reportId).status, "confirmed");
 });
 
 test("Trivy requires a fresh post-work full inventory and rejects the same CVE/package under a new finding id", async () => {

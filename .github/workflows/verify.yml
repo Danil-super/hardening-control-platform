@@ -5,12 +5,17 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
 jobs:
   web:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: web
@@ -22,6 +27,10 @@ jobs:
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: npm ci
+      - name: Audit production and complete application dependency trees
+        run: |
+          npm audit --omit=dev --audit-level=high --no-fund
+          npm audit --audit-level=high --no-fund
       - run: npm run typecheck
       - name: Install PDF renderer and Ansible regression dependencies
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends python3-reportlab fonts-dejavu-core ansible-core
@@ -32,6 +41,7 @@ jobs:
 
   ansible:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ansible
@@ -42,12 +52,15 @@ jobs:
           done
 
   container:
+    needs: [web, ansible]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - run: docker build --tag hardening-control-platform:test .
 
   lab:
+    needs: [web, ansible]
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -90,3 +103,25 @@ jobs:
         run: |
           docker rm -f hcp-enrollment-target || true
           docker compose -f deployment/lab/docker-compose.yml down
+
+  required:
+    name: Required platform checks
+    if: ${{ always() }}
+    needs: [web, ansible, container, lab]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    env:
+      HCP_WEB_RESULT: ${{ needs.web.result }}
+      HCP_ANSIBLE_RESULT: ${{ needs.ansible.result }}
+      HCP_CONTAINER_RESULT: ${{ needs.container.result }}
+      HCP_LAB_RESULT: ${{ needs.lab.result }}
+    steps:
+      - name: Require every platform job to succeed
+        run: |
+          set -euo pipefail
+          for result in "$HCP_WEB_RESULT" "$HCP_ANSIBLE_RESULT" "$HCP_CONTAINER_RESULT" "$HCP_LAB_RESULT"; do
+            if [ "$result" != success ]; then
+              echo "::error::All platform jobs must succeed; failed, cancelled or skipped jobs cannot satisfy this gate."
+              exit 1
+            fi
+          done

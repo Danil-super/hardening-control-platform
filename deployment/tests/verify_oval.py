@@ -175,7 +175,10 @@ def main():
     reports = []
     # Distinct family identifiers exercise routing, not OS compatibility claims.
     for release in ('1.6.7.15', '1.7.6', '1.8', '12.4-custom'):
-        options = argparse.Namespace(config=json.dumps(config), input='', inventory_host='synthetic-runner', run_id='fixture-' + release)
+        original_source = output / ('adapter-source-' + release + '.xml')
+        original_result = output / ('adapter-results-' + release + '.xml')
+        options = argparse.Namespace(config=json.dumps(config), input='', inventory_host='synthetic-runner', run_id='fixture-' + release,
+                                     raw_source_output=str(original_source), raw_results_output=str(original_result))
         with patch.object(OVAL, 'host_identity', return_value={'id': 'astra', 'astraVersion': release,
                          'architecture': 'x86_64', 'prettyName': 'Synthetic identity; actual OS in provenance.json'}):
             report = OVAL.evaluate(options)
@@ -188,12 +191,16 @@ def main():
         assert scanner['uniqueCveCount'] == 1 and scanner['cveIds'] == ['CVE-2099-999999']
         assert scanner['fullCveCoverage'] is False
         assert scanner['database']['vendorSignature'] == 'not_checked'
+        assert original_source.read_bytes() == source
+        assert hashlib.sha256(original_result.read_bytes()).hexdigest() == scanner['resultSha256']
+        assert original_source.stat().st_mode & 0o077 == original_result.stat().st_mode & 0o077 == 0
         assert any(item['values'].get('name') == 'bash' and item['values'].get('version') for item in scanner['packageItems'])
         failed = [finding for finding in report['findings'] if finding['status'] == 'failed']
         assert len(failed) == 1 and failed[0]['id'] == 'oval:hcp.acceptance:def:1', failed
         assert failed[0]['vulnerability']['cvss'] is None
         reports.append({'declaredIdentityFixture': release, 'definitionCount': scanner['definitionCount'],
-                        'nativePackageProbe': 'bash', 'uniqueSyntheticCveCount': scanner['uniqueCveCount']})
+                        'nativePackageProbe': 'bash', 'uniqueSyntheticCveCount': scanner['uniqueCveCount'],
+                        'originalSourceAndNativeResultsPreserved': True})
     source_path.write_bytes(source + b'\n')
     with patch.object(OVAL, 'host_identity', return_value={'id': 'astra', 'astraVersion': '1.7.6', 'architecture': 'x86_64'}):
         rejected = OVAL.evaluate(options)

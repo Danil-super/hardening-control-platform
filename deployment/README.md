@@ -21,7 +21,8 @@
 ```bash
 sudo apt-get install python3-venv python3-paramiko openssh-client
 sudo python3 -m venv /opt/hcp-tools/ssh-audit
-sudo /opt/hcp-tools/ssh-audit/bin/pip install --only-binary=:all: ssh-audit==3.3.0
+sudo /opt/hcp-tools/ssh-audit/bin/python -m pip install --require-hashes --only-binary=:all: -r deployment/requirements/ssh-audit.txt
+sudo /opt/hcp-tools/ssh-audit/bin/python -m pip check
 ```
 
 Задайте `HCP_SSH_AUDIT_BIN=/opt/hcp-tools/ssh-audit/bin/ssh-audit` в окружении сервиса HCP. Установка требует доступа к PyPI; сам SSH-аудит работает внутри локальной сети.
@@ -70,6 +71,39 @@ HCP_TRIVY_MAX_DB_AGE_HOURS=168
 Нативный JSON Trivy ограничен **128 МиБ stdout** и **1 МиБ stderr** на один scan. JSON передаётся через приватный временный файл, проверяется по размеру и SHA-256 и удаляется после чтения или ошибки. Превышение лимита, обрыв записи или изменение файла дают неполный отчёт; HCP не обрезает список находок ради успешного результата. Этот бюджет относится к выводу Trivy, отдельно от лимитов SBOM, отчётов других сканеров и загрузки DB, и не является общим пределом памяти процесса: разбор JSON и формирование отчёта требуют дополнительной памяти.
 
 Dependency-Track не запускается по умолчанию. После заполнения его пароля БД включите отдельный профиль: `docker compose --profile dependency-track up -d --build`. Подробные инструкции для OpenSCAP, Trivy, Greenbone и Dependency-Track — в [docs/audit-integrations.md](../docs/audit-integrations.md).
+
+## Закреплённые зависимости образа
+
+В `Dockerfile` базовые Node, Python и Trivy заданы как `tag@sha256:…`.
+Переназначение тега в реестре не меняет эти байты. Build arguments
+`NODE_IMAGE`, `PYTHON_IMAGE`, `TRIVY_IMAGE` позволяют подготовить обновление;
+замена значения требует новой проверки образа. Закрепление digest также
+останавливает автоматическое получение исправлений, поэтому обновления
+зависимостей нужно проверять отдельно.
+
+Три файла `deployment/requirements/*.txt` закрепляют полный набор Python-пакетов
+для modern Ansible, SSH-аудита и перевода, включая pip и нужный setuptools.
+Сборка принимает только wheel с указанным SHA-256, сохраняет разрешение
+зависимостей и выполняет `pip check` в каждом окружении. Неверный hash,
+незакреплённая новая зависимость или отсутствие совместимого wheel останавливают
+сборку. SHA получены из PyPI для конкретных выпусков; это фиксация допустимых
+байтов, а не независимая подпись разработчика. Дополнительные hashes Linux arm64
+не означают, что весь HCP прошёл приёмку на этой архитектуре.
+
+Для обновления подготовьте чистое окружение с той же версией Python, выберите
+проверенные версии всех транзитивных зависимостей, загрузите wheels через
+`pip download --only-binary=:all:` и получите их SHA командой `pip hash`.
+Обновите соответствующий файл, соберите отдельный кандидат и проверьте
+Ansible, SSH-аудит, офлайн-перевод, HTTP и advisories всего образа до замены
+рабочего контейнера. Порядок описан в официальных инструкциях
+[pip](https://pip.pypa.io/en/stable/topics/secure-installs/) и
+[Docker](https://docs.docker.com/build/building/best-practices/#pin-base-image-versions).
+
+APT остаётся подключён к обновляемым подписанным репозиториям Debian;
+полная побайтовая воспроизводимость повторной сборки этим не заявляется.
+Для переноса принятого кандидата сохраняйте готовый образ вместе с его
+идентификатором, исходным коммитом, протоколом проверок и резервной копией
+состояния. Финальный release tag назначается после операторской приёмки.
 
 ## Периодический аудит через systemd
 

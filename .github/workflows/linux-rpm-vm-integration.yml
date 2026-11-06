@@ -44,6 +44,10 @@ on:
       - web/lib/trivy-output.ts
       - web/lib/ansible-reports.ts
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -83,9 +87,9 @@ jobs:
           set -euo pipefail
           trivy_dir="$RUNNER_TEMP/hcp-rpm-trivy-${{ matrix.distribution }}"
           mkdir -m 700 "$trivy_dir"
-          docker pull aquasec/trivy:0.74.0
-          docker image inspect aquasec/trivy:0.74.0 --format '{{index .RepoDigests 0}}' > "$trivy_dir/image-digest.txt"
-          trivy_container=$(docker create aquasec/trivy:0.74.0)
+          docker pull aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb
+          docker image inspect aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb --format '{{index .RepoDigests 0}}' > "$trivy_dir/image-digest.txt"
+          trivy_container=$(docker create aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb)
           trap 'docker rm "$trivy_container" >/dev/null' EXIT
           docker cp "$trivy_container:/usr/local/bin/trivy" "$trivy_dir/trivy"
           chmod 0755 "$trivy_dir/trivy"

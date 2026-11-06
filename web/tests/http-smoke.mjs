@@ -21,7 +21,11 @@ const preflightFixture = path.join(temporary, "preflight-case");
 mkdirSync(fixtureBin);
 copyFileSync(path.join(webDir, "tests/fixtures/ansible-preflight.mjs"), path.join(fixtureBin, "ansible"));
 chmodSync(path.join(fixtureBin, "ansible"), 0o700);
+copyFileSync(path.join(webDir, "tests/fixtures/ansible-oval-launch.mjs"), path.join(fixtureBin, "ansible-playbook"));
+chmodSync(path.join(fixtureBin, "ansible-playbook"), 0o700);
 writeFileSync(preflightFixture, "ok");
+writeFileSync(`${preflightFixture}.source.xml`, "<synthetic-source/>");
+writeFileSync(`${preflightFixture}.results.xml`, "<synthetic-oval-results/>");
 const reports = path.join(temporary, "reports");
 const sshKey = path.join(temporary, "fixture-key");
 execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", sshKey], { stdio: "ignore" });
@@ -60,16 +64,20 @@ let output = "";
 let cookie = "";
 let checks = 0;
 
-async function start() {
+async function start(trustedProxy = false) {
   child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd: webDir, stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1",
       PATH: `${fixtureBin}${path.delimiter}${process.env.PATH}`, HCP_PREFLIGHT_FIXTURE: preflightFixture,
+      // These subprocess fixtures model one legacy controller. An inherited
+      // absolute modern runtime would bypass them and require real SSH output.
+      HCP_ANSIBLE_MODERN_BIN_DIR: "",
       HCP_STATE_DIR: temporary, HCP_REPORTS_DIR: reports,
       HCP_ADMIN_PASSWORD: "http-smoke-password", HCP_AUTH_SECRET: "http-smoke-session-key",
       HCP_AUDIT_HMAC_KEY: "http-smoke-ledger-key", HCP_SCHEDULE_API_KEY: "http-smoke-schedule-key",
       HCP_TRIVY_MODE: "offline", HCP_TRIVY_CACHE_DIR: path.join(temporary, "trivy-cache"),
-      HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_KNOWN_HOSTS_PATH: knownHosts, HCP_PRODUCTION_MODE: "true" },
+      HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_KNOWN_HOSTS_PATH: knownHosts, HCP_PRODUCTION_MODE: "true",
+      HCP_TRUSTED_TLS_PROXY: String(trustedProxy) },
   });
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (value) => { output = (output + value).slice(-12000); });
   for (let attempt = 0; attempt < 160; attempt++) {
@@ -88,9 +96,9 @@ async function stop() {
   if (child.exitCode === null) { child.kill("SIGKILL"); await exited; }
 }
 
-async function request(endpoint, { method = "GET", body, auth = true, origin = base, status = 200 } = {}) {
+async function request(endpoint, { method = "GET", body, auth = true, origin = base, headers = {}, status = 200 } = {}) {
   const response = await fetch(base + endpoint, {
-    method, redirect: "manual", headers: { "Content-Type": "application/json", Origin: origin, ...(auth && cookie ? { Cookie: cookie } : {}) },
+    method, redirect: "manual", headers: { "Content-Type": "application/json", Origin: origin, ...(auth && cookie ? { Cookie: cookie } : {}), ...headers },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   assert.equal(response.status, status, `${method} ${endpoint}\n${response.status !== status ? output : ""}`);
@@ -292,6 +300,10 @@ try {
   const ovalSettings = await (await request("/api/settings/astra-oval")).json();
   assert.deepEqual(ovalSettings.policies, []);
   await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid", body: {}, status: 403 });
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid",
+    headers: { "X-Forwarded-Host": "foreign.invalid", "X-Forwarded-Proto": "https" }, body: {}, status: 403 });
+  await request("/api/settings/astra-oval", { method: "POST", origin: base.replace("http:", "https:"),
+    headers: { "X-Forwarded-Proto": "https" }, body: {}, status: 403 });
   await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "nonexistent-smoke-group", config: {} }, status: 400 });
   const ovalPage = await (await request(`/reports/agentless/${ovalReportId}`)).text();
   assert.match(ovalPage, /Результат OVAL-аудита Astra/);
@@ -316,10 +328,34 @@ try {
   await request("/hosts");
   await request("/data-sources");
   await request("/policies");
+  const ovalConfig = { mode: "local", path: "/fixture/selected.xml", url: "", sha256: createHash("sha256").update(readFileSync(`${preflightFixture}.source.xml`)).digest("hex"),
+    releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "Synthetic HTTP fixture",
+    sourceReference: "FIXTURE-NOT-A-VENDOR-SOURCE", evidenceProjection: "bounded" };
+  await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "linux_hosts", config: ovalConfig } });
+  await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "linux_hosts", config: { ...ovalConfig, evidenceProjection: "lite" } }, status: 400 });
   await stop();
   await start();
   const persisted = await (await request("/api/settings/vulnerability-data")).json();
   assert.equal(persisted.database.mode, "online");
+  const reloadedOval = await (await request("/api/settings/astra-oval")).json();
+  assert.equal(reloadedOval.policies[0].config.evidenceProjection, "bounded");
+  const unconfirmedOval = await (await request("/api/ansible/run", { method: "POST", body: { action: "astraOvalAudit", limit: guardedIdentity.alias }, status: 400 })).json();
+  assert.equal(unconfirmedOval.error, "confirmation_required");
+  assert.equal(existsSync(`${preflightFixture}.oval-config`), false);
+  const ovalRun = await (await request("/api/ansible/run", { method: "POST", body: { action: "astraOvalAudit", limit: guardedIdentity.alias, confirmAudit: true, sudoPassword: "fixture-oval-sudo" } })).json();
+  assert.equal(ovalRun.ok, true, JSON.stringify(ovalRun));
+  assert.equal(ovalRun.partial, false, JSON.stringify(ovalRun));
+  assert.equal(JSON.parse(readFileSync(`${preflightFixture}.oval-config`, "utf8")).evidenceProjection, "bounded");
+  const publishedOval = await (await request(`/api/ansible/reports/${ovalRun.reportId}`)).json();
+  assert.equal(publishedOval.report.assetBinding.status, "verified");
+  assert.equal(publishedOval.report.partial, false);
+  assert.equal(publishedOval.report.raw.scanner.evidenceProjection, "bounded");
+  assert.equal(publishedOval.report.raw.scanner.definitionResults.length, 1);
+  assert.equal(publishedOval.report.raw.rawEvidence.complete, true);
+  for (const artifact of publishedOval.report.raw.rawEvidence.artifacts) {
+    const bytes = readFileSync(path.join(reports, artifact.path));
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), artifact.sha256);
+  }
   await request(`/api/ansible/reports/${reportId}`);
   await request("/reports/agentless");
   const logout = await request("/api/ansible/auth/logout", { method: "POST" });
@@ -334,6 +370,13 @@ try {
   cookie = relogin.headers.get("set-cookie").split(";", 1)[0];
   assert.notEqual(cookie, oldCookie, "each login must create a distinct session");
   await request("/api/ansible/session");
+  await stop();
+  await start(true);
+  const proxyHeaders = { "X-Forwarded-Host": "hcp.example", "X-Forwarded-Proto": "https" };
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://hcp.example",
+    headers: proxyHeaders, body: {}, status: 400 });
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid",
+    headers: proxyHeaders, body: {}, status: 403 });
   const sessionDatabase = new DatabaseSync(path.join(temporary, "hcp.sqlite"));
   sessionDatabase.prepare("UPDATE admin_sessions SET expires_at = ?").run(Date.now() - 1);
   sessionDatabase.close();

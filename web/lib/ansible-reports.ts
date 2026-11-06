@@ -6,6 +6,7 @@ import { getArchivedRecordIds, type ArchiveView } from "@/lib/state-store";
 import { normalizeLynisFindings } from "@/lib/lynis-findings";
 import { normalizeNmapScope, nmapPortCoverage, type NmapScanScope } from "@/lib/nmap-scope";
 import { parseAssetBinding, sameAssetEvidence, type AssetBinding } from "@/lib/asset-binding";
+import { assessAstraOvalEvidence, type AstraOvalEvidenceStatus } from "@/lib/astra-oval-evidence";
 
 export type AnsibleReportSummary = {
   id: string;
@@ -19,6 +20,7 @@ export type AnsibleReportSummary = {
   inventoryHost: string | null;
   assetBinding?: AssetBinding | null;
   assetBindingInvalid?: boolean;
+  ovalEvidence?: AstraOvalEvidenceStatus;
   partial: boolean;
   needsReview: boolean;
   available: boolean;
@@ -177,6 +179,9 @@ export function reportTimestamp(report: Pick<AnsibleReportSummary, "createdAt" |
  * legacy scopes remain individually identifiable but are never compatible. */
 export function reportScopeKey(report: Pick<AnsibleReportSummary, "mode" | "profileId" | "id" | "contentId" | "scanScope">) {
   if (report.mode === "nmap") return report.scanScope ? `nmap:${report.scanScope}` : `nmap:unknown:${report.id}`;
+  if (report.mode === "astra-oval") return report.contentId
+    ? `astra-oval:${encodeURIComponent(report.profileId ?? "astra-oval")}:${report.contentId}`
+    : `astra-oval:unknown:${report.id}`;
   if (report.mode !== "openscap") return `${report.mode}:${report.profileId ?? "default"}`;
   return report.profileId && report.profileId !== "openscap" && report.contentId
     ? `openscap:${encodeURIComponent(report.profileId)}:${report.contentId}`
@@ -327,7 +332,11 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
   let scanScope = mode === "nmap" ? normalizeNmapScope(parsed.scanner?.scanScope) : null;
   if (scanScope && (parsed.scanner?.portCoverage !== undefined && parsed.scanner.portCoverage !== nmapPortCoverage(scanScope)
       || parsed.scanner?.coverageComplete !== undefined && parsed.scanner.coverageComplete !== (scanScope === "full_tcp"))) scanScope = null;
-  const scopeKnown = mode === "openscap" ? Boolean(profileId && profileId !== "openscap" && contentId) : mode !== "nmap" || Boolean(scanScope);
+  const scopeKnown = mode === "openscap" ? Boolean(profileId && profileId !== "openscap" && contentId)
+    : mode === "astra-oval" ? Boolean(contentId) : mode !== "nmap" || Boolean(scanScope);
+  // A digest label alone proves neither successful evaluation nor complete
+  // original OVAL definition results. Never publish a truncated report as clean.
+  const ovalEvidence = mode === "astra-oval" ? assessAstraOvalEvidence(parsed.scanner, parsed.findings) : undefined;
   const findings = reportFindings(parsed);
   const events = Array.isArray(parsed.events) ? parsed.events : [];
   const observation: Pick<AnsibleReportSummary, "observedAt" | "importedAt"> = mode === "greenbone" ? greenboneObservation(parsed) : {};
@@ -341,8 +350,10 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
   const partial = assetBindingInvalid || !available || parsed.partial === true || parsed.scanner?.partial === true || Boolean(parsed.scanner?.error)
     || parsed.vulnerabilityScan?.partial === true || Boolean(parsed.packageInventory?.error) || parsed.packageInventory?.partial === true
     || (parsed.findings !== undefined && (!Array.isArray(parsed.findings) || findings.length !== parsed.findings.length))
-    || ["dependency-track", "dependency-track-analysis"].includes(mode) || !scopeKnown || mode === "greenbone" && !observation.observedAt;
-  const needsReview = assetBindingInvalid || !scopeKnown || mode === "greenbone" && !observation.observedAt || findings.some((finding) => finding.status === "manual");
+    || ["dependency-track", "dependency-track-analysis"].includes(mode) || !scopeKnown
+    || (ovalEvidence !== undefined && !ovalEvidence.complete) || mode === "greenbone" && !observation.observedAt;
+  const needsReview = assetBindingInvalid || !scopeKnown || (ovalEvidence !== undefined && !ovalEvidence.complete)
+    || mode === "greenbone" && !observation.observedAt || findings.some((finding) => finding.status === "manual");
   const reportTimeValid = reportTimestamp({ createdAt, modifiedAt: stats.mtime.toISOString(), ...observation }) > 0;
 
   return {
@@ -354,7 +365,7 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
     modifiedAt: stats.mtime.toISOString(),
     host: parsed.hostname ?? targetAliasFromReportFileName(fileName, profileId, mode),
     inventoryHost,
-    assetBinding, assetBindingInvalid,
+    assetBinding, assetBindingInvalid, ovalEvidence,
     available,
     partial,
     needsReview,

@@ -107,7 +107,7 @@ class OvalAuditTests(unittest.TestCase):
                     if index == 0: self.assertEqual(stock[0], 0)
                     elif index < 5: self.assertNotEqual(stock[0], 0)
 
-    def test_slow_download_is_allowed_past_five_minutes_and_keeps_its_deadline(self):
+    def test_slow_download_is_allowed_past_fifteen_minutes_and_keeps_its_deadline(self):
         raw = source(timestamp=oval.now().isoformat())
         class Response(io.BytesIO):
             headers = {'Content-Length': str(len(raw))}
@@ -115,7 +115,11 @@ class OvalAuditTests(unittest.TestCase):
             def getcode(self): return 200
         class Opener:
             def open(self, request, timeout): return Response(raw)
-        for times, success in (([0, 301, 302], True), ([0, 0, oval.DOWNLOAD_TIMEOUT + 1], False)):
+        # The real 135 MB vendor feed reached 125 MB after 900 seconds.
+        # A slow but progressing download may finish at sixteen minutes;
+        # it must still fail closed when the total download deadline expires.
+        for times, success in (([0, 301, 302], True), ([0, 960, 961], True),
+                               ([0, 0, oval.DOWNLOAD_TIMEOUT + 1], False)):
             with tempfile.TemporaryDirectory() as directory, patch.object(urllib.request, 'build_opener', return_value=Opener()), patch.object(oval.time, 'monotonic', side_effect=times):
                 target = Path(directory) / 'source.xml'
                 settings = config(raw, mode='online', url='https://mirror.example/db.xml')
@@ -377,6 +381,51 @@ class OvalAuditTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 oval.parse_results(oval.safe_xml(value), defs, oval.empty_report(arguments()))
 
+    def test_bounded_vendor_projection_preserves_all_id_states_without_nested_xml_duplication(self):
+        raw = source(('vulnerability', 'patch', 'inventory'))
+        extra = ('<tests><test test_id="oval:test:tst:1" result="true">'
+                 '<tested_item item_id="7" result="true"/></test></tests>'
+                 '<oval_system_characteristics><system_data><dpkginfo_item id="7">'
+                 '<name>example</name><version>1.2-astra1</version></dpkginfo_item>'
+                 '</system_data></oval_system_characteristics>')
+        root = oval.safe_xml(raw)
+        detailed = oval.empty_report(arguments())
+        bounded = oval.empty_report(arguments())
+        original = oval.safe_xml(results(('true', 'false', 'not evaluated'), extra))
+        oval.parse_results(original, oval.source_definitions(root), detailed)
+        oval.parse_results(oval.safe_xml(results(('true', 'false', 'not evaluated'), extra)),
+                           oval.source_definitions(root), bounded, evidence_projection='bounded')
+        full = detailed['scanner']
+        compact = bounded['scanner']
+        self.assertEqual(
+            [(x['id'], x['result']) for x in compact['definitionResults']],
+            [(x['id'], x['result']) for x in full['definitionResults']])
+        self.assertEqual(compact['definitionCount'], 3)
+        self.assertEqual(compact['evaluatedDefinitionCount'], 3)
+        self.assertEqual(compact['resultCounts'], full['resultCounts'])
+        self.assertEqual(compact['definitionResults'][0]['platformApplicability'],
+                         full['definitionResults'][0]['platformApplicability'])
+        self.assertEqual(compact['evidenceProjection'], 'bounded')
+        self.assertTrue(compact['fullDefinitionIdSetPreserved'])
+        self.assertTrue(compact['auxiliaryDetailsOmitted'])
+        self.assertTrue(compact['omittedAuxiliarySections'])
+        self.assertNotIn('criteria', compact['definitionResults'][0])
+        self.assertNotIn('description', compact['definitionResults'][0])
+        self.assertEqual(compact['testResults'], [])
+        self.assertEqual(compact['packageItems'], [])
+        self.assertTrue(detailed['scanner']['testResults'])
+        self.assertTrue(detailed['scanner']['packageItems'])
+        self.assertTrue(oval.finish(bounded)['scanner']['partial'])
+        self.assertEqual(len([f for f in bounded['findings'] if f['status'] == 'failed']), 1)
+
+    def test_bounded_projection_is_opt_in_and_cannot_be_unrecognized(self):
+        self.assertEqual(config()['evidenceProjection'], 'detailed')
+        self.assertEqual(config(evidenceProjection='bounded')['evidenceProjection'], 'bounded')
+        for bad in ('compressed', 'lite', None, {}, True):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    config(evidenceProjection=bad)
+
     def test_test_references_and_packages_preserved_without_shadow_contents(self):
         extra = '''<tests><test test_id="oval:test:tst:1" result="true"><tested_item item_id="7" result="true"/></test></tests>
         <oval_system_characteristics><system_data>
@@ -482,7 +531,15 @@ class OvalAuditTests(unittest.TestCase):
             target.write_bytes(raw)
             with patch.object(oval, 'host_identity', return_value={'id': 'astra', 'astraVersion': '1.8', 'architecture': 'x86_64'}), \
                     patch.object(oval.shutil, 'which', return_value='/usr/bin/oscap'), patch.object(oval, 'run_oscap', side_effect=execute):
-                report = oval.evaluate(arguments(config=json.dumps(config(raw, path=str(target)))))
+                raw_source = Path(directory) / 'original-source.xml'
+                raw_results = Path(directory) / 'original-results.xml'
+                report = oval.evaluate(arguments(config=json.dumps(config(raw, path=str(target))),
+                    raw_source_output=str(raw_source), raw_results_output=str(raw_results)))
+                self.assertEqual(raw_source.read_bytes(), raw)
+                self.assertEqual(raw_results.read_bytes(), results())
+                self.assertEqual(report['scanner']['resultSha256'], hashlib.sha256(raw_results.read_bytes()).hexdigest())
+                self.assertEqual(raw_source.stat().st_mode & 0o077, 0)
+                self.assertEqual(raw_results.stat().st_mode & 0o077, 0)
         self.assertTrue(report['scanner']['evaluationPerformed'])
         self.assertTrue(report['scanner']['partial'])
         self.assertEqual(report['scanner']['uniqueCveCount'], 1)
