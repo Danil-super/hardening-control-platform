@@ -79,6 +79,7 @@
             mode: "0600"
           when: oval_settings.mode | default('local') == 'online'
 
+        # Serialize proof at the argv boundary; legacy Ansible can coerce JSON strings into dict text.
         - name: Validate and evaluate OVAL locally on target
           ansible.builtin.command:
             argv:
@@ -86,7 +87,7 @@
               - "{{ oval_target_dir.path }}/hcp-oval-audit.py"
               - evaluate
               - --source-validation
-              - "{{ (hcp_oval_source_validation if hcp_oval_source_validation | default('') | length > 0 else (oval_download.stdout | from_json).sourceValidation | to_json) if oval_settings.mode | default('local') == 'online' else '{}' }}"
+              - "{{ (((hcp_oval_source_validation | from_json) if hcp_oval_source_validation | default('') | length > 0 else (oval_download.stdout | from_json).sourceValidation) if oval_settings.mode | default('local') == 'online' else {}) | to_json }}"
               - --config
               - "{{ oval_config_json }}"
               - --input
