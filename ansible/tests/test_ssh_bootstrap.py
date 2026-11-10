@@ -1,5 +1,10 @@
 import importlib.util
 from pathlib import Path
+import json
+import os
+import subprocess
+import sys
+import tempfile
 import unittest
 
 
@@ -7,6 +12,40 @@ HELPER_PATH = Path(__file__).resolve().parents[1] / "scripts" / "hcp-ssh-bootstr
 SPEC = importlib.util.spec_from_file_location("hcp_ssh_bootstrap_test", HELPER_PATH)
 BOOTSTRAP = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BOOTSTRAP)
+
+
+class KeyInstallFileTests(unittest.TestCase):
+    def test_enroll_and_revoke_preserve_existing_entries_and_blank_lines(self):
+        revoke_spec = importlib.util.spec_from_file_location("revoke_roundtrip", HELPER_PATH.with_name("hcp-ssh-revoke.py"))
+        revoke = importlib.util.module_from_spec(revoke_spec)
+        revoke_spec.loader.exec_module(revoke)
+        public_key = "ssh-ed25519 Zml4dHVyZQ== hcp-fixture"
+        for original in (b"", b"# operator\nssh-ed25519 b3RoZXI= operator\n", b"# operator\n\n"):
+            with self.subTest(original=original), tempfile.TemporaryDirectory() as home:
+                authorized = Path(home) / ".ssh/authorized_keys"
+                authorized.parent.mkdir(mode=0o700)
+                authorized.write_bytes(original)
+                for _ in range(2):
+                    subprocess.run(["sh", "-c", BOOTSTRAP.key_install_script(public_key)], env={**os.environ, "HOME": home}, check=True, capture_output=True)
+                self.assertEqual(authorized.read_bytes(), original + public_key.encode() + b"\n")
+                # Account lookup and sudoers are confined to this temporary home.
+                setup = "import pwd,types,sys;pwd.getpwnam=lambda user:types.SimpleNamespace(pw_dir=sys.argv[1]);\n"
+                program = revoke.REMOTE_PROGRAM.replace("'/etc/sudoers.d'", "home")
+                self.assertNotIn("/etc/sudoers.d", program)
+                result = subprocess.run([sys.executable, "-c", setup + program, home],
+                                        input=json.dumps({"user": "fixture", "credentialId": "a" * 64, "publicKey": public_key}),
+                                        text=True, capture_output=True, check=True)
+                self.assertTrue(json.loads(result.stdout)["ok"])
+                self.assertEqual(authorized.read_bytes(), original)
+
+    def test_unterminated_existing_entry_stays_separate_and_enrollment_is_idempotent(self):
+        with tempfile.TemporaryDirectory() as home:
+            authorized = Path(home) / ".ssh/authorized_keys"
+            authorized.parent.mkdir(mode=0o700)
+            authorized.write_bytes(b"ssh-ed25519 b3RoZXI= operator")
+            for _ in range(2):
+                subprocess.run(["sh", "-c", BOOTSTRAP.key_install_script("ssh-ed25519 Zml4dHVyZQ==")], env={**os.environ, "HOME": home}, check=True, capture_output=True)
+            self.assertEqual(authorized.read_bytes(), b"ssh-ed25519 b3RoZXI= operator\nssh-ed25519 Zml4dHVyZQ==\n")
 
 
 class _Channel:
