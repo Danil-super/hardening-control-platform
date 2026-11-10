@@ -420,6 +420,24 @@ class AgentlessAuditTest(unittest.TestCase):
                 self.assertTrue(report["scanner"]["partial"])
                 self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
 
+    def test_firewalld_not_running_on_stderr_is_inactive_only_for_official_exit_code(self):
+        for code, output, error, expected in [
+            (252, "", "not running", "inactive"),
+            (252, "not running", "", "inactive"),
+            (13, "", "not running", "unknown"),
+            (1, "not running", "", "unknown"),
+            (252, "not running", "Permission denied", "unknown"),
+            (1, "", "DBUS_ERROR: access denied", "unknown"),
+        ]:
+            with self.subTest(code=code, stdout=output, stderr=error):
+                report, findings = self.execute_audit({
+                    ("firewall-cmd", "--state"): (code, output, error),
+                    ("nft", "-j", "list", "ruleset"): (0, nft_input(expressions=[[{"xt": None}, {"accept": None}]]), ""),
+                })
+                self.assertEqual(report["agentless"]["firewallManagers"][1], {"backend": "firewalld", "state": expected})
+                self.assertEqual(findings["firewall_active"]["status"], "manual")
+                self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+
     def test_supported_firewalld_style_nft_jump_keeps_the_manager_identity(self):
         data = json.loads(nft_input(policy="accept", expressions=[[{"jump": {"target": "public"}}]]))
         data["nftables"].extend([

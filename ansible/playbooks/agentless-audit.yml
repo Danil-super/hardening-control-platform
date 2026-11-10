@@ -284,9 +284,8 @@
               code, output, error = run(["firewall-cmd", "--state"])
               if code == 0 and output.strip() == "running":
                   return "active", "firewalld", command_evidence("firewalld", output, error)
-              # Different firewalld releases use different non-zero exit codes
-              # for this exact, unambiguous inactive response.
-              if output.strip().lower() == "not running":
+              # NOT_RUNNING may be printed to stderr; other failures remain unknown.
+              if code == 252 and (output + "\n" + error).strip() == "not running":
                   return "inactive", "firewalld", command_evidence("firewalld", output, error)
               if command_is_missing(code, error):
                   return "missing", "firewalld", command_evidence("firewalld", output, error)
