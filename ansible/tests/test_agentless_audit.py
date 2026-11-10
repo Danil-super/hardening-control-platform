@@ -438,6 +438,27 @@ class AgentlessAuditTest(unittest.TestCase):
                 self.assertEqual(findings["firewall_active"]["status"], "manual")
                 self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
 
+    def test_legacy_nft_json_explains_missing_extension_details_without_claiming_pass(self):
+        legacy = json.loads(nft_input(expressions=[[{"xt": None}, {"accept": None}]]))
+        legacy["nftables"].insert(0, {"metainfo": {"version": "0.9.6", "json_schema_version": 1}})
+        report, findings = self.execute_audit({("nft", "-j", "list", "ruleset"): (0, json.dumps(legacy), "")})
+        self.assertEqual(findings["firewall_active"]["status"], "manual")
+        self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+        self.assertIn("xt:null", report["scanner"]["partialReasons"][0])
+        self.assertIn("ручная", report["scanner"]["partialReasons"][0])
+        self.assertTrue(firewall_proofs(findings)["nftables"]["extensionDetailsMissing"])
+        # Missing details in an unreachable rule cannot make a complete result partial.
+        legacy["nftables"].insert(3, {"rule": {"family": "inet", "table": "filter", "chain": "input", "expr": [{"drop": None}]}})
+        report, findings = self.execute_audit({("nft", "-j", "list", "ruleset"): (0, json.dumps(legacy), "")})
+        self.assertEqual(findings["firewall_active"]["status"], "passed")
+        self.assertEqual(report["scanner"]["partialReasons"], [])
+        report, findings = self.execute_audit({
+            ("nft", "-j", "list", "ruleset"): (0, json.dumps(legacy), ""),
+            ("iptables", "-S"): (1, "", "Permission denied"),
+        })
+        self.assertEqual(findings["firewall_active"]["status"], "manual")
+        self.assertEqual(report["scanner"]["partialReasons"], [])
+
     def test_supported_firewalld_style_nft_jump_keeps_the_manager_identity(self):
         data = json.loads(nft_input(policy="accept", expressions=[[{"jump": {"target": "public"}}]]))
         data["nftables"].extend([

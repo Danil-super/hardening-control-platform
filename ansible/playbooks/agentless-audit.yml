@@ -59,6 +59,7 @@
           filesystem_rules = rules.get("filesystem_rules", {})
           profile_checks = rules.get("profile_checks", {})
           incomplete_checks = []
+          incomplete_reasons = []
 
           def run(command):
               try:
@@ -815,6 +816,9 @@
                   entries = json.loads(output)["nftables"]
                   if not isinstance(entries, list):
                       raise ValueError("invalid nftables JSON")
+                  if proof is not None and any(expression == {"xt": None}
+                          for entry in entries for expression in entry.get("rule", {}).get("expr", [])):
+                      proof["extensionDetailsMissing"] = True
                   restored_states = {}
                   if any(expression.get("xt") == {"type": "match", "name": "conntrack"}
                          for entry in entries for expression in entry.get("rule", {}).get("expr", [])):
@@ -1016,6 +1020,10 @@
               # a positive observation from the other frontend. Missing tools are
               # distinct and still permit the bounded, explicitly scoped fallback.
               if any(item[0] == "unknown" for item in filters):
+                  if filters[0][0] == "unknown" and proofs["nftables"].get("extensionDetailsMissing"):
+                      incomplete_reasons.append("В JSON nftables часть условий записана как xt:null без названий и параметров. "
+                          "Автоматическая оценка INPUT ограничена форматом утилиты; нужна ручная сверка правил nftables и iptables/ip6tables. "
+                          "Повтор с тем же форматом не устраняет ограничение.")
                   return False, False, "incomplete_reason=unresolved_or_unreadable_packet_filter; " + evidence
               active = next((item for item in filters if item[0] == "active"), None)
               if active:
@@ -1588,7 +1596,7 @@
               "os": os_name,
               "profileId": profile_id,
               "mode": "agentless",
-              "scanner": {"source": "agentless", "partial": bool(incomplete_checks), "incompleteChecks": sorted(set(incomplete_checks))},
+              "scanner": {"source": "agentless", "partial": bool(incomplete_checks), "incompleteChecks": sorted(set(incomplete_checks)), "partialReasons": incomplete_reasons},
               "agentless": {
                   "version": rules.get("audit_rules_version", "0.2.0"),
                   "evaluatorVersion": "1.3.0",

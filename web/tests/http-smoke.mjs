@@ -379,6 +379,18 @@ try {
   assert.match(rendered, /Данные HCP \(JSON\)/);
   assert.match(rendered, /Скачать PDF HCP/);
   assert.doesNotMatch(rendered, />99%/);
+  const firewallFormatId = "smoke-agentless-firewall-format";
+  const firewallFormatReason = "В JSON nftables есть xt:null; нужна ручная сверка правил.";
+  writeFileSync(path.join(reports, `${firewallFormatId}.json`), JSON.stringify({
+    inventoryHost: "smoke", hostname: "fixture-host", createdAt: new Date().toISOString(),
+    mode: "agentless", profileId: "basic_linux", summary: { high: 0, medium: 1, total: 1 },
+    scanner: { partial: true, incompleteChecks: ["firewall_active"], partialReasons: [firewallFormatReason] },
+    findings: [{ id: "firewall_active", title: "INPUT не оценён", category: "Сеть", risk: "medium", status: "manual" }],
+  }));
+  const firewallFormatPage = await (await request(`/reports/agentless/${firewallFormatId}`)).text();
+  const firewallBanner = firewallFormatPage.match(/<section role="status"[\s\S]*?<\/section>/)?.[0] ?? "";
+  assert.match(firewallBanner, /В JSON nftables есть xt:null; нужна ручная сверка правил\./);
+  assert.match(firewallFormatPage, /Проверка неполная/);
   await request("/reports/correlation/smoke");
   await request("/hosts");
   await request("/data-sources");

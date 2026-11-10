@@ -193,7 +193,7 @@ export default async function AgentlessReportDetailPage({
                     <span className="flex h-7 w-7 items-center justify-center rounded-full border border-amber-300/30 bg-amber-400/10 text-xs font-semibold text-amber-100">{index + 1}</span>
                     <div>
                       <p className="font-semibold text-white">{check.title}</p>
-                      <p className="text-slate-300">{check.description}</p>
+                      <p className="text-slate-300">{incompleteChecks.length === 1 && scannerPartialReasons.length === 1 ? scannerPartialReasons[0] : check.description}</p>
                       <p className="mt-1 text-sky-100">Следующий шаг: {check.nextStep}</p>
                     </div>
                   </li>
