@@ -222,10 +222,11 @@ export default async function AgentlessReportDetailPage({
         <SummaryCard label="Советы по усилению" value={report.lynisSuggestions ?? 0} detail="Оцените необходимость для роли хоста" icon={<FileText size={18} />} />
         <SummaryCard label="Сбор данных" value={report.partial ? "Незавершён" : "Завершён"} detail={`Lynis ${textValue(scanner.version)} · ${report.findingsCount} записей`} icon={<ListChecks size={18} />} />
       </div> : <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard label="Высокий" value={report.high} detail="Срочный приоритет" icon={<AlertTriangle size={18} />} />
+        {report.critical > 0 ? <SummaryCard label="Критические" value={report.critical} detail="Явная оценка сканера" icon={<AlertTriangle size={18} />} /> : null}
+        <SummaryCard label="Высокий" value={report.high - report.critical} detail={report.critical > 0 ? "Без критических" : "Срочный приоритет"} icon={<AlertTriangle size={18} />} />
         <SummaryCard label="Средний" value={report.medium} detail="Плановое действие" icon={<FileText size={18} />} />
         <SummaryCard label="Проверки" value={report.findingsCount} detail="Записи в отчёте" icon={<Server size={18} />} />
-        <SummaryCard label="События" value={report.eventsCount} detail="События безопасности" icon={<ListChecks size={18} />} />
+        {report.critical === 0 || report.eventsCount > 0 ? <SummaryCard label="События" value={report.eventsCount} detail="События безопасности" icon={<ListChecks size={18} />} /> : null}
       </div>}
 
       <section aria-label="Отчёт HCP" className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">

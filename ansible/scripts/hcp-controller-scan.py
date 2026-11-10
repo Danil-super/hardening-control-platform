@@ -928,7 +928,7 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
                 status = "manual"
         except ValueError:
             status = "manual"
-        findings.append(finding(
+        item = finding(
             identifier="greenbone_" + hashlib.sha256(key.encode()).hexdigest()[:24],
             title=name or "Находка Greenbone/OpenVAS",
             risk=risk,
@@ -937,7 +937,11 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
             description=description or "Greenbone сообщил результат сетевой проверки.",
             recommendation=solution or "Проверьте рекомендации производителя и примените исправление по утверждённой процедуре.",
             evidence=f"result={identifier}; oid={oid or 'unknown'}; host={host}; port={port or 'unknown'}; threat={threat or 'unknown'}; severity={severity_text or 'unknown'}; qod={qod_value}; cve={','.join(cves) or 'none'}",
-        ))
+        )
+        if normalized_threat == "critical" and severity_score is not None and severity_score > 0:
+            item["risk"] = "high"
+            item["severityAssessment"] = {"level": "critical", "source": "scanner_metadata"}
+        findings.append(item)
 
     for element in matching_errors:
         host = child_text(element, "host")
@@ -970,6 +974,12 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
                   and (not scan_started_at or start_time is not None and start_time <= end_time))
     partial = not findings or scan_status.lower() != "done" or invalid_severity or not time_valid or bool(error_reasons) or (full_count is not None and full_count > len(results))
     partial_reasons = list(error_reasons)
+    if scan_status.lower() != "done":
+        partial_reasons.append(f"Статус сканирования Greenbone: {scan_status[:80] or 'не указан'}; требуется завершённый запуск.")
+    if full_count is not None and full_count > len(results):
+        partial_reasons.append(f"В XML экспортировано {len(results)} из {full_count} результатов Greenbone. Включите все уровни, включая Critical, QoD = 0 и экспорт всех страниц.")
+    if invalid_severity:
+        partial_reasons.append("В XML есть отсутствующая или некорректная оценка критичности Greenbone; такие записи требуют проверки.")
     if not time_valid:
         partial_reasons.append("Время окончания сканирования отсутствует, некорректно, находится в будущем или предшествует началу. Время импорта не подтверждает свежесть проверки.")
     if not findings:

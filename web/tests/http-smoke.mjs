@@ -385,12 +385,32 @@ try {
     inventoryHost: "smoke", hostname: "fixture-host", createdAt: new Date().toISOString(),
     mode: "agentless", profileId: "basic_linux", summary: { high: 0, medium: 1, total: 1 },
     scanner: { partial: true, incompleteChecks: ["firewall_active"], partialReasons: [firewallFormatReason] },
-    findings: [{ id: "firewall_active", title: "INPUT не оценён", category: "Сеть", risk: "medium", status: "manual" }],
+    findings: [{ id: "firewall_active", title: "INPUT не оценён", profileId: "basic_linux", source: "agentless", description: "Формат не поддержан", recommendation: "Сверьте правила", category: "Сеть", risk: "medium", status: "manual" }],
   }));
   const firewallFormatPage = await (await request(`/reports/agentless/${firewallFormatId}`)).text();
   const firewallBanner = firewallFormatPage.match(/<section role="status"[\s\S]*?<\/section>/)?.[0] ?? "";
   assert.match(firewallBanner, /В JSON nftables есть xt:null; нужна ручная сверка правил\./);
   assert.match(firewallFormatPage, /Проверка неполная/);
+  const criticalGreenboneId = "smoke-greenbone-critical";
+  writeFileSync(path.join(reports, `${criticalGreenboneId}.json`), JSON.stringify({
+    inventoryHost: "smoke", hostname: "fixture-host", mode: "greenbone", profileId: "greenbone",
+    scanner: { imported: true, partial: false, scanStatus: "Done", scanEndedAt: new Date().toISOString() },
+    findings: [
+      { id: "native-critical", title: "Native Critical", profileId: "greenbone", description: "Native classification", recommendation: "Review", category: "CVE", source: "greenbone", risk: "high", status: "failed", severityAssessment: { level: "critical", source: "scanner_metadata" } },
+      { id: "native-high", title: "Native High", profileId: "greenbone", description: "Native classification", recommendation: "Review", category: "CVE", source: "greenbone", risk: "high", status: "failed" },
+      { id: "native-unknown", title: "Неоценённый результат", profileId: "greenbone", description: "Unknown classification", recommendation: "Review", category: "CVE", source: "greenbone", risk: "info", status: "manual", severityUnknown: true, severityAssessment: { level: "critical", source: "scanner_metadata" } },
+    ],
+  }));
+  const criticalGreenboneData = await (await request(`/api/ansible/reports/${criticalGreenboneId}`)).json();
+  assert.equal(criticalGreenboneData.report.critical, 1);
+  assert.equal(criticalGreenboneData.report.findings.length, 3);
+  const criticalGreenbonePage = await (await request(`/reports/agentless/${criticalGreenboneId}`)).text();
+  assert.match(criticalGreenbonePage, /<span[^>]*>Критический<\/span>/);
+  assert.match(criticalGreenbonePage, /<button[^>]*>Критический<\/button>/);
+  assert.match(criticalGreenbonePage, /Критические/);
+  const unknownGreenboneRow = [...criticalGreenbonePage.matchAll(/<summary[^>]*>[\s\S]*?<\/summary>/g)].find(([html]) => html.includes("Неоценённый результат"))?.[0] ?? "";
+  assert.match(unknownGreenboneRow, />Риск не оценён<\/span>/);
+  assert.doesNotMatch(unknownGreenboneRow, />Критический<\/span>/);
   await request("/reports/correlation/smoke");
   await request("/hosts");
   await request("/data-sources");

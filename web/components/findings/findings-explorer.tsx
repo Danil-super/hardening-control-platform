@@ -8,10 +8,11 @@ import { LinkButton } from "@/components/ui/button";
 import { FindingDescription } from "@/components/reports/finding-description";
 import type { Finding, RiskLevel } from "@/types";
 
-type RiskFilter = RiskLevel | "all" | "unknown";
-const riskFilters: RiskFilter[] = ["all", "high", "medium", "low", "info", "unknown"];
+type RiskFilter = RiskLevel | "all" | "critical" | "unknown";
+const riskFilters: RiskFilter[] = ["all", "critical", "high", "medium", "low", "info", "unknown"];
 const riskFilterLabels: Record<RiskFilter, string> = {
   all: "Все риски",
+  critical: "Критический",
   high: "Высокий",
   medium: "Средний",
   low: "Низкий",
@@ -81,7 +82,8 @@ export function FindingsExplorer({
   );
 
   const filteredFindings = findings.filter((finding) => {
-    const riskMatch = risk === "all" || (risk === "unknown" ? finding.severityUnknown === true : !finding.severityUnknown && finding.risk === risk);
+    const level = finding.severityUnknown ? "unknown" : finding.severityAssessment?.level === "critical" ? "critical" : finding.risk;
+    const riskMatch = risk === "all" || level === risk;
     const categoryMatch = category === "all" || finding.category === category;
     return riskMatch && categoryMatch;
   });
@@ -94,7 +96,8 @@ export function FindingsExplorer({
           <p className="mt-1 text-sm text-slate-400">Показано: {filteredFindings.length} из {findings.length}</p>
         </div>
         <div className="flex flex-wrap gap-2">
-          {riskFilters.filter((value) => value !== "unknown" || findings.some((finding) => finding.severityUnknown)).map((value) => (
+          {riskFilters.filter((value) => (value !== "unknown" || findings.some((finding) => finding.severityUnknown))
+            && (value !== "critical" || findings.some((finding) => !finding.severityUnknown && finding.severityAssessment?.level === "critical"))).map((value) => (
             <button
               key={value}
               onClick={() => setRisk(value)}
@@ -127,7 +130,7 @@ export function FindingsExplorer({
             <summary className="flex cursor-pointer list-none flex-wrap items-start gap-3 text-sm">
               <span aria-hidden="true" className="text-sky-200 transition-transform group-open:rotate-90">›</span>
               <h3 className="min-w-0 flex-1 font-semibold text-white [overflow-wrap:anywhere]">{finding.source === "greenbone" && reportId ? <FindingDescription original={finding.title} reportId={reportId} findingId={finding.id} field="title" expanded inline lazy /> : finding.title}</h3>
-              <span className="flex flex-wrap gap-2"><RiskBadge risk={finding.risk} unknown={finding.severityUnknown} /><StatusBadge status={finding.status} /></span>
+              <span className="flex flex-wrap gap-2"><RiskBadge risk={finding.risk} unknown={finding.severityUnknown} critical={finding.severityAssessment?.level === "critical"} /><StatusBadge status={finding.status} /></span>
             </summary>
             <div className="mt-3 text-sm">
               <div className="leading-6 text-slate-400">{finding.source === "greenbone" && reportId ? <FindingDescription original={finding.description} reportId={reportId} findingId={finding.id} expanded lazy /> : finding.description}</div>
