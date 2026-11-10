@@ -50,10 +50,10 @@ export default async function HostCorrelationPage({ params, searchParams }: { pa
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">Единая оценка доказательств</p>
+
           <h1 className="mt-2 break-words text-3xl font-semibold text-white">{report.hostAlias}</h1>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            Последние результаты не старше {report.maxAgeHours} ч. Для OpenSCAP учитывается профиль и контент, для Nmap — выбранный диапазон TCP-портов. Сужение области проверки не подтверждает устранение прежних наблюдений. Повторные запуски из истории не суммируются.
+            Единая сводка · отчёты не старше {report.maxAgeHours} ч. История запусков не суммируется.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -67,7 +67,7 @@ export default async function HostCorrelationPage({ params, searchParams }: { pa
         <SummaryCard label="Критические" value={critical} detail="С явной оценкой из источника" icon={<AlertTriangle size={18} />} />
         <SummaryCard label="Высокие" value={high} detail="Без критических находок" icon={<AlertTriangle size={18} />} />
         <SummaryCard label="Не оценены" value={unknown} detail="Критичность неизвестна" icon={<CheckCircle2 size={18} />} />
-        <SummaryCard label="Полные свежие проверки" value={report.freshReports.filter((item) => !item.partial).length} detail={`Неполных или устаревших: ${report.partialReports.length}`} icon={<ShieldCheck size={18} />} />
+        <SummaryCard label="Проверки в сводке" value={report.freshReports.length} detail={`Ограничения текущей сводки: ${report.partialReports.filter(item => item.current).length}`} icon={<ShieldCheck size={18} />} />
       </div>
 
       {report.staleReports.length ? (
@@ -77,13 +77,15 @@ export default async function HostCorrelationPage({ params, searchParams }: { pa
       ) : null}
 
       {report.lostCoverage.length ? (
-        <section className="rounded-md border border-amber-400/30 bg-amber-500/10 p-4 text-sm leading-6 text-amber-100">
-          <h2 className="font-semibold">Прежнее покрытие не подтверждено</h2>
-          <p>Новая проверка не подтверждает результаты другого профиля, версии контента, пропущенных правил или портов вне выбранного диапазона. Старые наблюдения сохранены в исходных отчётах; их отсутствие в текущей сводке не означает устранения.</p>
+        <details className="rounded-md border border-slate-700 bg-slate-900/60 p-4 text-sm leading-6 text-slate-300">
+          <summary className="cursor-pointer font-semibold text-slate-200">Сравнение с прошлыми запусками: {report.lostCoverage.length}</summary>
+          <p className="mt-2">Для этих запусков нельзя подтвердить одинаковую базу, профиль или набор проверок. Это ограничение сравнения; статус выполнения сканера смотрите в его отчёте. Исчезновение старой находки из сводки не доказывает исправления.</p>
           <ul className="mt-2 list-disc space-y-1 pl-5">{report.lostCoverage.map((loss) => (
-            <li key={`${loss.reportId}:${loss.reason}`}><a className="underline" href={`/reports/agentless/${encodeURIComponent(loss.reportId)}`}>{loss.mode === "nmap" ? `Nmap · ${nmapScopeLabel(loss.scanScope)}` : loss.profileId ?? "Неизвестный профиль"}</a>: {loss.reason === "rules_missing" ? `не оценены ранее проверенные правила (${loss.ruleIds.length})` : loss.reason === "scope_unknown" ? "идентичность прежней или текущей области неизвестна" : loss.reason === "ports_not_checked" ? "прежний диапазон портов не покрыт новым сканированием" : loss.reason === "ports_unverified" ? "повторное сканирование портов не завершено" : loss.reason === "port_set_unknown" ? "состав top-портов разных запусков не сопоставлен; версия nmap-services не зафиксирована" : "профиль или контент изменён"}.</li>
+            <li key={`${loss.reportId}:${loss.reason}`}><span className="font-medium">{loss.mode === "nmap" ? `Nmap · ${nmapScopeLabel(loss.scanScope)}` : loss.profileId ?? "Профиль не указан"}</span>: {loss.reason === "rules_missing" ? `не оценены ранее проверенные правила (${loss.ruleIds.length})` : loss.reason === "scope_unknown" ? "в одном из отчётов не сохранены реквизиты базы, профиля или набора проверок" : loss.reason === "ports_not_checked" ? "новый запуск проверял другой диапазон портов" : loss.reason === "ports_unverified" ? "повторное сканирование портов не завершено" : loss.reason === "port_set_unknown" ? "наборы популярных портов разных запусков не сопоставлены" : "изменились база или профиль"}.
+              <span className="ml-2 inline-flex flex-wrap gap-3"><a className="text-sky-200 underline" href={`/reports/agentless/${encodeURIComponent(loss.reportId)}`}>Прошлый отчёт</a><a className="text-sky-200 underline" href={`/reports/agentless/${encodeURIComponent(loss.replacedByReportId)}`}>Новый отчёт</a></span>
+            </li>
           ))}</ul>
-        </section>
+        </details>
       ) : null}
 
       <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">

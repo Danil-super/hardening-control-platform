@@ -60,6 +60,26 @@ writeFileSync(path.join(reports, `${ovalReportId}.json`), JSON.stringify({
     source: "openscap", risk: "info", severityUnknown: true, status: "failed", description: "Контрольная находка без оценки поставщика",
     recommendation: "Проверить бюллетень", remediationAvailable: false }], events: [],
 }));
+const nativeFixtures = [
+  ["nmap", "nmap", "xml", "xml", '<nmaprun scanner="nmap"/>\n', "Отчёт Nmap (XML)"],
+  ["ssh-audit", "ssh-audit", "json", "json", '{"banner":"fixture SSH"}\n', "Отчёт ssh-audit (JSON)"],
+  ["lynis", "lynis-report", "dat", "dat", '# Lynis fixture\nhardening_index=70\n', "Отчёт Lynis (report.dat)"],
+  ["vulnerabilities", "trivy", "json", "json", '{"SchemaVersion":2,"Results":[]}\n', "Отчёт Trivy (JSON)"],
+  ["greenbone", "greenbone", "xml", "xml", '<report><results/></report>\n', "Отчёт Greenbone (XML)"],
+  ["openscap", "arf", "xml", "xml", '<asset-report-collection/>\n', "Результаты OpenSCAP (ARF XML)"],
+  ["dependency-track-analysis", "dependency-track", "json", "json", '{"findings":[]}\n', "Экспорт Dependency-Track (JSON)"],
+  ["dependency-track", "sbom", "json", "sbom", '{"bomFormat":"CycloneDX","components":[]}\n', "Переданный SBOM HCP (CycloneDX JSON)"],
+];
+for (const [mode, kind, ext, , bytes] of nativeFixtures) {
+  const id = `smoke-native-${mode}`;
+  const folder = path.join(reports, ".raw-evidence", id); mkdirSync(folder, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(folder, `${kind}.${ext}`), bytes);
+  writeFileSync(path.join(reports, `${id}.json`), JSON.stringify({
+    inventoryHost: "smoke", hostname: "fixture-host", mode, createdAt: new Date().toISOString(), findings: [], events: [],
+    vulnerabilityScan: { provider: "Trivy" }, scanner: { available: true, partial: false },
+    rawEvidence: { version: 1, complete: true, missing: [], artifacts: [{ kind, path: `.raw-evidence/${id}/${kind}.${ext}`, bytes: Buffer.byteLength(bytes), sha256: createHash("sha256").update(bytes).digest("hex") }] },
+  }));
+}
 let output = "";
 let cookie = "";
 let checks = 0;
@@ -115,6 +135,9 @@ try {
   await request("/api/ansible/hosts", { auth: false, status: 401 });
   await request("/api/ansible/session", { auth: false, status: 401 });
   await request("/api/settings/astra-oval", { auth: false, status: 401 });
+  await request("/api/ansible/hosts/oval-preparation?alias=smoke", { auth: false, status: 401 });
+  await request(`/api/ansible/reports/${ovalReportId}/native?format=xml`, { auth: false, status: 401 });
+  await request(`/api/ansible/reports/${reportId}/pdf`, { auth: false, status: 401 });
   await request(`/reports/agentless/${reportId}`, { auth: false, status: 307 });
   await request("/reports/correlation/smoke", { auth: false, status: 307 });
   await request("/api/ansible/auth/login", { method: "POST", body: { password: "wrong" }, auth: false, status: 401 });
@@ -122,6 +145,29 @@ try {
   cookie = login.headers.get("set-cookie").split(";", 1)[0];
   assert.match(cookie, /^hcp_admin_session=/);
   await request("/api/ansible/session");
+  const auditPdf = await request(`/api/ansible/reports/${reportId}/pdf`);
+  assert.equal(auditPdf.headers.get("content-type"), "application/pdf");
+  assert.match(auditPdf.headers.get("content-disposition"), /hcp\.pdf/);
+  assert.equal(auditPdf.headers.get("x-source-sha256"), createHash("sha256").update(readFileSync(path.join(reports, `${reportId}.json`))).digest("hex"));
+  assert.equal(Buffer.from(await auditPdf.arrayBuffer()).subarray(0, 5).toString(), "%PDF-");
+  await request("/api/ansible/reports/missing-report/pdf", { status: 404 });
+  const historicalOvalPage = await (await request(`/reports/agentless/${ovalReportId}`)).text();
+  assert.match(historicalOvalPage, /Оригинальный отчёт инструмента для этого запуска не сохранён/);
+  for (const [mode, kind, extension, format, bytes, label] of nativeFixtures) {
+    const id = `smoke-native-${mode}`;
+    const page = await (await request(`/reports/agentless/${id}`)).text();
+    assert.ok(page.includes(label), `${mode} native download label missing`);
+    const original = await request(`/api/ansible/reports/${id}/native?format=${format}`);
+    assert.equal(await original.text(), bytes, `${mode} original changed`);
+    assert.match(original.headers.get("content-disposition"), /attachment/);
+    assert.equal(original.headers.get("x-source-sha256"), createHash("sha256").update(bytes).digest("hex"));
+    const preview = await request(`/api/ansible/reports/${id}/native?format=${format}&view=1`);
+    assert.match(preview.headers.get("content-disposition"), /^inline;/);
+    assert.equal(preview.headers.get("content-type"), "text/plain; charset=utf-8");
+    assert.equal(await preview.text(), bytes);
+    await request(`/api/ansible/reports/${id}/native?format=${format}`, { auth: false, status: 401 });
+  }
+  await request(`/api/ansible/reports/${ovalReportId}/native?format=xml`, { status: 404 });
   assert.match(login.headers.get("set-cookie"), /HttpOnly/i);
   assert.match(login.headers.get("set-cookie"), /Path=\//i);
   const hostsPage = await (await request("/hosts")).text();
@@ -132,7 +178,9 @@ try {
   const networkPosition = hostsPage.indexOf('id="network-discovery"');
   const sshPosition = hostsPage.indexOf('id="ssh-setup"');
   const formPosition = hostsPage.indexOf('id="host-form"');
-  assert.ok(networkPosition > 0 && networkPosition < formPosition && formPosition < sshPosition, "discovery precedes the host form and password/key setup");
+  assert.ok(formPosition > 0 && formPosition < networkPosition && networkPosition < sshPosition, "optional discovery is inside connection setup before credentials");
+  const workflowPositions = ['managed-hosts', 'ansible-actions', 'host-results', 'firewall-actions', 'recent-remediations'].map(id => hostsPage.indexOf(`id="${id}"`));
+  assert.ok(workflowPositions.every((position, index) => position >= 0 && (!index || position > workflowPositions[index - 1])), "host actions follow selection, audit, result, change and recovery");
   assert.match(hostsPage.slice(formPosition), /Входить через терминал и создавать ключи вручную не нужно/);
   assert.doesNotMatch(hostsPage.slice(formPosition), />Добавить хост<|>Сохранить изменения</);
   assert.match(hostsPage.slice(formPosition), /Пароль для входа по SSH/);
@@ -321,8 +369,15 @@ try {
   assert.equal(report.report.score, null);
   assert.equal(report.report.high, 0);
   assert.equal(report.report.eventsCount, 0);
+  const hcpDownload = await request(`/api/ansible/reports/${reportId}?download=1`);
+  assert.match(hcpDownload.headers.get("content-disposition"), /attachment; filename=".*-hcp.json"/);
+  const hcpDocument = await hcpDownload.json();
+  assert.equal(hcpDocument.mode, "vulnerabilities");
+  assert.equal(hcpDocument.ok, undefined);
   const rendered = await (await request(`/reports/agentless/${reportId}`)).text();
   assert.match(rendered, /Сканер не выполнил проверку/);
+  assert.match(rendered, /Данные HCP \(JSON\)/);
+  assert.match(rendered, /Скачать PDF HCP/);
   assert.doesNotMatch(rendered, />99%/);
   await request("/reports/correlation/smoke");
   await request("/hosts");
@@ -339,6 +394,12 @@ try {
   assert.equal(persisted.database.mode, "online");
   const reloadedOval = await (await request("/api/settings/astra-oval")).json();
   assert.equal(reloadedOval.policies[0].config.evidenceProjection, "bounded");
+  const ovalPreparation = await (await request(`/api/ansible/hosts/oval-preparation?alias=${guardedIdentity.alias}`)).json();
+  assert.equal(ovalPreparation.source.mode, "local");
+  assert.equal(ovalPreparation.preparation.state, "local");
+  await request("/api/ansible/hosts/oval-preparation?alias=unregistered", { status: 400 });
+  const localPreparation = await (await request("/api/ansible/hosts/oval-preparation", { method: "POST", body: { alias: guardedIdentity.alias } })).json();
+  assert.equal(localPreparation.preparation.state, "local");
   const unconfirmedOval = await (await request("/api/ansible/run", { method: "POST", body: { action: "astraOvalAudit", limit: guardedIdentity.alias }, status: 400 })).json();
   assert.equal(unconfirmedOval.error, "confirmation_required");
   assert.equal(existsSync(`${preflightFixture}.oval-config`), false);

@@ -50,12 +50,14 @@ const control = await import(compiled.url('ansible-control'));
 const reports = await import(compiled.url('ansible-reports'));
 const auditResult = await import(compiled.url('audit-result'));
 const store = await import(compiled.url('state-store'));
+const { withAuditProgress } = await import(compiled.url('audit-progress'));
 const require = createRequire(import.meta.url);
 const stubs = {
   'next/server': { NextResponse: { json: (body, init) => Response.json(body, init) } },
   '@/lib/ansible-control': control, '@/lib/ansible-reports': reports,
   '@/lib/audit-result': auditResult, '@/lib/state-store': store,
   '@/lib/astra-oval-policy': { resolveAstraOvalPolicyForHost: () => ({ config: {} }) },
+  '@/lib/astra-oval-preparation': { preparedOvalExtraVars: () => ({}) },
   '@/lib/openscap-policy': {}, '@/lib/remediation': {},
   '@/lib/audit-repeat': { findRepeatAuditNotice: () => null },
   '@/lib/ssh-bootstrap': { credentialTransportAllowed: () => true },
@@ -81,7 +83,9 @@ after(() => {
 
 test('a failed Ansible child keeps the published partial report linked through HTTP and the stored job', async () => {
   process.env.HCP_FAILURE_FIXTURE_WRITE = 'true';
-  const response = await module.exports.POST(request());
+  const phases = [];
+  const response = await withAuditProgress(phase => phases.push(phase), () => module.exports.POST(request()));
+  assert.deepEqual(phases, ['Подготовка проверки', 'Выполняется проверка хоста', 'Сохранение и проверка отчёта']);
   const body = await response.json();
   assert.equal(response.status, 500); assert.equal(body.ok, false);
   const saved = readdirSync(process.env.HCP_REPORTS_DIR).find(name => name.endsWith('.json'));

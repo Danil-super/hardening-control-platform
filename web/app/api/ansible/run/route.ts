@@ -11,6 +11,7 @@ import {
 } from "@/lib/ansible-control";
 import { applyOpenScapExceptions, resolveOpenScapPolicyForHost } from "@/lib/openscap-policy";
 import { resolveAstraOvalPolicyForHost } from "@/lib/astra-oval-policy";
+import { preparedOvalExtraVars } from "@/lib/astra-oval-preparation";
 import { auditReportLimitations, inspectAuditReports } from "@/lib/audit-result";
 import { findRepeatAuditNotice } from "@/lib/audit-repeat";
 import { readAnsibleReport } from "@/lib/ansible-reports";
@@ -179,7 +180,7 @@ export async function POST(request: Request) {
   if (action === "astraOvalAudit") {
     try {
       const policy = resolveAstraOvalPolicyForHost(limit);
-      runnerExtraVars = { hcp_oval_config: JSON.stringify(policy.config) };
+      runnerExtraVars = { hcp_oval_config: JSON.stringify(policy.config), ...preparedOvalExtraVars(policy.config) };
     } catch (error) {
       return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "Не удалось выбрать OVAL-базу." }, { status: 400 });
     }

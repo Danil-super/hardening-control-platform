@@ -19,7 +19,7 @@ function checksum(value: unknown) {
 }
 
 /** Copy from one opened regular file; never follow a scanner-controlled link.
- * XML is copied in chunks, independently of the JSON memory budget. */
+ * Originals are copied in chunks, independently of the JSON memory budget. */
 function copyOriginal(source: string, destination: string, expectedHash: string | null) {
   const input = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   let output: number | undefined;
@@ -50,17 +50,21 @@ function copyOriginal(source: string, destination: string, expectedHash: string 
 /** Prepare native originals privately. The report publisher commits them before
  * publishing the JSON that names their hashes. This is not publisher trust. */
 export function prepareRawScanEvidence(stage: string, file: string, report: Record<string, unknown>, reportsDirectory: string): PreparedRawEvidence | null {
-  if (report.mode !== "openscap" && report.mode !== "astra-oval") return null;
+  if (!["openscap", "astra-oval", "nmap", "ssh-audit", "lynis"].includes(String(report.mode))) return null;
   if (!/^[A-Za-z0-9_.-]{1,220}\.json$/.test(file)) throw new Error("Недопустимое имя отчёта для исходных доказательств.");
   const id = file.slice(0, -5);
   const scanner = record(report.scanner);
-  const oval = report.mode === "astra-oval";
-  const specs = oval ? [
-    { kind: "oval-results", names: [`.${id}.oval-results.xml`], expected: checksum(scanner.resultSha256) },
-    { kind: "source", names: [`.${id}.source.xml`], expected: checksum(record(scanner.database).sha256) },
+  const native = report.mode === "nmap" ? { kind: "nmap", filename: "nmap.xml", sidecar: "nmap.xml" }
+    : report.mode === "ssh-audit" ? { kind: "ssh-audit", filename: "ssh-audit.json", sidecar: "ssh-audit.json" }
+    : report.mode === "lynis" ? { kind: "lynis-report", filename: "lynis-report.dat", sidecar: "report.dat" } : null;
+  const specs = native ? [
+    { kind: native.kind, filename: native.filename, names: [`.${id}.${native.sidecar}`], expected: null },
+  ] : report.mode === "astra-oval" ? [
+    { kind: "oval-results", filename: "oval-results.xml", names: [`.${id}.oval-results.xml`], expected: checksum(scanner.resultSha256) },
+    { kind: "source", filename: "source.xml", names: [`.${id}.source.xml`], expected: checksum(record(scanner.database).sha256) },
   ] : [
-    { kind: "arf", names: [`.${id}.xml`], expected: checksum(scanner.rawResultSha256) },
-    { kind: "source", names: [`.${id}.xml.datastream.xml`, `.${id}.xml.evaluated-xccdf.xml`], expected: checksum(scanner.datastreamChecksum) },
+    { kind: "arf", filename: "arf.xml", names: [`.${id}.xml`], expected: checksum(scanner.rawResultSha256) },
+    { kind: "source", filename: "source.xml", names: [`.${id}.xml.datastream.xml`, `.${id}.xml.evaluated-xccdf.xml`], expected: checksum(scanner.datastreamChecksum) },
   ];
   mkdirSync(reportsDirectory, { recursive: true });
   const root = path.join(reportsDirectory, ".raw-evidence");
@@ -77,10 +81,10 @@ export function prepareRawScanEvidence(stage: string, file: string, report: Reco
       if (matches.length !== 1) throw new Error("Неоднозначный набор исходных доказательств сканера.");
       const source = path.join(stage, matches[0]);
       if (lstatSync(source).isSymbolicLink()) throw new Error("Ссылка вместо исходного доказательства сканера недопустима.");
-      const copied = copyOriginal(source, path.join(temporaryDirectory, spec.kind + ".xml"), spec.expected);
+      const copied = copyOriginal(source, path.join(temporaryDirectory, spec.filename), spec.expected);
       total += copied.bytes;
       if (total > MAX_TOTAL_BYTES) throw new Error("Суммарный размер исходных доказательств превышает допустимый бюджет.");
-      evidence.artifacts.push({ kind: spec.kind, path: path.posix.join(".raw-evidence", id, spec.kind + ".xml"), ...copied });
+      evidence.artifacts.push({ kind: spec.kind, path: path.posix.join(".raw-evidence", id, spec.filename), ...copied });
     }
     evidence.complete = evidence.missing.length === 0;
     const finalDirectory = path.join(root, id);

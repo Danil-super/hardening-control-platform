@@ -322,9 +322,9 @@ export function PlaybooksClient() {
     <div className="space-y-5">
       <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-200">Проверки как код</p>
+
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">Сценарии проверок</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Встроенные сценарии запускаются через тот же защищённый путь, что и кнопки в разделе «Хосты». Собственный YAML сначала создаётся из шаблона и проверяется на синтаксис.</p>
+
         </div>
         <Button variant="secondary" onClick={() => loadPlaybooks(true)} disabled={Boolean(loading)}>
           <RefreshCw size={16} className={loading === "load" ? "animate-spin" : ""} aria-hidden="true" />
@@ -332,8 +332,9 @@ export function PlaybooksClient() {
         </Button>
       </header>
 
-      <section className={`rounded-2xl border p-5 ${customPlaybooks.authoringEnabled ? "border-sky-400/25 bg-sky-500/5" : "border-slate-800 bg-slate-950/70"}`}>
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+      <details className={`min-w-0 rounded-xl border p-5 [overflow-wrap:anywhere] ${customPlaybooks.authoringEnabled ? "border-sky-400/25 bg-sky-500/5" : "border-slate-800 bg-slate-950/70"}`}>
+        <summary className="cursor-pointer text-sm font-semibold text-slate-300">{customPlaybooks.executionEnabled ? "Собственные сценарии: тестовый запуск" : customPlaybooks.authoringEnabled ? "Собственные сценарии: только черновики" : "Собственные сценарии выключены"}</summary>
+        <div className="mt-3 flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex gap-3">
             {customPlaybooks.executionEnabled ? <TestTube2 className="mt-0.5 shrink-0 text-sky-200" size={21} aria-hidden="true" /> : <LockKeyhole className="mt-0.5 shrink-0 text-amber-200" size={21} aria-hidden="true" />}
             <div>
@@ -348,13 +349,13 @@ export function PlaybooksClient() {
             {customPlaybooks.executionEnabled ? "Тестовый запуск разрешён" : customPlaybooks.authoringEnabled ? "Только черновики" : "Черновики выключены"}
           </span>
         </div>
-      </section>
+      </details>
 
-      <div className="grid gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
-      <aside className="space-y-4">
+      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] gap-5 xl:grid-cols-[320px_minmax(0,1fr)]">
+      <aside className="min-w-0 space-y-4">
         <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
           <div className="flex items-center justify-between border-b border-slate-800 p-4">
-            <h2 className="text-lg font-semibold text-white">Доступные сценарии</h2>
+            <h2 className="text-lg font-semibold text-white">1. Выберите сценарий</h2>
           </div>
           <div className="max-h-[520px] divide-y divide-slate-800 overflow-auto">
             {playbooks.map((playbook) => (
@@ -372,8 +373,8 @@ export function PlaybooksClient() {
           </div>
         </section>
 
-        {customPlaybooks.authoringEnabled ? <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
-          <h2 className="text-lg font-semibold text-white">Создать черновик</h2>
+        {customPlaybooks.authoringEnabled ? <details className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+          <summary className="cursor-pointer font-semibold text-white">Создать черновик</summary>
           <div className="mt-4 space-y-3">
               <Field label="ID файла" value={newId} onChange={setNewId} placeholder="package-check" />
             <Field label="Название" value={newTitle} onChange={setNewTitle} />
@@ -402,21 +403,15 @@ export function PlaybooksClient() {
                 ))}
               </div>
             </div>
-            {template ? (
-              <div className="rounded-md border border-slate-800 bg-slate-900/70 p-3 text-xs leading-5 text-slate-400">
-                <p className="font-semibold text-slate-200">Что будет создано</p>
-                <p className="mt-1">YAML появится в постоянном хранилище HCP вместе с метаданными. После обновления или перезапуска черновик сохранится; для тестового запуска всегда потребуется цель.</p>
-              </div>
-            ) : null}
             <Button onClick={createPlaybook} disabled={Boolean(loading)} className="w-full">
               <Plus size={16} aria-hidden="true" />
               Создать
             </Button>
           </div>
-        </section> : null}
+        </details> : null}
       </aside>
 
-      <main className="space-y-4">
+      <div className="min-w-0 space-y-4">
         {selected ? (
           <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
             <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -431,68 +426,24 @@ export function PlaybooksClient() {
                 </div>
                 <p className="mt-1 text-xs text-slate-500">{selected.file}</p>
               </div>
-              <div className="flex flex-wrap gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={syntaxCheck}
-                  disabled={Boolean(loading) || dirty || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
-                  title={selected.source === "custom" && !customPlaybooks.executionEnabled ? "Проверка пользовательского YAML разрешена только на тестовом control node." : undefined}
-                >
-                  <CheckCircle2 size={16} className={loading === "syntax" ? "animate-spin" : ""} aria-hidden="true" />
-                  {selected.source === "custom" && !customPlaybooks.executionEnabled ? "Проверка только в тесте" : "Проверить YAML"}
-                </Button>
-                <Button
-                  variant={selected.kind === "response" ? "danger" : "primary"}
-                  onClick={runPlaybook}
-                  disabled={Boolean(loading) || dirty || !selectedHost || activeJob || (selected.requiresConfirmation && !confirmAudit) || (requiresSudo && !sudoPassword) || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
-                  title={selected.source === "custom" && !customPlaybooks.executionEnabled ? "Запуск черновиков разрешён только на тестовом control node." : undefined}
-                >
-                  <Play size={16} className={loading === "run" ? "animate-spin" : ""} aria-hidden="true" />
-                  {selected.source === "custom" && !customPlaybooks.executionEnabled ? "Запуск только в тесте" : "Запустить"}
-                </Button>
-                {selected.source === "custom" ? (
-                  <>
-                    <Button variant="secondary" onClick={savePlaybook} disabled={Boolean(loading)}>
-                      <Save size={16} className={loading === "save" ? "animate-spin" : ""} aria-hidden="true" />
-                      Сохранить
-                    </Button>
-                    <Button variant="danger" onClick={deletePlaybook} disabled={Boolean(loading)}>
-                      <Trash2 size={16} aria-hidden="true" />
-                      Удалить
-                    </Button>
-                  </>
-                ) : null}
-              </div>
+
             </div>
 
-            <div className="mt-4 grid gap-3 md:grid-cols-4">
-              <Field label="Название" value={title} onChange={setTitle} disabled={selected.source !== "custom"} />
-              <label className="block">
-                <span className="text-xs font-semibold uppercase text-slate-500">Тип</span>
-                <Select
-                  value={kind}
-                  onValueChange={(value) => setKind(value === "audit" ? "audit" : "response")}
-                  disabled={selected.source !== "custom"}
-                  className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 disabled:opacity-60"
-                >
-                  <option value="audit">audit</option>
-                </Select>
-              </label>
-              <p className="self-end rounded-md border border-slate-700 bg-slate-900 px-3 py-2 text-sm text-slate-300">Запуск на выбранном хосте</p>
+            <h3 className="mt-4 font-semibold text-white">2. Параметры запуска</h3>
+            <div className="mt-3 max-w-md">
               <label className="block"><span className="text-xs font-semibold uppercase text-slate-500">Целевой хост</span>
                 <Select aria-label="Целевой хост" value={limit} onValueChange={setLimit} className="mt-2 w-full">
                   {hosts.length ? hosts.map((host) => <option key={host.alias} value={host.alias}>{host.alias} · {host.address}</option>) : <option value="">Нет подключённых хостов</option>}
                 </Select>
               </label>
             </div>
-
             {dirty ? <p className="mt-3 text-sm text-amber-200">Есть несохранённые изменения. Сохраните их перед проверкой синтаксиса и запуском.</p> : null}
             <div className="mt-4 grid gap-3 md:grid-cols-2">
-              {requiresSudo ? <div><Field label="Пароль sudo для одного запуска" value={sudoPassword} onChange={setSudoPassword} type="password" /><p className="mt-1 text-xs text-slate-400">Пароль пользователя SSH используется только для этого запуска и не сохраняется.</p></div> : null}
+              {requiresSudo ? <div><Field label="Пароль sudo для одного запуска" value={sudoPassword} onChange={setSudoPassword} type="password" /><p className="mt-1 text-xs text-slate-400">Пароль не сохраняется.</p></div> : null}
               {selected.id === "agentlessAudit" ? <label><span className="text-xs font-semibold text-slate-400">Профиль аудита</span><Select aria-label="Профиль аудита" className="mt-2 w-full" value={profileId} onValueChange={setProfileId}><option value="basic_linux">Базовый Linux</option><option value="ssh_security">SSH-сервер</option><option value="web_server">Веб-сервер</option><option value="docker_host">Docker-хост</option></Select></label> : null}
               {selected.id === "networkPortScan" ? <label><span className="text-xs font-semibold text-slate-400">Глубина сканирования</span><Select aria-label="Глубина сканирования" className="mt-2 w-full" value={nmapScope} onValueChange={setNmapScope}><option value="top_100">100 популярных портов</option><option value="top_1000">1000 популярных портов</option><option value="full_tcp">Все TCP-порты</option></Select></label> : null}
             </div>
-            {selected.requiresConfirmation ? <label className="mt-3 flex items-start gap-2 text-sm text-slate-300"><input type="checkbox" checked={confirmAudit} onChange={(event) => setConfirmAudit(event.target.checked)} className="mt-1" />Подтверждаю запуск выбранной проверки на указанном хосте</label> : null}
+            {selected.requiresConfirmation ? <label className="mt-3 flex items-start gap-2 text-sm text-slate-300"><input type="checkbox" checked={confirmAudit} onChange={(event) => setConfirmAudit(event.target.checked)} className="mt-1" />Подтверждаю запуск на выбранном хосте</label> : null}
 
             {selected.variables.length ? (
               <div className="mt-4 grid gap-3 md:grid-cols-3">
@@ -508,6 +459,20 @@ export function PlaybooksClient() {
               </div>
             ) : null}
 
+<details open={selected.source === "custom"} className="mt-4 rounded-lg border border-slate-800 p-3"><summary className="cursor-pointer text-sm text-sky-200">{selected.source === "custom" ? "YAML и параметры черновика" : "Посмотреть YAML"}</summary>
+{selected.source === "custom" ? <div className="mt-3 grid gap-3 sm:grid-cols-2">              <Field label="Название" value={title} onChange={setTitle} disabled={selected.source !== "custom"} />
+              <label className="block">
+                <span className="text-xs font-semibold uppercase text-slate-500">Тип</span>
+                <Select
+                  value={kind}
+                  onValueChange={(value) => setKind(value === "audit" ? "audit" : "response")}
+                  disabled={selected.source !== "custom"}
+                  className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-900 px-3 text-sm text-slate-100 disabled:opacity-60"
+                >
+                  <option value="audit">audit</option>
+                </Select>
+              </label>
+</div> : null}
             <div className="mt-4 grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
               <label className="block">
                 <span className="flex items-center justify-between gap-3 text-xs font-semibold uppercase text-slate-500">
@@ -538,21 +503,52 @@ export function PlaybooksClient() {
                   spellCheck={false}
                   className="mt-2 h-[220px] w-full resize-y rounded-md border border-slate-700 bg-slate-950 p-4 font-mono text-xs leading-5 text-slate-100 read-only:opacity-75"
                 />
-                <div className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3 text-xs leading-5 text-slate-400">
-                  <p className="font-semibold text-slate-200">Что такое “Имя пакета”</p>
-                  <p className="mt-1">Это системный пакет Linux, например `openssl`, `nginx`, `curl` или `openssh-server`.</p>
-                  <p className="mt-3 font-semibold text-slate-200">Где менять шаблон</p>
-                  <p className="mt-1">После создания редактируйте YAML здесь; HCP хранит черновик в постоянном runtime-хранилище, а не внутри заменяемого образа контейнера.</p>
-                  <p className="mt-2">Встроенные сценарии доступны только для чтения. Черновик сначала сохраните и проверьте YAML, затем запускайте только в тестовом контуре.</p>
-                </div>
+
               </label>
+            </div>
+</details>
+            <div id="playbook-run-actions" className="mt-4 border-t border-slate-800 pt-4">
+              <div className="flex flex-wrap gap-2">
+                {selected.source === "custom" ? (
+                  <>
+                    <Button variant="secondary" onClick={savePlaybook} disabled={Boolean(loading)}>
+                      <Save size={16} className={loading === "save" ? "animate-spin" : ""} aria-hidden="true" />
+                      Сохранить
+                    </Button>
+
+                  </>
+                ) : null}
+
+                <Button
+                  variant="secondary"
+                  onClick={syntaxCheck}
+                  disabled={Boolean(loading) || dirty || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
+                  title={selected.source === "custom" && !customPlaybooks.executionEnabled ? "Проверка пользовательского YAML разрешена только на тестовом control node." : undefined}
+                >
+                  <CheckCircle2 size={16} className={loading === "syntax" ? "animate-spin" : ""} aria-hidden="true" />
+                  {selected.source === "custom" && !customPlaybooks.executionEnabled ? "Проверка только в тесте" : "Проверить YAML"}
+                </Button>
+                <Button
+                  variant={selected.kind === "response" ? "danger" : "primary"}
+                  onClick={runPlaybook}
+                  disabled={Boolean(loading) || dirty || !selectedHost || activeJob || (selected.requiresConfirmation && !confirmAudit) || (requiresSudo && !sudoPassword) || (selected.source === "custom" && !customPlaybooks.executionEnabled)}
+                  title={selected.source === "custom" && !customPlaybooks.executionEnabled ? "Запуск черновиков разрешён только на тестовом control node." : undefined}
+                >
+                  <Play size={16} className={loading === "run" ? "animate-spin" : ""} aria-hidden="true" />
+                  {selected.source === "custom" && !customPlaybooks.executionEnabled ? "Запуск только в тесте" : "Запустить"}
+                </Button>
+                {selected.source === "custom" ? <Button variant="danger" onClick={deletePlaybook} disabled={Boolean(loading)}>
+                      <Trash2 size={16} aria-hidden="true" />
+                      Удалить
+                    </Button> : null}
+              </div>
             </div>
           </section>
         ) : null}
 
         <section className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
+          <h2 className="text-lg font-semibold text-white">3. Результат</h2>
           <AuditJobHistory hostAlias={limit} />
-          <h2 className="text-lg font-semibold text-white">Результат</h2>
           {result ? (
             <div className="mt-3 space-y-3 text-sm">
               <div className={`rounded-md border p-3 ${
@@ -560,17 +556,18 @@ export function PlaybooksClient() {
               }`}>
                 <p className="font-semibold">{result.ok ? "OK" : "Ошибка"}</p>
                 {result.message ? <p className="mt-1">{result.message}</p> : null}
-                {result.command ? <p className="mt-1 break-all text-xs">{result.command}</p> : null}
+
               </div>
-              <pre className="max-h-80 overflow-auto rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
+              <details><summary className="cursor-pointer text-xs text-sky-200">Технический вывод</summary>
+              <pre className="mt-2 max-h-80 overflow-auto rounded-md bg-slate-900 p-3 text-xs leading-5 text-slate-200">
 {`${result.stdout ?? ""}${result.stderr ? `\n\nSTDERR:\n${result.stderr}` : ""}`}
-              </pre>
+              </pre></details>
             </div>
           ) : (
             <p className="mt-3 text-sm text-slate-400">Выберите встроенный сценарий для просмотра или создайте черновик из шаблона. Сначала сохраните и проверьте YAML; запуск пользовательского кода доступен только в тестовом контуре.</p>
           )}
         </section>
-      </main>
+      </div>
       </div>
     </div>
   );

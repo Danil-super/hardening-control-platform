@@ -68,6 +68,13 @@ export async function GET(
     );
   }
 
+  if (new URL(request.url).searchParams.get("download") === "1") {
+    return NextResponse.json(report.raw, { headers: {
+      "Content-Disposition": `attachment; filename="${report.id}-hcp.json"`,
+      "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "sandbox; default-src 'none'",
+    } });
+  }
   return NextResponse.json({ ok: true, report });
 }
 

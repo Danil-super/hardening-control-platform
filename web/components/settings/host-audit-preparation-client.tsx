@@ -140,10 +140,9 @@ export function HostAuditPreparationClient() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs font-semibold uppercase tracking-[0.14em] text-sky-200">Подготовка проверки</p>
-          <h2 id="host-audit-preparation-title" className="mt-1 text-xl font-semibold text-white">Назначенные источники и политики по хосту</h2>
+          <h2 id="host-audit-preparation-title" className="mt-1 text-xl font-semibold text-white">Назначения для хоста</h2>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            Только чтение сохранённых настроек. HCP не связывается с целевым сервером и не скачивает базы
-            при открытии этой секции. Назначение политики не подтверждает выполнение аудита.
+            Сохранённые назначения; аудит не запускается.
           </p>
         </div>
         <Button variant="secondary" onClick={() => setRefresh(value => value + 1)}
@@ -164,7 +163,7 @@ export function HostAuditPreparationClient() {
       {loadError ? <p role="alert" className="mt-4 flex items-start gap-2 rounded-lg border border-red-400/30 bg-red-500/10 p-3 text-sm text-red-100">
         <AlertCircle size={16} className="mt-0.5 shrink-0" aria-hidden="true"/>{loadError}
       </p> : null}
-      {hostsLoading || loading ? <p role="status" className="mt-4 text-sm text-slate-400">Читаем сохранённые назначения. Сканирование не выполняется.</p> : null}
+      {hostsLoading || loading ? <p role="status" className="mt-4 text-sm text-slate-400">Загрузка назначений…</p> : null}
       {!hostsLoading && !hosts.length && !loadError ? (
         <div className="mt-4 flex items-start gap-3 text-sm text-slate-300">
           <Server size={20} className="shrink-0 text-sky-200" aria-hidden="true"/>

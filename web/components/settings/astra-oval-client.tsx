@@ -5,7 +5,7 @@ import { Select } from "@/components/ui/select";
 import { useEffect, useState } from "react";
 import { useFeedbackMessage } from "@/components/ui/feedback";
 import { readApiResponse, errorMessage } from "@/lib/client-api";
-import { Button } from "@/components/ui/button";
+import { Button, LinkButton } from "@/components/ui/button";
 import type { AstraOvalConfig } from "@/lib/astra-oval-config";
 
 type Policy = { groupName: string; config: AstraOvalConfig; updatedAt: string };
@@ -86,16 +86,15 @@ export function AstraOvalClient() {
   }
 
   return <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5" aria-labelledby="astra-oval-title">
-    <h2 id="astra-oval-title" className="text-xl font-semibold text-white">CVE Astra по данным производителя <span className="ml-1 text-sm font-medium text-slate-400">· необязательно</span></h2>
-    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Обычный пакетный аудит и общая база Trivy не требуют этой настройки. Добавьте отдельный OVAL-источник для группы хостов одного выпуска Astra, если нужна дополнительная проверка CVE по определениям производителя. Это не гарантирует полноту бюллетеней или независимую подлинность источника. При сетевом варианте XML скачивает только control node; Astra не нужен интернет.</p>
+    <h2 id="astra-oval-title" className="text-xl font-semibold text-white">Astra OVAL <span className="ml-1 text-sm font-medium text-slate-400">· необязательно</span></h2>
+    <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Источник CVE для группы хостов одного выпуска Astra.</p>
     <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/60 p-4">
-      <p className="font-semibold text-slate-100">Каталог изготовителя (необязательное заполнение)</p>
+      <p className="font-semibold text-slate-100">Заполнение из каталога</p>
       <p className="mt-1 text-sm leading-6 text-slate-400">
-        Получает SHA-256 и прямой адрес XML из фиксированного каталога Astra на control node.
-        Не выполняет аудит, не сохраняет политику и не подтверждает цифровую подпись изготовителя.
+        Подставляет URL и SHA-256. Политика сохраняется отдельно.
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-3">
-        <label className="text-sm text-slate-300">Ветка Astra
+        <label className="min-w-0 text-sm text-slate-300">Ветка Astra
           <Select className={inputClass} value={catalogRelease}
             onValueChange={value => setCatalogRelease(value as "1.7" | "1.8")}>
             <option value="1.7">1.7, x86-64</option>
@@ -108,17 +107,16 @@ export function AstraOvalClient() {
         </Button>
       </div>
       <p className="mt-2 text-xs leading-5 text-amber-100">
-        SHA-256 из того же HTTPS-репозитория подтверждает лишь заявленную запись.
-        Перед сохранением проверьте выпуск хоста и бюллетень производителя независимо.
+        Сверьте выпуск и источник. SHA-256 не подтверждает подпись производителя.
       </p>
     </div>
-    <form className="mt-5 grid gap-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); void saveOrRemove("POST"); }}>
+    <form className="mt-5 grid grid-cols-1 gap-4 md:grid-cols-2" onSubmit={(event) => { event.preventDefault(); void saveOrRemove("POST"); }}>
       <label className="min-w-0 text-sm text-slate-300">Группа хостов
         <Select className={inputClass} value={group} onValueChange={(value) => setGroup(value)} required>
           {(data.inventoryGroups ?? ["linux_hosts"]).map((name) => <option key={name} value={name}>{name}</option>)}
         </Select>
       </label>
-      <label className="text-sm text-slate-300">Источник базы
+      <label className="min-w-0 text-sm text-slate-300">Источник базы
         <Select className={inputClass} value={config.mode} onValueChange={(value) => update({ mode: value as AstraOvalConfig["mode"] })}>
           <option value="online">HTTPS-источник или внутреннее зеркало</option><option value="local">Локальный XML на проверяемом хосте</option>
         </Select>
@@ -131,24 +129,24 @@ export function AstraOvalClient() {
         <input className={inputClass} value={config.sha256} onChange={(event) => update({ sha256: event.target.value })} required pattern="[a-fA-F0-9]{64}" placeholder="64 шестнадцатеричных символа" />
         <span className="mt-1 block text-xs leading-5 text-slate-400">Обязателен и для локального XML: HCP сравнит его с выбранной доверенной копией. Совпадение подтверждает байты файла, но не подпись производителя.</span>
       </label>
-      <label className="text-sm text-slate-300">Область применения: выпуск Astra
+      <label className="min-w-0 text-sm text-slate-300">Область применения: выпуск Astra
         <input className={inputClass} value={config.releasePattern} onChange={(event) => update({ releasePattern: event.target.value })} required placeholder="Например, 1.7.*" />
         <span className="mt-1 block text-xs leading-5 text-slate-400">Версия ОС из /etc/astra_version, например 1.7.6 или 1.7.*. Здесь нужна версия Astra, а не дата публикации базы. Условия внутри OVAL также проверяет сканер.</span>
       </label>
       <details className="rounded-md border border-slate-800 bg-slate-900/60 p-3 md:col-span-2">
         <summary className="cursor-pointer text-sm font-semibold text-slate-200">Дополнительные ограничения и реквизиты источника</summary>
-        <p className="mt-1 text-xs leading-5 text-slate-400">Если оставить реквизиты пустыми, HCP сохранит URL или путь как ссылку на доверенную копию. Укажите их вручную, если нужен номер бюллетеня или запись внутреннего реестра.</p>
+        <p className="mt-1 text-xs leading-5 text-slate-400">Необязательные реквизиты бюллетеня или внутреннего реестра.</p>
         <div className="mt-3 grid gap-4 md:grid-cols-2">
-          <label className="text-sm text-slate-300">Название доверенного источника
+          <label className="min-w-0 text-sm text-slate-300">Название доверенного источника
             <input className={inputClass} value={config.sourceName} onChange={(event) => update({ sourceName: event.target.value })} placeholder="Например, бюллетени производителя Astra" />
           </label>
-          <label className="text-sm text-slate-300">Ссылка или ID источника
+          <label className="min-w-0 text-sm text-slate-300">Ссылка или ID источника
             <input className={inputClass} value={config.sourceReference} onChange={(event) => update({ sourceReference: event.target.value })} placeholder="URL, номер бюллетеня или ID внутреннего реестра" />
           </label>
-          <label className="text-sm text-slate-300">Максимальный возраст базы, дней
+          <label className="min-w-0 text-sm text-slate-300">Максимальный возраст базы, дней
             <input className={inputClass} type="number" min={1} max={3650} value={config.maxAgeDays} onChange={(event) => update({ maxAgeDays: Number(event.target.value) })} required />
           </label>
-          <label className="text-sm text-slate-300">Архитектуры (необязательно)
+          <label className="min-w-0 text-sm text-slate-300">Архитектуры (необязательно)
             <input className={inputClass} value={architectures} onChange={(event) => setArchitectures(event.target.value)} placeholder="Например, x86_64, aarch64 — значения uname -m" />
           </label>
         </div>
@@ -167,6 +165,6 @@ export function AstraOvalClient() {
         </div>
       </div>)}
     </div>
-    <p className="mt-4 text-sm leading-6 text-slate-400">Для HTTPS-источника HCP скачивает XML на control node при OVAL-аудите; целевому хосту интернет не нужен. Если производитель выпустил новый XML, сначала сверьте его SHA-256 по доверенному источнику, затем через «Изменить» замените URL/контрольную сумму и сохраните источник. Полнота относится к определениям выбранного файла. Отсутствие находок не гарантирует отсутствие всех CVE.</p>
+    <div className="mt-4 flex flex-wrap items-center gap-3"><LinkButton href="/hosts#ansible-actions" variant="secondary">Далее: подготовка и запуск</LinkButton><span className="text-xs text-slate-400">Новая база требует повторной подготовки.</span></div>
   </section>;
 }

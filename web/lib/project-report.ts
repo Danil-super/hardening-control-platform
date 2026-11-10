@@ -77,7 +77,7 @@ function writeSecure(pathname: string, content: string | Buffer) {
   }
 }
 
-function runPdfRenderer(snapshot: Record<string, unknown>): Promise<Buffer> {
+export function runPdfRenderer(snapshot: Record<string, unknown>): Promise<Buffer> {
   const input = Buffer.from(JSON.stringify(snapshot), "utf8");
   // A complete 30,000-definition OVAL audit can produce thousands of CVEs.
   // Raw scanner trees never enter this bounded, projected snapshot.

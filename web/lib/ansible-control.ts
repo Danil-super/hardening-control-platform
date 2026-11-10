@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { reportAuditProgress } from "@/lib/audit-progress";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -267,7 +268,8 @@ export async function runAnsiblePlaybook({
   let reportStage = "";
   let reportRunId: string | null = null;
   const expectedReports = new Map<string, AssetBinding>();
-  const preserveRaw = action === "openScapAudit" || action === "astraOvalAudit";
+  const preserveRaw = action === "openScapAudit" || action === "astraOvalAudit"
+    || action === "networkPortScan" || action === "sshCryptoAudit" || action === "lynisTemporaryAudit";
   try {
     const repoRoot = getRepoRoot();
     const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
@@ -309,6 +311,7 @@ export async function runAnsiblePlaybook({
       args.push("--check", "--diff");
     }
 
+    reportAuditProgress("prepare");
     assetExecution = await prepareAssetExecution(limit, { authenticate: actionRequiresTargetSudo(action), remediationId, expectedAssetBinding });
     args[1] = assetExecution.inventoryPath;
     if (reportRunId) {
@@ -322,6 +325,7 @@ export async function runAnsiblePlaybook({
     }
 
     executionDispatched = true;
+    reportAuditProgress("scan");
     const result = await executeAnsiblePlaybook({ args, timeout: selected.timeout, becomePassword, sshTrust: assetExecution.sshTrust, ansibleRuntime: assetExecution.ansibleRuntime });
     return { ...result, reportRunId };
   } catch (error) {
@@ -331,6 +335,7 @@ export async function runAnsiblePlaybook({
     if (reportRunId && error && typeof error === "object") Object.assign(error, { reportRunId });
     throw error;
   } finally {
+    if (reportStage && action !== "packageInventory") reportAuditProgress("report");
     try { if (reportStage) publishCapturedAssetReports(reportStage, expectedReports, { preserveRaw }); }
     finally {
       if (reportStage) rmSync(reportStage, { recursive: true, force: true });

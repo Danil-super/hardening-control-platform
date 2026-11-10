@@ -11,7 +11,7 @@ const MAX_REPORT_BYTES = 384 * 1024 * 1024;
 export function publishCapturedAssetReports(stage: string, expected: Map<string, AssetBinding>, options: { preserveRaw?: boolean } = {}) {
   const originals: PreparedRawEvidence[] = [];
   try {
-    const files = readdirSync(stage).filter((file) => file.endsWith(".json"));
+    const files = readdirSync(stage).filter((file) => !file.startsWith(".") && file.endsWith(".json"));
     if (files.length > expected.size) throw new Error("Запуск создал неожиданные отчёты; публикация остановлена.");
     let totalBytes = 0;
     const outputs = files.map((file) => {

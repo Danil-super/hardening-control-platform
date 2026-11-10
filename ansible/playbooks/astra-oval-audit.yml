@@ -48,13 +48,16 @@
           delegate_to: localhost
           become: false
           changed_when: false
-          when: oval_settings.mode | default('local') == 'online'
+          when:
+            - oval_settings.mode | default('local') == 'online'
+            - hcp_oval_prepared_input | default('') | length == 0
 
         - name: Stop on an unavailable online source without a local fallback
           ansible.builtin.fail:
             msg: "{{ (oval_download.stdout | from_json).error | default('Не удалось подготовить OVAL.') }}"
           when:
             - oval_settings.mode | default('local') == 'online'
+            - hcp_oval_prepared_input | default('') | length == 0
             - not ((oval_download.stdout | from_json).ok | default(false) | bool)
 
         - name: Allocate temporary target directory
@@ -71,7 +74,7 @@
 
         - name: Transfer verified online XML to target
           ansible.builtin.copy:
-            src: "{{ oval_controller_dir.path }}/database.xml"
+            src: "{{ hcp_oval_prepared_input if hcp_oval_prepared_input | default('') | length > 0 else oval_controller_dir.path ~ '/database.xml' }}"
             dest: "{{ oval_target_dir.path }}/database.xml"
             mode: "0600"
           when: oval_settings.mode | default('local') == 'online'
@@ -83,7 +86,7 @@
               - "{{ oval_target_dir.path }}/hcp-oval-audit.py"
               - evaluate
               - --source-validation
-              - "{{ (oval_download.stdout | from_json).sourceValidation | to_json if oval_settings.mode | default('local') == 'online' else '{}' }}"
+              - "{{ (hcp_oval_source_validation if hcp_oval_source_validation | default('') | length > 0 else (oval_download.stdout | from_json).sourceValidation | to_json) if oval_settings.mode | default('local') == 'online' else '{}' }}"
               - --config
               - "{{ oval_config_json }}"
               - --input

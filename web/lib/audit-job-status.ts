@@ -1,6 +1,15 @@
 import type { AuditJob } from "@/lib/state-store";
 
 export const isActiveAuditJob = (job: AuditJob) => job.status === "queued" || job.status === "running";
+export const auditProgressStages = ["Подготовка", "Проверка", "Отчёт"] as const;
+export function auditJobProgress(job: AuditJob): { stage: number | null; completedStages: number } {
+  if (job.status === "completed") return { stage: null, completedStages: 3 };
+  if (job.status === "queued") return { stage: 0, completedStages: 0 };
+  const stage = job.phase === "Подготовка проверки" ? 0
+    : ["Выполняется проверка хоста", "Проверяются пакеты и CVE", "Передаётся SBOM в Dependency-Track"].includes(job.phase) ? 1
+    : job.phase === "Сохранение и проверка отчёта" ? 2 : null;
+  return { stage, completedStages: stage ?? 0 };
+}
 export const auditActionLabels: Record<string, string> = {
   ping: "Проверка подключения SSH", collectFacts: "Сведения о хосте", collectEvents: "События безопасности",
   agentlessAudit: "Локальные правила HCP", packageInventory: "Пакеты и CVE — Trivy", astraOvalAudit: "CVE Astra — OVAL",

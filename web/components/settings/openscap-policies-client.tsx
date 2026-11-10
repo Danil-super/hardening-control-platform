@@ -130,9 +130,9 @@ export function OpenScapPoliciesClient() {
     <div className="space-y-6">
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">Политики соответствия</p>
+
           <h1 className="mt-2 text-3xl font-semibold text-white">OpenSCAP и исключения</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Выберите встроенный профиль Astra или собственный SCAP-профиль для группы. Временное исключение остаётся видимым в отчёте и не скрывает риск.</p>
+
         </div>
         <Button variant="secondary" onClick={() => load(true)} disabled={loading || saving}><RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" />Обновить</Button>
       </header>
@@ -141,22 +141,22 @@ export function OpenScapPoliciesClient() {
         <div className="flex gap-3">
           <ShieldCheck size={22} className="mt-0.5 shrink-0 text-sky-200" aria-hidden="true" />
           <div>
-            <h2 id="profile-title" className="text-xl font-semibold text-white">Профиль проверок для группы</h2>
-            <p className="mt-1 text-sm leading-6 text-slate-400">Назначьте профиль группе хоста перед первым запуском. Без профиля группы или полной настройки окружения проверка не запускается. Для Astra готовый базовый набор уже входит в HCP.</p>
+            <h2 id="profile-title" className="text-xl font-semibold text-white">1. Профиль для группы</h2>
+            <p className="mt-1 text-sm leading-6 text-slate-400">Назначьте профиль перед запуском OpenSCAP.</p>
           </div>
         </div>
-        <form className="mt-5 grid gap-4 lg:grid-cols-3" onSubmit={(event) => { event.preventDefault(); void submit({ kind: "profile", groupName: policyGroup, datastream: preset === "astra" ? ASTRA_BASELINE_DATASTREAM : datastream, profile: preset === "astra" ? ASTRA_BASELINE_PROFILE : profile }); }}>
-          <label className="text-sm text-slate-300">Группа inventory
+        <form className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-3" onSubmit={(event) => { event.preventDefault(); void submit({ kind: "profile", groupName: policyGroup, datastream: preset === "astra" ? ASTRA_BASELINE_DATASTREAM : datastream, profile: preset === "astra" ? ASTRA_BASELINE_PROFILE : profile }); }}>
+          <label className="min-w-0 text-sm text-slate-300">Группа inventory
             <Select className={inputClassName} value={policyGroup} onValueChange={(value) => setPolicyGroup(value)}>{groups.map((group) => <option key={group} value={group}>{group}</option>)}</Select>
           </label>
-          <label className="text-sm text-slate-300 lg:col-span-2">Набор проверок
+          <label className="min-w-0 text-sm text-slate-300 lg:col-span-2">Набор проверок
             <Select className={inputClassName} value={preset} onValueChange={(value) => setPreset(value)}><option value="custom">Собственный SCAP / SSG</option><option value="astra">Astra Linux — базовые проверки HCP</option></Select>
           </label>
           {preset === "astra" ? <p className="text-sm leading-6 text-slate-400 lg:col-span-3">Собственный профиль HCP для семейства Astra. Проверяет настройки SSH, учётных записей, файлов, ядра и аудита с учётом доступных возможностей. Передаётся временно по SSH; на хосте нужен OpenSCAP с SCE. Не является профилем сертификации ФСТЭК или CIS.</p> : <>
-          <label className="text-sm text-slate-300">Путь к datastream
+          <label className="min-w-0 text-sm text-slate-300">Путь к datastream
             <input className={inputClassName} placeholder="Полный путь к SCAP datastream на хосте" value={datastream} onChange={(event) => setDatastream(event.target.value)} required />
           </label>
-          <label className="text-sm text-slate-300">Идентификатор профиля
+          <label className="min-w-0 text-sm text-slate-300">Идентификатор профиля
             <input className={inputClassName} placeholder="Идентификатор из oscap info" value={profile} onChange={(event) => setProfile(event.target.value)} required />
           </label>
           </>}
@@ -172,12 +172,12 @@ export function OpenScapPoliciesClient() {
       </section>
 
       <section className="rounded-md border border-amber-400/25 bg-amber-500/5 p-5" aria-labelledby="exception-title">
-        <div className="flex gap-3"><FileWarning size={22} className="mt-0.5 shrink-0 text-amber-200" aria-hidden="true" /><div><h2 id="exception-title" className="text-xl font-semibold text-white">Согласованное исключение</h2><p className="mt-1 text-sm leading-6 text-amber-100">Добавляйте только для конкретного правила профиля, с причиной и сроком. Исключение отмечается в отчёте; исходный результат проверки, риск и количество проблем сохраняются.</p></div></div>
-        <form className="mt-5 grid gap-4 lg:grid-cols-2" onSubmit={async (event) => { event.preventDefault(); const ok = await submit({ kind: "exception", groupName: exceptionGroup, ruleId, reason, expiresAt: `${expiresAt}T23:59:59.999Z` }); if (ok) { setRuleId(""); setReason(""); } }}>
-          <label className="text-sm text-slate-300">Группа inventory<Select className={inputClassName} value={exceptionGroup} onValueChange={(value) => setExceptionGroup(value)}>{groups.map((group) => <option key={group} value={group}>{group}</option>)}</Select></label>
-          <label className="text-sm text-slate-300">Идентификатор правила из отчёта<input className={inputClassName} placeholder="xccdf_org.ssgproject.content_rule_…" value={ruleId} onChange={(event) => setRuleId(event.target.value)} required /></label>
-          <label className="text-sm text-slate-300 lg:col-span-1">Дата окончания<input className={inputClassName} type="date" value={expiresAt} min={new Date().toISOString().slice(0, 10)} onChange={(event) => setExpiresAt(event.target.value)} required /></label>
-          <label className="text-sm text-slate-300 lg:col-span-1">Причина исключения<textarea className="mt-1 min-h-24 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-sky-300 focus:ring-2 focus:ring-sky-300/20" value={reason} onChange={(event) => setReason(event.target.value)} minLength={10} maxLength={500} required /></label>
+        <div className="flex gap-3"><FileWarning size={22} className="mt-0.5 shrink-0 text-amber-200" aria-hidden="true" /><div><h2 id="exception-title" className="text-xl font-semibold text-white">2. Исключения</h2><p className="mt-1 text-sm leading-6 text-amber-100">Укажите правило, причину и срок. Исходный риск останется в отчёте.</p></div></div>
+        <form className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-2" onSubmit={async (event) => { event.preventDefault(); const ok = await submit({ kind: "exception", groupName: exceptionGroup, ruleId, reason, expiresAt: `${expiresAt}T23:59:59.999Z` }); if (ok) { setRuleId(""); setReason(""); } }}>
+          <label className="min-w-0 text-sm text-slate-300">Группа inventory<Select className={inputClassName} value={exceptionGroup} onValueChange={(value) => setExceptionGroup(value)}>{groups.map((group) => <option key={group} value={group}>{group}</option>)}</Select></label>
+          <label className="min-w-0 text-sm text-slate-300">Идентификатор правила из отчёта<input className={inputClassName} placeholder="xccdf_org.ssgproject.content_rule_…" value={ruleId} onChange={(event) => setRuleId(event.target.value)} required /></label>
+          <label className="min-w-0 text-sm text-slate-300 lg:col-span-1">Дата окончания<input className={inputClassName} type="date" value={expiresAt} min={new Date().toISOString().slice(0, 10)} onChange={(event) => setExpiresAt(event.target.value)} required /></label>
+          <label className="min-w-0 text-sm text-slate-300 lg:col-span-1">Причина исключения<textarea className="mt-1 min-h-24 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none placeholder:text-slate-600 focus:border-sky-300 focus:ring-2 focus:ring-sky-300/20" value={reason} onChange={(event) => setReason(event.target.value)} minLength={10} maxLength={500} required /></label>
           <div className="lg:col-span-2"><Button type="submit" disabled={saving || loading}><CheckCircle2 size={16} aria-hidden="true" />{saving ? "Сохраняем…" : "Сохранить исключение"}</Button></div>
         </form>
         <div className="relative mt-6 overflow-x-auto rounded-md border border-amber-400/20">

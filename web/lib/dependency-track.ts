@@ -1,11 +1,12 @@
-import { createHash, randomUUID } from "node:crypto";
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { closeSync, constants, existsSync, fstatSync, openSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { getReportsDir } from "@/lib/ansible-reports";
 import { getStateDir } from "@/lib/ansible-control";
 import { withReportEvidenceLock } from "@/lib/state-store";
 import type { Finding } from "@/types";
 import { parseAssetBinding } from "@/lib/asset-binding";
+import { publishNativeReport, type NativeReportArtifact } from "@/lib/native-report-storage";
 
 type Json = Record<string, unknown>;
 type Component = { group: string; name: string; version: string; purl: string; cpe: string };
@@ -105,10 +106,29 @@ async function request(settings: Settings, endpoint: string, signal: AbortSignal
       chunks.push(value);
     }
   } finally { reader.releaseLock(); }
+  const bytes = Buffer.concat(chunks);
   let data: unknown;
-  try { data = JSON.parse(Buffer.concat(chunks).toString("utf8")); }
+  try { data = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)); }
   catch { throw new Error("Dependency-Track вернул некорректный JSON API."); }
-  return { data, headers: response.headers, byteLength: size };
+  return { data, bytes, headers: response.headers, byteLength: size };
+}
+
+/** The paginated analysis is HCP data, not an upstream standalone report. FPF is the official read-only export. */
+async function nativeFindings(settings: Settings, project: Json, signal: AbortSignal) {
+  try {
+    const response = await request(settings, `/api/v1/finding/project/${project.uuid}/export`, signal);
+    const document = record(response.data), exportedProject = record(document.project);
+    const hasSecret = (value: unknown): boolean => {
+      if (typeof value === "string") return value.includes(settings.apiKey);
+      if (Array.isArray(value)) return value.some(hasSecret);
+      return value !== null && typeof value === "object" && Object.entries(value).some(([key, item]) =>
+        /^(?:x-api-key|api[_-]?key|authorization|password|client[_-]?secret|access[_-]?token)$/i.test(key) || hasSecret(item));
+    };
+    if (!Array.isArray(document.findings) || exportedProject.uuid !== project.uuid || exportedProject.name !== project.name
+        || exportedProject.version !== project.version || typeof document.version !== "string" || !record(document.meta).application
+        || hasSecret(document)) return undefined;
+    return response.bytes;
+  } catch { return undefined; }
 }
 
 async function list(settings: Settings, endpoint: string, signal: AbortSignal, identity: (row: Json) => string) {
@@ -145,10 +165,9 @@ function manual(id: string, title: string, description: string): Finding {
 }
 
 /** Publish immutable reports; never modify a historical report already used by a plan/PDF. */
-function publish(reportId: string, output: Json, validate: () => void) {
+function publish(reportId: string, output: Json, validate: () => void, artifacts: NativeReportArtifact[], missing: string[] = []) {
   return withReportEvidenceLock(() => {
     validate();
-    mkdirSync(getReportsDir(), { recursive: true });
     const target = path.join(getReportsDir(), `${reportId}.json`);
     if (existsSync(target)) {
       const previous = readRawReport(reportId).raw;
@@ -159,12 +178,7 @@ function publish(reportId: string, output: Json, validate: () => void) {
     }
     const serialized = JSON.stringify(output, null, 2);
     if (Buffer.byteLength(serialized) > MAX_BYTES) throw new Error("Итоговый отчёт превышает 32 МиБ. Импорт не опубликован.");
-    const temporary = path.join(getReportsDir(), `.dependency-track-${randomUUID()}.tmp`);
-    try {
-      const fd = openSync(temporary, "wx", 0o600);
-      try { writeFileSync(fd, serialized); fsyncSync(fd); } finally { closeSync(fd); }
-      linkSync(temporary, target);
-    } finally { if (existsSync(temporary)) unlinkSync(temporary); }
+    publishNativeReport(reportId, output, artifacts, missing);
     return true;
   });
 }
@@ -228,9 +242,9 @@ export async function syncDependencyTrack({ hostAlias, vulnerabilityReportId }: 
   const output = { schemaVersion: 1, action: "dependencyTrackSync", runId: `run-${key.slice(0, 24)}`, inventoryHost: hostAlias, hostname: hostAlias,
     ...(input.report.assetBinding !== undefined ? { assetBinding: input.report.assetBinding } : {}),
     createdAt: uploadedAt, os: input.report.os ?? null, profileId: "dependency-track", mode: "dependency-track",
-    scanner: { source: "dependency_track", sbomFile: input.sbomFile, sourceCveReport: vulnerabilityReportId, processingToken: token, binding, analysisStatus: "pending", partial: true },
+    scanner: { source: "dependency_track", sbomFile: input.sbomFile, sbomOrigin: "HCP CycloneDX SBOM; не официальный отчёт сканирования Dependency-Track.", sourceCveReport: vulnerabilityReportId, processingToken: token, binding, analysisStatus: "pending", partial: true },
     summary: summary(findings), findings, events: [] };
-  const written = publish(reportId, output, () => { verifySource(binding); });
+  const written = publish(reportId, output, () => { verifySource(binding); }, [{ kind: "sbom", bytes: input.bytes }]);
   return { configured: true as const, reportId, reused: !written, message: "SBOM передан в Dependency-Track. Откройте отчёт и проверьте результат асинхронного анализа." };
 }
 
@@ -310,6 +324,7 @@ export async function refreshDependencyTrack({ hostAlias, reportId }: { hostAlia
     const c = record(row.component), v = record(row.vulnerability);
     return typeof c.uuid === "string" && typeof v.uuid === "string" ? `${c.uuid}:${v.uuid}` : "";
   });
+  const native = await nativeFindings(settings, before, signal);
   const after = record((await request(settings, `/api/v1/project/${projectUuid}`, signal)).data);
   const afterEvent = eventProcessing((await request(settings, `/api/v1/event/token/${binding.processingToken}`, signal)).data);
   if (afterEvent || after.name !== before.name || after.version !== before.version || after.uuid !== before.uuid
@@ -324,11 +339,15 @@ export async function refreshDependencyTrack({ hostAlias, reportId }: { hostAlia
     scanner: { source: "dependency_track", analysisStatus: "complete", processingComplete: true, available: true, partial: true, partialReasons: [SOURCE_LIMITATION],
       deliveryReportId, sourceCveReport: binding.sourceCveReport, sbomFile: binding.sbomFile, binding, projectUuid, resultFingerprint,
       lastBomImport: imported, lastVulnerabilityAnalysis: analyzed, componentCount: components.length, findingCount: rows.length, findingsComplete: true,
-      sourceCoverageVerified: false }, summary: summary(findings), findings, events: [] };
+      sourceCoverageVerified: false,
+      sbomOrigin: "HCP CycloneDX SBOM; не официальный отчёт сканирования Dependency-Track.",
+      nativeReport: native ? { format: "FPF", endpoint: `/api/v1/finding/project/${projectUuid}/export` }
+        : { available: false, limitation: "Официальный FPF export недоступен или не прошёл проверку. Пагинированные ответы API не являются оригинальным самостоятельным отчётом." },
+    }, summary: summary(findings), findings, events: [] };
   const written = publish(analysisReportId, output, () => {
     verifySource(binding);
     if (readRawReport(deliveryReportId).sha256 !== delivery.sha256) throw new Error("Отчёт передачи изменился во время получения результата.");
-  });
+  }, [{ kind: "sbom", bytes: input.bytes }, ...(native ? [{ kind: "dependency-track" as const, bytes: native }] : [])], native ? [] : ["dependency-track"]);
   return { configured: true as const, status: "complete" as const, reportId: analysisReportId, deliveryReportId, partial: true, reused: !written, findingCount: rows.length,
     message: `Результат Dependency-Track получен: ${rows.length} находок. Полнота источников остаётся неподтверждённой.` };
 }

@@ -8,7 +8,9 @@ import { DependencyTrackResult } from "@/components/reports/dependency-track-res
 import { LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { describeIncompleteAuditChecks } from "@/lib/audit-coverage";
-import { readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
+import { getReportsDir, readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
+import { nativeReportAvailability } from "@/lib/astra-oval-native-export";
+import { AuditPdfDownload } from "@/components/reports/audit-pdf-download";
 import { describeAstraOvalNextStep } from "@/lib/astra-oval-policy";
 import { auditReportLimitations } from "@/lib/audit-result";
 import { summarizeDebianAptRepositoryEvidence } from "@/lib/debian-apt-provenance";
@@ -137,6 +139,13 @@ export default async function AgentlessReportDetailPage({
   const ovalFindings = report.findings.filter((finding) => finding.status === "failed");
   const ovalCritical = ovalFindings.filter((finding) => finding.severityAssessment?.level === "critical").length;
   const ovalUnknown = ovalFindings.filter((finding) => finding.severityUnknown).length;
+  const ovalChromiumSeverity = ovalFindings.filter((finding) => finding.severityAssessment?.source === "chromium_description").length;
+  const ovalMetadataSeverity = ovalFindings.filter((finding) => finding.severityAssessment?.source === "oval_metadata").length;
+  const nativeDownloads = await nativeReportAvailability(getReportsDir(), report.id, raw);
+  const availableDownloads = nativeDownloads.filter(item => item.available);
+  const nativeSourceAvailable = nativeDownloads.some(item => item.format === "source-xml" && item.available);
+  const nativeReportAvailable = nativeDownloads.some(item => item.format !== "source-xml" && item.available);
+  const nativeOvalUrl = `/api/ansible/reports/${encodeURIComponent(report.id)}/native`;
   const isOpenScapReport = report.mode === "openscap";
   const isNmapReport = report.mode === "nmap";
   const freshnessLabels: Record<string, string> = { fresh: "актуальна", stale: "устарела", missing: "отсутствует", unknown: "актуальность неизвестна" };
@@ -163,53 +172,15 @@ export default async function AgentlessReportDetailPage({
           <LinkButton href={`/reports/agentless?host=${encodeURIComponent(targetAlias)}`} variant="secondary">История хоста</LinkButton>
           <LinkButton href={`/reports/correlation/${encodeURIComponent(targetAlias)}`} variant="secondary">Единая сводка</LinkButton>
           {["facts", "events", "packages"].includes(report.mode) ? <LinkButton href="/hosts">Перейти к проверкам</LinkButton> : <LinkButton href={`/remediation-plan?host=${encodeURIComponent(targetAlias)}`}>Выбрать изменения</LinkButton>}
-          <LinkButton href={`/api/ansible/reports/${encodeURIComponent(report.id)}`} variant="secondary">
-            <Download size={16} aria-hidden="true" />
-            JSON
-          </LinkButton>
         </div>
       </div>
-
-      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <div>
-            <p className="text-xs font-semibold uppercase text-slate-500">Файл</p>
-            <p className="mt-2 break-all text-sm text-slate-300">{report.fileName}</p>
-          </div>
-          <div>
-            <p className="text-xs font-semibold uppercase text-slate-500">Хост и ОС</p>
-            <p className="mt-2 text-sm text-slate-300">{report.hostname ?? report.host}</p>
-            <p className="mt-1 text-xs text-slate-500">{report.os ?? "ОС не указана"}</p>
-          </div>
-          <div>
-            <p className="text-xs font-semibold uppercase text-slate-500">Профиль</p>
-            <p className="mt-2 text-sm text-slate-300">{profileTitle(report.profileId)}</p>
-            {report.profileId ? <p className="mt-1 text-xs text-slate-500">{report.profileId}</p> : null}
-          </div>
-          <div>
-            <p className="text-xs font-semibold uppercase text-slate-500">Источник</p>
-            <p className="mt-2 text-sm text-slate-300">{vulnerabilityScan.provider === "Trivy" ? "Trivy на управляющей машине" : "Control node Ansible"}</p>
-          </div>
-        </div>
-      </section>
-
-      {["dependency-track", "dependency-track-analysis"].includes(report.mode) ? <DependencyTrackResult hostAlias={targetAlias} reportId={report.id}
-        complete={report.mode === "dependency-track-analysis" && scanner.analysisStatus === "complete"}
-        findingCount={typeof scanner.findingCount === "number" ? scanner.findingCount : null} /> : null}
-
-      <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-sm text-slate-300">
-        {report.assetBinding?.status === "verified" ? <p className="break-all">Идентичность при запуске: {report.assetBinding.assetId}; alias {report.assetBinding.alias}; поколение {report.assetBinding.generation}. SSH fingerprint: {report.assetBinding.sshHostKeyFingerprint}.</p>
-          : <p>{report.assetBindingInvalid ? "Привязка идентичности в отчёте некорректна; результат требует проверки."
-            : report.assetBinding?.status === "unknown" ? "Сетевая проверка выполнена без аутентификации. Идентичность машины не подтверждена; результат не присоединяется к проверенному активу."
-              : "Исторический отчёт не содержит проверяемой идентичности актива. Текущая привязка alias не применяется к нему задним числом."}</p>}
-      </section>
 
       {report.partial || !report.reportTimeValid ? (
         <section role="status" className="rounded-xl border border-amber-400/30 bg-amber-500/10 p-5 text-sm leading-6 text-amber-100">
           <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
             <div>
               <p className="font-semibold">{!report.available ? "Сканер не выполнил проверку" : isAstraTrivyReport ? "Для CVE Astra нужен OVAL-аудит" : "Проверка неполная"}</p>
-              <p className="mt-1">{!report.reportTimeValid ? "Дата отчёта некорректна: его нельзя использовать как актуальное свидетельство." : isAstraTrivyReport ? "Пакеты собраны, но Trivy не поддерживает базу CVE производителя Astra. Даже свежая база Trivy не позволяет подтвердить отсутствие уязвимостей этой ОС." : "Часть контролей не дала достоверный ответ. Поэтому отсутствие находок и общая оценка не означают, что хост защищён."}</p>
+              <p className="mt-1">{!report.reportTimeValid ? "Дата отчёта некорректна: его нельзя использовать как актуальное свидетельство." : isAstraTrivyReport ? "Пакеты собраны, но Trivy не поддерживает базу CVE производителя Astra. Даже свежая база Trivy не позволяет подтвердить отсутствие уязвимостей этой ОС." : "Есть непроверенные контроли."}</p>
             </div>
             {report.mode === "agentless" ? <LinkButton href="/hosts" variant="secondary">Повторить после исправления</LinkButton> : null}
           </div>
@@ -231,16 +202,6 @@ export default async function AgentlessReportDetailPage({
             </div>
           ) : scannerPartialReasons.length ? <div className="mt-3 text-slate-200"><p className="font-semibold">Причины ограничения</p><ul className="mt-2 list-inside list-disc space-y-1">{scannerPartialReasons.slice(0, 20).map((reason, index) => <li key={index} className="break-words">{reason}</li>)}</ul>{scannerPartialReasons.length > 20 ? <p className="mt-2">Остальные причины доступны в JSON.</p> : null}</div> : report.partial && !isAstraTrivyReport && !vulnerabilityScan.message ? <p className="mt-3 text-slate-200">Точная причина не записана этим источником. Откройте JSON или технические данные отчёта, устраните ошибку сбора и повторите проверку.</p> : null}
           {astraNextStep ? <div className="mt-3"><p className="text-slate-200">{astraNextStep.message}</p><LinkButton href={astraNextStep.href} variant="secondary" className="mt-3">{astraNextStep.ready ? "Перейти к проверке CVE Astra" : "Исправить OVAL-источник"}</LinkButton></div> : typeof vulnerabilityScan.message === "string" ? <p className="mt-3 text-slate-200">{vulnerabilityScan.message}</p> : null}
-        </section>
-      ) : null}
-
-      {isNmapReport ? (
-        <section className="rounded-md border border-sky-400/25 bg-sky-500/5 p-4 text-sm leading-6 text-sky-100">
-          <h2 className="font-semibold">Охват проверки Nmap</h2>
-          <p className="mt-1">{nmapScope}.</p>
-          <p className="mt-1 text-slate-300">{scanner.coverageComplete === true
-            ? "Все TCP-порты проверены. UDP, локальные сокеты и сценарии уязвимостей в этот запуск не входят."
-            : "Это ограниченная выборка TCP-портов: отсутствие находок вне указанного диапазона не подтверждено. Для полного TCP-охвата запустите «Полная TCP: 1–65 535». UDP выполняется отдельной согласованной проверкой."}</p>
         </section>
       ) : null}
 
@@ -267,11 +228,81 @@ export default async function AgentlessReportDetailPage({
         <SummaryCard label="События" value={report.eventsCount} detail="События безопасности" icon={<ListChecks size={18} />} />
       </div>}
 
-      {isOvalReport && ovalUnknown > 0 ? <p className="rounded-lg border border-amber-400/25 bg-amber-500/5 p-4 text-sm leading-6 text-amber-100">У {ovalUnknown} срабатываний критичность неизвестна. Оценки Chromium взяты из явно указанного поля в описаниях базы; CVSS не вычислялся. Нули в отдельных категориях не подтверждают отсутствие опасных уязвимостей.</p> : report.needsReview && !report.partial && !isOvalReport ? <p className="text-sm leading-6 text-amber-100">Часть результатов требует ручной оценки. Завершение сбора данных не означает, что все настройки признаны безопасными.</p> : null}
+      <section aria-label="Отчёт HCP" className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+        <h2 className="font-semibold text-white">Отчёт HCP</h2>
+        <div className="mt-3 flex flex-wrap gap-3">
+          <AuditPdfDownload reportId={report.id} />
+        </div>
+        <details className="mt-3 text-sm text-slate-400">
+          <summary className="cursor-pointer">Технические данные</summary>
+          <div className="mt-3">
+          <a href={`/api/ansible/reports/${encodeURIComponent(report.id)}?download=1`} download className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-200"><Download size={16} aria-hidden="true" />Данные HCP (JSON)</a>
+          </div>
+        </details>
+      </section>
+      {nativeDownloads.length ? <section aria-label="Файлы сканера" className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+        <h2 className="font-semibold text-white">Отчёт инструмента</h2>
+        <p role="status" className={`mt-1 text-sm leading-6 ${nativeReportAvailable ? "text-slate-400" : "text-amber-200"}`}>
+          {nativeReportAvailable ? "Файлы исходного запуска; размер и SHA-256 проверяются." : "Оригинальный отчёт инструмента для этого запуска не сохранён или недоступен."}
+        </p>
+        {availableDownloads.map(item => <div key={item.format} className="mt-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 border-t border-slate-800 pt-2">
+          <p className="text-sm text-slate-200">{item.label}</p>
+          <div className="flex flex-wrap gap-2">
+            <a href={`${nativeOvalUrl}?format=${item.format}&view=1`} target="_blank" rel="noopener noreferrer" aria-label={`Просмотреть ${item.label} в новой вкладке`} className="inline-flex min-h-11 items-center rounded-lg px-3 text-sm text-sky-200 underline underline-offset-4 focus-visible:outline-2 focus-visible:outline-sky-300">Просмотреть ↗</a>
+            <a href={`${nativeOvalUrl}?format=${item.format}`} download aria-label={`Скачать ${item.label}`} className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-700 px-3 text-sm text-slate-200 hover:bg-slate-800 focus-visible:outline-2 focus-visible:outline-sky-300"><Download size={16} aria-hidden="true" />Скачать</a>
+          </div>
+        </div>)}
+      </section> : <p className="text-sm leading-6 text-slate-400">Отдельного файла сканера нет.</p>}
+      <details className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-300">Параметры и источник проверки</summary>
+        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">Файл</p>
+            <p className="mt-2 break-all text-sm text-slate-300">{report.fileName}</p>
+          </div>
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">Хост и ОС</p>
+            <p className="mt-2 text-sm text-slate-300">{report.hostname ?? report.host}</p>
+            <p className="mt-1 text-xs text-slate-500">{report.os ?? "ОС не указана"}</p>
+          </div>
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">Профиль</p>
+            <p className="mt-2 text-sm text-slate-300">{profileTitle(report.profileId)}</p>
+            {report.profileId ? <p className="mt-1 text-xs text-slate-500">{report.profileId}</p> : null}
+          </div>
+          <div>
+            <p className="text-xs font-semibold uppercase text-slate-500">Источник</p>
+            <p className="mt-2 text-sm text-slate-300">{vulnerabilityScan.provider === "Trivy" ? "Trivy на управляющей машине" : "Control node Ansible"}</p>
+          </div>
+        </div>
+      </details>
+
+      {["dependency-track", "dependency-track-analysis"].includes(report.mode) ? <DependencyTrackResult hostAlias={targetAlias} reportId={report.id}
+        complete={report.mode === "dependency-track-analysis" && scanner.analysisStatus === "complete"}
+        findingCount={typeof scanner.findingCount === "number" ? scanner.findingCount : null} /> : null}
+
+      <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 text-sm text-slate-300">
+        {report.assetBinding?.status === "verified" ? <details><summary className="cursor-pointer text-xs text-sky-200">Идентичность актива подтверждена</summary><p className="mt-2 break-all">Идентичность при запуске: {report.assetBinding.assetId}; alias {report.assetBinding.alias}; поколение {report.assetBinding.generation}. SSH fingerprint: {report.assetBinding.sshHostKeyFingerprint}.</p></details>
+          : <p>{report.assetBindingInvalid ? "Привязка идентичности в отчёте некорректна; результат требует проверки."
+            : report.assetBinding?.status === "unknown" ? "Сетевая проверка выполнена без аутентификации. Идентичность машины не подтверждена; результат не присоединяется к проверенному активу."
+              : "Исторический отчёт не содержит проверяемой идентичности актива. Текущая привязка alias не применяется к нему задним числом."}</p>}
+      </section>
+
+      {isNmapReport ? (
+        <section className="rounded-md border border-sky-400/25 bg-sky-500/5 p-4 text-sm leading-6 text-sky-100">
+          <h2 className="font-semibold">Охват проверки Nmap</h2>
+          <p className="mt-1">{nmapScope}.</p>
+          <p className="mt-1 text-slate-300">{scanner.coverageComplete === true
+            ? "Все TCP-порты проверены. UDP, локальные сокеты и сценарии уязвимостей в этот запуск не входят."
+            : "Это ограниченная выборка TCP-портов: отсутствие находок вне указанного диапазона не подтверждено. Для полного TCP-охвата запустите «Полная TCP: 1–65 535». UDP выполняется отдельной согласованной проверкой."}</p>
+        </section>
+      ) : null}
+
+      {isOvalReport && ovalUnknown > 0 ? <p className="rounded-lg border border-amber-400/25 bg-amber-500/5 p-4 text-sm leading-6 text-amber-100">У {ovalUnknown} срабатываний критичность неизвестна. Оценки Chromium взяты из явно указанного поля в описаниях базы; CVSS не вычислялся. Нули в отдельных категориях не подтверждают отсутствие опасных уязвимостей.</p> : report.needsReview && !report.partial && !isOvalReport ? <p className="text-sm leading-6 text-amber-100">Есть результаты для ручной проверки.</p> : null}
 
       {aptRepositoryEvidence ? (
-        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h2 className="text-xl font-semibold text-white">APT: наблюдение за источниками пакетов Debian</h2>
+        <details className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-300">APT: наблюдение за источниками пакетов Debian</summary>
           <p className="mt-2 text-sm leading-6 text-slate-400">
             Данные получены из локального apt-cache policy без обновления репозиториев. Это сведения о настроенных индексах,
             а не доказательство того, откуда установлен конкретный пакет или прошла ли проверка подписи Release.
@@ -288,12 +319,12 @@ export default async function AgentlessReportDetailPage({
             <p className="mt-2 break-all text-xs text-slate-400">SHA-256 наблюдения apt-cache policy: {aptRepositoryEvidence.policySha256}</p>
           ) : null}
           <p className="mt-3 text-sm text-amber-100">Подпись репозитория: не проверена. Происхождение установленных .deb: не подтверждено. Даже метка Debian в APT-индексе не является криптографическим доказательством.</p>
-        </section>
+        </details>
       ) : null}
 
       {signedReleases ? (
-        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h2 className="text-xl font-semibold text-white">Debian: локальная проверка подписи InRelease</h2>
+        <details className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-300">Debian: локальная проверка подписи InRelease</summary>
           <p className="mt-2 text-sm leading-6 text-slate-400">
             Выполнена проверка gpgv с набором ключей Debian, установленным на целевой системе.
             Набор ключей не удостоверен независимо; это не подтверждение подлинности ранее установленного пакета,
@@ -311,12 +342,12 @@ export default async function AgentlessReportDetailPage({
             Подлинность ключей из независимого доверенного источника не проверена. Подпись пакета, связь с
             установленным файлом и хеши Packages не проверены; права на исправление не предоставлены.
           </p>
-        </section>
+        </details>
       ) : null}
 
       {debianIndexEvidence ? (
-        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h2 className="text-xl font-semibold text-white">Debian: целостность локальных индексов Packages</h2>
+        <details className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-300">Debian: целостность локальных индексов Packages</summary>
           <p className="mt-2 text-sm leading-6 text-slate-400">
             SHA-256 распакованных индексов сопоставляется с записью внутри локального подписанного InRelease.
             Подпись проверяется локальным набором ключей на оцениваемой системе; подлинность самого набора ключей,
@@ -418,7 +449,7 @@ export default async function AgentlessReportDetailPage({
             Локальное совпадение хешей не удостоверяет установленные пакеты. Выводы Trivy не изменяются;
             разрешение автоматического исправления не предоставлено.
           </p>
-        </section>
+        </details>
       ) : null}
 
       {report.mode === "facts" ? (
@@ -534,11 +565,23 @@ export default async function AgentlessReportDetailPage({
         </section>
       ) : null}
 
-      {report.mode === "astra-oval" ? <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-        <h2 className="text-xl font-semibold text-white">Результат OVAL-аудита Astra</h2>
+      {report.mode === "astra-oval" ? <details className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+        <summary className="cursor-pointer text-sm font-semibold text-slate-300">Результат OVAL-аудита Astra</summary>
         <p className="mt-2 text-sm leading-6 text-slate-300">Проверено {textValue(scanner.evaluatedDefinitionCount)} из {textValue(scanner.definitionCount)} определений. Выпуск хоста: {textValue(ovalIdentity.astraVersion)}. База: {formatDate(typeof ovalDatabase.generatedAt === "string" ? ovalDatabase.generatedAt : null)}.</p>
         <p className="mt-2 text-sm leading-6 text-slate-400">Результат относится к выбранной базе OVAL. Список ниже содержит сработавшие определения; подробности раскрываются по нажатию на строку.</p>
+        <div className="mt-4 rounded-md border border-slate-700 p-4 text-sm leading-6 text-slate-300">
+          <h3 className="font-semibold text-white">Откуда взята критичность</h3>
+          <p className="mt-2">Сработавших определений: {ovalFindings.length}. Это не число уникальных CVE: одна CVE может встречаться в нескольких определениях с разными условиями или пакетами.</p>
+          <p className="mt-2">Из метаданных OVAL (oval_metadata): {ovalMetadataSeverity}. Из явной метки «Chromium security severity» в описании Chromium (chromium_description): {ovalChromiumSeverity}. Это атрибуция из текста источника, а не вычисленная HCP оценка.</p>
+          <p className="mt-2">Не оценено текущим адаптером HCP (not_provided): {ovalUnknown}. HCP не распознал поддерживаемый уровень severity или явную метку Chromium. Это не низкий риск и не отсутствие уязвимости. Этот код не доказывает отсутствие CVSS в исходной базе: расширения CVSS2.0/CVSS3.0 могут содержать векторы и оценки NistCVSS, которые текущий адаптер не переносит в JSON и не преобразует в уровень. Для проверки скачайте исходную базу XML. HCP не придумывает уровень или CVSS.</p>
+          <p className="mt-2 text-slate-400">HTML создаёт OpenSCAP на управляющем узле из сохранённого исходного XML результатов, без повторного сканирования хоста. Это отчёт OpenSCAP, не сертифицированный или официальный отчёт Astra. HTML содержит недоверенные данные сканера и выдаётся только как файл для скачивания; он может отличаться от представления HCP и не получает добавленные HCP оценки.</p>
+        </div>
         <details className="mt-4"><summary className="cursor-pointer text-sm font-semibold text-sky-200">Источник базы и технические сведения</summary>
+        <div className="mt-3 flex flex-wrap gap-4 text-sm text-sky-200">
+          <a href={`/api/ansible/reports/${encodeURIComponent(report.id)}`} className="underline">Технические данные HCP (JSON)</a>
+          {nativeSourceAvailable ? <a href={`${nativeOvalUrl}?format=source-xml`} download className="underline">Исходная база OVAL (XML)</a> : null}
+        </div>
+        <p className="mt-2 text-xs text-slate-400">При загрузке XML сверяются сохранённые размер и SHA-256. Если оригинал отсутствует или повреждён, сервер явно отказывает, а не подменяет его JSON.</p>
         <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
           <div><p className="text-slate-500">Определений в базе / результатов</p><p className="mt-1 text-slate-200">{textValue(scanner.definitionCount)} / {textValue(scanner.evaluatedDefinitionCount)}</p></div>
           <div><p className="text-slate-500">Выпуск хоста / область базы</p><p className="mt-1 break-words text-slate-200">{textValue(ovalIdentity.astraVersion)} / {textValue(ovalDatabase.releasePattern)}</p></div>
@@ -560,11 +603,11 @@ export default async function AgentlessReportDetailPage({
           </table></div><p className="mt-2 text-xs text-slate-500">Показаны первые {Math.min(100, ovalDefinitions.length)} определений. Полные результаты, условия и сведения о пакетах доступны в JSON. Ссылка на CVE сама по себе не означает её обнаружение.</p>
         </details> : null}
         </details>
-      </section> : null}
+      </details> : null}
 
       {isOpenScapReport ? (
-        <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
-          <h2 className="text-xl font-semibold text-white">Параметры OpenSCAP</h2>
+        <details className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+          <summary className="cursor-pointer text-sm font-semibold text-slate-300">Параметры OpenSCAP</summary>
           <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">Профиль и контрольная сумма содержимого фиксируются для воспроизведения проверки. Профиль HCP для Astra охватывает базовые настройки и не является сертификационным.</p>
           <div className="mt-4 grid gap-4 text-sm sm:grid-cols-2 xl:grid-cols-4">
             <div><p className="text-slate-500">Группа политики</p><p className="mt-1 break-words text-slate-200">{textValue(scanner.policyGroup)}</p></div>
@@ -574,7 +617,7 @@ export default async function AgentlessReportDetailPage({
           </div>
           <LinkButton href="/policies" variant="secondary" className="mt-3">Настроить профиль OpenSCAP</LinkButton>
           {exceptionsApplied.length ? <p className="mt-4 rounded-md border border-amber-400/25 bg-amber-500/5 px-3 py-2 text-sm leading-6 text-amber-100">Согласованных исключений: {exceptionsApplied.length}. Причина и срок указаны в находках. Исходный результат проверки и уровень риска сохранены.</p> : null}
-        </section>
+        </details>
       ) : null}
 
       {isLynisReport ? <LynisFindingsView findings={report.findings} reportId={report.id} /> : isOvalReport ? <OvalFindingsView findings={report.findings} reportId={report.id} /> : report.findings.length ? (

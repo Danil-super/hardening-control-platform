@@ -147,12 +147,12 @@ export default async function AgentlessReportsPage({
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">История проверок</p>
+
           <h1 className="mt-2 text-3xl font-semibold text-white">{reportView === "archive" ? "Архив отчётов" : "Отчёты"}</h1>
           <p className="mt-2 max-w-3xl text-slate-400">
             {hostFilter
               ? `История всех запусков для хоста ${hostFilter}.`
-              : "Здесь собраны сохранённые результаты аудита, проверки пакетов и события безопасности."}
+              : null}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -198,7 +198,7 @@ export default async function AgentlessReportsPage({
                         <Server size={18} className="mt-0.5 text-sky-200" aria-hidden="true" />
                         <div>
                           <p className="font-semibold text-white">{report.host}</p>
-                          <p className="mt-1 text-xs text-slate-500">{report.fileName}</p>
+                          <details className="mt-1 text-xs text-slate-500"><summary className="cursor-pointer text-sky-200">Файл</summary><p className="mt-1 break-all">{report.fileName}</p></details>
                         </div>
                       </div>
                     </td>
@@ -221,11 +221,11 @@ export default async function AgentlessReportsPage({
                           <span className="rounded-md bg-slate-800 px-2 py-1 text-slate-300">I {report.info}</span>
                         </div>
                       ) : (
-                        <span className="text-slate-500">нет проблем</span>
+                        <span className="text-slate-500">нет находок</span>
                       )}
                     </td>
                     <td className="px-4 py-4 text-slate-300">
-                      <p>{report.mode === "lynis" ? "Пунктов" : "Проблем"}: {report.findingsCount}</p>
+                      <p>{report.mode === "lynis" ? "Пунктов" : "Записей"}: {report.findingsCount}</p>
                       <p className="mt-1 text-xs text-slate-500">Событий: {report.eventsCount}</p>
                     </td>
                     <td className="px-4 py-4 text-slate-300">{formatDate(report.createdAt ?? (report.mode === "greenbone" ? null : report.modifiedAt))}</td>
@@ -314,7 +314,8 @@ export default async function AgentlessReportsPage({
         )}
       </section>
 
-      <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
+      <details open={!auditIntegrity.valid || !auditIntegrity.payloadProtected} className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
+        <summary className="cursor-pointer p-4 font-semibold text-slate-200">Журнал действий</summary>
         <div className="flex flex-col gap-2 border-b border-slate-800 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <h2 className="text-lg font-semibold text-white">Журнал действий</h2>
@@ -379,7 +380,7 @@ export default async function AgentlessReportsPage({
         ) : (
           <div className="p-5 text-sm text-slate-400">Запусков пока нет.</div>
         )}
-      </section>
+      </details>
     </div>
   );
 }

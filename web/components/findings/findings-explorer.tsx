@@ -123,14 +123,14 @@ export function FindingsExplorer({
 
       <div className="space-y-3">
         {filteredFindings.length ? filteredFindings.map((finding) => (
-          <article key={finding.id} className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <h3 className="font-semibold text-white">{finding.source === "greenbone" && reportId ? <FindingDescription original={finding.title} reportId={reportId} findingId={finding.id} field="title" expanded inline lazy /> : finding.title}</h3>
-                <div className="mt-1 leading-6 text-slate-400">{finding.source === "greenbone" && reportId ? <FindingDescription original={finding.description} reportId={reportId} findingId={finding.id} expanded lazy /> : finding.description}</div>
-              </div>
-              <div className="flex shrink-0 flex-wrap gap-2"><RiskBadge risk={finding.risk} unknown={finding.severityUnknown} /><StatusBadge status={finding.status} /></div>
-            </div>
+          <details key={finding.id} className="group rounded-md border border-slate-800 bg-slate-950/70 px-4 py-3">
+            <summary className="flex cursor-pointer list-none flex-wrap items-start gap-3 text-sm">
+              <span aria-hidden="true" className="text-sky-200 transition-transform group-open:rotate-90">›</span>
+              <h3 className="min-w-0 flex-1 font-semibold text-white [overflow-wrap:anywhere]">{finding.source === "greenbone" && reportId ? <FindingDescription original={finding.title} reportId={reportId} findingId={finding.id} field="title" expanded inline lazy /> : finding.title}</h3>
+              <span className="flex flex-wrap gap-2"><RiskBadge risk={finding.risk} unknown={finding.severityUnknown} /><StatusBadge status={finding.status} /></span>
+            </summary>
+            <div className="mt-3 text-sm">
+              <div className="leading-6 text-slate-400">{finding.source === "greenbone" && reportId ? <FindingDescription original={finding.description} reportId={reportId} findingId={finding.id} expanded lazy /> : finding.description}</div>
             {finding.cveApplicability ? (
               <div className="mt-3 rounded-md border border-sky-400/20 bg-slate-900/60 px-3 py-2 text-sm text-slate-200">
                 <p className="font-medium">{cveAssessmentLabel(finding)}</p>
@@ -184,7 +184,8 @@ export function FindingsExplorer({
             ) : null}
             {finding.affectedFiles?.length ? <p className="mt-3 break-all text-xs text-slate-500">Файлы: {finding.affectedFiles.join(", ")}</p> : null}
             {finding.remediationAvailable && hostAlias ? <LinkButton href={remediationLinkHref ?? "/hosts"} variant="secondary" className="mt-4">Открыть управление хостом</LinkButton> : null}
-          </article>
+            </div>
+          </details>
         )) : (
           <div className="rounded-md border border-slate-800 bg-slate-950/70 px-4 py-8 text-center text-sm text-slate-400">Нет результатов, соответствующих выбранным фильтрам.</div>
         )}

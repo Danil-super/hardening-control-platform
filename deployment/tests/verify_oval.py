@@ -147,7 +147,22 @@ def verify_playbook(output):
     assert report['scanner']['hostIdentity']['id'] != 'astra'
     assert report['scanner']['uniqueCveCount'] is None
     assert set(Path('/tmp').glob('hcp-astra-oval-*')) == before, 'Target temporary files remain'
-    result = {'productionPlaybookExecuted': True, 'nonAstraRejected': True, 'reportFetched': True, 'targetCleanup': True}
+    prepared = output / 'synthetic-oval.xml'
+    settings.update(report_run_id='run-prepared-acceptance', hcp_oval_prepared_input=str(prepared),
+                    hcp_oval_source_validation=json.dumps({'sha256': hashlib.sha256(prepared.read_bytes()).hexdigest(),
+                        'schemaExitCode': 0, 'schematronExitCode': 0, 'location': 'control_node'}),
+                    hcp_oval_config={'mode': 'online', 'url': 'https://127.0.0.1:1/must-not-download.xml',
+                        'sha256': hashlib.sha256(prepared.read_bytes()).hexdigest(), 'releasePattern': '*'})
+    online = execute(['ansible-playbook', '-i', str(inventory), str(ROOT / 'ansible/playbooks/astra-oval-audit.yml'),
+                      '-e', json.dumps(settings)])
+    (output / 'prepared-playbook-stdout.txt').write_text(online.stdout)
+    report = json.loads((output / 'playbook-reports/non-astra-runner-astra-oval-run-prepared-acceptance.json').read_text())
+    assert report['scanner']['hostIdentity']['id'] != 'astra', 'Prepared copy did not reach target evaluation'
+    assert report['scanner']['partial'] and not report['scanner']['evaluationPerformed']
+    assert prepared.exists(), 'Reusable controller copy was removed'
+    assert set(Path('/tmp').glob('hcp-astra-oval-*')) == before, 'Prepared target temporary files remain'
+    result = {'productionPlaybookExecuted': True, 'nonAstraRejected': True, 'reportFetched': True,
+              'targetCleanup': True, 'preparedCopyTransferredWithoutDownloading': True}
     save(output / 'playbook-evidence.json', result)
     return result
 

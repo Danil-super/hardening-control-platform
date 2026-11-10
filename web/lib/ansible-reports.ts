@@ -547,7 +547,19 @@ export function deleteAnsibleReport(reportId: string): DeletedAnsibleReport | nu
     throw new Error("Файл конфигурации этого сканирования имеет недопустимый тип.");
   }
 
+  const originalsRoot = path.join(reportsDir, ".raw-evidence");
+  const originalsDirectory = path.join(originalsRoot, fileName.slice(0, -5));
+  const originalsRootInfo = lstatSync(originalsRoot, { throwIfNoEntry: false });
+  if (originalsRootInfo && (!originalsRootInfo.isDirectory() || originalsRootInfo.isSymbolicLink())) {
+    throw new Error("Каталог оригинальных отчётов имеет недопустимый тип.");
+  }
+  const originalsInfo = originalsRootInfo ? lstatSync(originalsDirectory, { throwIfNoEntry: false }) : null;
+  if (originalsInfo && (!originalsInfo.isDirectory() || originalsInfo.isSymbolicLink())) {
+    throw new Error("Оригинальные файлы отчёта имеют недопустимый тип.");
+  }
+
   rmSync(reportPath, { force: false });
+  if (originalsInfo) rmSync(originalsDirectory, { recursive: true, force: false });
   if (sbomPath && sbomInfo && !sbomUsedElsewhere) {
     rmSync(sbomPath, { force: false });
   }
