@@ -1,0 +1,446 @@
+{
+  "date": "2026-11-11",
+  "code": "e0db79bf77cb1fe6991869396ae40ef951201847",
+  "image": "sha256:a4b06e3643b3c5a0ade9d2229a1772e6c062afcc34a35f925a883a30944b4c9f",
+  "startedAt": "2026-11-11T14:11:22.946403+00:00",
+  "completedAt": "2026-11-11T14:17:09.084051+00:00",
+  "scope": {
+    "realAstraTargets": 1,
+    "sequentialAudits": [
+      "astraOvalAudit",
+      "lynisTemporaryAudit",
+      "openScapAudit"
+    ],
+    "parallelReadClients": 3,
+    "maximumParallelPdfRenders": 2,
+    "desktopViewports": [
+      1280,
+      1440,
+      1920
+    ],
+    "remoteConfigurationChanged": false
+  },
+  "ovalDatabase": {
+    "sha256": "c9364c80d664907dc472475d2ef57689c314abecede7a58e7e9dae8250891d17",
+    "bytes": 134668815,
+    "generatedAt": "2026-10-15T13:52:37.151714+00:00",
+    "downloadedAgain": false,
+    "assignedMaxAgeDays": 30
+  },
+  "results": [
+    {
+      "action": "astraOvalAudit",
+      "reportId": "host-172.16.95.128-astra-oval-run-20261111T141137164Z-3f2266b6",
+      "status": "completed",
+      "partial": false,
+      "findings": 4135
+    },
+    {
+      "action": "lynisTemporaryAudit",
+      "reportId": "host-172.16.95.128-lynis-run-20261111T141457597Z-128ab39f",
+      "status": "completed",
+      "partial": false,
+      "findings": 54
+    },
+    {
+      "action": "openScapAudit",
+      "reportId": "host-172.16.95.128-openscap-run-20261111T141639998Z-b3561c91",
+      "status": "completed",
+      "partial": false,
+      "findings": 18
+    }
+  ],
+  "nativeVerification": {
+    "oval": {
+      "definitions": 19527,
+      "results": 19527,
+      "states": {
+        "false": 15393,
+        "true": 4134
+      },
+      "uniqueCves": 4068,
+      "allDefinitionIdsStatesClassesAndCvesMatchNative": true,
+      "findings": 4135
+    },
+    "lynis": {
+      "warnings": 4,
+      "suggestions": 50,
+      "allNativeCodesPreserved": true,
+      "hardeningIndex": 70
+    },
+    "openscap": {
+      "rules": 18,
+      "states": {
+        "passed": 14,
+        "failed": 4
+      },
+      "allNativeIdsAndStatesMatch": true
+    },
+    "exportsValidated": 15,
+    "browserFreshPdfAllCvesPresent": true,
+    "browserFreshPdfAllFindingIdsPresent": true,
+    "browserFreshPdfPages": 884,
+    "allPdfEmbeddedSourceHashesMatch": true
+  },
+  "apiExports": [
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "format": "pdf",
+      "phase": "astraOvalAudit",
+      "seconds": 4.759,
+      "bytes": 2114928,
+      "sha256": "d0a744a703a1c77be6e921783d250fe14547b403f37f71bfa4fb2ac5d6dffd97",
+      "sourceSha256": "b2ff7886138d8f1c559a5adb130e1a9250ce0d97612edb570f0e827f544df8d5",
+      "file": "old-oval-1.pdf"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "format": "pdf",
+      "phase": "astraOvalAudit",
+      "seconds": 3.635,
+      "bytes": 2114927,
+      "sha256": "cdb6259bd7605b91574ab019e9175fe5449a0706d116e1b255ad1d262883841c",
+      "sourceSha256": "b2ff7886138d8f1c559a5adb130e1a9250ce0d97612edb570f0e827f544df8d5",
+      "file": "old-oval-2.pdf"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "format": "pdf",
+      "phase": "astraOvalAudit",
+      "seconds": 3.51,
+      "bytes": 2114927,
+      "sha256": "5be1734dadb67ff73675fbf339167b41be7644845543ee8166284c6bf2d560c5",
+      "sourceSha256": "b2ff7886138d8f1c559a5adb130e1a9250ce0d97612edb570f0e827f544df8d5",
+      "file": "old-oval-3.pdf"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "format": "xml",
+      "phase": "astraOvalAudit",
+      "seconds": 0.372,
+      "bytes": 169882850,
+      "sha256": "570c008ede636d50c760deed2e026de8c144277abbdbac89f42d9fff98ca184d",
+      "sourceSha256": "570c008ede636d50c760deed2e026de8c144277abbdbac89f42d9fff98ca184d",
+      "file": "old-oval-native-xml.xml"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "format": "html",
+      "phase": "astraOvalAudit",
+      "seconds": 3.264,
+      "bytes": 10997844,
+      "sha256": "49b4a6b9486dc192c8b76833e1f5d0ca5d38a637a92c4fc1567084742b3bcc5a",
+      "sourceSha256": "570c008ede636d50c760deed2e026de8c144277abbdbac89f42d9fff98ca184d",
+      "file": "old-oval-native-html.html"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "format": "pdf",
+      "phase": "astraOvalAudit",
+      "seconds": 3.863,
+      "bytes": 2114927,
+      "sha256": "b81d1d6fd6ac34a0040bcbc07578e4ad6f8aa309b1bd66fe350319f3ed167a1a",
+      "sourceSha256": "b2ff7886138d8f1c559a5adb130e1a9250ce0d97612edb570f0e827f544df8d5",
+      "file": "old-oval-burst-0.pdf"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "format": "pdf",
+      "phase": "astraOvalAudit",
+      "seconds": 3.765,
+      "bytes": 2114927,
+      "sha256": "7a61e1611f23b0e43ce722deec5432bee634a5612cc611c5003b51b8ee9ee6fa",
+      "sourceSha256": "b2ff7886138d8f1c559a5adb130e1a9250ce0d97612edb570f0e827f544df8d5",
+      "file": "old-oval-burst-1.pdf"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "format": "pdf",
+      "busy": true,
+      "phase": "astraOvalAudit",
+      "seconds": 0.434
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "format": "pdf",
+      "phase": "astraOvalAudit",
+      "seconds": 3.565,
+      "bytes": 2114927,
+      "sha256": "20cfd64223cfd4b14473a353d66903f186b47b095407392a72b4ac0d1822d022",
+      "sourceSha256": "b2ff7886138d8f1c559a5adb130e1a9250ce0d97612edb570f0e827f544df8d5",
+      "file": "old-oval-burst-retry-2.pdf"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261111T141137164Z-3f2266b6",
+      "format": "xml",
+      "phase": "lynisTemporaryAudit",
+      "seconds": 0.945,
+      "bytes": 169882850,
+      "sha256": "13dc5c0468736a388163ecaa3574f9671a8528e434a558a25390d572c7a35779",
+      "sourceSha256": "13dc5c0468736a388163ecaa3574f9671a8528e434a558a25390d572c7a35779",
+      "file": "fresh-oval-xml.xml"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261111T141137164Z-3f2266b6",
+      "format": "source-xml",
+      "phase": "lynisTemporaryAudit",
+      "seconds": 0.389,
+      "bytes": 134668815,
+      "sha256": "c9364c80d664907dc472475d2ef57689c314abecede7a58e7e9dae8250891d17",
+      "sourceSha256": "c9364c80d664907dc472475d2ef57689c314abecede7a58e7e9dae8250891d17",
+      "file": "fresh-oval-source-xml.xml"
+    },
+    {
+      "reportId": "host-172.16.95.128-astra-oval-run-20261111T141137164Z-3f2266b6",
+      "format": "pdf",
+      "phase": "lynisTemporaryAudit",
+      "seconds": 3.824,
+      "bytes": 2114962,
+      "sha256": "0c9949516abbbfc5e7cc485b2e77027438c38c8883b74f05331e4715b1ede69c",
+      "sourceSha256": "c6945c01c4f829dc7c3a9ea8d83d9149b172c565eccc4ba376b58b5dd80402a2",
+      "file": "fresh-oval-pdf.pdf"
+    },
+    {
+      "reportId": "host-172.16.95.128-lynis-run-20261111T141457597Z-128ab39f",
+      "format": "dat",
+      "phase": "lynisTemporaryAudit",
+      "seconds": 0.004,
+      "bytes": 152733,
+      "sha256": "20a4e40bf95dd486d8c7e5466aa2e6245f7cd4495d6be559f2ac1f5b15f3619e",
+      "sourceSha256": "20a4e40bf95dd486d8c7e5466aa2e6245f7cd4495d6be559f2ac1f5b15f3619e",
+      "file": "fresh-lynis.dat"
+    },
+    {
+      "reportId": "host-172.16.95.128-lynis-run-20261111T141457597Z-128ab39f",
+      "format": "pdf",
+      "phase": "lynisTemporaryAudit",
+      "seconds": 0.157,
+      "bytes": 76287,
+      "sha256": "cccf29f7cd802a0835191be61b16d78ca5d2f7925c5137bd288ef40098dbf54e",
+      "sourceSha256": "633989f74c61989d055413e6f689e6dde3f561c7415a5e6d4ba9e5b0d8c593a5",
+      "file": "fresh-lynis.pdf"
+    },
+    {
+      "reportId": "host-172.16.95.128-openscap-run-20261111T141639998Z-b3561c91",
+      "format": "xml",
+      "phase": "openScapAudit",
+      "seconds": 0.005,
+      "bytes": 68134,
+      "sha256": "38a97f9487c0dd7b90dd47cb3b6aab980399395a2a798aa524e5461de9645fa7",
+      "sourceSha256": "38a97f9487c0dd7b90dd47cb3b6aab980399395a2a798aa524e5461de9645fa7",
+      "file": "fresh-openscap.xml"
+    },
+    {
+      "reportId": "host-172.16.95.128-openscap-run-20261111T141639998Z-b3561c91",
+      "format": "pdf",
+      "phase": "openScapAudit",
+      "seconds": 0.165,
+      "bytes": 55841,
+      "sha256": "e25713d1477cc8278855948cd4c4f4e948ecb0cdde3789f7c390876bc20acf78",
+      "sourceSha256": "07c73295fb39806c879ae2eca090825ba16902f2ec131398e81a9ae5f6f6a033",
+      "file": "fresh-openscap.pdf"
+    }
+  ],
+  "pdfVerification": [
+    {
+      "file": "old-oval-1.pdf",
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "pages": 884,
+      "allFindingIdsPresent": true,
+      "sourceSha256MatchesStoredFile": true
+    },
+    {
+      "file": "old-oval-2.pdf",
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "pages": 884,
+      "allFindingIdsPresent": true,
+      "sourceSha256MatchesStoredFile": true
+    },
+    {
+      "file": "old-oval-3.pdf",
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "pages": 884,
+      "allFindingIdsPresent": true,
+      "sourceSha256MatchesStoredFile": true
+    },
+    {
+      "file": "old-oval-burst-0.pdf",
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "pages": 884,
+      "allFindingIdsPresent": true,
+      "sourceSha256MatchesStoredFile": true
+    },
+    {
+      "file": "old-oval-burst-1.pdf",
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "pages": 884,
+      "allFindingIdsPresent": true,
+      "sourceSha256MatchesStoredFile": true
+    },
+    {
+      "file": "old-oval-burst-retry-2.pdf",
+      "reportId": "host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+      "pages": 884,
+      "allFindingIdsPresent": true,
+      "sourceSha256MatchesStoredFile": true
+    },
+    {
+      "file": "fresh-oval-pdf.pdf",
+      "reportId": "host-172.16.95.128-astra-oval-run-20261111T141137164Z-3f2266b6",
+      "pages": 884,
+      "allFindingIdsPresent": true,
+      "sourceSha256MatchesStoredFile": true
+    },
+    {
+      "file": "fresh-lynis.pdf",
+      "reportId": "host-172.16.95.128-lynis-run-20261111T141457597Z-128ab39f",
+      "pages": 11,
+      "allFindingIdsPresent": true,
+      "sourceSha256MatchesStoredFile": true
+    },
+    {
+      "file": "fresh-openscap.pdf",
+      "reportId": "host-172.16.95.128-openscap-run-20261111T141639998Z-b3561c91",
+      "pages": 4,
+      "allFindingIdsPresent": true,
+      "sourceSha256MatchesStoredFile": true
+    }
+  ],
+  "browserDuringAudit": {
+    "ok": true,
+    "errors": [],
+    "navigation": [
+      {
+        "route": "/hosts",
+        "ms": 760
+      },
+      {
+        "route": "/reports/agentless/host-172.16.95.128-astra-oval-run-20261110T134324338Z-2e239b22",
+        "ms": 764
+      },
+      {
+        "route": "/hosts",
+        "ms": 113
+      }
+    ],
+    "viewports": [
+      1280,
+      1440,
+      1920
+    ],
+    "jobStatusAfterNavigation": "running",
+    "jobStatusAfterReload": "running",
+    "sameJobSurvivesNavigationAndReload": true
+  },
+  "browserFreshReport": {
+    "ok": true,
+    "errors": [],
+    "activeJobsBefore": [],
+    "pdfSourceSha256": "c6945c01c4f829dc7c3a9ea8d83d9149b172c565eccc4ba376b58b5dd80402a2",
+    "pdfSha256": "f65cb0b17d40103e204ed7fc966ed00053ddf7de12ba6047d75fab668524f6ff",
+    "downloadButtonWorked": true,
+    "nativeHtmlTitle": "OVAL Results",
+    "nativeHtmlContainsSampleCves": true
+  },
+  "requestSamples": 1861,
+  "latencies": {
+    "/api/ansible/hosts": {
+      "count": 620,
+      "p50Ms": 3.4,
+      "p95Ms": 248.11,
+      "maxMs": 2817.01,
+      "errors": 0
+    },
+    "/api/ansible/jobs": {
+      "count": 621,
+      "p50Ms": 3.33,
+      "p95Ms": 248.43,
+      "maxMs": 2816.99,
+      "errors": 0
+    },
+    "/login": {
+      "count": 620,
+      "p50Ms": 4.16,
+      "p95Ms": 238.32,
+      "maxMs": 2975.46,
+      "errors": 0
+    }
+  },
+  "resources": {
+    "maximumSampledControllerCgroupBytes": 2138394624,
+    "controllerCgroupIncludesFileCacheAndChildren": true,
+    "controllerMemoryEventsBefore": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 0
+    },
+    "controllerMemoryEventsAfter": {
+      "low": 0,
+      "high": 0,
+      "max": 0,
+      "oom": 0,
+      "oom_kill": 0,
+      "oom_group_kill": 0,
+      "sock_throttled": 629
+    },
+    "targetSamples": 31,
+    "targetSampleErrors": 0,
+    "minimumSampledTargetAvailableKiB": 1374176,
+    "maximumSampledTargetSwapUsedKiB": 567972,
+    "controllerLimits": {
+      "Memory": 0,
+      "MemorySwap": 0,
+      "NanoCpus": 0,
+      "CpuQuota": 0,
+      "CpuPeriod": 0
+    },
+    "hostVisibleCpuAffinityCount": 12,
+    "hostMemTotalKiB": 32694636
+  },
+  "preservation": {
+    "oldReportFilesPreserved": 101,
+    "currentReportFiles": 109,
+    "changedTables": [
+      "audit_events",
+      "audit_jobs"
+    ],
+    "liveIntegrity": {
+      "valid": true,
+      "entries": 273,
+      "lastEntryHash": "3a9f3fd58b84de949d62bbc4e706eaf1a82b87523fb1a55a5c9982a5d2d77537"
+    },
+    "healthyAtEnd": true
+  },
+  "limits": [
+    "One actual Astra with sequential audits; no 3/5 heavy target matrix or RPS saturation",
+    "OVAL findings cover the pinned database generated 2026-10-15, not all known CVEs",
+    "Rare API pauses up to 2.98 seconds remain unprofiled in this workload",
+    "Browser PDF button/native HTML preview tested after audits; API exports and navigation tested while OVAL was running",
+    "No full dependency rebuild, GitHub CI, HTTPS, offsite anchors/DR or operator sign-off in this stage"
+  ],
+  "privateEvidenceSha256": {
+    "protocol.json": "dda0d954afe6b43a8880cbbe5f259dfd4fb1b4e6ab5d270e6a9e75c8e5fab0ce",
+    "verification.json": "bc8edfdc9115e86dbdccabccb1a7b23f09446cba4dd02653d6b8e3d87b7001aa",
+    "request-samples-private.json": "85f8551d4766332399866c4194300c1c5530773c1852027964de02cc0dc339f7",
+    "resource-samples.json": "43e478bb75a6cbec85989e7d611ac0527d90272954e18aa6d9fdce81baedde04",
+    "target-memory-samples.json": "33dbca2babfd049b6cebd6bafd311b254c6a402c64692c9fd132dbf0172303b8"
+  },
+  "finalHealth": {
+    "ok": true,
+    "activeJobs": 0,
+    "integrity": {
+      "valid": true,
+      "entries": 273,
+      "brokenAt": null,
+      "legacyEntries": 0,
+      "payloadProtected": true,
+      "lastEntryHash": "3a9f3fd58b84de949d62bbc4e706eaf1a82b87523fb1a55a5c9982a5d2d77537"
+    },
+    "anonymousNativeExport": 401,
+    "foreignOrigin": 403
+  }
+}
