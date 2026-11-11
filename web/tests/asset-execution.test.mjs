@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -365,4 +366,63 @@ test("current evidence uses effective host_vars rather than a shadowed inline en
     assert.equal(effective.address, "192.0.2.99", "the real Ansible resolver applies host_vars precedence");
     assert.equal(explicitInventoryConnectionId(alias), identity.assetConnectionId(effective), "displayed current endpoint must agree with actual execution");
   } finally { rmSync(frozen.directory, { recursive: true, force: true }); }
+});
+
+test("one native inventory lookup serves all displayed hosts and notices variable edits immediately", native, () => {
+  const aliases = Array.from({ length: 5 }, (_, index) => `fixture-${index + 1}`);
+  writeInventory(aliases.map((alias, index) => `${alias} ansible_host=192.0.2.${index + 10}`));
+  const groupVars = path.join(directory, "ansible/group_vars/linux_hosts.yml");
+  writeFileSync(groupVars, "ansible_user: audit\nansible_port: 2222\n");
+  mkdirSync(path.join(directory, "ansible/host_vars"));
+  const hostVars = path.join(directory, "ansible/host_vars/fixture-3.yml");
+  writeFileSync(hostVars, "ansible_host: 192.0.2.99\n");
+  const invoke = childProcess.execFileSync;
+  let calls = 0;
+  childProcess.execFileSync = (command, ...args) => {
+    if (command === "ansible-inventory") calls++;
+    return invoke(command, ...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    const expected = (index, port = 2222, override = "192.0.2.99") => identity.assetConnectionId({
+      address: index === 2 ? override : `192.0.2.${index + 10}`, port, user: "audit",
+    });
+    aliases.forEach((alias, index) => assert.equal(explicitInventoryConnectionId(alias), expected(index)));
+    assert.equal(calls, 1, "displaying five hosts must not block on five native child processes");
+    writeFileSync(hostVars, "ansible_host: 192.0.2.88\n");
+    aliases.forEach((alias, index) => assert.equal(explicitInventoryConnectionId(alias), expected(index, 2222, "192.0.2.88")));
+    assert.equal(calls, 2, "a host_vars edit invalidates the entire view before the TTL expires");
+    writeFileSync(groupVars, "ansible_user: audit\nansible_port: 3333\n");
+    aliases.forEach((alias, index) => assert.equal(explicitInventoryConnectionId(alias), expected(index, 3333, "192.0.2.88")));
+    assert.equal(calls, 3, "a group_vars edit invalidates all affected endpoints immediately");
+    writeFileSync(hostVars, "ansible_port: not-a-port\n");
+    assert.equal(explicitInventoryConnectionId(aliases[2]), "unresolved");
+    assert.equal(explicitInventoryConnectionId(aliases[0]), expected(0, 3333));
+    assert.equal(calls, 4, "an invalid endpoint must not discard the other hosts or reuse its old identity");
+  } finally {
+    childProcess.execFileSync = invoke;
+    syncBuiltinESMExports();
+  }
+});
+
+test("failed or malformed inventory snapshots cannot reuse a previously resolved endpoint", () => {
+  const invoke = childProcess.execFileSync;
+  let output = JSON.stringify({ _meta: { hostvars: { "fixture-one": { ansible_host: "192.0.2.10", ansible_user: "audit" } } } });
+  childProcess.execFileSync = () => {
+    if (output === null) throw new Error("Controlled inventory failure");
+    return output;
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.equal(explicitInventoryConnectionId("fixture-one"), identity.assetConnectionId({ address: "192.0.2.10", port: 22, user: "audit" }));
+    const invalid = [null, "not-json", "{}", '{"_meta":{"hostvars":[]}}', '{"_meta":{"hostvars":{"fixture-one":null}}}'];
+    invalid.forEach((value, index) => {
+      output = value;
+      writeFileSync(inventoryPath, `# changed configuration ${index}\n[linux_hosts]\nfixture-one ansible_host=192.0.2.99 ansible_user=audit\n`);
+      assert.equal(explicitInventoryConnectionId("fixture-one"), "unresolved");
+    });
+  } finally {
+    childProcess.execFileSync = invoke;
+    syncBuiltinESMExports();
+  }
 });

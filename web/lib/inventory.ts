@@ -132,7 +132,7 @@ export function freezeInventoryTargets(limit = "linux_hosts") {
   } catch (error) { rmSync(directory, { recursive: true, force: true }); throw error; }
 }
 
-const connectionViewCache = new Map<string, { expiresAt: number; value: string }>();
+let connectionViewCache: { key: string; expiresAt: number; connections: Map<string, string> } | null = null;
 /** The view cache must follow effective Ansible precedence, including host_vars
  * overriding an inline address. Hash bounded variable files so an edit cannot
  * retain a previously verified endpoint until the time-based cache expires. */
@@ -164,17 +164,33 @@ export function explicitInventoryConnectionId(alias: string): string | null {
   if (!existsSync(file)) return null;
   try {
     const bytes = readFileSync(file);
-    if (bytes.length > 4 * 1024 * 1024 || !getInventoryHost(alias, parseStaticInventory(bytes.toString("utf8")))) return "unresolved";
-    const key = `${file}:${alias}:${connectionConfigurationSignature(file, bytes)}`;
-    const cached = connectionViewCache.get(key);
-    if (cached && cached.expiresAt > Date.now()) return cached.value;
-    let value = "unresolved";
+    if (bytes.length > 4 * 1024 * 1024) return "unresolved";
+    const inventory = parseStaticInventory(bytes.toString("utf8"));
+    if (!getInventoryHost(alias, inventory)) return "unresolved";
+    const key = `${file}:${connectionConfigurationSignature(file, bytes)}`;
+    if (connectionViewCache?.key === key && connectionViewCache.expiresAt > Date.now()) {
+      return connectionViewCache.connections.get(alias) ?? "unresolved";
+    }
+    const connections = new Map<string, string>();
     try {
-      const connection = connectionFromInventoryVariables(alias, resolvedInventoryVariables(alias, file));
-      if (connection.user) value = assetConnectionId(connection);
+      // One native snapshot serves the list, avoiding a blocking process per host.
+      // shortcut: this lookup is synchronous; make view callers async before supporting slow inventory sources.
+      const output = execFileSync("ansible-inventory", ["-i", file, "--list", "--playbook-dir", path.resolve(process.cwd(), "..", "ansible")], {
+        cwd: path.resolve(process.cwd(), ".."), encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+      });
+      const variables = JSON.parse(output)?._meta?.hostvars;
+      if (!variables || typeof variables !== "object" || Array.isArray(variables)) throw new Error("Inventory не вернул переменные хостов.");
+      for (const host of inventory.hosts) {
+        const values = Object.hasOwn(variables, host.alias) ? variables[host.alias] : {};
+        if (!values || typeof values !== "object" || Array.isArray(values)) continue;
+        try {
+          const connection = connectionFromInventoryVariables(host.alias, values);
+          if (connection.user) connections.set(host.alias, assetConnectionId(connection));
+        } catch { /* An invalid endpoint cannot inherit a previous identity. */ }
+      }
     } catch { /* Unknown configuration is a visible coverage gap, not trust. */ }
-    if (connectionViewCache.size > 128) connectionViewCache.clear();
-    connectionViewCache.set(key, { expiresAt: Date.now() + 5_000, value });
-    return value;
+    connectionViewCache = { key, expiresAt: Date.now() + 5_000, connections };
+    return connections.get(alias) ?? "unresolved";
   } catch { return "unresolved"; }
 }
