@@ -34,7 +34,7 @@ function fixture(count = 3, positives = 1) {
   };
 }
 
-test("the selected source is complete only when every native result and positive finding survives", () => {
+test("the selected source is complete only when every native result and positive finding survives", async () => {
   const original = fixture();
   assert.deepEqual(assessAstraOvalEvidence(original.scanner, original.findings), {
     complete: true, reason: "exact_scoped_definition_states_present", definitionCount: 3,
@@ -66,7 +66,7 @@ test("the selected source is complete only when every native result and positive
   assert.equal(assessAstraOvalEvidence(fixture(0, 0).scanner, []).complete, false);
 });
 
-test("original selected-source 19527-ID sized synthetic JSON survives asset-binding publication; corrupt scope remains partial", () => {
+test("original selected-source 19527-ID sized synthetic JSON survives asset-binding publication; corrupt scope remains partial", async () => {
   const directory = mkdtempSync(path.join(tmpdir(), "hcp-astra-oval-integrity-"));
   const saved = Object.fromEntries(["HCP_STATE_DIR", "HCP_REPORTS_DIR"].map((key) => [key, process.env[key]]));
   process.env.HCP_STATE_DIR = directory;
@@ -95,7 +95,7 @@ test("original selected-source 19527-ID sized synthetic JSON survives asset-bind
     const tampered = structuredClone(base);
     tampered.scanner.evaluatedDefinitionCount--;
     writeFileSync(path.join(stage, bad + ".json"), JSON.stringify(tampered));
-    publishCapturedAssetReports(stage, new Map([
+    await publishCapturedAssetReports(stage, new Map([
       [good + ".json", binding], [bad + ".json", binding],
     ]));
     const accepted = readAnsibleReport(good);
@@ -121,7 +121,7 @@ test("original selected-source 19527-ID sized synthetic JSON survives asset-bind
   }
 });
 
-test("truly missing vendor digest is an unknown scope and always partial in HCP", () => {
+test("truly missing vendor digest is an unknown scope and always partial in HCP", async () => {
   const missing = fixture();
   delete missing.scanner.database.sha256;
   const proof = assessAstraOvalEvidence(missing.scanner, missing.findings);

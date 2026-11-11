@@ -32,17 +32,17 @@ function fixture(name, mode = "astra-oval") {
   const sourceName = mode === "astra-oval" ? `.${id}.source.xml` : `.${id}.xml.datastream.xml`;
   return { stage, id, source, result, resultName, sourceName, report };
 }
-function publish(f) {
-  publishCapturedAssetReports(f.stage, new Map([[`${f.id}.json`, binding]]), { preserveRaw: true });
+async function publish(f) {
+  await publishCapturedAssetReports(f.stage, new Map([[`${f.id}.json`, binding]]), { preserveRaw: true });
   return JSON.parse(readFileSync(path.join(process.env.HCP_REPORTS_DIR, `${f.id}.json`), "utf8"));
 }
 
-test("original OVAL and ARF bytes survive launch staging cleanup and are bound by hashes in the published report", () => {
+test("original OVAL and ARF bytes survive launch staging cleanup and are bound by hashes in the published report", async () => {
   for (const mode of ["astra-oval", "openscap"]) {
     const f = fixture(mode, mode);
     writeFileSync(path.join(f.stage, f.resultName), f.result);
     writeFileSync(path.join(f.stage, f.sourceName), f.source);
-    const report = publish(f);
+    const report = await publish(f);
     rmSync(f.stage, { recursive: true });
     assert.equal(report.rawEvidence.complete, true);
     assert.equal(report.rawEvidence.artifacts.length, 2);
@@ -72,11 +72,11 @@ function noStagingDirectories() {
   assert.deepEqual(readdirSync(path.join(process.env.HCP_REPORTS_DIR, ".raw-evidence")).filter((name) => name.startsWith(".staging-")), []);
 }
 
-test("raw preparation maps each CLI original to its native manifest artifact without reserialization", () => {
+test("raw preparation maps each CLI original to its native manifest artifact without reserialization", async () => {
   for (const native of nativeModes) {
     const f = nativeFixture("native-prepare", native);
     writeFileSync(path.join(f.stage, f.originalName), native.bytes);
-    const prepared = prepareRawScanEvidence(f.stage, `${f.id}.json`, f.report, process.env.HCP_REPORTS_DIR);
+    const prepared = await prepareRawScanEvidence(f.stage, `${f.id}.json`, f.report, process.env.HCP_REPORTS_DIR);
     try {
       assert.deepEqual(prepared.evidence, { version: 1, complete: true, missing: [], artifacts: [{
         kind: native.kind, path: `.raw-evidence/${f.id}/${native.filename}`, sha256: sha(native.bytes), bytes: native.bytes.length,
@@ -87,11 +87,11 @@ test("raw preparation maps each CLI original to its native manifest artifact wit
   }
 });
 
-test("CLI native originals publish byte-for-byte on successful and partial scans, including hidden JSON sidecars", () => {
+test("CLI native originals publish byte-for-byte on successful and partial scans, including hidden JSON sidecars", async () => {
   for (const native of nativeModes) for (const partial of [false, true]) {
     const f = nativeFixture(`native-${partial}`, native, { partial, available: !partial });
     writeFileSync(path.join(f.stage, f.originalName), native.bytes);
-    const report = publish(f);
+    const report = await publish(f);
     rmSync(f.stage, { recursive: true });
     assert.deepEqual(report.rawEvidence, { version: 1, complete: true, missing: [], artifacts: [{
       kind: native.kind, path: `.raw-evidence/${f.id}/${native.filename}`, sha256: sha(native.bytes), bytes: native.bytes.length,
@@ -105,10 +105,10 @@ test("CLI native originals publish byte-for-byte on successful and partial scans
   }
 });
 
-test("missing and unavailable CLI originals are never reconstructed from normalized reports", () => {
+test("missing and unavailable CLI originals are never reconstructed from normalized reports", async () => {
   for (const native of nativeModes) for (const available of [true, false]) {
     const f = nativeFixture(`native-missing-${available}`, native, { available });
-    const report = publish(f);
+    const report = await publish(f);
     assert.deepEqual(report.rawEvidence, { version: 1, complete: false, missing: [native.kind], artifacts: [] });
     assert.equal(report.partial, true);
     assert.equal(report.scanner.available, available);
@@ -117,25 +117,25 @@ test("missing and unavailable CLI originals are never reconstructed from normali
   }
 });
 
-test("native originals preserve opt-in and immutable publication semantics", () => {
+test("native originals preserve opt-in and immutable publication semantics", async () => {
   for (const native of nativeModes) {
     const f = nativeFixture("native-immutable", native);
     writeFileSync(path.join(f.stage, f.originalName), native.bytes);
-    const report = publish(f);
+    const report = await publish(f);
     writeFileSync(path.join(f.stage, f.originalName), "replacement");
-    assert.throws(() => publish(f), /уже сохранены|уже существует/);
+    await assert.rejects(() => publish(f), /уже сохранены|уже существует/);
     const artifact = path.join(process.env.HCP_REPORTS_DIR, report.rawEvidence.artifacts[0].path);
     assert.deepEqual(readFileSync(artifact), native.bytes);
     noStagingDirectories();
     const legacy = nativeFixture("native-opt-out", native);
-    publishCapturedAssetReports(legacy.stage, new Map([[`${legacy.id}.json`, binding]]));
+    await publishCapturedAssetReports(legacy.stage, new Map([[`${legacy.id}.json`, binding]]));
     const normalized = JSON.parse(readFileSync(path.join(process.env.HCP_REPORTS_DIR, `${legacy.id}.json`)));
     assert.equal(normalized.rawEvidence, undefined);
     assert.equal(existsSync(path.join(process.env.HCP_REPORTS_DIR, ".raw-evidence", legacy.id)), false);
   }
 });
 
-test("invalid native files fail closed and remove prepared copies and staging directories", () => {
+test("invalid native files fail closed and remove prepared copies and staging directories", async () => {
   for (const native of nativeModes) for (const scenario of ["symlink", "empty", "directory", "oversize"]) {
     const f = nativeFixture(`native-invalid-${scenario}`, native);
     const original = path.join(f.stage, f.originalName);
@@ -145,20 +145,20 @@ test("invalid native files fail closed and remove prepared copies and staging di
       writeFileSync(original, "");
       if (scenario === "oversize") truncateSync(original, 384 * 1024 * 1024 + 1);
     }
-    assert.throws(() => publish(f), /доказательств|контрольн|тип|ссылк/i);
+    await assert.rejects(() => publish(f), /доказательств|контрольн|тип|ссылк/i);
     assert.equal(existsSync(path.join(process.env.HCP_REPORTS_DIR, `${f.id}.json`)), false);
     assert.equal(existsSync(path.join(process.env.HCP_REPORTS_DIR, ".raw-evidence", f.id)), false);
     noStagingDirectories();
   }
 });
 
-test("standalone XCCDF fallback keeps existing XML paths and checksum validation", () => {
+test("standalone XCCDF fallback keeps existing XML paths and checksum validation", async () => {
   const f = fixture("standalone-xccdf", "openscap");
   f.report.scanner.rawResultSha256 = sha(f.result);
   writeFileSync(path.join(f.stage, `${f.id}.json`), JSON.stringify(f.report));
   writeFileSync(path.join(f.stage, f.resultName), f.result);
   writeFileSync(path.join(f.stage, `.${f.id}.xml.evaluated-xccdf.xml`), f.source);
-  const report = publish(f);
+  const report = await publish(f);
   assert.deepEqual(report.rawEvidence.artifacts.map(({ kind, path: file }) => [kind, file]), [
     ["arf", `.raw-evidence/${f.id}/arf.xml`], ["source", `.raw-evidence/${f.id}/source.xml`],
   ]);
@@ -166,15 +166,15 @@ test("standalone XCCDF fallback keeps existing XML paths and checksum validation
   noStagingDirectories();
 });
 
-test("missing original evidence stays partial rather than claiming a complete auditable run", () => {
+test("missing original evidence stays partial rather than claiming a complete auditable run", async () => {
   const f = fixture("missing");
-  const report = publish(f);
+  const report = await publish(f);
   assert.equal(report.partial, true);
   assert.equal(report.rawEvidence.complete, false);
   assert.deepEqual(report.rawEvidence.missing.sort(), ["oval-results", "source"]);
 });
 
-test("raw evidence refuses a symlink or a checksum different from the normalized source/result", () => {
+test("raw evidence refuses a symlink or a checksum different from the normalized source/result", async () => {
   for (const scenario of ["symlink", "wrong-hash", "directory", "oversize"]) {
     const f = fixture(scenario);
     writeFileSync(path.join(f.stage, f.sourceName), f.source);
@@ -184,7 +184,42 @@ test("raw evidence refuses a symlink or a checksum different from the normalized
       writeFileSync(path.join(f.stage, f.resultName), "different native result");
       if (scenario === "oversize") truncateSync(path.join(f.stage, f.resultName), 384 * 1024 * 1024 + 1);
     }
-    assert.throws(() => publish(f), /доказательств|контрольн|тип|ссылк/i);
+    await assert.rejects(() => publish(f), /доказательств|контрольн|тип|ссылк/i);
     assert.equal(existsSync(path.join(process.env.HCP_REPORTS_DIR, `${f.id}.json`)), false);
   }
+});
+
+test("native publication yields to other requests before committing complete evidence", async () => {
+  const f = fixture("responsive");
+  const bytes = Buffer.alloc(4 * 1024 * 1024, 0x61);
+  f.report.scanner.resultSha256 = sha(bytes);
+  writeFileSync(path.join(f.stage, `${f.id}.json`), JSON.stringify(f.report));
+  writeFileSync(path.join(f.stage, f.resultName), bytes);
+  writeFileSync(path.join(f.stage, f.sourceName), f.source);
+  let settled = false;
+  const pending = Promise.resolve(publishCapturedAssetReports(f.stage, new Map([[`${f.id}.json`, binding]]), { preserveRaw: true }))
+    .finally(() => { settled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, "native file I/O must let the event loop serve another request");
+  assert.equal(existsSync(path.join(process.env.HCP_REPORTS_DIR, `${f.id}.json`)), false);
+  await pending;
+  const saved = JSON.parse(readFileSync(path.join(process.env.HCP_REPORTS_DIR, `${f.id}.json`)));
+  assert.equal(saved.rawEvidence.complete, true);
+  assert.equal(sha(readFileSync(path.join(process.env.HCP_REPORTS_DIR, saved.rawEvidence.artifacts[0].path))), sha(bytes));
+});
+
+test("concurrent publication keeps one immutable report and cleans the losing prepared copies", async () => {
+  const f = fixture("concurrent");
+  writeFileSync(path.join(f.stage, f.resultName), f.result);
+  writeFileSync(path.join(f.stage, f.sourceName), f.source);
+  const results = await Promise.allSettled([publish(f), publish(f)]);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  const failure = results.find((result) => result.status === "rejected");
+  assert.match(failure.reason.message, /уже сохранены|уже существует/);
+  const report = results.find((result) => result.status === "fulfilled").value;
+  for (const artifact of report.rawEvidence.artifacts) {
+    assert.equal(sha(readFileSync(path.join(process.env.HCP_REPORTS_DIR, artifact.path))), artifact.sha256);
+  }
+  assert.deepEqual(readdirSync(process.env.HCP_REPORTS_DIR).filter((name) => name.startsWith(".asset-report-")), []);
+  noStagingDirectories();
 });

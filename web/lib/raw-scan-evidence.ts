@@ -1,4 +1,5 @@
-import { closeSync, constants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, mkdtempSync, openSync, readSync, rmSync, writeSync } from "node:fs";
+import { constants, existsSync, lstatSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import path from "node:path";
 
@@ -20,36 +21,40 @@ function checksum(value: unknown) {
 
 /** Copy from one opened regular file; never follow a scanner-controlled link.
  * Originals are copied in chunks, independently of the JSON memory budget. */
-function copyOriginal(source: string, destination: string, expectedHash: string | null) {
-  const input = openSync(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  let output: number | undefined;
+async function copyOriginal(source: string, destination: string, expectedHash: string | null) {
+  const input = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  let output: FileHandle | undefined;
   try {
-    const before = fstatSync(input);
+    const before = await input.stat();
     if (!before.isFile() || before.size <= 0 || before.size > MAX_FILE_BYTES) throw new Error("Недопустимый тип или размер исходного доказательства сканера.");
-    output = openSync(destination, "wx", 0o600);
+    output = await open(destination, "wx", 0o600);
     const hash = createHash("sha256");
     const buffer = Buffer.allocUnsafe(1024 * 1024);
     let bytes = 0;
     for (;;) {
-      const size = readSync(input, buffer, 0, buffer.length, null);
+      const { bytesRead: size } = await input.read(buffer, 0, buffer.length, null);
       if (!size) break;
       bytes += size;
       if (bytes > MAX_FILE_BYTES) throw new Error("Исходное доказательство превысило допустимый размер.");
       hash.update(buffer.subarray(0, size));
-      for (let offset = 0; offset < size;) offset += writeSync(output, buffer, offset, size - offset);
+      for (let offset = 0; offset < size;) {
+        const { bytesWritten } = await output.write(buffer, offset, size - offset, null);
+        if (!bytesWritten) throw new Error("Не удалось полностью записать исходное доказательство.");
+        offset += bytesWritten;
+      }
     }
-    const after = fstatSync(input);
+    const after = await input.stat();
     const sha256 = hash.digest("hex");
     if (bytes !== before.size || after.size !== before.size || after.mtimeMs !== before.mtimeMs || after.ctimeMs !== before.ctimeMs
       || expectedHash && sha256 !== expectedHash) throw new Error("Исходное доказательство изменилось или его контрольная сумма не совпадает с отчётом.");
-    fsyncSync(output);
+    await output.sync();
     return { bytes, sha256 };
-  } finally { if (output !== undefined) closeSync(output); closeSync(input); }
+  } finally { try { await output?.close(); } finally { await input.close(); } }
 }
 
 /** Prepare native originals privately. The report publisher commits them before
  * publishing the JSON that names their hashes. This is not publisher trust. */
-export function prepareRawScanEvidence(stage: string, file: string, report: Record<string, unknown>, reportsDirectory: string): PreparedRawEvidence | null {
+export async function prepareRawScanEvidence(stage: string, file: string, report: Record<string, unknown>, reportsDirectory: string): Promise<PreparedRawEvidence | null> {
   if (!["openscap", "astra-oval", "nmap", "ssh-audit", "lynis"].includes(String(report.mode))) return null;
   if (!/^[A-Za-z0-9_.-]{1,220}\.json$/.test(file)) throw new Error("Недопустимое имя отчёта для исходных доказательств.");
   const id = file.slice(0, -5);
@@ -81,7 +86,7 @@ export function prepareRawScanEvidence(stage: string, file: string, report: Reco
       if (matches.length !== 1) throw new Error("Неоднозначный набор исходных доказательств сканера.");
       const source = path.join(stage, matches[0]);
       if (lstatSync(source).isSymbolicLink()) throw new Error("Ссылка вместо исходного доказательства сканера недопустима.");
-      const copied = copyOriginal(source, path.join(temporaryDirectory, spec.filename), spec.expected);
+      const copied = await copyOriginal(source, path.join(temporaryDirectory, spec.filename), spec.expected);
       total += copied.bytes;
       if (total > MAX_TOTAL_BYTES) throw new Error("Суммарный размер исходных доказательств превышает допустимый бюджет.");
       evidence.artifacts.push({ kind: spec.kind, path: path.posix.join(".raw-evidence", id, spec.filename), ...copied });

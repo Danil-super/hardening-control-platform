@@ -336,7 +336,7 @@ export async function runAnsiblePlaybook({
     throw error;
   } finally {
     if (reportStage && action !== "packageInventory") reportAuditProgress("report");
-    try { if (reportStage) publishCapturedAssetReports(reportStage, expectedReports, { preserveRaw }); }
+    try { if (reportStage) await publishCapturedAssetReports(reportStage, expectedReports, { preserveRaw }); }
     finally {
       if (reportStage) rmSync(reportStage, { recursive: true, force: true });
       assetExecution?.release();
