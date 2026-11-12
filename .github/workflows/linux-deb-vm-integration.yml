@@ -32,6 +32,7 @@ on:
       - web/lib/asset-report-publication.ts
       - web/lib/state-store.ts
       - web/tests/_typescript-loader.mjs
+      - web/scripts/compile-server-modules.mjs
       - web/package*.json
   push:
     branches: [main]
@@ -64,6 +65,7 @@ on:
       - web/lib/asset-report-publication.ts
       - web/lib/state-store.ts
       - web/tests/_typescript-loader.mjs
+      - web/scripts/compile-server-modules.mjs
       - web/package*.json
 
 concurrency:

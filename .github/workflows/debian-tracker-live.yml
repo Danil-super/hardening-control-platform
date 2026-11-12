@@ -9,6 +9,7 @@ on:
       - web/lib/debian-tracker-crosscheck.ts
       - web/tests/debian-tracker-live-acceptance.mjs
       - web/tests/_typescript-loader.mjs
+      - web/scripts/compile-server-modules.mjs
       - web/package*.json
 
 concurrency:
