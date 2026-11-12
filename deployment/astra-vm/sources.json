@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "reviewedAt": "2026-11-04",
+  "reviewedAt": "2026-11-12",
   "imageDocumentation": "https://registry.astralinux.ru/descriptions/cloud/cloudinit/",
   "images": {
     "1.8.1": {
@@ -21,8 +21,8 @@
   "oval": {
     "url": "https://dl.astralinux.ru/artifactory/al-oval/1.8_x86-64/oval-definitions-alse-1.8.xml",
     "metadataUrl": "https://dl.astralinux.ru/artifactory/api/storage/al-oval/1.8_x86-64/oval-definitions-alse-1.8.xml",
-    "bytes": 128465944,
-    "sha256": "ff59143634a610b0ee7e7ac3360e9541d1bbe2d81f3dcbe0788f1331114a7b60",
+    "bytes": 113813544,
+    "sha256": "ee0da8cd6d1cacc72f1ecdc6590677049b02916cfdfec0bfdc8d7e0fc6c07fdd",
     "definitionId": "oval:astra:def:4214940672944626263348052579907",
     "cve": "CVE-2024-5535",
     "fixedVersion": "0:3.4.0-2-astra6",

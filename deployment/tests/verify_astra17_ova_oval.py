@@ -22,8 +22,8 @@ from verify_astra17_ova_audit import HOST, demand, file_sha256, load_private_jso
 VENDOR = {
     "url": "https://dl.astralinux.ru/artifactory/al-oval/1.7_x86-64/oval-definitions-alse-1.7.xml",
     "metadataUrl": "https://dl.astralinux.ru/artifactory/api/storage/al-oval/1.7_x86-64/oval-definitions-alse-1.7.xml",
-    "bytes": 134668815,
-    "sha256": "c9364c80d664907dc472475d2ef57689c314abecede7a58e7e9dae8250891d17",
+    "bytes": 171177747,
+    "sha256": "87bc54ce8fd972921c1fb51f7a7515dcfed51a5f0f74aa97c5ec17aa1feb4afc",
 }
 NS_DEFINITION = "{http://oval.mitre.org/XMLSchema/oval-definitions-5}definition"
 ID = re.compile(r"^oval:[A-Za-z0-9_.:-]{3,200}$")

@@ -39,9 +39,9 @@ class OriginalVendorOvaSourceTests(unittest.TestCase):
         return original, {"oval:astra:def:10", "oval:astra:def:20"}
 
     def test_original_official_17_full_definition_source_is_exact_pinned(self):
-        self.assertEqual(oval.VENDOR["bytes"], 134668815)
+        self.assertEqual(oval.VENDOR["bytes"], 171177747)
         self.assertEqual(oval.VENDOR["sha256"],
-                         "c9364c80d664907dc472475d2ef57689c314abecede7a58e7e9dae8250891d17")
+                         "87bc54ce8fd972921c1fb51f7a7515dcfed51a5f0f74aa97c5ec17aa1feb4afc")
         self.assertIn("1.7_x86-64", oval.VENDOR["url"])
         self.assertNotIn("latest", oval.VENDOR["url"])
 
