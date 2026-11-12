@@ -1,0 +1,58 @@
+{
+  "date": "2026-11-12",
+  "scope": "local preparation explicitly selected by operator",
+  "sourceRevision": "89b25ac5506985adde50db702988d108cd86dd45",
+  "sourceImage": "sha256:79cee278f3ac4c96c64e5782a053b8ade478c1d7f5686bcf88e1a53785559902",
+  "backup": {
+    "manifestSha256": "41fb8c841afab1db47b089415eb6c614b18cc45af0968e35179702421e3f2c72",
+    "archiveSizes": {
+      "runtime.tar.gz": 454056954,
+      "settings.tar.gz": 5302,
+      "image.tar.gz": 1109852606
+    },
+    "totalBundleBytes": 1563915547,
+    "checkedTables": 13,
+    "reportFilesPreserved": 119,
+    "primaryPauseSeconds": 78.417,
+    "structuralValidationPassed": true
+  },
+  "isolatedRestore": {
+    "ok": true,
+    "localElapsedSeconds": 346.079,
+    "activeReports": 34,
+    "archivedReports": 41,
+    "pdfFindingIdsVerified": 4135,
+    "originalXmlManifestVerified": true,
+    "hmacEntries": 277,
+    "fullPayloadProtection": true,
+    "restoredLoginAndAuthCsrfVerified": true,
+    "controlledSessionRejectedAfterRevocation": true,
+    "sourceDataPreserved": true,
+    "internalNetwork": true,
+    "publicPortsPublished": false,
+    "restoredControllerStopped": true,
+    "controllerOomKilled": false,
+    "controllerMemoryLimitBytes": 3221225472,
+    "testVirtualMachinesStarted": 0
+  },
+  "transferPreparation": {
+    "effectiveEnvironmentIncluded": true,
+    "toolSourceRevision": "89b25ac5506985adde50db702988d108cd86dd45",
+    "toolSourceSha256": "f92980e1de266e7126607f3181e9688365e69b561d6b9a5ee5466cd2b6b20fb0",
+    "packagedUtilitiesValidatedBundle": true,
+    "pinsKeptInSeparateLocalDirectory": true,
+    "independentStorageVerified": false
+  },
+  "memory": {
+    "minimumAvailableBytes": 5391757312,
+    "guardReserveBytes": 2147483648,
+    "guardTripped": false
+  },
+  "primaryHealthyAtEnd": true,
+  "remaining": [
+    "No external disk or independent server/NAS used",
+    "Pins were captured and stored on the same physical computer",
+    "No loss-of-workstation or different-hardware recovery tested",
+    "No new SSH/audit/firewall action from the restored copy"
+  ]
+}
