@@ -87,8 +87,8 @@ afterEach(() => {
 });
 after(() => rmSync(compiled.directory, { recursive: true, force: true }));
 
-test("native inventory resolves the repository's default key template without evaluating arbitrary Jinja", native, () => {
-  const frozen = freezeInventoryTargets("fixture-one");
+test("native inventory resolves the repository's default key template without evaluating arbitrary Jinja", native, async () => {
+  const frozen = await freezeInventoryTargets("fixture-one");
   try {
     const target = frozen.targets[0];
     assert.match(target.variables.ansible_ssh_private_key_file, /lookup\('env', 'HCP_STATE_DIR'\)/,
@@ -355,12 +355,12 @@ test("a default-port inventory change excludes the old machine and endpoint with
   assert.equal(buildHostCorrelation(alias).findings.length, 0, "unresolved live configuration cannot reuse the old identity as evidence");
 });
 
-test("current evidence uses effective host_vars rather than a shadowed inline endpoint", native, () => {
+test("current evidence uses effective host_vars rather than a shadowed inline endpoint", native, async () => {
   const alias = "fixture-one";
   writeInventory([alias + " ansible_host=192.0.2.10 ansible_user=audit ansible_port=22"]);
   mkdirSync(path.join(directory, "ansible/host_vars"));
   writeFileSync(path.join(directory, "ansible/host_vars/fixture-one.yml"), "ansible_host: 192.0.2.99\n");
-  const frozen = freezeInventoryTargets(alias);
+  const frozen = await freezeInventoryTargets(alias);
   try {
     const effective = frozen.targets[0].connection;
     assert.equal(effective.address, "192.0.2.99", "the real Ansible resolver applies host_vars precedence");
@@ -424,5 +424,29 @@ test("failed or malformed inventory snapshots cannot reuse a previously resolved
   } finally {
     childProcess.execFileSync = invoke;
     syncBuiltinESMExports();
+  }
+});
+
+test("a slow native resolver lets other requests run while preserving the launch inventory snapshot", native, async () => {
+  const executable = execFileSync("which", ["ansible-inventory"], { encoding: "utf8" }).trim();
+  writeFileSync(path.join(directory, "bin/ansible-inventory"), [
+    "#!/usr/bin/python3", "import os, sys, time", "time.sleep(0.25)",
+    `os.execv(${JSON.stringify(executable)}, [${JSON.stringify(executable)}] + sys.argv[1:])`,
+  ].join("\n"), { mode: 0o700 });
+  let frozen; let settled = false;
+  const pending = Promise.resolve(freezeInventoryTargets("fixture-one")).then((value) => {
+    frozen = value; settled = true; return value;
+  });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "inventory resolution must not block the event loop");
+    writeInventory(["fixture-one ansible_host=192.0.2.99 ansible_user=other ansible_port=22"]);
+    await pending;
+    assert.equal(frozen.targets[0].connection.address, "192.0.2.10");
+    assert.equal(frozen.targets[0].connection.user, "audit");
+    assert.equal(frozen.targets[0].connection.port, 2222);
+  } finally {
+    await pending;
+    if (frozen) rmSync(frozen.directory, { recursive: true, force: true });
   }
 });

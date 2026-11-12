@@ -1,10 +1,13 @@
 import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { configuredPrivateKeyPath, isSafeSshHostAddress } from "@/lib/ssh-access";
 import { assetConnectionId } from "@/lib/asset-binding";
+
+const execFileAsync = promisify(execFile);
 
 export type InventoryHost = { alias: string; groups: string[] };
 export type StaticInventory = { hosts: InventoryHost[]; groups: string[] };
@@ -89,6 +92,10 @@ export function resolvedInventoryVariables(alias: string, inventoryPath = path.r
     cwd: path.resolve(process.cwd(), ".."), encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024,
     env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
   });
+  return parseInventoryVariables(output);
+}
+
+function parseInventoryVariables(output: string) {
   const variables = JSON.parse(output);
   if (!variables || typeof variables !== "object" || Array.isArray(variables)) throw new Error("Inventory не вернул переменные хоста.");
   return variables as Record<string, unknown>;
@@ -111,7 +118,7 @@ export function connectionFromInventoryVariables(alias: string, variables: Recor
 }
 
 /** Resolve every target from one private INI snapshot before any network await. */
-export function freezeInventoryTargets(limit = "linux_hosts") {
+export async function freezeInventoryTargets(limit = "linux_hosts") {
   const source = path.resolve(process.cwd(), "..", "ansible", "inventory.ini");
   const bytes = readFileSync(source);
   if (bytes.length > 4 * 1024 * 1024) throw new Error("Inventory превышает допустимые 4 МиБ.");
@@ -124,10 +131,15 @@ export function freezeInventoryTargets(limit = "linux_hosts") {
   try {
     const sourcePath = path.join(directory, "source.ini");
     writeFileSync(sourcePath, bytes, { mode: 0o600 });
-    const resolved = targets.map((host) => {
-      const variables = resolvedInventoryVariables(host.alias, sourcePath);
-      return { ...host, variables, connection: connectionFromInventoryVariables(host.alias, variables) };
-    });
+    const resolved = [];
+    for (const host of targets) {
+      const { stdout } = await execFileAsync("ansible-inventory", ["-i", sourcePath, "--host", host.alias, "--playbook-dir", path.resolve(process.cwd(), "..", "ansible")], {
+        cwd: path.resolve(process.cwd(), ".."), encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024,
+        env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+      });
+      const variables = parseInventoryVariables(stdout);
+      resolved.push({ ...host, variables, connection: connectionFromInventoryVariables(host.alias, variables) });
+    }
     return { directory, targets: resolved, inventoryPath: path.join(directory, "inventory.json") };
   } catch (error) { rmSync(directory, { recursive: true, force: true }); throw error; }
 }
