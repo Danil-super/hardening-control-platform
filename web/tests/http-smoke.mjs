@@ -145,6 +145,12 @@ try {
   cookie = login.headers.get("set-cookie").split(";", 1)[0];
   assert.match(cookie, /^hcp_admin_session=/);
   await request("/api/ansible/session");
+  // Exercise cold metadata before another endpoint can warm the server cache.
+  const reportList = await (await request("/api/ansible/reports")).json();
+  assert.ok(reportList.reports.some(report => report.id === reportId));
+  await request(`/api/ansible/reports/${reportId}?dependencies=1`);
+  await request("/api/ansible/hosts");
+  await request("/reports/agentless");
   const auditPdf = await request(`/api/ansible/reports/${reportId}/pdf`);
   assert.equal(auditPdf.headers.get("content-type"), "application/pdf");
   assert.match(auditPdf.headers.get("content-disposition"), /hcp\.pdf/);

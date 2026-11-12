@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
-import { deleteAnsibleReport, listAnsibleReports, listAnsibleReportDependents, readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
+import { deleteAnsibleReport, listAnsibleReportsAsync, listAnsibleReportDependents, listAnsibleReportDependentsAsync, type AnsibleReportDependent, readAnsibleReport, targetAliasFromReport } from "@/lib/ansible-reports";
 import { listProjectReportSourceReferences } from "@/lib/project-report";
 import { appendAuditEvent, getProjectReportRecord, getRemediationPlanItem, listStoredReportReferences, withReportEvidenceLock } from "@/lib/state-store";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-function deletionStatus(reportId: string, hostAlias: string) {
+function deletionStatus(reportId: string, hostAlias: string, dependents: AnsibleReportDependent[] = listAnsibleReportDependents(reportId)) {
   const references = [
-    ...listAnsibleReportDependents(reportId).map((item) => ({
+    ...dependents.map((item) => ({
       id: item.id, kind: "report", label: `Последующий тест · ${item.mode}`,
       description: "Этот тест использует выбранный отчёт как исходные данные. Сначала удалите последующий тест, если он больше не нужен.",
       href: `/reports/agentless/${encodeURIComponent(item.id)}`,
@@ -52,9 +52,9 @@ export async function GET(
   if (new URL(request.url).searchParams.get("dependencies") === "1") {
     try {
       const id = decodedReportId(reportId);
-      const summary = listAnsibleReports("all").find((item) => item.id === id);
+      const summary = (await listAnsibleReportsAsync("all")).find((item) => item.id === id);
       if (!summary) return NextResponse.json({ ok: false, error: "report_not_found", message: "Отчёт не найден." }, { status: 404 });
-      return NextResponse.json({ ok: true, ...deletionStatus(id, targetAliasFromReport(summary)) });
+      return NextResponse.json({ ok: true, ...deletionStatus(id, targetAliasFromReport(summary), await listAnsibleReportDependentsAsync(id)) });
     } catch {
       return NextResponse.json({ ok: false, message: "Не удалось проверить использование отчёта. Удаление не выполнено." }, { status: 400 });
     }

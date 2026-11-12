@@ -5,12 +5,15 @@
   "scripts": {
     "dev": "next dev",
     "dev:lan": "next dev --hostname 0.0.0.0",
-    "build": "next build",
+    "build": "node scripts/build-report-reader.mjs && next build",
     "typecheck": "tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
     "test:http": "node tests/http-smoke.mjs",
     "start": "next start",
-    "start:lan": "next start --hostname 0.0.0.0"
+    "start:lan": "next start --hostname 0.0.0.0",
+    "predev": "node scripts/build-report-reader.mjs",
+    "predev:lan": "node scripts/build-report-reader.mjs",
+    "pretest": "node scripts/build-report-reader.mjs"
   },
   "dependencies": {
     "@radix-ui/react-select": "^2.3.8",

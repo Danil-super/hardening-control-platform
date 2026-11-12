@@ -6,7 +6,7 @@ import { DeleteRecordButton } from "@/components/reports/delete-record-button";
 import { ArchiveControls } from "@/components/reports/archive-controls";
 import { readIncidents } from "@/lib/ansible-control";
 import { verifyAuditChain } from "@/lib/state-store";
-import { listAnsibleReports, targetAliasFromReport, type AnsibleReportSummary } from "@/lib/ansible-reports";
+import { listAnsibleReportsAsync, targetAliasFromReport, type AnsibleReportSummary } from "@/lib/ansible-reports";
 
 import { incidentDisplayStatus } from "@/lib/incident-status";
 
@@ -114,7 +114,7 @@ export default async function AgentlessReportsPage({
   const reportView = view === "archive" ? "archive" : "active";
   const journalView = journal === "archive" ? "archive" : "active";
   const hostFilter = requestedHost && /^[a-zA-Z0-9_.-]{1,64}$/.test(requestedHost) ? requestedHost : null;
-  const reports = listAnsibleReports(reportView);
+  const reports = await listAnsibleReportsAsync(reportView);
   const scopedReports = hostFilter
     ? reports.filter((report) => targetAliasFromReport(report) === hostFilter)
     : reports;

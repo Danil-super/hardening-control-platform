@@ -39,7 +39,7 @@ test("host list exposes a zero-audit summary on a new install with no reports di
     "next/server": { NextResponse: { json: (body, options) => Response.json(body, options) } },
     "@/lib/ansible-reports": {
       getReportsDir: () => "/not-yet-created/reports",
-      listAnsibleReports: () => { throw new Error("Reports directory absent: must not enumerate files"); },
+      listAnsibleReportsAsync: async () => [],
       targetAliasFromReport: () => { throw new Error("No reports exist"); },
     },
     "@/lib/host-risk-summary": {

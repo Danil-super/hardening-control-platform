@@ -16,3 +16,5 @@ ansible/ssh-host-keys
 ansible/playbooks/custom
 secrets
 *.log
+
+web/.hcp-report-reader/

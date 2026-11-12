@@ -75,6 +75,7 @@ ENV NODE_ENV=production \
 WORKDIR /app
 COPY --chown=node:node --from=dependencies /app/web/node_modules ./web/node_modules
 COPY --chown=node:node --from=build /app/web/.next ./web/.next
+COPY --chown=node:node --from=build /app/web/.hcp-report-reader ./web/.hcp-report-reader
 COPY --from=trivy /usr/local/bin/trivy /usr/local/bin/trivy
 COPY --chown=node:node web/package.json web/package-lock.json ./web/
 COPY --chown=node:node web/public ./web/public
