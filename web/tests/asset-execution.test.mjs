@@ -33,7 +33,7 @@ writeFileSync(path.join(compiled.directory, "ssh-access.mjs"), [
 ].join("\n"));
 const { installObservation } = await import(compiled.url("ssh-access"));
 const { prepareAssetExecution } = await import(compiled.url("asset-execution"));
-const { freezeInventoryTargets, connectionFromInventoryVariables, explicitInventoryConnectionId } = await import(compiled.url("inventory"));
+const { freezeInventoryTargets, connectionFromInventoryVariables, explicitInventoryConnectionId, withInventoryConnectionView } = await import(compiled.url("inventory"));
 const { runAnsiblePlaybook } = await import(compiled.url("ansible-control"));
 const { runScheduledInventoryAudit } = await import(compiled.url("scheduled-audit"));
 const credentials = await import(compiled.url("host-credentials"));
@@ -449,4 +449,52 @@ test("a slow native resolver lets other requests run while preserving the launch
     await pending;
     if (frozen) rmSync(frozen.directory, { recursive: true, force: true });
   }
+});
+
+test("concurrent host views share a nonblocking native inventory lookup", native, async () => {
+  const executable = execFileSync("which", ["ansible-inventory"], { encoding: "utf8" }).trim();
+  const calls = path.join(directory, "view-calls");
+  writeFileSync(path.join(directory, "bin/ansible-inventory"), [
+    "#!/usr/bin/python3", "import os, sys, time",
+    `with open(${JSON.stringify(calls)}, 'a') as f: f.write('call\\n')`,
+    "time.sleep(0.25)",
+    `os.execv(${JSON.stringify(executable)}, [${JSON.stringify(executable)}] + sys.argv[1:])`,
+  ].join("\n"), { mode: 0o700 });
+  let settled = false;
+  const pending = Promise.all([1, 2, 3].map(() => withInventoryConnectionView(() => explicitInventoryConnectionId("fixture-one"))))
+    .then((value) => { settled = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, "host views must yield while Ansible resolves variables");
+  const expected = identity.assetConnectionId({ address: "192.0.2.10", port: 2222, user: "audit" });
+  assert.deepEqual(await pending, [expected, expected, expected]);
+  assert.equal(readFileSync(calls, "utf8"), "call\n", "concurrent misses and nested lookups must share one native process");
+});
+
+test("an inventory edit during an async host view cannot inherit the old endpoint", native, async () => {
+  const executable = execFileSync("which", ["ansible-inventory"], { encoding: "utf8" }).trim();
+  writeFileSync(path.join(directory, "bin/ansible-inventory"), [
+    "#!/usr/bin/python3", "import os, sys, time", "time.sleep(0.25)",
+    `os.execv(${JSON.stringify(executable)}, [${JSON.stringify(executable)}] + sys.argv[1:])`,
+  ].join("\n"), { mode: 0o700 });
+  const pending = withInventoryConnectionView(() => explicitInventoryConnectionId("fixture-one"));
+  await new Promise((resolve) => setImmediate(resolve));
+  writeInventory(["fixture-one ansible_host=192.0.2.99 ansible_user=other ansible_port=2222"]);
+  assert.equal(await pending, "unresolved");
+  const expected = identity.assetConnectionId({ address: "192.0.2.99", port: 2222, user: "other" });
+  assert.equal(await withInventoryConnectionView(() => explicitInventoryConnectionId("fixture-one")), expected);
+  assert.equal(explicitInventoryConnectionId("fixture-one"), expected);
+});
+
+test("failed async host views cannot reuse a valid old connection or leak request context", native, async () => {
+  const expected = identity.assetConnectionId({ address: "192.0.2.10", port: 2222, user: "audit" });
+  assert.equal(await withInventoryConnectionView(() => explicitInventoryConnectionId("fixture-one")), expected);
+  for (const [index, script] of ["raise SystemExit(1)", "print('{}')", "print('not-json')"].entries()) {
+    writeInventory([`# changed ${index}`, "fixture-one ansible_host=192.0.2.99 ansible_user=other"]);
+    writeFileSync(path.join(directory, "bin/ansible-inventory"), "#!/usr/bin/python3\n" + script + "\n", { mode: 0o700 });
+    await withInventoryConnectionView(() => assert.equal(explicitInventoryConnectionId("fixture-one"), "unresolved"));
+  }
+  rmSync(path.join(directory, "bin/ansible-inventory"));
+  writeInventory(["fixture-one ansible_host=192.0.2.10 ansible_user=audit ansible_port=2222"]);
+  await assert.rejects(withInventoryConnectionView(() => { throw new Error("view failed"); }), /view failed/);
+  assert.equal(explicitInventoryConnectionId("fixture-one"), expected, "a completed or failed request must release its scoped snapshot");
 });

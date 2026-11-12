@@ -7,6 +7,7 @@ import { buildHostRiskSummary, isSecurityAudit, type HostRiskSummary } from "@/l
 import { isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 import { HostCredentialError, credentialKeyPath, publicCredentialSummary, validateHostCredential } from "@/lib/host-credentials";
 import { assertAssetIdle, hasActiveRemediationForHost } from "@/lib/state-store";
+import { withInventoryConnectionView } from "@/lib/inventory";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -273,6 +274,10 @@ function attachReports(hosts: InventoryHost[], reportsPath: string) {
 }
 
 export async function GET() {
+  return withInventoryConnectionView(hostListResponse);
+}
+
+function hostListResponse() {
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
   const reportsPath = getReportsDir(repoRoot);

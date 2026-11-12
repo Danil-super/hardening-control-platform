@@ -23,7 +23,15 @@ function load(file, stubs) {
 
 test("host list exposes a zero-audit summary on a new install with no reports directory", async () => {
   const observed = [];
+  let viewResolved = false;
+  let viewCalls = 0;
   const endpoint = load("app/api/ansible/hosts/route.ts", {
+    "@/lib/inventory": { withInventoryConnectionView: async work => {
+      viewCalls++;
+      await Promise.resolve();
+      viewResolved = true;
+      return work();
+    } },
     "node:fs": {
       existsSync: file => String(file).endsWith("/ansible/inventory.ini"),
       readFileSync: () => "[linux_hosts]\nastra-lab ansible_host=192.0.2.10 ansible_user=operator ansible_port=22\n",
@@ -36,6 +44,7 @@ test("host list exposes a zero-audit summary on a new install with no reports di
     },
     "@/lib/host-risk-summary": {
       buildHostRiskSummary: (alias, reports) => {
+        assert.equal(viewResolved, true, "host risks must wait for the nonblocking inventory view");
         observed.push({ alias, reports });
         return {
           critical: 0, high: 0, medium: 0, low: 0, unknown: 0, info: 0,
@@ -54,6 +63,7 @@ test("host list exposes a zero-audit summary on a new install with no reports di
   const body = await response.json();
   assert.equal(response.status, 200);
   assert.equal(body.ok, true);
+  assert.equal(viewCalls, 1);
   assert.equal(body.summary.total, 1);
   assert.equal(body.summary.withReports, 0);
   assert.equal(body.hosts[0].alias, "astra-lab");
