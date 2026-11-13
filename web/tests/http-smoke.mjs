@@ -48,6 +48,18 @@ writeFileSync(path.join(reports, `${reportId}.json`), JSON.stringify({
   findings: [{ id: "fixture", title: "Сканер недоступен", description: "Контролируемый вход интеграционного теста",
     category: "CVE пакеты", source: "trivy", risk: "info", status: "manual", recommendation: "Повторить аудит", remediationAvailable: false }],
 }));
+const inventoryGuidanceFixtures = [
+  ["astra", { ID: "astra", VERSION_ID: "1.7" }, "Для CVE Astra используйте OVAL / OpenSCAP."],
+  ["debian", { ID: "debian", VERSION_ID: "12" }, "Запустите проверку пакетов и CVE через Trivy."],
+  ["derivative", { ID: "fixture-linux", ID_LIKE: "debian" }, "Нужен CVE-источник производителя ОС."],
+];
+for (const [id, osRelease] of inventoryGuidanceFixtures) {
+  writeFileSync(path.join(reports, `smoke-packages-${id}.json`), JSON.stringify({
+    inventoryHost: "smoke", hostname: "fixture-host", createdAt: new Date().toISOString(),
+    mode: "packages", profileId: "packages", packageInventory: { osRelease, packageCount: 1, manager: "dpkg" },
+    packages: [{ name: "fixture-package", version: "1", architecture: "all" }], findings: [], events: [],
+  }));
+}
 let child;
 const ovalReportId = "smoke-astra-oval-run-http";
 writeFileSync(path.join(reports, `${ovalReportId}.json`), JSON.stringify({
@@ -151,6 +163,11 @@ try {
   await request(`/api/ansible/reports/${reportId}?dependencies=1`);
   await request("/api/ansible/hosts");
   await request("/reports/agentless");
+  for (const [id, , expected] of inventoryGuidanceFixtures) {
+    const page = await (await request(`/reports/agentless/smoke-packages-${id}`)).text();
+    assert.ok(page.includes(expected), `CVE guidance for ${id}`);
+    if (id !== "debian") assert.ok(!page.includes("Запустите проверку пакетов и CVE через Trivy."));
+  }
   const auditPdf = await request(`/api/ansible/reports/${reportId}/pdf`);
   assert.equal(auditPdf.headers.get("content-type"), "application/pdf");
   assert.match(auditPdf.headers.get("content-disposition"), /hcp\.pdf/);

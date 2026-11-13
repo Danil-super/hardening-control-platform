@@ -16,6 +16,7 @@ import { auditReportLimitations } from "@/lib/audit-result";
 import { summarizeDebianAptRepositoryEvidence } from "@/lib/debian-apt-provenance";
 import { summarizeDebianSignedReleases } from "@/lib/debian-signed-release";
 import { summarizeDebianPackageIndexes } from "@/lib/debian-package-index-evidence";
+import { resolveLinuxPlatform } from "@/lib/linux-platform";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -89,6 +90,8 @@ export default async function AgentlessReportDetailPage({
   const raw = asRecord(report.raw);
   const defaultIpv4 = asRecord(raw.defaultIpv4);
   const packageInventory = asRecord(raw.packageInventory);
+  const packageCveProvider = resolveLinuxPlatform(asRecord(packageInventory.osRelease) as Record<string, string>,
+    typeof packageInventory.astraVersion === "string" ? packageInventory.astraVersion : null).packageCveProvider;
   const vulnerabilityScan = asRecord(raw.vulnerabilityScan);
   const isAstraTrivyReport = report.mode === "vulnerabilities" && report.available && vulnerabilityScan.provider === "Trivy" && /astra/i.test(report.os ?? "");
   const sourcePackages = isAstraTrivyReport && typeof vulnerabilityScan.sourcePackageReportId === "string" ? readAnsibleReport(vulnerabilityScan.sourcePackageReportId) : null;
@@ -478,7 +481,7 @@ export default async function AgentlessReportDetailPage({
           <div className="mt-4 grid gap-4 text-sm sm:grid-cols-3">
             <div><p className="text-slate-500">Пакетов найдено</p><p className="mt-1 text-2xl font-semibold text-white">{textValue(packageInventory.packageCount)}</p></div>
             <div><p className="text-slate-500">Менеджер</p><p className="mt-1 text-slate-200">{textValue(packageInventory.manager)}</p></div>
-            <div><p className="text-slate-500">CVE</p><p className="mt-1 text-slate-200">Запустите проверку пакетов и CVE через Trivy.</p></div>
+            <div><p className="text-slate-500">CVE</p><p className="mt-1 text-slate-200">{packageCveProvider === "astra-oval" ? "Для CVE Astra используйте OVAL / OpenSCAP." : packageCveProvider === "trivy" ? "Запустите проверку пакетов и CVE через Trivy." : "Нужен CVE-источник производителя ОС."}</p></div>
           </div>
         </section>
       ) : null}
