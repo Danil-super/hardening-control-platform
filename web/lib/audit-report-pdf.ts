@@ -12,6 +12,7 @@ export function auditPdfSnapshot(report: AnsibleReportDetail, sourceSha256: stri
   const raw = record(report.raw);
   const scanner = record(raw.scanner);
   const inventory = record(raw.packageInventory);
+  const packages = Array.isArray(raw.packages) ? raw.packages : inventory.packages;
   return {
     kind: "audit", id: report.id, hostAlias: report.inventoryHost ?? report.host,
     hostname: report.hostname, os: report.os, mode: report.mode, profileId: report.profileId,
@@ -28,7 +29,7 @@ export function auditPdfSnapshot(report: AnsibleReportDetail, sourceSha256: stri
       status: item.status, source: item.source, description: item.description, recommendation: item.recommendation })),
     events: report.events.map(item => ({ source: text(item.source), message: text(item.message) })),
     facts: report.mode === "facts" ? Object.fromEntries(["kernel", "architecture", "memoryMb", "processorCount", "virtualizationType", "virtualizationRole"].map(key => [key, text(raw[key])])) : {},
-    packages: report.mode === "packages" && Array.isArray(inventory.packages) ? inventory.packages.map(record).map(item => ({ name: text(item.name), version: text(item.version), architecture: text(item.architecture) })) : [],
+    packages: report.mode === "packages" && Array.isArray(packages) ? packages.map(record).map(item => ({ name: text(item.name), version: text(item.version), architecture: text(item.architecture) })) : [],
     scanner: { name: text(scanner.name), version: text(scanner.version) },
   };
 }
