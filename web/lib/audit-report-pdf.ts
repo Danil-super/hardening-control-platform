@@ -29,7 +29,7 @@ export function auditPdfSnapshot(report: AnsibleReportDetail, sourceSha256: stri
       status: item.status, source: item.source, description: item.description, recommendation: item.recommendation })),
     events: report.events.map(item => ({ source: text(item.source), message: text(item.message) })),
     facts: report.mode === "facts" ? Object.fromEntries(["kernel", "architecture", "memoryMb", "processorCount", "virtualizationType", "virtualizationRole"].map(key => [key, text(raw[key])])) : {},
-    packages: report.mode === "packages" && Array.isArray(packages) ? packages.map(record).map(item => ({ name: text(item.name), version: text(item.version), architecture: text(item.architecture) })) : [],
+    packages: report.mode === "packages" && Array.isArray(packages) ? packages.map(record).map(item => ({ name: text(item.name), version: text(item.version), architecture: text(item.arch) || text(item.architecture) })) : [],
     scanner: { name: text(scanner.name), version: text(scanner.version) },
   };
 }

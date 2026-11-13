@@ -31,12 +31,14 @@ test('unavailable, incomplete and historical invalid-time results keep their lim
   assert.deepEqual(snapshot.limitations,['Оценка прервана']);
 });
 test('inventory PDFs preserve every collected package and the supported nested shape', () => {
-  const packages = Array.from({length:3}, (_,i) => ({name:`package-${i}`,version:`1.${i}`,architecture:i%2?'amd64':'all',privateField:'must-not-export'}));
+  const packages = Array.from({length:3}, (_,i) => ({name:`package-${i}`,version:`1.${i}`,arch:['amd64','arm64','all'][i],privateField:'must-not-export'}));
   const report = {id:'package-run',mode:'packages',host:'server',findings:[],events:[],raw:{packageInventory:{packageCount:packages.length,manager:'dpkg'},packages}};
-  const expected = packages.map(({name,version,architecture})=>({name,version,architecture}));
+  const expected = packages.map(({name,version,arch})=>({name,version,architecture:arch}));
   const snapshot = auditPdfSnapshot(report, 'd'.repeat(64));
   assert.deepEqual(snapshot.packages,expected);
   assert.deepEqual(auditPdfSnapshot({...report,raw:{packageInventory:{packages}}},'d'.repeat(64)).packages,expected);
+  assert.deepEqual(auditPdfSnapshot({...report,raw:{packages:expected}},'d'.repeat(64)).packages,expected);
+  assert.deepEqual(auditPdfSnapshot({...report,raw:{packageInventory:{packages:expected}}},'d'.repeat(64)).packages,expected);
   assert.deepEqual(auditPdfSnapshot({...report,mode:'openscap'},'d'.repeat(64)).packages,[]);
 });
 test('the real one-run PDF includes all 4000 controls and the exact JSON checksum without creating a project export', async () => {
