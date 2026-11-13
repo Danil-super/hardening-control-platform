@@ -20,7 +20,8 @@ function save(id, extra = {}) {
 }
 
 test("cold concurrent readers yield to the event loop and preserve summaries and source references", async () => {
-  save("large", { unusedLegacyData: "x".repeat(16 * 1024 * 1024) });
+  save("large", { unusedLegacyData: "x".repeat(65 * 1024 * 1024) });
+  save("large-two", { unusedLegacyData: "y".repeat(65 * 1024 * 1024) });
   save("future", { mode: "unknown-adapter", createdAt: "2099-01-01T00:00:00Z", scanner: { sourceCveReport: "large" } });
   save("delivery", { scanner: { deliveryReportId: "large" } });
   save("package", { vulnerabilityScan: { sourcePackageReportId: "large" }, scanner: { sourceCveReport: "large" } });

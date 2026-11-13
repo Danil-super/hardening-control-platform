@@ -476,7 +476,21 @@ function reportMetadataAsync(view: ArchiveView): Promise<ReportMetadata[]> {
     const records = files.map(file => cachedMetadata(file));
     const missing = files.filter((_file, index) => !records[index]);
     if (missing.length) {
-      const loaded = await readMetadataInWorker(missing);
+      const loaded: ReportMetadata[] = [];
+      let batch: string[] = [];
+      let bytes = 0;
+      for (const file of missing) {
+        const size = statSync(file).size;
+        // Release each large legacy JSON heap before reading another report.
+        if (batch.length && bytes + size > 64 * 1024 * 1024) {
+          loaded.push(...await readMetadataInWorker(batch));
+          batch = [];
+          bytes = 0;
+        }
+        batch.push(file);
+        bytes += size;
+      }
+      if (batch.length) loaded.push(...await readMetadataInWorker(batch));
       let cursor = 0;
       for (let index = 0; index < files.length; index++) {
         if (!records[index]) records[index] = loaded[cursor++];
