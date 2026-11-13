@@ -7,8 +7,9 @@ FROM ${PYTHON_IMAGE} AS ansible-modern
 
 # Separate controller Python supports current targets without replacing either
 # the Debian Python used by ReportLab or Python on any audited server.
-COPY deployment/requirements/ansible-modern.txt /opt/hcp-tools/requirements/ansible-modern.txt
-RUN python3.13 -m venv /opt/hcp-tools/ansible-modern \
+COPY deployment/requirements/ansible-modern.txt deployment/requirements/pip.txt /opt/hcp-tools/requirements/
+RUN python3.13 -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/hcp-tools/requirements/pip.txt \
+  && python3.13 -m venv /opt/hcp-tools/ansible-modern \
   && /opt/hcp-tools/ansible-modern/bin/python -m pip install --no-cache-dir --require-hashes --only-binary=:all: -r /opt/hcp-tools/requirements/ansible-modern.txt \
   && /opt/hcp-tools/ansible-modern/bin/python -m pip check
 

@@ -58,6 +58,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build --tag hardening-control-platform:test .
+      - name: Verify all Python installers and vendored dependency floors
+        run: docker run --rm -i --network none --entrypoint python3 hardening-control-platform:test < deployment/tests/verify_tool_installers.py
 
   lab:
     needs: [web, ansible]

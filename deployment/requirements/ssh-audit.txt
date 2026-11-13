@@ -3,8 +3,7 @@
 # A wheel hash allows these bytes; it does not attest platform acceptance.
 # Install with --require-hashes --only-binary=:all: and dependency resolution enabled.
 
-pip==26.2.2 \
-    --hash=sha256:fd7f4dfa8190e014013b9f08f3e973f4e4c26ffd179a204895533a7254813a70
+-r pip.txt
 
 setuptools==84.2.1 \
     --hash=sha256:ca140b45d5325a9478f880e351484f62fef15f336462e449ca0c03c873d589c2
