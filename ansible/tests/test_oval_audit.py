@@ -446,6 +446,50 @@ class OvalAuditTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 oval.safe_xml(value)
 
+    def test_xml_encoding_is_checked_after_long_declaration_whitespace(self):
+        for padding in (0, 250, 900):
+            for encoding in (b'ISO-8859-1', b'UTF-7'):
+                raw = b'<?xml version="1.0" ' + b' ' * padding + b'encoding="' + encoding + b'"?><x/>'
+                with self.subTest(padding=padding, encoding=encoding), self.assertRaisesRegex(ValueError, 'UTF-8'):
+                    oval.safe_xml(raw)
+        for raw in (b'<?xml version="1.0" ' + b' ' * 1024 + b'encoding="UTF-8"?><x/>',
+                    b'<?xml version="1.0" encoding="UTF-8"'):
+            with self.subTest(raw=raw[:40]), self.assertRaisesRegex(ValueError, 'XML-декларация'):
+                oval.safe_xml(raw)
+
+    def test_supported_xml_headers_and_long_body_are_accepted(self):
+        for encoding in (b'UTF-8', b'utf8', b'Us-AsCiI'):
+            for bom in (b'', b'\xef\xbb\xbf'):
+                header = b'<?xml version="1.0" encoding=\'' + encoding + b'\'?>'
+                header = header.replace(b' encoding=', b' ' * (1024 - len(header)) + b' encoding=')
+                raw = bom + header + b'<x>' + b'a' * 2048 + b'</x>'
+                with self.subTest(encoding=encoding, bom=bool(bom)):
+                    self.assertEqual(oval.safe_xml(raw).text, 'a' * 2048)
+                    self.assertEqual(len(header), 1024)
+        self.assertEqual(oval.safe_xml(b'<x/>').tag, 'x')
+
+    def test_preparation_enforces_header_contract_before_native_validation(self):
+        for encoding in (b'ISO-8859-1', b'UTF-8'):
+            raw = b'<?xml version="1.0" ' + b' ' * 300 + b'encoding="' + encoding + b'"?>' + source()
+            class Response(io.BytesIO):
+                headers = {'Content-Length': str(len(raw))}
+                def geturl(self): return 'https://mirror.example/db.xml'
+                def getcode(self): return 200
+            class Opener:
+                def open(self, request, timeout): return Response(raw)
+            with self.subTest(encoding=encoding), tempfile.TemporaryDirectory() as directory, patch.object(urllib.request, 'build_opener', return_value=Opener()), patch.object(oval, 'validate_for_transfer') as native, patch.object(oval.shutil, 'which', return_value='/usr/bin/oscap'):
+                target = Path(directory) / 'source.xml'
+                settings = config(raw, mode='online', url='https://mirror.example/db.xml')
+                if encoding == b'UTF-8':
+                    oval.prepare(settings, str(target), validate=True)
+                    self.assertEqual(target.read_bytes(), raw)
+                    native.assert_called_once_with('/usr/bin/oscap', str(target), hashlib.sha256(raw).hexdigest(), len(raw), directory)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'UTF-8'):
+                        oval.prepare(settings, str(target), validate=True)
+                    native.assert_not_called()
+                    self.assertFalse(target.exists())
+
     def test_nonlocal_sql_and_missing_external_variables_prevent_evaluation(self):
         for node in ('<sql57_object/>', '<external_variable/>'):
             raw = source().replace(b'</oval_definitions>', node.encode() + b'</oval_definitions>')

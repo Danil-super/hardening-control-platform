@@ -165,9 +165,15 @@ def safe_xml(raw):
     # with UTF-16/32. No DTD, entities or XInclude are needed by standalone OVAL.
     if b'\x00' in raw or re.search(br'<!\s*(?:DOCTYPE|ENTITY)', raw, re.I):
         raise ValueError('DTD, сущности и кодировки с NUL не разрешены для OVAL.')
-    declaration = re.search(br'<\?xml[^>]*encoding\s*=\s*[\"\']([^\"\']+)', raw[:250], re.I)
-    if declaration and declaration.group(1).lower() not in (b'utf-8', b'utf8', b'us-ascii'):
-        raise ValueError('Для OVAL поддерживается XML UTF-8.')
+    start = 3 if raw.startswith(b'\xef\xbb\xbf') else 0
+    if re.match(br'<\?xml[ \t\r\n]', raw[start:start + 6]):
+        # Bound the entire declaration, as in native HTML export, not a prefix.
+        end = raw.find(b'?>', start, start + 1024)
+        if end < 0:
+            raise ValueError('XML-декларация неполна или превышает допустимый размер.')
+        declaration = re.search(br'encoding\s*=\s*[\"\']([^\"\']+)', raw[start:end])
+        if declaration and declaration.group(1).lower() not in (b'utf-8', b'utf8', b'us-ascii'):
+            raise ValueError('Для OVAL поддерживается XML UTF-8.')
     root = ET.fromstring(raw)
     count = 0
     pending = [(root, 0)]
