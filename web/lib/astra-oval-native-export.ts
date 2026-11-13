@@ -126,11 +126,36 @@ export async function nativeOvalAvailability(reports: string, reportId: string, 
 function xmlSafetyGuard() {
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let tail = "";
+  let declaration = "";
+  let declarationChecked = false;
   return (buffer: Buffer, final = false) => {
     let text: string;
-    try { text = tail + decoder.decode(buffer, { stream: !final }); } catch { throw new NativeExportError("unsafe_xml", "Для HTML требуется безопасный XML в UTF-8."); }
-    if (/\0|<!\s*(?:DOCTYPE|ENTITY)|<\?(?!xml(?:\s|\?>))|<(?:[\w.-]+:)?include\b/i.test(text)) {
+    let decoded: string;
+    try { decoded = decoder.decode(buffer, { stream: !final }); } catch { throw new NativeExportError("unsafe_xml", "Для HTML требуется безопасный XML в UTF-8."); }
+    text = tail + decoded;
+    // A short read may end inside the permitted XML declaration marker.
+    const instructions = final ? text : text.replace(/<\?(?:x(?:m(?:l\??)?)?)?$/i, "");
+    if (/\0|<!\s*(?:DOCTYPE|ENTITY)|<(?:[\w.-]+:)?include\b/i.test(text) || /<\?(?!xml(?:\s|\?>))/i.test(instructions)) {
       throw new NativeExportError("unsafe_xml", "HTML не создаётся: XML содержит внешние сущности, инструкции или включения.");
+    }
+    if (!declarationChecked) {
+      declaration = (declaration + decoded).trimStart();
+      if (!"<?xml".startsWith(declaration) && !declaration.startsWith("<?xml")) {
+        declarationChecked = true;
+      } else {
+        const end = declaration.indexOf("?>");
+        if ((end < 0 && (final || declaration.length > 1024)) || end + 2 > 1024) {
+          throw new NativeExportError("unsafe_xml", "HTML не создаётся: XML-декларация неполна или превышает допустимый размер.");
+        }
+        if (end >= 0) {
+          const encoding = declaration.slice(0, end).match(/\bencoding\s*=\s*(["'])([^"']+)\1/i);
+          if (encoding && !/^(?:utf-8|utf8|us-ascii)$/i.test(encoding[2])) {
+            throw new NativeExportError("unsafe_xml", "Для HTML требуется XML с кодировкой UTF-8.");
+          }
+          declarationChecked = true;
+        }
+      }
+      if (declarationChecked) declaration = "";
     }
     tail = text.slice(-256);
   };

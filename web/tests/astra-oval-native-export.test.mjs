@@ -13,7 +13,7 @@ const reports = path.join(directory, "reports"); mkdirSync(reports);
 after(() => rmSync(directory, { recursive: true, force: true }));
 const source = readFileSync(path.join(web, "lib/astra-oval-native-export.ts"), "utf8");
 const transpile = (text) => ts.transpileModule(text, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ES2022 } }).outputText;
-writeFileSync(path.join(directory, "native.mjs"), transpile(source).replace('"node:child_process"', '"./generator.mjs"'));
+writeFileSync(path.join(directory, "native.mjs"), transpile(source + "\nexport { xmlSafetyGuard };\n").replace('"node:child_process"', '"./generator.mjs"'));
 writeFileSync(path.join(directory, "generator.mjs"), `
 import { spawn as actualSpawn } from "node:child_process";
 export let behavior = "success";
@@ -26,7 +26,7 @@ export function spawn(command, args, options) {
 }
 `);
 const generator = await import(pathToFileURL(path.join(directory, "generator.mjs")).href);
-const { nativeOvalDownload: download, nativeOvalAvailability: availability, nativeReportAvailability: reportAvailability } = await import(pathToFileURL(path.join(directory, "native.mjs")).href);
+const { nativeOvalDownload: download, nativeOvalAvailability: availability, nativeReportAvailability: reportAvailability, xmlSafetyGuard } = await import(pathToFileURL(path.join(directory, "native.mjs")).href);
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 let sequence = 0;
 function fixture(xml = Buffer.from('<?xml version="1.0" encoding="UTF-8"?><oval_results>original XML</oval_results>')) {
@@ -194,6 +194,63 @@ function scannerFixture(mode, kind, extension, original) {
   const save = () => writeFileSync(path.join(reports, `${id}.json`), JSON.stringify(raw)); save();
   return { id, raw, result, save };
 }
+
+test("HTML rejects incompatible or oversized XML declarations while originals stay exact", async () => {
+  for (const [mode, kind] of [["astra-oval", "oval-results"], ["openscap", "arf"]]) {
+    for (const declaration of [
+      '<?xml version="1.0" encoding="ISO-8859-1"?>',
+      "<?xml version='1.0' " + " ".repeat(300) + "encoding='utf-7'?>",
+      '<?xml version="1.0" ' + " ".repeat(1024) + 'encoding="UTF-8"?>',
+      '<?xml version="1.0"',
+    ]) {
+      const xml = Buffer.from(declaration + (declaration.endsWith("?>") ? "<root>ordinary text</root>" : ""));
+      const f = scannerFixture(mode, kind, "xml", xml);
+      generator.configure("success");
+      await assert.rejects(async () => {
+        const response = await download(reports, f.id, "html", signal());
+        await response.body.cancel();
+      }, (error) => error.code === "unsafe_xml" && error.status === 409);
+      assert.equal(generator.calls.length, 0); noWork();
+      const original = await download(reports, f.id, "xml", signal());
+      assert.deepEqual(Buffer.from(await original.arrayBuffer()), xml); noWork();
+    }
+  }
+});
+
+test("HTML accepts UTF-8 declaration aliases, BOM and long ordinary bodies", async () => {
+  for (const [mode, kind] of [["astra-oval", "oval-results"], ["openscap", "arf"]]) {
+    for (const prefix of ["", "\uFEFF", '<?xml version="1.0" encoding="UTF-8"?>',
+      "\uFEFF<?xml version='1.0' encoding='uTf8'?>", '<?xml version="1.0" encoding="US-ASCII"?>']) {
+      const xml = Buffer.from(prefix + "<root>" + "text".repeat(1000) + "</root>");
+      const f = scannerFixture(mode, kind, "xml", xml);
+      generator.configure("success");
+      const response = await download(reports, f.id, "html", signal());
+      assert.match(Buffer.from(await response.arrayBuffer()).toString(), /native report/);
+      assert.equal(generator.calls.length, 1); noWork();
+    }
+  }
+});
+
+test("XML encoding checks survive every split in a declaration, BOM and multibyte text", () => {
+  const valid = Buffer.from("\uFEFF<?xml version='1.0' " + " ".repeat(300) + "encoding = 'uTf8'?><root>Текст</root>");
+  const incompatible = Buffer.from("<?xml version='1.0' encoding = 'ISO-8859-1'?><root>text</root>");
+  const instruction = Buffer.from('<?xml-stylesheet href="style.xsl"?><root/>');
+  for (const [bytes, accepted] of [[valid, true], [incompatible, false], [instruction, false]]) {
+    for (let split = 0; split <= bytes.length; split++) {
+      const inspect = xmlSafetyGuard();
+      const run = () => {
+        inspect(bytes.subarray(0, split)); inspect(bytes.subarray(split)); inspect(Buffer.alloc(0), true);
+      };
+      if (accepted) assert.doesNotThrow(run, `split ${split}`);
+      else assert.throws(run, (error) => error.code === "unsafe_xml", `split ${split}`);
+    }
+  }
+  for (const bytes of [Buffer.from("<root>\u20ac</root>").subarray(0, 8), Buffer.from("<?xml version='1.0'")]) {
+    const inspect = xmlSafetyGuard();
+    inspect(bytes);
+    assert.throws(() => inspect(Buffer.alloc(0), true), (error) => error.code === "unsafe_xml");
+  }
+});
 
 test("all supported scanners download their exact original bytes with format-specific names and MIME types", async () => {
   for (const [mode, kind, extension, format, bytes] of [
