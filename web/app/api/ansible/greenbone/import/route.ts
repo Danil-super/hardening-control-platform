@@ -1,13 +1,14 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { lookup } from "node:dns/promises";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { isIP } from "node:net";
 import path from "node:path";
 import { promisify } from "node:util";
 import { NextResponse } from "next/server";
 import { appendIncident, getRepoRoot, getStateDir, inventoryHostAddress, inventoryHostExists, isSafeLimit } from "@/lib/ansible-control";
-import { getReportsDir } from "@/lib/ansible-reports";
+import { publishNativeReport, readNativeReportFile } from "@/lib/native-report-storage";
+import { withReportEvidenceLock } from "@/lib/state-store";
 
 const execFileAsync = promisify(execFile);
 const maxXmlBytes = 20 * 1024 * 1024;
@@ -32,12 +33,14 @@ export async function POST(request: Request) {
   const temporaryDir = mkdtempSync(path.join(stateDir, "greenbone-import-"));
   const inputPath = path.join(temporaryDir, "report.xml");
   const reportId = `${hostAlias}-greenbone-${runId}`;
-  const outputPath = path.join(getReportsDir(), `${reportId}.json`);
+  const outputPath = path.join(temporaryDir, "normalized.json");
   try {
     const hostAddress = inventoryHostAddress(hostAlias);
     if (!hostAddress) throw new Error("Адрес выбранного хоста отсутствует в inventory.");
     const expectedAddresses = isIP(hostAddress) ? [] : await lookup(hostAddress, { all: true });
-    writeFileSync(inputPath, Buffer.from(await reportFile.arrayBuffer()), { mode: 0o600 });
+    const originalXml = Buffer.from(await reportFile.arrayBuffer());
+    if (!originalXml.length || originalXml.length > maxXmlBytes) throw new Error("Недопустимый размер XML-отчёта Greenbone.");
+    writeFileSync(inputPath, originalXml, { mode: 0o600, flag: "wx" });
     await execFileAsync("/usr/bin/python3", [
       path.join(getRepoRoot(), "ansible", "scripts", "hcp-controller-scan.py"),
       "greenbone-report",
@@ -48,8 +51,9 @@ export async function POST(request: Request) {
       "--run-id", runId,
       "--output", outputPath,
     ], { timeout: 60_000, maxBuffer: 1024 * 1024 * 2 });
-    const report = JSON.parse(readFileSync(outputPath, "utf8")) as { scanner?: { imported?: boolean; partial?: boolean; excludedOtherHostResults?: number } };
-    if (report.scanner?.imported !== true) throw new Error("Парсер не подтвердил корректность импорта Greenbone.");
+    const report = JSON.parse(readNativeReportFile(outputPath, 128 * 1024 * 1024).toString("utf8")) as { mode?: string; inventoryHost?: string; scanner?: { imported?: boolean; partial?: boolean; excludedOtherHostResults?: number } };
+    if (report.scanner?.imported !== true || report.mode !== "greenbone" || report.inventoryHost !== hostAlias) throw new Error("Парсер не подтвердил корректность импорта Greenbone.");
+    withReportEvidenceLock(() => publishNativeReport(reportId, report, [{ kind: "greenbone", bytes: originalXml }]));
     const partial = report.scanner.partial === true;
     const excluded = report.scanner.excludedOtherHostResults ?? 0;
     const message = `Импортированы результаты Greenbone для ${hostAlias}.${partial ? " Отчёт частичный: ограничения указаны в результатах." : ""}${excluded ? ` Результаты других хостов исключены: ${excluded}.` : ""}`;

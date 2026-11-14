@@ -32,7 +32,7 @@ test("an 8284-definition OVAL report above 32 MiB survives identity publication 
       const serialized = JSON.stringify(source, null, 2);
       assert.ok(Buffer.byteLength(serialized) > 32 * 1024 * 1024);
       writeFileSync(path.join(stage, `${id}.json`), serialized);
-      publishCapturedAssetReports(stage, new Map([[`${id}.json`, binding]]));
+      await publishCapturedAssetReports(stage, new Map([[`${id}.json`, binding]]));
       const report = readAnsibleReport(id);
       assert.equal(report.mode, "astra-oval"); assert.equal(report.assetBinding.assetId, binding.assetId);
       assert.equal(report.raw.scanner.definitionResults.length, 8284);

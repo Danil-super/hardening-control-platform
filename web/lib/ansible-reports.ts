@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
+import { createRequire } from "node:module";
 import type { Finding } from "@/types";
 import { getArchivedRecordIds, type ArchiveView } from "@/lib/state-store";
 import { normalizeLynisFindings } from "@/lib/lynis-findings";
 import { normalizeNmapScope, nmapPortCoverage, type NmapScanScope } from "@/lib/nmap-scope";
 import { parseAssetBinding, sameAssetEvidence, type AssetBinding } from "@/lib/asset-binding";
+import { assessAstraOvalEvidence, type AstraOvalEvidenceStatus } from "@/lib/astra-oval-evidence";
 
 export type AnsibleReportSummary = {
   id: string;
@@ -19,6 +21,7 @@ export type AnsibleReportSummary = {
   inventoryHost: string | null;
   assetBinding?: AssetBinding | null;
   assetBindingInvalid?: boolean;
+  ovalEvidence?: AstraOvalEvidenceStatus;
   partial: boolean;
   needsReview: boolean;
   available: boolean;
@@ -177,6 +180,9 @@ export function reportTimestamp(report: Pick<AnsibleReportSummary, "createdAt" |
  * legacy scopes remain individually identifiable but are never compatible. */
 export function reportScopeKey(report: Pick<AnsibleReportSummary, "mode" | "profileId" | "id" | "contentId" | "scanScope">) {
   if (report.mode === "nmap") return report.scanScope ? `nmap:${report.scanScope}` : `nmap:unknown:${report.id}`;
+  if (report.mode === "astra-oval") return report.contentId
+    ? `astra-oval:${encodeURIComponent(report.profileId ?? "astra-oval")}:${report.contentId}`
+    : `astra-oval:unknown:${report.id}`;
   if (report.mode !== "openscap") return `${report.mode}:${report.profileId ?? "default"}`;
   return report.profileId && report.profileId !== "openscap" && report.contentId
     ? `openscap:${encodeURIComponent(report.profileId)}:${report.contentId}`
@@ -327,7 +333,11 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
   let scanScope = mode === "nmap" ? normalizeNmapScope(parsed.scanner?.scanScope) : null;
   if (scanScope && (parsed.scanner?.portCoverage !== undefined && parsed.scanner.portCoverage !== nmapPortCoverage(scanScope)
       || parsed.scanner?.coverageComplete !== undefined && parsed.scanner.coverageComplete !== (scanScope === "full_tcp"))) scanScope = null;
-  const scopeKnown = mode === "openscap" ? Boolean(profileId && profileId !== "openscap" && contentId) : mode !== "nmap" || Boolean(scanScope);
+  const scopeKnown = mode === "openscap" ? Boolean(profileId && profileId !== "openscap" && contentId)
+    : mode === "astra-oval" ? Boolean(contentId) : mode !== "nmap" || Boolean(scanScope);
+  // A digest label alone proves neither successful evaluation nor complete
+  // original OVAL definition results. Never publish a truncated report as clean.
+  const ovalEvidence = mode === "astra-oval" ? assessAstraOvalEvidence(parsed.scanner, parsed.findings) : undefined;
   const findings = reportFindings(parsed);
   const events = Array.isArray(parsed.events) ? parsed.events : [];
   const observation: Pick<AnsibleReportSummary, "observedAt" | "importedAt"> = mode === "greenbone" ? greenboneObservation(parsed) : {};
@@ -341,8 +351,10 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
   const partial = assetBindingInvalid || !available || parsed.partial === true || parsed.scanner?.partial === true || Boolean(parsed.scanner?.error)
     || parsed.vulnerabilityScan?.partial === true || Boolean(parsed.packageInventory?.error) || parsed.packageInventory?.partial === true
     || (parsed.findings !== undefined && (!Array.isArray(parsed.findings) || findings.length !== parsed.findings.length))
-    || ["dependency-track", "dependency-track-analysis"].includes(mode) || !scopeKnown || mode === "greenbone" && !observation.observedAt;
-  const needsReview = assetBindingInvalid || !scopeKnown || mode === "greenbone" && !observation.observedAt || findings.some((finding) => finding.status === "manual");
+    || ["dependency-track", "dependency-track-analysis"].includes(mode) || !scopeKnown
+    || (ovalEvidence !== undefined && !ovalEvidence.complete) || mode === "greenbone" && !observation.observedAt;
+  const needsReview = assetBindingInvalid || !scopeKnown || (ovalEvidence !== undefined && !ovalEvidence.complete)
+    || mode === "greenbone" && !observation.observedAt || findings.some((finding) => finding.status === "manual");
   const reportTimeValid = reportTimestamp({ createdAt, modifiedAt: stats.mtime.toISOString(), ...observation }) > 0;
 
   return {
@@ -354,7 +366,7 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
     modifiedAt: stats.mtime.toISOString(),
     host: parsed.hostname ?? targetAliasFromReportFileName(fileName, profileId, mode),
     inventoryHost,
-    assetBinding, assetBindingInvalid,
+    assetBinding, assetBindingInvalid, ovalEvidence,
     available,
     partial,
     needsReview,
@@ -381,42 +393,140 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
   };
 }
 
-const summaryCache = new Map<string, { signature: string; summary: AnsibleReportSummary }>();
-function cachedReportSummary(fileName: string, fullPath: string) {
+type ReportMetadata = {
+  signature: string;
+  summary: AnsibleReportSummary | null;
+  sources: { id: string; reason: AnsibleReportDependent["reason"] }[];
+};
+const summaryCache = new Map<string, ReportMetadata>();
+function reportSignature(fullPath: string) {
   const info = statSync(fullPath);
-  const signature = `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
-  const cached = summaryCache.get(fullPath);
-  if (cached?.signature === signature && reportTimestamp(cached.summary) > 0) return { ...cached.summary };
-  const summary = buildReportSummary(fileName, fullPath);
-  // Future/invalid timestamps must be re-evaluated as time passes. Only keep
-  // compact, already valid summaries; never retain the raw OVAL evidence tree.
-  if (summary?.reportTimeValid) {
-    if (summaryCache.size >= 256) summaryCache.delete(summaryCache.keys().next().value!);
-    summaryCache.set(fullPath, { signature, summary });
-  } else summaryCache.delete(fullPath);
-  return summary;
+  return `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
 }
 
-export function listAnsibleReports(view: ArchiveView = "active") {
-  const reportsDir = getReportsDir();
-  if (!existsSync(reportsDir)) {
-    return [];
-  }
+// Only compact metadata crosses the worker boundary; raw scanner evidence stays on disk.
+export function readReportMetadata(fullPath: string): ReportMetadata {
+  const signature = reportSignature(fullPath);
+  const parsed = readReportJson(fullPath);
+  const summary = buildReportSummary(path.basename(fullPath), fullPath, parsed);
+  const raw = record(parsed);
+  const scanner = record(raw.scanner);
+  const sources: ReportMetadata["sources"] = [];
+  for (const [id, reason] of [
+    [record(raw.vulnerabilityScan).sourcePackageReportId, "package_inventory"],
+    [scanner.sourceCveReport, "cve_report"],
+    [scanner.deliveryReportId, "dependency_track_delivery"],
+  ] as const) if (typeof id === "string") sources.push({ id, reason });
+  if (reportSignature(fullPath) !== signature) throw new Error("Отчёт изменился во время чтения. Повторите запрос.");
+  return { signature, summary, sources };
+}
 
+function cacheMetadata(fullPath: string, metadata: ReportMetadata) {
+  // Future/invalid times must be re-evaluated on the next request.
+  if (metadata.summary?.reportTimeValid && reportTimestamp(metadata.summary) > 0) {
+    if (summaryCache.size >= 256) summaryCache.delete(summaryCache.keys().next().value!);
+    summaryCache.set(fullPath, metadata);
+  } else summaryCache.delete(fullPath);
+}
+function cachedMetadata(fullPath: string) {
+  const cached = summaryCache.get(fullPath);
+  return cached?.signature === reportSignature(fullPath) && cached.summary && reportTimestamp(cached.summary) > 0 ? cached : null;
+}
+function cachedReportSummary(fullPath: string) {
+  const metadata = cachedMetadata(fullPath) ?? readReportMetadata(fullPath);
+  cacheMetadata(fullPath, metadata);
+  return metadata.summary ? { ...metadata.summary } : null;
+}
+
+function reportFiles(view: ArchiveView) {
+  const reportsDir = getReportsDir();
+  if (!existsSync(reportsDir)) return [];
   const archived = getArchivedRecordIds("report");
-  return readdirSync(reportsDir)
-    .filter((fileName) => fileName.endsWith(".json"))
-    .filter((fileName) => view === "all" || archived.has(fileName.slice(0, -5)) === (view === "archive"))
-    .map((fileName) => {
-      const fullPath = path.join(reportsDir, fileName);
-      try { return cachedReportSummary(fileName, fullPath); } catch { return null; }
-    })
-    .filter((report): report is AnsibleReportSummary => Boolean(report))
-    .sort((left, right) => {
-      const leftTime = reportTimestamp(left);
-      const rightTime = reportTimestamp(right);
-      return rightTime - leftTime;
+  return readdirSync(reportsDir).filter(fileName => fileName.endsWith(".json"))
+    .filter(fileName => view === "all" || archived.has(fileName.slice(0, -5)) === (view === "archive"))
+    .map(fileName => path.join(reportsDir, fileName));
+}
+
+async function readMetadataInWorker(files: string[]): Promise<ReportMetadata[]> {
+  // Use the native constructor: Turbopack wraps workerData for bundled workers.
+  const { Worker } = createRequire(path.join(process.cwd(), "package.json"))("node:worker_threads") as typeof import("node:worker_threads");
+  const worker = new Worker(path.resolve(process.cwd(), ".hcp-report-reader/reader.mjs"), {
+    workerData: files, execArgv: [], resourceLimits: { maxOldGenerationSizeMb: 1536 },
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await new Promise<ReportMetadata[]>((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error("Чтение отчётов превысило допустимое время.")), 60_000);
+      worker.once("message", resolve);
+      worker.once("error", reject);
+      worker.once("exit", () => reject(new Error("Не удалось прочитать отчёты в фоновом потоке.")));
     });
+  } finally {
+    clearTimeout(timer);
+    // Release the temporary legacy JSON heap before starting the next reader.
+    await worker.terminate();
+  }
+}
+
+let readerQueue: Promise<unknown> = Promise.resolve();
+function reportMetadataAsync(view: ArchiveView): Promise<ReportMetadata[]> {
+  // A single reader also coalesces concurrent cold requests through the compact cache.
+  const pending = readerQueue.then(async () => {
+    const files = reportFiles(view);
+    const records = files.map(file => cachedMetadata(file));
+    const missing = files.filter((_file, index) => !records[index]);
+    if (missing.length) {
+      const loaded: ReportMetadata[] = [];
+      let batch: string[] = [];
+      let bytes = 0;
+      for (const file of missing) {
+        const size = statSync(file).size;
+        // Release each large legacy JSON heap before reading another report.
+        if (batch.length && bytes + size > 64 * 1024 * 1024) {
+          loaded.push(...await readMetadataInWorker(batch));
+          batch = [];
+          bytes = 0;
+        }
+        batch.push(file);
+        bytes += size;
+      }
+      if (batch.length) loaded.push(...await readMetadataInWorker(batch));
+      let cursor = 0;
+      for (let index = 0; index < files.length; index++) {
+        if (!records[index]) records[index] = loaded[cursor++];
+        if (records[index]!.signature !== reportSignature(files[index])) throw new Error("Отчёт изменился во время чтения. Повторите запрос.");
+      }
+      for (let index = 0; index < files.length; index++) cacheMetadata(files[index], records[index]!);
+    }
+    return records as ReportMetadata[];
+  });
+  readerQueue = pending.then(() => undefined, () => undefined);
+  return pending;
+}
+
+export async function listAnsibleReportsAsync(view: ArchiveView = "active") {
+  const metadata = await reportMetadataAsync(view);
+  return metadata.flatMap(item => item.summary ? [{ ...item.summary }] : [])
+    .sort((left, right) => reportTimestamp(right) - reportTimestamp(left));
+}
+
+export async function listAnsibleReportDependentsAsync(reportId: string): Promise<AnsibleReportDependent[]> {
+  if (!fileNameFromReportId(reportId)) return [];
+  return (await reportMetadataAsync("all"))
+    .filter(item => item.summary)
+    .sort((left, right) => reportTimestamp(right.summary!) - reportTimestamp(left.summary!)).flatMap(item => {
+    const source = item.sources.find(source => source.id === reportId);
+    return item.summary && source ? [{ id: item.summary.id, mode: item.summary.mode, reason: source.reason }] : [];
+  });
+}
+
+// shortcut: synchronous transaction callers retain their current locking contract;
+// move their cold reads to preparation if profiling shows user-visible contention.
+export function listAnsibleReports(view: ArchiveView = "active") {
+  return reportFiles(view).map(fullPath => {
+    try { return cachedReportSummary(fullPath); } catch { return null; }
+  }).filter((report): report is AnsibleReportSummary => Boolean(report))
+    .sort((left, right) => reportTimestamp(right) - reportTimestamp(left));
 }
 
 export function readAnsibleReport(reportId: string): AnsibleReportDetail | null {
@@ -466,20 +576,9 @@ export function listAnsibleReportDependents(reportId: string): AnsibleReportDepe
   if (!fileNameFromReportId(reportId)) return [];
   const dependents: AnsibleReportDependent[] = [];
   for (const summary of listAnsibleReports("all")) {
-    const report = readAnsibleReport(summary.id);
-    if (!report) continue;
-    const raw = record(report.raw);
-    const vulnerabilityScan = record(raw.vulnerabilityScan);
-    if (vulnerabilityScan.sourcePackageReportId === reportId) {
-      dependents.push({ id: report.id, mode: report.mode, reason: "package_inventory" });
-      continue;
-    }
-    const scanner = record(raw.scanner);
-    if (scanner.sourceCveReport === reportId) {
-      dependents.push({ id: report.id, mode: report.mode, reason: "cve_report" });
-    } else if (scanner.deliveryReportId === reportId) {
-      dependents.push({ id: report.id, mode: report.mode, reason: "dependency_track_delivery" });
-    }
+    const metadata = cachedMetadata(summary.path) ?? readReportMetadata(summary.path);
+    const source = metadata.sources.find(source => source.id === reportId);
+    if (source) dependents.push({ id: summary.id, mode: summary.mode, reason: source.reason });
   }
   return dependents;
 }
@@ -536,7 +635,19 @@ export function deleteAnsibleReport(reportId: string): DeletedAnsibleReport | nu
     throw new Error("Файл конфигурации этого сканирования имеет недопустимый тип.");
   }
 
+  const originalsRoot = path.join(reportsDir, ".raw-evidence");
+  const originalsDirectory = path.join(originalsRoot, fileName.slice(0, -5));
+  const originalsRootInfo = lstatSync(originalsRoot, { throwIfNoEntry: false });
+  if (originalsRootInfo && (!originalsRootInfo.isDirectory() || originalsRootInfo.isSymbolicLink())) {
+    throw new Error("Каталог оригинальных отчётов имеет недопустимый тип.");
+  }
+  const originalsInfo = originalsRootInfo ? lstatSync(originalsDirectory, { throwIfNoEntry: false }) : null;
+  if (originalsInfo && (!originalsInfo.isDirectory() || originalsInfo.isSymbolicLink())) {
+    throw new Error("Оригинальные файлы отчёта имеют недопустимый тип.");
+  }
+
   rmSync(reportPath, { force: false });
+  if (originalsInfo) rmSync(originalsDirectory, { recursive: true, force: false });
   if (sbomPath && sbomInfo && !sbomUsedElsewhere) {
     rmSync(sbomPath, { force: false });
   }

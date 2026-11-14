@@ -51,6 +51,36 @@ def run(command: list[str], timeout: int) -> tuple[int | None, str, str]:
         return None, "", str(error)
 
 
+def preserve_original(args: argparse.Namespace, suffix: str, content: bytes, source: Path | None = None) -> None:
+    if not getattr(args, "preserve_raw_evidence", False) or not content:
+        return
+    output = Path(args.output)
+    destination = output.with_name(f".{output.stem}.{suffix}")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source is not None and source.absolute() == destination.absolute():
+        destination.chmod(0o600)
+        return
+    fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(content)
+
+
+def run_with_original(args: argparse.Namespace, command: list[str], timeout: int, suffix: str) -> tuple[int | None, str, str]:
+    if not getattr(args, "preserve_raw_evidence", False):
+        return run(command, timeout)
+    # Binary capture preserves native stdout, including CRLF and partial timeout output.
+    try:
+        result = subprocess.run(command, capture_output=True, timeout=timeout, check=False)
+        code, stdout, stderr = result.returncode, result.stdout, result.stderr
+    except subprocess.TimeoutExpired as error:
+        code, stdout = None, error.stdout or b""
+        stderr = (error.stderr or b"") + f"\nПревышено время выполнения ({timeout} с).".encode("utf-8")
+    except OSError as error:
+        return None, "", str(error)
+    preserve_original(args, suffix, stdout)
+    return code, stdout.decode("utf-8", errors="replace"), stderr.decode("utf-8", errors="replace")
+
+
 def finding(
     *,
     identifier: str,
@@ -170,7 +200,7 @@ def ssh_audit(args: argparse.Namespace) -> dict[str, Any]:
             available=False, partial=True, target=f"{args.host}:{args.port}", exitCode=help_code,
             version=".".join(map(str, version)) if version else None)
     command = [binary, "--json", "--skip-rate-test", "-p", str(args.port), args.host]
-    code, stdout, stderr = run(command, 90)
+    code, stdout, stderr = run_with_original(args, command, 90, "ssh-audit.json")
     try:
         payload = json.loads(stdout)
         if (not isinstance(payload, dict) or not isinstance(payload.get("banner"), dict)
@@ -358,7 +388,7 @@ def nmap(args: argparse.Namespace) -> dict[str, Any]:
     command = [binary, "-Pn", "-n", "-sT", "-sV", "--version-light", *scope["arguments"], "-oX", "-", args.host]
     if ":" in args.host:
         command.insert(1, "-6")
-    code, stdout, stderr = run(command, scope["timeout"])
+    code, stdout, stderr = run_with_original(args, command, scope["timeout"], "nmap.xml")
     try:
         root = element_tree.fromstring(stdout)
     except element_tree.ParseError:
@@ -493,11 +523,13 @@ def lynis_diagnostics(input_path: str | None) -> dict[str, Any] | None:
 
 def lynis_report(args: argparse.Namespace) -> dict[str, Any]:
     try:
-        content = Path(args.input).read_text(encoding="utf-8", errors="replace")
+        original = Path(args.input).read_bytes()
+        content = original.decode("utf-8", errors="replace")
     except OSError as error:
         content = ""
         read_error = str(error)
     else:
+        preserve_original(args, "report.dat", original, Path(args.input))
         read_error = ""
 
     findings: list[dict[str, Any]] = []
@@ -896,7 +928,7 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
                 status = "manual"
         except ValueError:
             status = "manual"
-        findings.append(finding(
+        item = finding(
             identifier="greenbone_" + hashlib.sha256(key.encode()).hexdigest()[:24],
             title=name or "Находка Greenbone/OpenVAS",
             risk=risk,
@@ -905,7 +937,11 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
             description=description or "Greenbone сообщил результат сетевой проверки.",
             recommendation=solution or "Проверьте рекомендации производителя и примените исправление по утверждённой процедуре.",
             evidence=f"result={identifier}; oid={oid or 'unknown'}; host={host}; port={port or 'unknown'}; threat={threat or 'unknown'}; severity={severity_text or 'unknown'}; qod={qod_value}; cve={','.join(cves) or 'none'}",
-        ))
+        )
+        if normalized_threat == "critical" and severity_score is not None and severity_score > 0:
+            item["risk"] = "high"
+            item["severityAssessment"] = {"level": "critical", "source": "scanner_metadata"}
+        findings.append(item)
 
     for element in matching_errors:
         host = child_text(element, "host")
@@ -938,6 +974,12 @@ def greenbone_report(args: argparse.Namespace) -> dict[str, Any]:
                   and (not scan_started_at or start_time is not None and start_time <= end_time))
     partial = not findings or scan_status.lower() != "done" or invalid_severity or not time_valid or bool(error_reasons) or (full_count is not None and full_count > len(results))
     partial_reasons = list(error_reasons)
+    if scan_status.lower() != "done":
+        partial_reasons.append(f"Статус сканирования Greenbone: {scan_status[:80] or 'не указан'}; требуется завершённый запуск.")
+    if full_count is not None and full_count > len(results):
+        partial_reasons.append(f"В XML экспортировано {len(results)} из {full_count} результатов Greenbone. Включите все уровни, включая Critical, QoD = 0 и экспорт всех страниц.")
+    if invalid_severity:
+        partial_reasons.append("В XML есть отсутствующая или некорректная оценка критичности Greenbone; такие записи требуют проверки.")
     if not time_valid:
         partial_reasons.append("Время окончания сканирования отсутствует, некорректно, находится в будущем или предшествует началу. Время импорта не подтверждает свежесть проверки.")
     if not findings:
@@ -977,6 +1019,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--inventory-host", required=True)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--preserve-raw-evidence", action="store_true",
+                        default=os.environ.get("HCP_PRESERVE_RAW_EVIDENCE") == "1",
+                        help="Keep byte-exact native scanner output beside the normalized report (private sidecar).")
     parser.add_argument("--input")
     parser.add_argument("--diagnostics-input")
     parser.add_argument("--exit-code", type=int, default=0)

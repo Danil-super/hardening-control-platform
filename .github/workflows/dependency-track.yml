@@ -11,6 +11,7 @@ on:
       - 'web/lib/ansible-control.ts'
       - 'web/lib/ansible-reports.ts'
       - 'web/tests/_typescript-loader.mjs'
+      - 'web/scripts/compile-server-modules.mjs'
       - 'web/package*.json'
       - 'docker-compose.yml'
   pull_request:
@@ -21,8 +22,13 @@ on:
       - 'web/lib/ansible-control.ts'
       - 'web/lib/ansible-reports.ts'
       - 'web/tests/_typescript-loader.mjs'
+      - 'web/scripts/compile-server-modules.mjs'
       - 'web/package*.json'
       - 'docker-compose.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

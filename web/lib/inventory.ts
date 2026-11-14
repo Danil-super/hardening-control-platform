@@ -1,10 +1,14 @@
 import { chmodSync, existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
+import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { configuredPrivateKeyPath, isSafeSshHostAddress } from "@/lib/ssh-access";
 import { assetConnectionId } from "@/lib/asset-binding";
+
+const execFileAsync = promisify(execFile);
 
 export type InventoryHost = { alias: string; groups: string[] };
 export type StaticInventory = { hosts: InventoryHost[]; groups: string[] };
@@ -89,6 +93,10 @@ export function resolvedInventoryVariables(alias: string, inventoryPath = path.r
     cwd: path.resolve(process.cwd(), ".."), encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024,
     env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
   });
+  return parseInventoryVariables(output);
+}
+
+function parseInventoryVariables(output: string) {
   const variables = JSON.parse(output);
   if (!variables || typeof variables !== "object" || Array.isArray(variables)) throw new Error("Inventory не вернул переменные хоста.");
   return variables as Record<string, unknown>;
@@ -111,7 +119,7 @@ export function connectionFromInventoryVariables(alias: string, variables: Recor
 }
 
 /** Resolve every target from one private INI snapshot before any network await. */
-export function freezeInventoryTargets(limit = "linux_hosts") {
+export async function freezeInventoryTargets(limit = "linux_hosts") {
   const source = path.resolve(process.cwd(), "..", "ansible", "inventory.ini");
   const bytes = readFileSync(source);
   if (bytes.length > 4 * 1024 * 1024) throw new Error("Inventory превышает допустимые 4 МиБ.");
@@ -124,15 +132,23 @@ export function freezeInventoryTargets(limit = "linux_hosts") {
   try {
     const sourcePath = path.join(directory, "source.ini");
     writeFileSync(sourcePath, bytes, { mode: 0o600 });
-    const resolved = targets.map((host) => {
-      const variables = resolvedInventoryVariables(host.alias, sourcePath);
-      return { ...host, variables, connection: connectionFromInventoryVariables(host.alias, variables) };
-    });
+    const resolved = [];
+    for (const host of targets) {
+      const { stdout } = await execFileAsync("ansible-inventory", ["-i", sourcePath, "--host", host.alias, "--playbook-dir", path.resolve(process.cwd(), "..", "ansible")], {
+        cwd: path.resolve(process.cwd(), ".."), encoding: "utf8", timeout: 15_000, maxBuffer: 1024 * 1024,
+        env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+      });
+      const variables = parseInventoryVariables(stdout);
+      resolved.push({ ...host, variables, connection: connectionFromInventoryVariables(host.alias, variables) });
+    }
     return { directory, targets: resolved, inventoryPath: path.join(directory, "inventory.json") };
   } catch (error) { rmSync(directory, { recursive: true, force: true }); throw error; }
 }
 
-const connectionViewCache = new Map<string, { expiresAt: number; value: string }>();
+type ConnectionView = { key: string; expiresAt: number; connections: Map<string, string> };
+let connectionViewCache: ConnectionView | null = null;
+let pendingConnectionView: { key: string; promise: Promise<ConnectionView> } | null = null;
+const connectionViewScope = new AsyncLocalStorage<ConnectionView>();
 /** The view cache must follow effective Ansible precedence, including host_vars
  * overriding an inline address. Hash bounded variable files so an edit cannot
  * retain a previously verified endpoint until the time-based cache expires. */
@@ -157,24 +173,86 @@ function connectionConfigurationSignature(file: string, bytes: Buffer) {
   return hash.digest("hex");
 }
 
+function connectionViewInput(file: string) {
+  const bytes = readFileSync(file);
+  if (bytes.length > 4 * 1024 * 1024) throw new Error("Inventory exceeds the bounded view resolver");
+  return { file, inventory: parseStaticInventory(bytes.toString("utf8")), key: `${file}:${connectionConfigurationSignature(file, bytes)}` };
+}
+
+function connectionsFromOutput(output: string, inventory: StaticInventory) {
+  const variables = JSON.parse(output)?._meta?.hostvars;
+  if (!variables || typeof variables !== "object" || Array.isArray(variables)) throw new Error("Inventory не вернул переменные хостов.");
+  const connections = new Map<string, string>();
+  for (const host of inventory.hosts) {
+    const values = Object.hasOwn(variables, host.alias) ? variables[host.alias] : {};
+    if (!values || typeof values !== "object" || Array.isArray(values)) continue;
+    try {
+      const connection = connectionFromInventoryVariables(host.alias, values);
+      if (connection.user) connections.set(host.alias, assetConnectionId(connection));
+    } catch { /* An invalid endpoint cannot inherit a previous identity. */ }
+  }
+  return connections;
+}
+
+async function resolveConnectionView(input: ReturnType<typeof connectionViewInput>): Promise<ConnectionView> {
+  let connections = new Map<string, string>();
+  try {
+    const { stdout } = await execFileAsync("ansible-inventory", ["-i", input.file, "--list", "--playbook-dir", path.resolve(process.cwd(), "..", "ansible")], {
+      cwd: path.resolve(process.cwd(), ".."), encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+    });
+    connections = connectionsFromOutput(stdout, input.inventory);
+  } catch { /* Unknown configuration is a visible coverage gap, not trust. */ }
+  // A native lookup may have read configuration edited while it was running.
+  try {
+    if (connectionViewInput(input.file).key === input.key) {
+      connectionViewCache = { key: input.key, expiresAt: Date.now() + 5_000, connections };
+      return connectionViewCache;
+    }
+  } catch { /* An unreadable live configuration cannot retain an old identity. */ }
+  return { key: input.key, expiresAt: 0, connections: new Map() };
+}
+
+/** Resolve the read-only view without holding up unrelated HTTP requests. */
+export async function withInventoryConnectionView<T>(work: () => T) {
+  let view: ConnectionView = { key: "", expiresAt: 0, connections: new Map() };
+  try {
+    const input = connectionViewInput(path.resolve(process.cwd(), "..", "ansible", "inventory.ini"));
+    if (connectionViewCache?.key === input.key && connectionViewCache.expiresAt > Date.now()) view = connectionViewCache;
+    else {
+      if (pendingConnectionView?.key !== input.key) pendingConnectionView = { key: input.key, promise: resolveConnectionView(input) };
+      const pending = pendingConnectionView;
+      try { view = await pending.promise; }
+      finally { if (pendingConnectionView === pending) pendingConnectionView = null; }
+    }
+  } catch { /* The scoped lookup must fail closed without a synchronous retry. */ }
+  return connectionViewScope.run(view, work);
+}
+
 /** Bounded effective lookup; an unresolved configuration never means "same
  * machine". A missing inventory still permits a historical/offline view. */
 export function explicitInventoryConnectionId(alias: string): string | null {
   const file = path.resolve(process.cwd(), "..", "ansible", "inventory.ini");
   if (!existsSync(file)) return null;
   try {
-    const bytes = readFileSync(file);
-    if (bytes.length > 4 * 1024 * 1024 || !getInventoryHost(alias, parseStaticInventory(bytes.toString("utf8")))) return "unresolved";
-    const key = `${file}:${alias}:${connectionConfigurationSignature(file, bytes)}`;
-    const cached = connectionViewCache.get(key);
-    if (cached && cached.expiresAt > Date.now()) return cached.value;
-    let value = "unresolved";
+    const { inventory, key } = connectionViewInput(file);
+    if (!getInventoryHost(alias, inventory)) return "unresolved";
+    const scoped = connectionViewScope.getStore();
+    if (scoped) return scoped.key === key ? scoped.connections.get(alias) ?? "unresolved" : "unresolved";
+    if (connectionViewCache?.key === key && connectionViewCache.expiresAt > Date.now()) {
+      return connectionViewCache.connections.get(alias) ?? "unresolved";
+    }
+    let connections = new Map<string, string>();
     try {
-      const connection = connectionFromInventoryVariables(alias, resolvedInventoryVariables(alias, file));
-      if (connection.user) value = assetConnectionId(connection);
+      // Transactions cannot await; the HTTP host list resolves before its scoped callback.
+      // shortcut: other callers remain synchronous; migrate read paths when profiling shows their lookup blocking requests.
+      const output = execFileSync("ansible-inventory", ["-i", file, "--list", "--playbook-dir", path.resolve(process.cwd(), "..", "ansible")], {
+        cwd: path.resolve(process.cwd(), ".."), encoding: "utf8", timeout: 15_000, maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, ANSIBLE_FORCE_COLOR: "false" },
+      });
+      connections = connectionsFromOutput(output, inventory);
     } catch { /* Unknown configuration is a visible coverage gap, not trust. */ }
-    if (connectionViewCache.size > 128) connectionViewCache.clear();
-    connectionViewCache.set(key, { expiresAt: Date.now() + 5_000, value });
-    return value;
+    connectionViewCache = { key, expiresAt: Date.now() + 5_000, connections };
+    return connections.get(alias) ?? "unresolved";
   } catch { return "unresolved"; }
 }

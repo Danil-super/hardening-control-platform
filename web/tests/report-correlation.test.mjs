@@ -230,6 +230,53 @@ test("Astra OVAL verification requires the actual same database digest", () => {
   assert.equal(reports.reportScopesCompatible({ ...old, contentId: null }, old), false);
 });
 
+test("new Astra OVAL source digest does not silently erase earlier CVE scope", () => {
+  const scanner = (digest, result = "false") => ({
+    available: true, partial: false, evaluationPerformed: true, exitCode: result === "true" ? 2 : 0,
+    partialReasons: [], database: { sha256: digest, checksumVerified: true },
+    resultSha256: "e".repeat(64), definitionCount: 1, evaluatedDefinitionCount: 1,
+    resultCounts: { [result]: 1 },
+    definitionResults: [{ id: "oval:astra:def:1", class: "vulnerability", result }],
+  });
+  const original = finding("oval:astra:def:1", "openscap", "CVE-2026-12345", {
+    profileId: "astra-oval", category: "Astra CVE", status: "failed",
+  });
+  save("host-one-astra-oval-run-original", { mode: "astra-oval", profileId: "astra-oval",
+    createdAt: ago(120_000), scanner: scanner("a".repeat(64), "true"), findings: [original] });
+  save("host-one-astra-oval-run-replacement", { mode: "astra-oval", profileId: "astra-oval",
+    createdAt: ago(60_000), scanner: scanner("b".repeat(64)), findings: [] });
+  const result = buildHostCorrelation("host-one");
+  const old = reports.readAnsibleReport("host-one-astra-oval-run-original");
+  const current = reports.readAnsibleReport("host-one-astra-oval-run-replacement");
+  assert.equal(old.partial, false);
+  assert.equal(current.partial, false);
+  assert.notEqual(old.scopeKey, current.scopeKey);
+  assert.equal(reports.reportScopesCompatible(old, current), false);
+  const loss = result.lostCoverage.find((value) => value.reportId === old.id);
+  assert.ok(loss, "previous exact vendor definition scope must remain visible");
+  assert.equal(loss.reason, "scope_changed");
+  assert.equal(loss.replacedByReportId, current.id);
+  assert.deepEqual(loss.findingIds, [original.id]);
+  const oldCoverage = result.coverage.find((entry) => entry.reportId === old.id);
+  const currentCoverage = result.coverage.find((entry) => entry.reportId === current.id);
+  assert.equal(oldCoverage.current, false);
+  assert.equal(oldCoverage.partial, true);
+  assert.equal(oldCoverage.supersededBy, current.id);
+  assert.equal(currentCoverage.current, true);
+  assert.ok(currentCoverage.coverageIssues.includes("previous_coverage_not_verified"));
+  assert.equal(result.findings.length, 0, "old source is not silently an observed current finding");
+
+  // Replacing a report with the EXACT SAME source does not manufacture
+  // an additional historical source loss.
+  save("host-same-astra-oval-run-first", { inventoryHost: "host-same", hostname: "host-same",
+    mode: "astra-oval", profileId: "astra-oval",
+    createdAt: ago(120_000), scanner: scanner("c".repeat(64)), findings: [] });
+  save("host-same-astra-oval-run-second", { inventoryHost: "host-same", hostname: "host-same",
+    mode: "astra-oval", profileId: "astra-oval",
+    createdAt: ago(60_000), scanner: scanner("c".repeat(64)), findings: [] });
+  assert.equal(buildHostCorrelation("host-same").lostCoverage.filter((x) => x.mode === "astra-oval").length, 0);
+});
+
 test("known Nmap scopes distinguish a completed selected range from lost earlier coverage", () => {
   const scope = (scanScope, partial = false) => ({ available: true, partial, scanScope,
     portCoverage: scanScope === "full_tcp" ? "all_tcp_1_65535" : `${scanScope}_tcp`, coverageComplete: scanScope === "full_tcp" });

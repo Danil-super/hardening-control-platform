@@ -21,7 +21,11 @@ const preflightFixture = path.join(temporary, "preflight-case");
 mkdirSync(fixtureBin);
 copyFileSync(path.join(webDir, "tests/fixtures/ansible-preflight.mjs"), path.join(fixtureBin, "ansible"));
 chmodSync(path.join(fixtureBin, "ansible"), 0o700);
+copyFileSync(path.join(webDir, "tests/fixtures/ansible-oval-launch.mjs"), path.join(fixtureBin, "ansible-playbook"));
+chmodSync(path.join(fixtureBin, "ansible-playbook"), 0o700);
 writeFileSync(preflightFixture, "ok");
+writeFileSync(`${preflightFixture}.source.xml`, "<synthetic-source/>");
+writeFileSync(`${preflightFixture}.results.xml`, "<synthetic-oval-results/>");
 const reports = path.join(temporary, "reports");
 const sshKey = path.join(temporary, "fixture-key");
 execFileSync("ssh-keygen", ["-t", "ed25519", "-N", "", "-f", sshKey], { stdio: "ignore" });
@@ -44,6 +48,18 @@ writeFileSync(path.join(reports, `${reportId}.json`), JSON.stringify({
   findings: [{ id: "fixture", title: "Сканер недоступен", description: "Контролируемый вход интеграционного теста",
     category: "CVE пакеты", source: "trivy", risk: "info", status: "manual", recommendation: "Повторить аудит", remediationAvailable: false }],
 }));
+const inventoryGuidanceFixtures = [
+  ["astra", { ID: "astra", VERSION_ID: "1.7" }, "Для CVE Astra используйте OVAL / OpenSCAP."],
+  ["debian", { ID: "debian", VERSION_ID: "12" }, "Запустите проверку пакетов и CVE через Trivy."],
+  ["derivative", { ID: "fixture-linux", ID_LIKE: "debian" }, "Нужен CVE-источник производителя ОС."],
+];
+for (const [id, osRelease] of inventoryGuidanceFixtures) {
+  writeFileSync(path.join(reports, `smoke-packages-${id}.json`), JSON.stringify({
+    inventoryHost: "smoke", hostname: "fixture-host", createdAt: new Date().toISOString(),
+    mode: "packages", profileId: "packages", packageInventory: { osRelease, packageCount: 1, manager: "dpkg" },
+    packages: [{ name: "fixture-package", version: "1", architecture: "all" }], findings: [], events: [],
+  }));
+}
 let child;
 const ovalReportId = "smoke-astra-oval-run-http";
 writeFileSync(path.join(reports, `${ovalReportId}.json`), JSON.stringify({
@@ -56,20 +72,44 @@ writeFileSync(path.join(reports, `${ovalReportId}.json`), JSON.stringify({
     source: "openscap", risk: "info", severityUnknown: true, status: "failed", description: "Контрольная находка без оценки поставщика",
     recommendation: "Проверить бюллетень", remediationAvailable: false }], events: [],
 }));
+const nativeFixtures = [
+  ["nmap", "nmap", "xml", "xml", '<nmaprun scanner="nmap"/>\n', "Отчёт Nmap (XML)"],
+  ["ssh-audit", "ssh-audit", "json", "json", '{"banner":"fixture SSH"}\n', "Отчёт ssh-audit (JSON)"],
+  ["lynis", "lynis-report", "dat", "dat", '# Lynis fixture\nhardening_index=70\n', "Отчёт Lynis (report.dat)"],
+  ["vulnerabilities", "trivy", "json", "json", '{"SchemaVersion":2,"Results":[]}\n', "Отчёт Trivy (JSON)"],
+  ["greenbone", "greenbone", "xml", "xml", '<report><results/></report>\n', "Отчёт Greenbone (XML)"],
+  ["openscap", "arf", "xml", "xml", '<asset-report-collection/>\n', "Результаты OpenSCAP (ARF XML)"],
+  ["dependency-track-analysis", "dependency-track", "json", "json", '{"findings":[]}\n', "Экспорт Dependency-Track (JSON)"],
+  ["dependency-track", "sbom", "json", "sbom", '{"bomFormat":"CycloneDX","components":[]}\n', "Переданный SBOM HCP (CycloneDX JSON)"],
+];
+for (const [mode, kind, ext, , bytes] of nativeFixtures) {
+  const id = `smoke-native-${mode}`;
+  const folder = path.join(reports, ".raw-evidence", id); mkdirSync(folder, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(folder, `${kind}.${ext}`), bytes);
+  writeFileSync(path.join(reports, `${id}.json`), JSON.stringify({
+    inventoryHost: "smoke", hostname: "fixture-host", mode, createdAt: new Date().toISOString(), findings: [], events: [],
+    vulnerabilityScan: { provider: "Trivy" }, scanner: { available: true, partial: false },
+    rawEvidence: { version: 1, complete: true, missing: [], artifacts: [{ kind, path: `.raw-evidence/${id}/${kind}.${ext}`, bytes: Buffer.byteLength(bytes), sha256: createHash("sha256").update(bytes).digest("hex") }] },
+  }));
+}
 let output = "";
 let cookie = "";
 let checks = 0;
 
-async function start() {
+async function start(trustedProxy = false) {
   child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", String(port)], {
     cwd: webDir, stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, NODE_ENV: "production", NEXT_TELEMETRY_DISABLED: "1",
       PATH: `${fixtureBin}${path.delimiter}${process.env.PATH}`, HCP_PREFLIGHT_FIXTURE: preflightFixture,
+      // These subprocess fixtures model one legacy controller. An inherited
+      // absolute modern runtime would bypass them and require real SSH output.
+      HCP_ANSIBLE_MODERN_BIN_DIR: "",
       HCP_STATE_DIR: temporary, HCP_REPORTS_DIR: reports,
       HCP_ADMIN_PASSWORD: "http-smoke-password", HCP_AUTH_SECRET: "http-smoke-session-key",
       HCP_AUDIT_HMAC_KEY: "http-smoke-ledger-key", HCP_SCHEDULE_API_KEY: "http-smoke-schedule-key",
       HCP_TRIVY_MODE: "offline", HCP_TRIVY_CACHE_DIR: path.join(temporary, "trivy-cache"),
-      HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_KNOWN_HOSTS_PATH: knownHosts, HCP_PRODUCTION_MODE: "true" },
+      HCP_SSH_PRIVATE_KEY_PATH: sshKey, HCP_KNOWN_HOSTS_PATH: knownHosts, HCP_PRODUCTION_MODE: "true",
+      HCP_TRUSTED_TLS_PROXY: String(trustedProxy) },
   });
   for (const stream of [child.stdout, child.stderr]) stream.on("data", (value) => { output = (output + value).slice(-12000); });
   for (let attempt = 0; attempt < 160; attempt++) {
@@ -88,9 +128,9 @@ async function stop() {
   if (child.exitCode === null) { child.kill("SIGKILL"); await exited; }
 }
 
-async function request(endpoint, { method = "GET", body, auth = true, origin = base, status = 200 } = {}) {
+async function request(endpoint, { method = "GET", body, auth = true, origin = base, headers = {}, status = 200 } = {}) {
   const response = await fetch(base + endpoint, {
-    method, redirect: "manual", headers: { "Content-Type": "application/json", Origin: origin, ...(auth && cookie ? { Cookie: cookie } : {}) },
+    method, redirect: "manual", headers: { "Content-Type": "application/json", Origin: origin, ...(auth && cookie ? { Cookie: cookie } : {}), ...headers },
     ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
   });
   assert.equal(response.status, status, `${method} ${endpoint}\n${response.status !== status ? output : ""}`);
@@ -107,6 +147,9 @@ try {
   await request("/api/ansible/hosts", { auth: false, status: 401 });
   await request("/api/ansible/session", { auth: false, status: 401 });
   await request("/api/settings/astra-oval", { auth: false, status: 401 });
+  await request("/api/ansible/hosts/oval-preparation?alias=smoke", { auth: false, status: 401 });
+  await request(`/api/ansible/reports/${ovalReportId}/native?format=xml`, { auth: false, status: 401 });
+  await request(`/api/ansible/reports/${reportId}/pdf`, { auth: false, status: 401 });
   await request(`/reports/agentless/${reportId}`, { auth: false, status: 307 });
   await request("/reports/correlation/smoke", { auth: false, status: 307 });
   await request("/api/ansible/auth/login", { method: "POST", body: { password: "wrong" }, auth: false, status: 401 });
@@ -114,6 +157,40 @@ try {
   cookie = login.headers.get("set-cookie").split(";", 1)[0];
   assert.match(cookie, /^hcp_admin_session=/);
   await request("/api/ansible/session");
+  // Exercise cold metadata before another endpoint can warm the server cache.
+  const reportList = await (await request("/api/ansible/reports")).json();
+  assert.ok(reportList.reports.some(report => report.id === reportId));
+  await request(`/api/ansible/reports/${reportId}?dependencies=1`);
+  await request("/api/ansible/hosts");
+  await request("/reports/agentless");
+  for (const [id, , expected] of inventoryGuidanceFixtures) {
+    const page = await (await request(`/reports/agentless/smoke-packages-${id}`)).text();
+    assert.ok(page.includes(expected), `CVE guidance for ${id}`);
+    if (id !== "debian") assert.ok(!page.includes("Запустите проверку пакетов и CVE через Trivy."));
+  }
+  const auditPdf = await request(`/api/ansible/reports/${reportId}/pdf`);
+  assert.equal(auditPdf.headers.get("content-type"), "application/pdf");
+  assert.match(auditPdf.headers.get("content-disposition"), /hcp\.pdf/);
+  assert.equal(auditPdf.headers.get("x-source-sha256"), createHash("sha256").update(readFileSync(path.join(reports, `${reportId}.json`))).digest("hex"));
+  assert.equal(Buffer.from(await auditPdf.arrayBuffer()).subarray(0, 5).toString(), "%PDF-");
+  await request("/api/ansible/reports/missing-report/pdf", { status: 404 });
+  const historicalOvalPage = await (await request(`/reports/agentless/${ovalReportId}`)).text();
+  assert.match(historicalOvalPage, /Оригинальный отчёт инструмента для этого запуска не сохранён/);
+  for (const [mode, kind, extension, format, bytes, label] of nativeFixtures) {
+    const id = `smoke-native-${mode}`;
+    const page = await (await request(`/reports/agentless/${id}`)).text();
+    assert.ok(page.includes(label), `${mode} native download label missing`);
+    const original = await request(`/api/ansible/reports/${id}/native?format=${format}`);
+    assert.equal(await original.text(), bytes, `${mode} original changed`);
+    assert.match(original.headers.get("content-disposition"), /attachment/);
+    assert.equal(original.headers.get("x-source-sha256"), createHash("sha256").update(bytes).digest("hex"));
+    const preview = await request(`/api/ansible/reports/${id}/native?format=${format}&view=1`);
+    assert.match(preview.headers.get("content-disposition"), /^inline;/);
+    assert.equal(preview.headers.get("content-type"), "text/plain; charset=utf-8");
+    assert.equal(await preview.text(), bytes);
+    await request(`/api/ansible/reports/${id}/native?format=${format}`, { auth: false, status: 401 });
+  }
+  await request(`/api/ansible/reports/${ovalReportId}/native?format=xml`, { status: 404 });
   assert.match(login.headers.get("set-cookie"), /HttpOnly/i);
   assert.match(login.headers.get("set-cookie"), /Path=\//i);
   const hostsPage = await (await request("/hosts")).text();
@@ -124,7 +201,9 @@ try {
   const networkPosition = hostsPage.indexOf('id="network-discovery"');
   const sshPosition = hostsPage.indexOf('id="ssh-setup"');
   const formPosition = hostsPage.indexOf('id="host-form"');
-  assert.ok(networkPosition > 0 && networkPosition < formPosition && formPosition < sshPosition, "discovery precedes the host form and password/key setup");
+  assert.ok(formPosition > 0 && formPosition < networkPosition && networkPosition < sshPosition, "optional discovery is inside connection setup before credentials");
+  const workflowPositions = ['managed-hosts', 'ansible-actions', 'host-results', 'firewall-actions', 'recent-remediations'].map(id => hostsPage.indexOf(`id="${id}"`));
+  assert.ok(workflowPositions.every((position, index) => position >= 0 && (!index || position > workflowPositions[index - 1])), "host actions follow selection, audit, result, change and recovery");
   assert.match(hostsPage.slice(formPosition), /Входить через терминал и создавать ключи вручную не нужно/);
   assert.doesNotMatch(hostsPage.slice(formPosition), />Добавить хост<|>Сохранить изменения</);
   assert.match(hostsPage.slice(formPosition), /Пароль для входа по SSH/);
@@ -292,6 +371,10 @@ try {
   const ovalSettings = await (await request("/api/settings/astra-oval")).json();
   assert.deepEqual(ovalSettings.policies, []);
   await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid", body: {}, status: 403 });
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid",
+    headers: { "X-Forwarded-Host": "foreign.invalid", "X-Forwarded-Proto": "https" }, body: {}, status: 403 });
+  await request("/api/settings/astra-oval", { method: "POST", origin: base.replace("http:", "https:"),
+    headers: { "X-Forwarded-Proto": "https" }, body: {}, status: 403 });
   await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "nonexistent-smoke-group", config: {} }, status: 400 });
   const ovalPage = await (await request(`/reports/agentless/${ovalReportId}`)).text();
   assert.match(ovalPage, /Результат OVAL-аудита Astra/);
@@ -309,17 +392,86 @@ try {
   assert.equal(report.report.score, null);
   assert.equal(report.report.high, 0);
   assert.equal(report.report.eventsCount, 0);
+  const hcpDownload = await request(`/api/ansible/reports/${reportId}?download=1`);
+  assert.match(hcpDownload.headers.get("content-disposition"), /attachment; filename=".*-hcp.json"/);
+  const hcpDocument = await hcpDownload.json();
+  assert.equal(hcpDocument.mode, "vulnerabilities");
+  assert.equal(hcpDocument.ok, undefined);
   const rendered = await (await request(`/reports/agentless/${reportId}`)).text();
   assert.match(rendered, /Сканер не выполнил проверку/);
+  assert.match(rendered, /Данные HCP \(JSON\)/);
+  assert.match(rendered, /Скачать PDF HCP/);
   assert.doesNotMatch(rendered, />99%/);
+  const firewallFormatId = "smoke-agentless-firewall-format";
+  const firewallFormatReason = "В JSON nftables есть xt:null; нужна ручная сверка правил.";
+  writeFileSync(path.join(reports, `${firewallFormatId}.json`), JSON.stringify({
+    inventoryHost: "smoke", hostname: "fixture-host", createdAt: new Date().toISOString(),
+    mode: "agentless", profileId: "basic_linux", summary: { high: 0, medium: 1, total: 1 },
+    scanner: { partial: true, incompleteChecks: ["firewall_active"], partialReasons: [firewallFormatReason] },
+    findings: [{ id: "firewall_active", title: "INPUT не оценён", profileId: "basic_linux", source: "agentless", description: "Формат не поддержан", recommendation: "Сверьте правила", category: "Сеть", risk: "medium", status: "manual" }],
+  }));
+  const firewallFormatPage = await (await request(`/reports/agentless/${firewallFormatId}`)).text();
+  const firewallBanner = firewallFormatPage.match(/<section role="status"[\s\S]*?<\/section>/)?.[0] ?? "";
+  assert.match(firewallBanner, /В JSON nftables есть xt:null; нужна ручная сверка правил\./);
+  assert.match(firewallFormatPage, /Проверка неполная/);
+  const criticalGreenboneId = "smoke-greenbone-critical";
+  writeFileSync(path.join(reports, `${criticalGreenboneId}.json`), JSON.stringify({
+    inventoryHost: "smoke", hostname: "fixture-host", mode: "greenbone", profileId: "greenbone",
+    scanner: { imported: true, partial: false, scanStatus: "Done", scanEndedAt: new Date().toISOString() },
+    findings: [
+      { id: "native-critical", title: "Native Critical", profileId: "greenbone", description: "Native classification", recommendation: "Review", category: "CVE", source: "greenbone", risk: "high", status: "failed", severityAssessment: { level: "critical", source: "scanner_metadata" } },
+      { id: "native-high", title: "Native High", profileId: "greenbone", description: "Native classification", recommendation: "Review", category: "CVE", source: "greenbone", risk: "high", status: "failed" },
+      { id: "native-unknown", title: "Неоценённый результат", profileId: "greenbone", description: "Unknown classification", recommendation: "Review", category: "CVE", source: "greenbone", risk: "info", status: "manual", severityUnknown: true, severityAssessment: { level: "critical", source: "scanner_metadata" } },
+    ],
+  }));
+  const criticalGreenboneData = await (await request(`/api/ansible/reports/${criticalGreenboneId}`)).json();
+  assert.equal(criticalGreenboneData.report.critical, 1);
+  assert.equal(criticalGreenboneData.report.findings.length, 3);
+  const criticalGreenbonePage = await (await request(`/reports/agentless/${criticalGreenboneId}`)).text();
+  assert.match(criticalGreenbonePage, /<span[^>]*>Критический<\/span>/);
+  assert.match(criticalGreenbonePage, /<button[^>]*>Критический<\/button>/);
+  assert.match(criticalGreenbonePage, /Критические/);
+  const unknownGreenboneRow = [...criticalGreenbonePage.matchAll(/<summary[^>]*>[\s\S]*?<\/summary>/g)].find(([html]) => html.includes("Неоценённый результат"))?.[0] ?? "";
+  assert.match(unknownGreenboneRow, />Риск не оценён<\/span>/);
+  assert.doesNotMatch(unknownGreenboneRow, />Критический<\/span>/);
   await request("/reports/correlation/smoke");
   await request("/hosts");
   await request("/data-sources");
   await request("/policies");
+  const ovalConfig = { mode: "local", path: "/fixture/selected.xml", url: "", sha256: createHash("sha256").update(readFileSync(`${preflightFixture}.source.xml`)).digest("hex"),
+    releasePattern: "*", architectures: [], maxAgeDays: 30, sourceName: "Synthetic HTTP fixture",
+    sourceReference: "FIXTURE-NOT-A-VENDOR-SOURCE", evidenceProjection: "bounded" };
+  await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "linux_hosts", config: ovalConfig } });
+  await request("/api/settings/astra-oval", { method: "POST", body: { groupName: "linux_hosts", config: { ...ovalConfig, evidenceProjection: "lite" } }, status: 400 });
   await stop();
   await start();
   const persisted = await (await request("/api/settings/vulnerability-data")).json();
   assert.equal(persisted.database.mode, "online");
+  const reloadedOval = await (await request("/api/settings/astra-oval")).json();
+  assert.equal(reloadedOval.policies[0].config.evidenceProjection, "bounded");
+  const ovalPreparation = await (await request(`/api/ansible/hosts/oval-preparation?alias=${guardedIdentity.alias}`)).json();
+  assert.equal(ovalPreparation.source.mode, "local");
+  assert.equal(ovalPreparation.preparation.state, "local");
+  await request("/api/ansible/hosts/oval-preparation?alias=unregistered", { status: 400 });
+  const localPreparation = await (await request("/api/ansible/hosts/oval-preparation", { method: "POST", body: { alias: guardedIdentity.alias } })).json();
+  assert.equal(localPreparation.preparation.state, "local");
+  const unconfirmedOval = await (await request("/api/ansible/run", { method: "POST", body: { action: "astraOvalAudit", limit: guardedIdentity.alias }, status: 400 })).json();
+  assert.equal(unconfirmedOval.error, "confirmation_required");
+  assert.equal(existsSync(`${preflightFixture}.oval-config`), false);
+  const ovalRun = await (await request("/api/ansible/run", { method: "POST", body: { action: "astraOvalAudit", limit: guardedIdentity.alias, confirmAudit: true, sudoPassword: "fixture-oval-sudo" } })).json();
+  assert.equal(ovalRun.ok, true, JSON.stringify(ovalRun));
+  assert.equal(ovalRun.partial, false, JSON.stringify(ovalRun));
+  assert.equal(JSON.parse(readFileSync(`${preflightFixture}.oval-config`, "utf8")).evidenceProjection, "bounded");
+  const publishedOval = await (await request(`/api/ansible/reports/${ovalRun.reportId}`)).json();
+  assert.equal(publishedOval.report.assetBinding.status, "verified");
+  assert.equal(publishedOval.report.partial, false);
+  assert.equal(publishedOval.report.raw.scanner.evidenceProjection, "bounded");
+  assert.equal(publishedOval.report.raw.scanner.definitionResults.length, 1);
+  assert.equal(publishedOval.report.raw.rawEvidence.complete, true);
+  for (const artifact of publishedOval.report.raw.rawEvidence.artifacts) {
+    const bytes = readFileSync(path.join(reports, artifact.path));
+    assert.equal(createHash("sha256").update(bytes).digest("hex"), artifact.sha256);
+  }
   await request(`/api/ansible/reports/${reportId}`);
   await request("/reports/agentless");
   const logout = await request("/api/ansible/auth/logout", { method: "POST" });
@@ -334,6 +486,13 @@ try {
   cookie = relogin.headers.get("set-cookie").split(";", 1)[0];
   assert.notEqual(cookie, oldCookie, "each login must create a distinct session");
   await request("/api/ansible/session");
+  await stop();
+  await start(true);
+  const proxyHeaders = { "X-Forwarded-Host": "hcp.example", "X-Forwarded-Proto": "https" };
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://hcp.example",
+    headers: proxyHeaders, body: {}, status: 400 });
+  await request("/api/settings/astra-oval", { method: "POST", origin: "https://foreign.invalid",
+    headers: proxyHeaders, body: {}, status: 403 });
   const sessionDatabase = new DatabaseSync(path.join(temporary, "hcp.sqlite"));
   sessionDatabase.prepare("UPDATE admin_sessions SET expires_at = ?").run(Date.now() - 1);
   sessionDatabase.close();

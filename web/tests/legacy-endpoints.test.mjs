@@ -111,7 +111,8 @@ test("read-only deletion preview names the exact PDF and links to its host and e
   const id = "project_report_53f754a3-6c4c-4cf9-8791-17aa3e856e4e";
   const route = load("app/api/ansible/reports/[reportId]/route.ts", {
     "@/lib/ansible-reports": {
-      listAnsibleReports: () => [{ id: "host-1-facts-run", mode: "facts" }],
+      listAnsibleReportsAsync: async () => [{ id: "host-1-facts-run", mode: "facts" }],
+      listAnsibleReportDependentsAsync: async () => [],
       targetAliasFromReport: () => "host-1",
       listAnsibleReportDependents: () => [],
       readAnsibleReport: () => { throw new Error("preview must not load raw scanner trees"); },
@@ -138,7 +139,8 @@ test("unreferenced preview is deletable and a later PDF reference still blocks D
   let removed = false;
   const route = load("app/api/ansible/reports/[reportId]/route.ts", {
     "@/lib/ansible-reports": {
-      listAnsibleReports: () => [{ id: "host-1-facts-run", mode: "facts" }],
+      listAnsibleReportsAsync: async () => [{ id: "host-1-facts-run", mode: "facts" }],
+      listAnsibleReportDependentsAsync: async () => [],
       readAnsibleReport: () => ({ id: "host-1-facts-run", mode: "facts" }),
       targetAliasFromReport: () => "host-1", listAnsibleReportDependents: () => [],
       deleteAnsibleReport: () => { removed = true; },

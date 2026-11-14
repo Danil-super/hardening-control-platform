@@ -1,0 +1,123 @@
+{
+  "date": "2026-11-11",
+  "baselineCode": "334bfff736b6c0af5d20fba127b4c6650c2d0f96",
+  "finalCode": "e0db79bf77cb1fe6991869396ae40ef951201847",
+  "finalImage": "sha256:a4b06e3643b3c5a0ade9d2229a1772e6c062afcc34a35f925a883a30944b4c9f",
+  "baseImage": "sha256:47f833b532e38416f6a00dc541974a8e5a2e3d6c57251f0f65e703a464577d21",
+  "scope": {
+    "hosts": 5,
+    "storedReports": 22,
+    "controllerCpus": 2,
+    "controllerMemoryBytes": 4294967296,
+    "nativeAnsibleInventory": true,
+    "remoteSshOrScansExecuted": false,
+    "roundsPerImage": 3,
+    "expiryWaitSeconds": 5.2,
+    "probePeriodSeconds": 0.03,
+    "temporaryInstrumentationOnly": true
+  },
+  "comparison": {
+    "before": {
+      "coldHostMs": [
+        1273.2,
+        1170.2,
+        1109.49
+      ],
+      "coldMedianMs": 1170.2,
+      "warmHostMs": [
+        5.0,
+        6.38,
+        6.42
+      ],
+      "nativeCallsForThreeColdHostLists": 15,
+      "eventLoopMaxMs": 1280.31,
+      "healthProbes": 462,
+      "healthMaxMs": 1276.43,
+      "healthP95Ms": 6.02,
+      "probeErrors": 0
+    },
+    "after": {
+      "coldHostMs": [
+        254.23,
+        225.7,
+        240.96
+      ],
+      "coldMedianMs": 240.96,
+      "warmHostMs": [
+        5.78,
+        6.21,
+        6.46
+      ],
+      "nativeCallsForThreeColdHostLists": 3,
+      "eventLoopMaxMs": 256.51,
+      "healthProbes": 466,
+      "healthMaxMs": 263.8,
+      "healthP95Ms": 6.23,
+      "probeErrors": 0
+    },
+    "coldMedianReductionPercent": 79.41
+  },
+  "tests": {
+    "focusedHostNativePassed": 27,
+    "webPassed": 620,
+    "httpPassed": 125,
+    "productionBuild": true,
+    "regressionInitiallyFailed": true
+  },
+  "browser": {
+    "hosts": [
+      {
+        "alias": "hcp-load-1",
+        "reports": 8
+      },
+      {
+        "alias": "hcp-load-2",
+        "reports": 5
+      },
+      {
+        "alias": "hcp-load-3",
+        "reports": 5
+      },
+      {
+        "alias": "hcp-load-4",
+        "reports": 2
+      },
+      {
+        "alias": "hcp-load-5",
+        "reports": 2
+      }
+    ],
+    "authAndCsrfVerified": true,
+    "jsErrors": [],
+    "passedViewports": [
+      390,
+      1440
+    ],
+    "exploratory320PreexistingOverflow": true,
+    "exploratory320DocumentWidth": 349
+  },
+  "installation": {
+    "previousImage": "sha256:47f833b532e38416f6a00dc541974a8e5a2e3d6c57251f0f65e703a464577d21",
+    "image": "sha256:a4b06e3643b3c5a0ade9d2229a1772e6c062afcc34a35f925a883a30944b4c9f",
+    "revision": "e0db79bf77cb1fe6991869396ae40ef951201847",
+    "checkedTables": 13,
+    "checkedReportFiles": 101,
+    "ok": true,
+    "dataAndConfigurationPreserved": true
+  },
+  "limits": [
+    "One bounded native invocation remains synchronous; this is not a fully nonblocking server",
+    "Controlled local view requests on stored data, not a repeated 1/3/5 scanner load or RPS stress",
+    "Does not establish the cause of every historical 2.24s outlier",
+    "Existing hosts page overflow at 320px remains",
+    "No new full dependency rebuild, GitHub CI, external HTTPS/DR or operator signature"
+  ],
+  "privateEvidenceSha256": {
+    "baseline-profile.json": "ddd975649a585d894f9337ba40287a0bfedc37cbca5efddb04dbc92f9a125574",
+    "trace.jsonl": "6ee5ddbc921ed5530211d4a9fb9227ee41c85d9bb381d4f3e6948bcc937b58b2",
+    "final-profile/baseline-profile.json": "8bc131fc06c4a2105bbe74617d606cbbcc37ddfc8dd13eead1384bbe7aee9687",
+    "final-profile/trace.jsonl": "fd235b1f98114b755795243b5ae8bf7596a41db40fcc2a970dfb8543e95a44ae",
+    "regression-red.log": "cd5146c2deb26a54c4344f89ed58b5bc27d6153c874e3c372e38815d121b25ca",
+    "final-build.log": "eafb59a2e2b0e2884250e10e629608f2ab7d67b90b924f014681ea857d7ee291"
+  }
+}

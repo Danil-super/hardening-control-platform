@@ -78,6 +78,46 @@ test("unrelated audit limitations do not block a verified firewall transaction",
   assert.deepEqual(control.runs, ["agentlessAudit", "backupRemediation", "closePort", "agentlessAudit"]);
 });
 
+test("a known active manager permits a bounded change while opaque packet filtering remains manual", async () => {
+  control.report = verifiedButPartlyLimitedAudit(["firewall_active"]);
+  control.report.raw.findings[0].status = "manual";
+  control.report.raw.agentless = { firewallManagers: [
+    { backend: "ufw", state: "active" }, { backend: "firewalld", state: "missing" },
+  ] };
+  const result = await remediation.applyRemediation(request);
+  assert.equal(result.transaction.status, "applied");
+  assert.match(result.preAuditWarnings.join(" "), /фильтраци/);
+  assert.match(result.postAuditWarnings.join(" "), /фильтраци/);
+  assert.equal(control.report.partial, true);
+  assert.equal(control.report.raw.findings[0].status, "manual");
+  assert.deepEqual(control.runs, ["agentlessAudit", "backupRemediation", "closePort", "agentlessAudit"]);
+});
+
+test("manager observations reject denied access, ambiguity, inactive and malformed states even with a passed packet audit", () => {
+  for (const managers of [null, [], [{ backend: "ufw", state: "active" }],
+    [{ backend: "ufw", state: "active" }, { backend: "ufw", state: "missing" }],
+    [{ backend: "ufw", state: "active" }, { backend: "nftables", state: "missing" }],
+    [{ backend: "ufw", state: "unknown" }, { backend: "firewalld", state: "active" }],
+    [{ backend: "ufw", state: "active" }, { backend: "firewalld", state: "active" }],
+    [{ backend: "ufw", state: "inactive" }, { backend: "firewalld", state: "missing" }],
+  ]) {
+    const report = verifiedButPartlyLimitedAudit([]);
+    report.raw.agentless = { firewallManagers: managers };
+    assert.equal(remediation.assessFirewallBaseline(report).ok, false, JSON.stringify(managers));
+  }
+  const report = verifiedButPartlyLimitedAudit([]);
+  report.raw.agentless = { firewallManagers: [{ backend: "ufw", state: "active" }, { backend: "firewalld", state: "missing" }] };
+  report.raw.findings[0].evidence = "backend=firewalld;";
+  assert.equal(remediation.assessFirewallBaseline(report).ok, false, "contradictory backend identity");
+  report.raw.findings[0].evidence = "ufw: Permission denied: /run/ufw.lock";
+  assert.equal(remediation.assessFirewallBaseline(report).ok, false, "an access error still blocks changes");
+  report.raw.findings[0].evidence = "";
+  report.raw.findings.push({ id: "agentless_ports_unavailable", status: "manual" });
+  assert.equal(remediation.assessFirewallBaseline(report).ok, false, "missing ports remain blocking");
+  report.raw.findings = [];
+  assert.equal(remediation.assessFirewallBaseline(report).ok, false, "missing audit finding remains blocking");
+});
+
 test("missing firewall or port evidence still prevents the backup and modification", async () => {
   control.report = verifiedButPartlyLimitedAudit(["firewall_active"]);
   control.report.raw.findings[0].status = "manual";

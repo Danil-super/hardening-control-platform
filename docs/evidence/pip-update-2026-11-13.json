@@ -1,0 +1,99 @@
+{
+  "date": "2026-11-13",
+  "sourceRevision": "08728cc68d532a72175fecc9df8708df89c97e02",
+  "image": "sha256:9b242270c2af6475847de3d2122f6a5ba88535afd9d4f33c01a02539d1477517",
+  "install": {
+    "ok": true,
+    "tablesPreserved": 13,
+    "reportFilesPreserved": 119,
+    "environmentMountsAndHostConfigPreserved": true
+  },
+  "dependencies": {
+    "pip": "26.3",
+    "vendoredUrllib3": "2.8.0",
+    "vendoredMsgpack": "1.2.4",
+    "copiesVerified": 4,
+    "exactClosurePackages": {
+      "modern": 10,
+      "sshAudit": 3,
+      "translation": 6
+    },
+    "badNestedHashRejected": true
+  },
+  "validation": {
+    "webTests": 630,
+    "deploymentTests": 235,
+    "deploymentRootCasesRetested": 6,
+    "fullDockerfileBuildPassed": true,
+    "cachedAptAndNpmBaseLayersReused": true,
+    "toolVenvsInstalledFromPinnedWheels": true,
+    "httpChecks": 129,
+    "modernLocalhostPing": true,
+    "sshAuditCli": true,
+    "offlineTranslationWithIdsPreserved": true,
+    "ciWorkflows": 20,
+    "ciChecks": 28,
+    "ciSourceRevision": "08728cc68d532a72175fecc9df8708df89c97e02",
+    "verifiedCiArtifactZips": 5
+  },
+  "scanner": {
+    "version": "0.76.2",
+    "databaseUpdatedAt": "2026-11-13T00:58:46.183130125Z",
+    "databaseSha256": "15982ae74263f22790b348c89b181c9edfd21d70b08b2364aedcf0f7ef8fab29",
+    "sameDatabaseBefore": 778,
+    "sameDatabaseAfter": 773,
+    "removedRows": 5,
+    "addedRows": 0,
+    "high": 185,
+    "critical": 12,
+    "distinctIds": 469,
+    "sbomComponents": 964,
+    "reportSha256": "7e5fb2eb0035d6aa1be7a5927d2af8fc3f9802be4b5574fc4368b93306133956",
+    "sbomSha256": "ae96f41f3ddba90e2e9848feca1f30994bc6437ecd87fc9b1059fa05f7b9c09e",
+    "networkDisabledDuringScan": true,
+    "runtimeVolumeMountedDuringScan": false,
+    "findingsFiltered": false,
+    "reportArtifact": "artifacts/image-audit/2026-11-13/isolated/final-isolated.json",
+    "sbomArtifact": "artifacts/image-audit/2026-11-13/isolated/final-isolated-sbom.cdx.json",
+    "backupOrEnvironmentDirectoryMounted": false,
+    "mountDestinations": [
+      "/cache",
+      "/input/image.tar",
+      "/output"
+    ]
+  },
+  "recovery": {
+    "localOnly": true,
+    "backupManifestSha256": "de71369d9b0187b77623d8ecb988998cba350228eed444c0fb517f07817b064b",
+    "bundleBytes": 1503952966,
+    "primaryPauseSeconds": 36.857,
+    "savedImageLoadedAndRestored": true,
+    "elapsedSeconds": 144.309,
+    "activeReports": 34,
+    "archivedReports": 41,
+    "hmacEntries": 277,
+    "pdfFindingIdsVerified": 4135,
+    "originalXmlVerified": true,
+    "authAndCsrfVerified": true,
+    "controlledRestoredCookieRejectedAfterRevocation": true,
+    "sourceDataPreserved": true,
+    "restoredControllerStopped": true,
+    "internalNetwork": true,
+    "portsPublished": false,
+    "packagedSourceToolsVerifiedBundle": true,
+    "sourceToolsRevision": "08728cc68d532a72175fecc9df8708df89c97e02"
+  },
+  "memory": {
+    "minimumAvailableBytes": 6604800000,
+    "guardReserveBytes": 2147483648,
+    "guardTripped": false,
+    "restoredControllerOomKilled": false
+  },
+  "limitations": [
+    "No independent backup/anchor storage; operator selected local storage",
+    "Same physical computer and cached Docker store; elapsed restore time is not an RTO guarantee",
+    "No new SSH or scan against the operator Astra VM during this dependency update",
+    "Remaining CVEs, upstream-EOL Ansible, mutable APT supply, public HTTPS and operator signoff remain open",
+    "No universal latency SLA or three simultaneous full Astra OVAL audits accepted"
+  ]
+}

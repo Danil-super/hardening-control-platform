@@ -20,7 +20,7 @@ try {
   const native = JSON.parse(readFileSync(nativeReportPath, "utf8"));
   assert.ok(Date.parse(binding.verifiedAt) <= Date.parse(native.createdAt), "Identity was captured before scanning");
   copyFileSync(nativeReportPath, path.join(stage, reportId + ".json"));
-  publishCapturedAssetReports(stage, new Map([[reportId + ".json", binding]]));
+  await publishCapturedAssetReports(stage, new Map([[reportId + ".json", binding]]));
   const report = readAnsibleReport(reportId);
   assert.ok(report, "The production web normalizer must read the actual VM report");
   assert.deepEqual(report.assetBinding, binding);

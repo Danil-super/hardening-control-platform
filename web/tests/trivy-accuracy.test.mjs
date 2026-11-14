@@ -65,9 +65,14 @@ function harness(t, response = "normal", mode = "offline", repositories = "") {
     "@/lib/debian-package-index-evidence": indexEvidenceModule,
     "@/lib/ansible-control": { getStateDir: () => dir, getRepoRoot: () => path.resolve(webDir, "..") },
     "@/lib/ansible-reports": { getReportsDir: () => reports, listAnsibleReports: () => [], targetAliasFromReport: (r) => r.inventoryHost ?? r.fileName.replace(/-packages(?:-.*)?\.json$/, "") },
-    "@/lib/state-store": { getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), getDebianTrackerSelection: () => ({ sha256: null, source: "environment", updatedAt: null }), appendAuditEvent: () => {} },
+    "@/lib/state-store": { withReportEvidenceLock: fn => fn(), getVulnerabilityDatabaseSettings: () => ({ mode, source: "environment" }), getDebianTrackerSelection: () => ({ sha256: null, source: "environment", updatedAt: null }), appendAuditEvent: () => {} },
     "@/lib/astra-oval-policy": { describeAstraOvalNextStep: () => ({ ready: true, message: "OVAL-источник группы linux_hosts уже назначен. Запустите CVE Astra — OVAL / OpenSCAP.", href: "/hosts" }) },
   };
+  const nativeStorage = {};
+  vm.runInNewContext(ts.transpileModule(readFileSync(path.join(webDir, "lib/native-report-storage.ts"), "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
+  }).outputText, { exports: nativeStorage, Buffer, require: name => mocks[name] ?? require(name) });
+  mocks["@/lib/native-report-storage"] = nativeStorage;
   vm.runInNewContext(compiled, { exports, require: (name) => mocks[name] ?? require(name), process: { env }, URLSearchParams, console: { warn: () => {}, log: () => {}, error: () => {} } });
   const report = { mode: "packages", profileId: "packages", inventoryHost: "lab-host", hostname: "different-hostname", createdAt: new Date().toISOString(), packageInventory: { packageCount: 1, manager: "dpkg", osRelease: { ID: "ubuntu", VERSION_ID: "22.04" }, error: "" }, packages: [{ name: "libssl3:amd64", version: "3.0.2-0ubuntu1", arch: "amd64", manager: "dpkg", sourceName: "openssl", sourceVersion: "3.0.2-0ubuntu1", maintainer: "Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>", origin: "Ubuntu" }] };
   const save = () => writeFileSync(path.join(reports, "lab-host-packages-run1.json"), JSON.stringify(report));

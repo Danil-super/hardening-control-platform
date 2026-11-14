@@ -15,9 +15,14 @@ on:
       - web/lib/inventory.ts
       - web/tests/openscap-policy.test.mjs
       - web/tests/_typescript-loader.mjs
+      - web/scripts/compile-server-modules.mjs
       - web/package.json
       - web/package-lock.json
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

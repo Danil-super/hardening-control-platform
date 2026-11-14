@@ -1,0 +1,256 @@
+{
+  "date": "2026-11-11",
+  "code": {
+    "image": "sha256:d786198b45c915631af0a916040cd73f7fafec40fb2216b168c3d767919a7038",
+    "baseImage": "sha256:a4b06e3643b3c5a0ade9d2229a1772e6c062afcc34a35f925a883a30944b4c9f",
+    "revision": "5e578e501698d3ed96bfbe0bda50208425526fb4"
+  },
+  "localOnly": true,
+  "tests": {
+    "web": 622,
+    "http": 125,
+    "productionBuild": true,
+    "redReproductionFailedBeforeFix": true
+  },
+  "publication": {
+    "before-warm": {
+      "publicationMs": [
+        10652.12,
+        6867.65,
+        9854.47
+      ],
+      "eventLoopGapMs": [
+        10653.74,
+        6873.04,
+        9859.8
+      ],
+      "medianGapMs": 9859.8,
+      "publishedJsonSha256": "c6945c01c4f829dc7c3a9ea8d83d9149b172c565eccc4ba376b58b5dd80402a2"
+    },
+    "after-warm": {
+      "publicationMs": [
+        11705.94,
+        11615.52,
+        12841.13
+      ],
+      "eventLoopGapMs": [
+        73.89,
+        165.82,
+        67.47
+      ],
+      "medianGapMs": 73.89,
+      "publishedJsonSha256": "c6945c01c4f829dc7c3a9ea8d83d9149b172c565eccc4ba376b58b5dd80402a2"
+    },
+    "allSixPublicationsPreservedSameJsonAndNativeHashes": true,
+    "measurement": "Real captured OVAL JSON plus 304551665 native XML bytes, three isolated repetitions, preopened DB, Node22.23.1 event-loop heartbeat; not a full Next.js HTTP load test"
+  },
+  "astraSettings": {
+    "ok": true,
+    "baselineReportId": "host-172.16.95.128-openscap-run-20261111T141639998Z-b3561c91",
+    "reportId": "host-172.16.95.128-openscap-run-20261111T145913751Z-eae88f60",
+    "profileId": "xccdf_org.hcp_profile_astra_baseline",
+    "contentId": "bundle-sha256:d5dcd96987d288da7ca92bfcfced2b1cfc3b51f787821870ed14a49c9b0416b7",
+    "sameAssetAndGeneration": true,
+    "before": {
+      "passed": 14,
+      "failed": 4
+    },
+    "after": {
+      "passed": 18,
+      "failed": 0
+    },
+    "fixedNativeRuleIds": [
+      "xccdf_org.hcp_rule_ssh_root_login",
+      "xccdf_org.hcp_rule_ssh_max_auth_tries",
+      "xccdf_org.hcp_rule_ssh_x11_forwarding",
+      "xccdf_org.hcp_rule_kptr_restrict"
+    ],
+    "allArfAndHcpIdsAndStatesMatch": true,
+    "pdfAllIdsAndSourceShaPresent": true,
+    "freshSshAndSudo": {
+      "ok": true,
+      "freshSshAndSudo": true,
+      "syntaxValid": true,
+      "testAndRootContextsValid": true,
+      "kptr": 1,
+      "mainConfigPreserved": true,
+      "rollbackTimerCancelledAfterVerification": true
+    },
+    "snapshotCreated": true,
+    "rebootChecked": false,
+    "agentless": {
+      "status": "partial",
+      "reportId": "host-172.16.95.128-basic_linux-run-20261111T145943854Z-1c538cd8",
+      "partial": true,
+      "findings": 19,
+      "remainingFailed": [
+        "dangerous_port_tcp_21",
+        "dangerous_port_tcp_5432",
+        "ssh_password_auth",
+        "service_fail2ban_active",
+        "security_auto_updates"
+      ],
+      "manual": [
+        "dangerous_port_tcp_11211",
+        "firewall_active",
+        "package_updates_available",
+        "sudo_users_review",
+        "sudo_nopasswd",
+        "failed_logins",
+        "critical_services_review",
+        "root_account_present"
+      ]
+    }
+  },
+  "liveAcceptance": {
+    "ok": true,
+    "reportId": "host-172.16.95.128-astra-oval-run-20261111T150912681Z-37a68b53",
+    "partial": false,
+    "definitions": 19527,
+    "states": {
+      "false": 15393,
+      "true": 4134
+    },
+    "uniqueCves": 4068,
+    "allIdsStatesClassesAndCvesMatchNative": true,
+    "sourceSha256": "c9364c80d664907dc472475d2ef57689c314abecede7a58e7e9dae8250891d17",
+    "findings": 4135,
+    "exports": [
+      {
+        "reportId": "host-172.16.95.128-astra-oval-run-20261111T150912681Z-37a68b53",
+        "format": "xml",
+        "seconds": 0.573,
+        "bytes": 169882850,
+        "sha256": "d189f201ff49ece72e6998d1520db4ca67d1da8cb0fc937cf1c5d78962557fd7",
+        "sourceSha256": "d189f201ff49ece72e6998d1520db4ca67d1da8cb0fc937cf1c5d78962557fd7"
+      },
+      {
+        "reportId": "host-172.16.95.128-astra-oval-run-20261111T150912681Z-37a68b53",
+        "format": "source-xml",
+        "seconds": 0.316,
+        "bytes": 134668815,
+        "sha256": "c9364c80d664907dc472475d2ef57689c314abecede7a58e7e9dae8250891d17",
+        "sourceSha256": "c9364c80d664907dc472475d2ef57689c314abecede7a58e7e9dae8250891d17"
+      },
+      {
+        "reportId": "host-172.16.95.128-astra-oval-run-20261111T150912681Z-37a68b53",
+        "format": "pdf",
+        "seconds": 3.449,
+        "bytes": 2114939,
+        "sha256": "d5da757ef7c6dbff8aea2c083353f8b2633450ad224a954d130898506edbd388",
+        "sourceSha256": "543ef5c35904fdcab891e9d030f229a74b099f47dbdbd78d3ece466f7015c608",
+        "allFindingIdsAndCvesAndSourceShaMatch": true
+      },
+      {
+        "reportId": "host-172.16.95.128-astra-oval-run-20261111T150912681Z-37a68b53",
+        "format": "html",
+        "seconds": 3.218,
+        "bytes": 10997844,
+        "sha256": "2f7a26350cf7299b9e15133a23ddc6cbd38676e509a19db98be3f11a3ab5724c",
+        "sourceSha256": "d189f201ff49ece72e6998d1520db4ca67d1da8cb0fc937cf1c5d78962557fd7"
+      },
+      {
+        "reportId": "host-172.16.95.128-astra-oval-run-20261111T141137164Z-3f2266b6",
+        "format": "pdf",
+        "seconds": 5.499,
+        "bytes": 2114964,
+        "sha256": "4b1767ff8a88683e338475b6a7ec3b9b1f056f24173a2e22c36b9feda3a644b1",
+        "sourceSha256": "c6945c01c4f829dc7c3a9ea8d83d9149b172c565eccc4ba376b58b5dd80402a2",
+        "allFindingIdsAndCvesAndSourceShaMatch": true
+      }
+    ],
+    "latencies": {
+      "/api/ansible/hosts": {
+        "count": 442,
+        "p50Ms": 3.51,
+        "p95Ms": 254.16,
+        "maxMs": 1035.86,
+        "errors": 0
+      },
+      "/api/ansible/jobs": {
+        "count": 444,
+        "p50Ms": 3.41,
+        "p95Ms": 251.22,
+        "maxMs": 1201.27,
+        "errors": 0
+      },
+      "/login": {
+        "count": 442,
+        "p50Ms": 4.28,
+        "p95Ms": 245.44,
+        "maxMs": 1053.47,
+        "errors": 0
+      }
+    },
+    "browser": {
+      "ok": true,
+      "errors": [],
+      "navigation": [
+        {
+          "route": "/hosts",
+          "ms": 535
+        },
+        {
+          "route": "/reports/agentless/host-172.16.95.128-astra-oval-run-20261111T141137164Z-3f2266b6",
+          "ms": 867
+        },
+        {
+          "route": "/hosts",
+          "ms": 106
+        }
+      ],
+      "viewports": [
+        1280,
+        1440,
+        1920
+      ],
+      "jobStatusAfterNavigation": "running",
+      "jobStatusAfterReload": "running",
+      "sameJobSurvivesNavigationAndReload": true
+    },
+    "oldFilesPreserved": 113,
+    "newFiles": 116,
+    "integrity": {
+      "valid": true,
+      "entries": 276,
+      "lastEntryHash": "87792d1b19ac3a24de2475f75c4d6b4ca9de0ef8e71d1b1bf9e9b49a85ca125f",
+      "payloadProtected": true
+    }
+  },
+  "installation": {
+    "previousImage": "sha256:a4b06e3643b3c5a0ade9d2229a1772e6c062afcc34a35f925a883a30944b4c9f",
+    "image": "sha256:d786198b45c915631af0a916040cd73f7fafec40fb2216b168c3d767919a7038",
+    "revision": "5e578e501698d3ed96bfbe0bda50208425526fb4",
+    "checkedTables": 13,
+    "checkedReportFiles": 113,
+    "ok": true,
+    "dataAndConfigurationPreserved": true
+  },
+  "finalHealth": {
+    "ok": true,
+    "healthy": true,
+    "noActiveJobsOrAssetLeasesOrIncompleteRemediations": true,
+    "oldFilesPreserved": 113,
+    "newFiles": 116,
+    "changedTables": [
+      "audit_events",
+      "audit_jobs"
+    ]
+  },
+  "browserExports": {
+    "ok": true,
+    "afterAuditsCompleted": true,
+    "downloadButtonWorked": true,
+    "allFindingIdsAndCvesAndSourceHashMatch": true,
+    "nativeHtmlTitle": "OVAL Results",
+    "nativeHtmlContainsSampleCves": true,
+    "noPageErrors": true
+  },
+  "limitations": [
+    "No fresh dependency rebuild or GitHub CI",
+    "No reboot or snapshot/SSH rollback timer activation tested in this step",
+    "Other findings remain; 18 passing rules cover the selected baseline only",
+    "One real Astra, not a 3/5-host heavy scanner matrix",
+    "JSON normalization and one synchronous inventory lookup still have bounded blocking work"
+  ]
+}

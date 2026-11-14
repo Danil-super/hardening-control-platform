@@ -11,7 +11,8 @@ import {
 } from "@/lib/ansible-control";
 import { applyOpenScapExceptions, resolveOpenScapPolicyForHost } from "@/lib/openscap-policy";
 import { resolveAstraOvalPolicyForHost } from "@/lib/astra-oval-policy";
-import { inspectAuditReports } from "@/lib/audit-result";
+import { preparedOvalExtraVars } from "@/lib/astra-oval-preparation";
+import { auditReportLimitations, inspectAuditReports } from "@/lib/audit-result";
 import { findRepeatAuditNotice } from "@/lib/audit-repeat";
 import { readAnsibleReport } from "@/lib/ansible-reports";
 import { listOpenScapExceptions, listRemediationTransactions } from "@/lib/state-store";
@@ -179,7 +180,7 @@ export async function POST(request: Request) {
   if (action === "astraOvalAudit") {
     try {
       const policy = resolveAstraOvalPolicyForHost(limit);
-      runnerExtraVars = { hcp_oval_config: JSON.stringify(policy.config) };
+      runnerExtraVars = { hcp_oval_config: JSON.stringify(policy.config), ...preparedOvalExtraVars(policy.config) };
     } catch (error) {
       return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "Не удалось выбрать OVAL-базу." }, { status: 400 });
     }
@@ -280,14 +281,21 @@ export async function POST(request: Request) {
       stderr,
     });
   } catch (error) {
-    const output = error as { stdout?: string; stderr?: string; message?: string; code?: string };
+    const output = error as { stdout?: string; stderr?: string; message?: string; code?: string; reportRunId?: string };
+    const reportRunId = typeof output.reportRunId === "string" && /^run-[A-Za-z0-9_.:-]{1,96}$/.test(output.reportRunId) ? output.reportRunId : null;
+    const expectedReportId = reportIdForRun({ action, profileId, limit, reportRunId });
+    const savedReport = expectedReportId ? readAnsibleReport(expectedReportId) : null;
+    const reportId = savedReport ? expectedReportId : null;
+    const warnings = savedReport ? auditReportLimitations(savedReport.raw) : [];
+    const message = (output.message ?? "Playbook завершился с ошибкой.")
+      + (reportId ? " Отчёт этого запуска сохранён и доступен для просмотра." : "");
     appendIncident({
       action,
       kind: "audit",
       status: "failed",
       profileId,
       limit: limit || null,
-      message: output.message ?? "Playbook завершился с ошибкой.",
+      message,
     });
     return NextResponse.json(
       {
@@ -296,7 +304,11 @@ export async function POST(request: Request) {
         profileId,
         limit: limit || null,
         command: "",
-        message: output.message ?? "Playbook завершился с ошибкой.",
+        message,
+        reportRunId,
+        reportId,
+        partial: Boolean(savedReport),
+        warnings,
         stdout: output.stdout ?? "",
         stderr: output.stderr ?? "",
       },

@@ -1,0 +1,704 @@
+{
+  "schemaVersion": 1,
+  "scope": "local RC recovery and bounded one/three guest audit acceptance",
+  "codeRevision": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+  "image": "sha256:fe8d8b1a79f08837161bc913fb3434fae3eba6d3b574f1617d0abbd8916eec45",
+  "install": {
+    "previousImage": "sha256:d786198b45c915631af0a916040cd73f7fafec40fb2216b168c3d767919a7038",
+    "image": "sha256:fe8d8b1a79f08837161bc913fb3434fae3eba6d3b574f1617d0abbd8916eec45",
+    "revision": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+    "checkedTables": 13,
+    "checkedReportFiles": 116,
+    "ok": true,
+    "dataAndConfigurationPreserved": true,
+    "composeDefaultTagUpdated": true
+  },
+  "cleanBuild": {
+    "ok": true,
+    "revision": "ee927aae5ff8a3d5a2828ef7ab09677edcdfaf2c",
+    "cleanDependencies": true,
+    "buildExit": 0,
+    "image": "sha256:dfc7432f690d072d01557021bb8f33c8011c7026cacf09ef9835f49c99524180"
+  },
+  "runtimeLayerComparison": {
+    "ok": true,
+    "image": "sha256:fe8d8b1a79f08837161bc913fb3434fae3eba6d3b574f1617d0abbd8916eec45",
+    "revision": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+    "cleanBuildImage": "sha256:dfc7432f690d072d01557021bb8f33c8011c7026cacf09ef9835f49c99524180",
+    "cleanBuildRevision": "ee927aae5ff8a3d5a2828ef7ab09677edcdfaf2c",
+    "runtimeLayersUnchanged": true,
+    "onlyChangedNonRuntimeFiles": [
+      "deployment/astra-vm/sources.json",
+      "deployment/tests/test_astra17_ova_oval.py",
+      "deployment/tests/verify_astra17_ova_oval.py",
+      "deployment/tests/verify_astra_vm_normalization.mjs",
+      "deployment/tests/verify_astra_vm_three_stage_publication.mjs",
+      "deployment/tests/verify_deb_vm_normalization.mjs"
+    ],
+    "cleanDependencyBuildReceipt": "clean-build-final.json"
+  },
+  "backups": [
+    {
+      "ok": true,
+      "startedAt": "2026-11-12T06:14:22.264248+00:00",
+      "primaryPauseSeconds": 41.711,
+      "image": "sha256:d786198b45c915631af0a916040cd73f7fafec40fb2216b168c3d767919a7038",
+      "revision": "5e578e501698d3ed96bfbe0bda50208425526fb4",
+      "manifestSha256": "53145223febf8fb1e03b7dac44b49c0be447dda315dd202299c3d93c83554fb3",
+      "reportsPreserved": 116,
+      "checkedTables": 13,
+      "archiveBytes": {
+        "runtime.tar.gz": 454020739,
+        "settings.tar.gz": 5302,
+        "image.tar.gz": 1364680106
+      },
+      "healthyAtEnd": true,
+      "completedAt": "2026-11-12T06:17:08.065220+00:00"
+    },
+    {
+      "ok": true,
+      "startedAt": "2026-11-12T09:43:17.505635+00:00",
+      "primaryPauseSeconds": 70.526,
+      "image": "sha256:fe8d8b1a79f08837161bc913fb3434fae3eba6d3b574f1617d0abbd8916eec45",
+      "revision": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+      "manifestSha256": "820c4bbb2460b4d5a88ab1af38f11dacd9e109858b5de19aa8e647b2ad74f5e2",
+      "reportsPreserved": 116,
+      "checkedTables": 13,
+      "archiveBytes": {
+        "runtime.tar.gz": 454020973,
+        "settings.tar.gz": 5302,
+        "image.tar.gz": 1046610222
+      },
+      "healthyAtEnd": true,
+      "completedAt": "2026-11-12T09:47:09.961361+00:00"
+    }
+  ],
+  "recovery": {
+    "previousImage": {
+      "ok": true,
+      "reportCount": 33,
+      "restoredLoginAndAuthCsrfVerified": true,
+      "previouslyValidRestoredCookieRejectedAfterRevocation": true,
+      "sourceDataPreserved": true,
+      "stoppedRestoredController": true,
+      "primaryHealthyAtEnd": true
+    },
+    "finalImage": {
+      "ok": true,
+      "reportCount": 33,
+      "restoredLoginAndAuthCsrfVerified": true,
+      "previouslyValidRestoredCookieRejectedAfterRevocation": true,
+      "sourceDataPreserved": true,
+      "stoppedRestoredController": true,
+      "primaryHealthyAtEnd": true
+    }
+  },
+  "postBootRestoredAudit": {
+    "ok": true,
+    "sameAssetAndGenerationAsSource": true,
+    "allNativeStatesMatch": true,
+    "allPdfIdsAndSourceShaPresent": true,
+    "passed": 18,
+    "failed": 0
+  },
+  "finalInstalledAudit": {
+    "ok": true,
+    "pdfSourceSha256": "27187bd6e4dfad049b59ed3a8cd23efefbebd184f90820f51c14fe938640bdcd",
+    "xmlSourceSha256": "0fc10d0263b8055422a52869ebfa906686c5c4037bf89a664af5b0653f384839",
+    "passed": 18,
+    "failed": 0,
+    "partial": false,
+    "allNativeStatesMatch": true,
+    "allPdfIdsAndSourceShaPresent": true,
+    "oldFilesPreserved": 116,
+    "reportFilesAfter": 119,
+    "liveIntegrity": {
+      "valid": true,
+      "entries": 277,
+      "brokenAt": null,
+      "legacyEntries": 0,
+      "payloadProtected": true,
+      "lastEntryHash": "195fb66812a47d3cd725a2bd530de84bff983ff2da6412c04ec79f066ca6fdc5"
+    },
+    "unrelatedTablesPreserved": true,
+    "healthyAtEnd": true,
+    "concurrentHttp": {
+      "samples": 150,
+      "errors": 0,
+      "maxMs": 373.85
+    }
+  },
+  "github": {
+    "workflowCount": 20,
+    "checkCount": 28,
+    "checks": [
+      {
+        "name": "Required platform checks",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "lab",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "container",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "astra-vm (1.8.1)",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "web",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "Reject high or critical production dependency advisories",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "astra-vm (1.8.6)",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "ansible",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "native-astra17-qemu",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "targeted-nvd-source",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "openscap-full-profile-acceptance",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "rpm-native (rocky)",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "live-scan",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "firewalld-kernel-acceptance",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "rpm-native (almalinux)",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "live-debian-tracker",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "deb-native (debian)",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "ingestion",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "python35",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "deb-native (ubuntu)",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "native-ova-ssh",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "native-astra17-complete-source",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "real-openscap-engine",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "real-python35",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "alpine",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "ufw-kernel-acceptance",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "native-astra17-hcp",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      },
+      {
+        "name": "real-oval-package-probes",
+        "head_sha": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+        "status": "completed",
+        "conclusion": "success"
+      }
+    ],
+    "artifacts": [
+      {
+        "name": "deb-native-debian",
+        "runId": 43190793926,
+        "bytes": 2171952,
+        "sha256": "fa9a7460d863cd1a48ac6a29393f68f5ec92692574eac3bf88e7fe9b79b90e3c"
+      },
+      {
+        "name": "deb-native-ubuntu",
+        "runId": 43190793926,
+        "bytes": 25763293,
+        "sha256": "ce93e1ffe215bc28e5715c8780b8b637d85ebdc598f064e7f2928aefc8933383"
+      },
+      {
+        "name": "native-astra17-full-oval-source-status-only",
+        "runId": 43190793770,
+        "bytes": 3204,
+        "sha256": "859ea6ce88550511caf5d23e5f2f131c9a1dd6dc49b155b8ac45907415a04188"
+      },
+      {
+        "name": "astra-vm-1.8.1",
+        "runId": 43190794007,
+        "bytes": 34065966,
+        "sha256": "27e9433a83979c9f7cec67fec754283c83205bb233ca399a4033a302adb8433b"
+      },
+      {
+        "name": "astra-vm-1.8.6",
+        "runId": 43190794007,
+        "bytes": 33547870,
+        "sha256": "da1357d16bc04a382012848f845af99bd39cd1daedfef26309706155bfd94279"
+      }
+    ]
+  },
+  "load": {
+    "maximumFormalConcurrency": 3,
+    "fiveHostAuditExcludedByOperator": true,
+    "formalAudits": 14,
+    "rounds": [
+      {
+        "concurrency": 1,
+        "repeat": 1,
+        "action": "lynisTemporaryAudit",
+        "createdToLastFinishedSeconds": 521.287,
+        "jobDurationsSeconds": [
+          521.287
+        ],
+        "allAuditsOverlapped": true,
+        "completedAudits": 1,
+        "pdfs": [
+          {
+            "bytes": 69260,
+            "sha256": "835aa1ab8bce959756344b89d47949cae7c967f0cb5cee3d84cc334b936f53d2",
+            "sourceSha256": "28ee915220871854f0af5016fa98085725608833768fe5ad90d487b41b5a97ab"
+          }
+        ],
+        "native": [
+          {
+            "format": "dat",
+            "bytes": 46414,
+            "sha256": "e5c67f63fa98b1f11a7ec868829c504340d3ebb12657dd7149ab59a9e63e5450",
+            "sourceSha256": "e5c67f63fa98b1f11a7ec868829c504340d3ebb12657dd7149ab59a9e63e5450"
+          }
+        ],
+        "historicalAstraPdfExport": {
+          "bytes": 2114967,
+          "sha256": "db6b88721c89e64c95732f9fad193d454c8a47c50b3c59d913fb73a9d74fc01c",
+          "sourceSha256": "c6945c01c4f829dc7c3a9ea8d83d9149b172c565eccc4ba376b58b5dd80402a2",
+          "seconds": 3.779
+        }
+      },
+      {
+        "concurrency": 1,
+        "repeat": 1,
+        "action": "sshCryptoAudit",
+        "createdToLastFinishedSeconds": 2.255,
+        "jobDurationsSeconds": [
+          2.255
+        ],
+        "allAuditsOverlapped": true,
+        "completedAudits": 1,
+        "pdfs": [
+          {
+            "bytes": 51942,
+            "sha256": "9e7fad37f95e002ede12a7f0cc4e3c4ff2e2e397f5869afcb3dd1440175253e6",
+            "sourceSha256": "599c847a6a0065069286d7f8847c68e50426182de05757801ff322145ae5f86f"
+          }
+        ],
+        "native": [
+          {
+            "format": "json",
+            "bytes": 6395,
+            "sha256": "484653a075c36dc49b147ea48c4d5fe274f5827f463b049b0b028393c3f01438",
+            "sourceSha256": "484653a075c36dc49b147ea48c4d5fe274f5827f463b049b0b028393c3f01438"
+          }
+        ]
+      },
+      {
+        "concurrency": 3,
+        "repeat": 1,
+        "action": "lynisTemporaryAudit",
+        "createdToLastFinishedSeconds": 681.215,
+        "jobDurationsSeconds": [
+          658.77,
+          662.878,
+          680.611
+        ],
+        "allAuditsOverlapped": true,
+        "completedAudits": 3,
+        "pdfs": [
+          {
+            "bytes": 69261,
+            "sha256": "a0ca1fd1d5768c8de78ef448a8cf51455d3a8438700746d0ae7eadf5ea9e2cc2",
+            "sourceSha256": "ee7ddc4a62dc22ec8ddffdf4eace4ce157e994a7f0a989b7eb7a56fbd60fe69e"
+          },
+          {
+            "bytes": 69278,
+            "sha256": "c488fbeb1819b1ad2e80f9e13f51dc2eebe2345d32e056fceaf4fd0a6f4b2058",
+            "sourceSha256": "f45f38dccadeaf08c561a3987f699396ca5d80ff262e98f741137643b53883f2"
+          },
+          {
+            "bytes": 69258,
+            "sha256": "127bafa10d4a48fc0f0f0525dc8582e57f63906b0f00b84794dbfc65982b8c8f",
+            "sourceSha256": "900fc4d1e38884b34b104106acbaed0d3e72c2448f9270a58fffad2431489190"
+          }
+        ],
+        "native": [
+          {
+            "format": "dat",
+            "bytes": 46446,
+            "sha256": "da70ef621415a824e94d913725a92131d37da1c2ba7819e270d8892881c59f7a",
+            "sourceSha256": "da70ef621415a824e94d913725a92131d37da1c2ba7819e270d8892881c59f7a"
+          },
+          {
+            "format": "dat",
+            "bytes": 46292,
+            "sha256": "ae213ea45dd20ce223d4f9424d741ccc334b1a189262d9a3e34e35e4bec29eae",
+            "sourceSha256": "ae213ea45dd20ce223d4f9424d741ccc334b1a189262d9a3e34e35e4bec29eae"
+          },
+          {
+            "format": "dat",
+            "bytes": 46348,
+            "sha256": "ac42ffe8bfb95a8a8aa247e32410e9680530153918ffadd64a9250c3e6ebc3b5",
+            "sourceSha256": "ac42ffe8bfb95a8a8aa247e32410e9680530153918ffadd64a9250c3e6ebc3b5"
+          }
+        ],
+        "historicalAstraPdfExport": {
+          "bytes": 2114967,
+          "sha256": "c2c7b3f6e08478bf4c33f8c4c146154010fd0d8ab7505e7c876d0ed8521d6cd3",
+          "sourceSha256": "c6945c01c4f829dc7c3a9ea8d83d9149b172c565eccc4ba376b58b5dd80402a2",
+          "seconds": 4.336
+        }
+      },
+      {
+        "concurrency": 3,
+        "repeat": 1,
+        "action": "sshCryptoAudit",
+        "createdToLastFinishedSeconds": 2.811,
+        "jobDurationsSeconds": [
+          2.69,
+          2.708,
+          2.769
+        ],
+        "allAuditsOverlapped": true,
+        "completedAudits": 3,
+        "pdfs": [
+          {
+            "bytes": 51943,
+            "sha256": "3f5bb568383c61fe537703830e4933d9a9a982c79d8b22a634b5700aa9037ce5",
+            "sourceSha256": "976bde8527f2c0756db1f8fb07871220beb9687b34e5cc671dffc178d0b7e1e3"
+          },
+          {
+            "bytes": 51887,
+            "sha256": "8161720d8ea2bffbbd46fc9263d38a81149698f1176cbea144015a40629f4943",
+            "sourceSha256": "98a253d2692c50795ce9f7c8ffba9bf5578397883c965209761a1f4ea31bb40c"
+          },
+          {
+            "bytes": 51945,
+            "sha256": "18e92124e03c1b7110339e6c009a256f196cad2bc520e22ad55f025475ad880d",
+            "sourceSha256": "b17482ead7c4fd19ad310a6b1b291f034f2f94830156471bd685b4381a45d5d5"
+          }
+        ],
+        "native": [
+          {
+            "format": "json",
+            "bytes": 6395,
+            "sha256": "484653a075c36dc49b147ea48c4d5fe274f5827f463b049b0b028393c3f01438",
+            "sourceSha256": "484653a075c36dc49b147ea48c4d5fe274f5827f463b049b0b028393c3f01438"
+          },
+          {
+            "format": "json",
+            "bytes": 6395,
+            "sha256": "714ba02fdc80378686d9c79fb21a465963628210b018b42575a5a9ddddb068fc",
+            "sourceSha256": "714ba02fdc80378686d9c79fb21a465963628210b018b42575a5a9ddddb068fc"
+          },
+          {
+            "format": "json",
+            "bytes": 6395,
+            "sha256": "10095452ae7e34ce091f38eec90d50b5f0843912fa35bac1b3e6807ffc9f46e6",
+            "sourceSha256": "10095452ae7e34ce091f38eec90d50b5f0843912fa35bac1b3e6807ffc9f46e6"
+          }
+        ]
+      },
+      {
+        "concurrency": 3,
+        "repeat": 2,
+        "action": "lynisTemporaryAudit",
+        "createdToLastFinishedSeconds": 588.812,
+        "jobDurationsSeconds": [
+          583.107,
+          588.583,
+          575.559
+        ],
+        "allAuditsOverlapped": true,
+        "completedAudits": 3,
+        "pdfs": [
+          {
+            "bytes": 69282,
+            "sha256": "b71bfd9655a4e6260f1daddb8682b072d99a4ffb5a53da1b413ada6da271ea54",
+            "sourceSha256": "5ef98638a4b183bf46aff9ae917ba1cbb935bf6104af3c48251385dd605d997a"
+          },
+          {
+            "bytes": 69263,
+            "sha256": "e8794b605fc47631c5aa7df7694eeba376593c2a1d7efc2ad502e6ae3fd84753",
+            "sourceSha256": "03e7979948f225819101d1c39e3b265ac6bd3701c34d8a0334e5acbcafdbd39e"
+          },
+          {
+            "bytes": 69261,
+            "sha256": "a6bc995e329bc9227cd2fd01af33b7ab522978a3f40747c2756ef32cd3271fe3",
+            "sourceSha256": "04b94c71f28e601a9f4e18c60c114fffe889d491c7157d47e8ff1e1001f5cbf2"
+          }
+        ],
+        "native": [
+          {
+            "format": "dat",
+            "bytes": 46358,
+            "sha256": "644a4ac2c7b340266301f9d438e9cbe8b7ed2d0b72a07555eb2de6373cc9192d",
+            "sourceSha256": "644a4ac2c7b340266301f9d438e9cbe8b7ed2d0b72a07555eb2de6373cc9192d"
+          },
+          {
+            "format": "dat",
+            "bytes": 46414,
+            "sha256": "bda986b05fe245649bc025acde542c38f35eac8e074589246c598a6513165e7c",
+            "sourceSha256": "bda986b05fe245649bc025acde542c38f35eac8e074589246c598a6513165e7c"
+          },
+          {
+            "format": "dat",
+            "bytes": 46446,
+            "sha256": "257d9579f90a48f886ff99bd17bb96f31f2efce1136ad3cce98ce7e169ea5d04",
+            "sourceSha256": "257d9579f90a48f886ff99bd17bb96f31f2efce1136ad3cce98ce7e169ea5d04"
+          }
+        ],
+        "historicalAstraPdfExport": {
+          "bytes": 2114967,
+          "sha256": "1e8d481ec8511fb82bd24c85f3edb7cae682ce8a4222c1262fabce5053000a92",
+          "sourceSha256": "c6945c01c4f829dc7c3a9ea8d83d9149b172c565eccc4ba376b58b5dd80402a2",
+          "seconds": 3.561
+        }
+      },
+      {
+        "concurrency": 3,
+        "repeat": 2,
+        "action": "sshCryptoAudit",
+        "createdToLastFinishedSeconds": 3.123,
+        "jobDurationsSeconds": [
+          3.123,
+          2.705,
+          2.699
+        ],
+        "allAuditsOverlapped": true,
+        "completedAudits": 3,
+        "pdfs": [
+          {
+            "bytes": 51948,
+            "sha256": "242258e7961c05ff4baabc03e28f5072eacf6066a9a1aea1ee45802434282934",
+            "sourceSha256": "71aa387055a05b103ccbb84d4d0c2d034dffaa534f0bedc23180acdd4dd68f30"
+          },
+          {
+            "bytes": 51947,
+            "sha256": "abfc408e98290b63f4cc8819f6a27e6804c9f82c968d70c869152a6ef767405a",
+            "sourceSha256": "b40b73e17a927361d0fe61326b58f9d853f183b1581960961b769ab34bc14be2"
+          },
+          {
+            "bytes": 51945,
+            "sha256": "b42a72b41af66ffba9033b5d648f4e0dc8a79d1037c413aee90ebeaa3287fb4e",
+            "sourceSha256": "5a6e4c85e5427f7f8d1e172c79057350ae35a6660949fd1bf6cb21356ed5210f"
+          }
+        ],
+        "native": [
+          {
+            "format": "json",
+            "bytes": 6395,
+            "sha256": "714ba02fdc80378686d9c79fb21a465963628210b018b42575a5a9ddddb068fc",
+            "sourceSha256": "714ba02fdc80378686d9c79fb21a465963628210b018b42575a5a9ddddb068fc"
+          },
+          {
+            "format": "json",
+            "bytes": 6395,
+            "sha256": "10095452ae7e34ce091f38eec90d50b5f0843912fa35bac1b3e6807ffc9f46e6",
+            "sourceSha256": "10095452ae7e34ce091f38eec90d50b5f0843912fa35bac1b3e6807ffc9f46e6"
+          },
+          {
+            "format": "json",
+            "bytes": 6395,
+            "sha256": "484653a075c36dc49b147ea48c4d5fe274f5827f463b049b0b028393c3f01438",
+            "sourceSha256": "484653a075c36dc49b147ea48c4d5fe274f5827f463b049b0b028393c3f01438"
+          }
+        ]
+      }
+    ],
+    "http": {
+      "/api/ansible/hosts": {
+        "samples": 3261,
+        "errors": 0,
+        "p50": 2.91,
+        "p95": 247.47,
+        "max": 6956.35
+      },
+      "/api/ansible/jobs": {
+        "samples": 3270,
+        "errors": 0,
+        "p50": 2.82,
+        "p95": 246.78,
+        "max": 6957.03
+      },
+      "/login": {
+        "samples": 3261,
+        "errors": 0,
+        "p50": 3.56,
+        "p95": 240.7,
+        "max": 6954.07
+      }
+    },
+    "browser": {
+      "ok": true,
+      "viewports": [
+        1280,
+        1440,
+        1920
+      ],
+      "activeAtStart": 3,
+      "activeAtEnd": 3,
+      "reloadVerified": true,
+      "pageErrors": [],
+      "unexpectedRequestFailures": []
+    },
+    "cleanup": {
+      "ok": true,
+      "allFivePreparedGuestsStopped": true,
+      "controllerStopped": true,
+      "mainDataPreserved": true,
+      "minimumAvailableKiBAfterScopeReduction": 5224672,
+      "memoryGuard": {
+        "stoppedLoad": false,
+        "minimumAvailableKiB": 2166056,
+        "thresholdKiB": 2097152
+      },
+      "offlineIntegrity": {
+        "schemaVersion": 1,
+        "status": "hmac-chain-valid-with-stated-legacy-limits",
+        "scope": "restored-HCP-audit-events-chain-only",
+        "entries": 20,
+        "legacyEntries": 0,
+        "payloadProtectedForAllEntries": true,
+        "lastEntryHash": "8856f06e6c323946828b7e615cbcefb04720dcbc6e9c0270a92340049f60fc0b",
+        "operatorHeadAnchorMatched": true,
+        "restoredDatabaseSha256": "7860150ac0bc63dacd461e1dd5d1d3e6ead19d0cd13330a5f5de4492a795eb23",
+        "checkedAtUtc": "2026-11-12T10:03:51.314664+00:00",
+        "usedOriginalHcpAuditKey": "operator-supplied-from-restored-env",
+        "publisherOrOperatorAuthenticated": false,
+        "restoredLoginVerified": false,
+        "sshRestorationVerified": false,
+        "limitations": [
+          "Matches hashes against the key inside the operator-provided protected .env; not independent authenticity.",
+          "A chain without an independently retained prior head and count cannot detect deletion of its valid tail.",
+          "Operator-provided head and count require independent retention to establish a trustworthy checkpoint.",
+          "Legacy version 1 hash uses a JSON replacer and does not protect all nested payload fields.",
+          "Does not prove old sessions were revoked, reports unchanged, or SSH/firewall restored.",
+          "Requires an isolated stopped restored controller and an independent operational drill."
+        ]
+      },
+      "anchorRetention": "Observed live before stop and retained locally on the same workstation; not external independent storage"
+    },
+    "controllerResourceUsage": {
+      "memory.current": "385695744",
+      "memory.peak": "732164096",
+      "memory.events": "low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\nsock_throttled 7",
+      "cpu.stat": "usage_usec 334691003\nuser_usec 301699600\nsystem_usec 32991403\nnice_usec 0\ncore_sched.force_idle_usec 0\nnr_periods 23165\nnr_throttled 106\nthrottled_usec 6580079\nnr_bursts 0\nburst_usec 0"
+    },
+    "observationIncludesControllerBackupRestore": true,
+    "observerRestartedForOperatorScopeChange": true
+  },
+  "limitations": [
+    "Rare HTTP pauses up to 6.96 seconds remain unexplained; no universal latency SLA is established.",
+    "Load includes Lynis/SSH with historical Astra OVAL export, not concurrent full OVAL scans on three Astra guests.",
+    "Five guests were prepared before the operator reduced scope; no formal five-host audit round ran.",
+    "Backup/restore and desktop applications shared one physical host; external anchors, HTTPS and operator signature remain open.",
+    "Manufacturer SHA metadata does not independently authenticate publisher signatures.",
+    "The final cold backup predates the final fresh audit, which added three verified report files.",
+    "No narrow-screen acceptance, full five-host acceptance or actual SSH recovery-timer activation."
+  ]
+}

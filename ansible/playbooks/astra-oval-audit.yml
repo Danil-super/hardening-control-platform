@@ -48,13 +48,16 @@
           delegate_to: localhost
           become: false
           changed_when: false
-          when: oval_settings.mode | default('local') == 'online'
+          when:
+            - oval_settings.mode | default('local') == 'online'
+            - hcp_oval_prepared_input | default('') | length == 0
 
         - name: Stop on an unavailable online source without a local fallback
           ansible.builtin.fail:
             msg: "{{ (oval_download.stdout | from_json).error | default('Не удалось подготовить OVAL.') }}"
           when:
             - oval_settings.mode | default('local') == 'online'
+            - hcp_oval_prepared_input | default('') | length == 0
             - not ((oval_download.stdout | from_json).ok | default(false) | bool)
 
         - name: Allocate temporary target directory
@@ -71,11 +74,12 @@
 
         - name: Transfer verified online XML to target
           ansible.builtin.copy:
-            src: "{{ oval_controller_dir.path }}/database.xml"
+            src: "{{ hcp_oval_prepared_input if hcp_oval_prepared_input | default('') | length > 0 else oval_controller_dir.path ~ '/database.xml' }}"
             dest: "{{ oval_target_dir.path }}/database.xml"
             mode: "0600"
           when: oval_settings.mode | default('local') == 'online'
 
+        # Serialize proof at the argv boundary; legacy Ansible can coerce JSON strings into dict text.
         - name: Validate and evaluate OVAL locally on target
           ansible.builtin.command:
             argv:
@@ -83,7 +87,7 @@
               - "{{ oval_target_dir.path }}/hcp-oval-audit.py"
               - evaluate
               - --source-validation
-              - "{{ (oval_download.stdout | from_json).sourceValidation | to_json if oval_settings.mode | default('local') == 'online' else '{}' }}"
+              - "{{ (((hcp_oval_source_validation | from_json) if hcp_oval_source_validation | default('') | length > 0 else (oval_download.stdout | from_json).sourceValidation) if oval_settings.mode | default('local') == 'online' else {}) | to_json }}"
               - --config
               - "{{ oval_config_json }}"
               - --input
@@ -94,6 +98,10 @@
               - "{{ report_suffix }}"
               - --output
               - "{{ oval_target_dir.path }}/report.json"
+              - --raw-source-output
+              - "{{ (oval_target_dir.path ~ '/original-source.xml') if (hcp_preserve_raw_evidence | default(false) | bool) else '' }}"
+              - --raw-results-output
+              - "{{ (oval_target_dir.path ~ '/original-results.xml') if (hcp_preserve_raw_evidence | default(false) | bool) else '' }}"
           changed_when: false
 
         - name: Fetch normalized OVAL report including incomplete outcomes
@@ -101,6 +109,28 @@
             src: "{{ oval_target_dir.path }}/report.json"
             dest: "{{ oval_report_path }}"
             flat: true
+          no_log: true
+
+        - name: Inspect original OVAL evidence before private retrieval
+          ansible.builtin.stat:
+            path: "{{ oval_target_dir.path }}/{{ item.file }}"
+            get_checksum: false
+          loop:
+            - { file: original-source.xml, kind: source }
+            - { file: original-results.xml, kind: oval-results }
+          register: oval_original_files
+          when: hcp_preserve_raw_evidence | default(false) | bool
+          no_log: true
+
+        - name: Retrieve original OVAL source and native result for evidence publication
+          ansible.builtin.fetch:
+            src: "{{ item.stat.path }}"
+            dest: "{{ scanner_report_dir }}/.{{ inventory_hostname }}-astra-oval-{{ report_suffix }}.{{ item.item.kind }}.xml"
+            flat: true
+          loop: "{{ oval_original_files.results | default([]) }}"
+          when:
+            - hcp_preserve_raw_evidence | default(false) | bool
+            - item.stat.exists | default(false) | bool
           no_log: true
 
       rescue:
