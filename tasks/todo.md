@@ -5,7 +5,7 @@
 ## Текущий срез — кандидат для локальной сдачи, 14 ноября
 
 - [x] Общая restore-проверка требует внешний manifest pin до SQLite/чтения HMAC-ключа: `07742a8`, 237 deployment-тестов, GitHub 20/20 workflow и 28/28 checks. Нативная SQLite не обновлялась, CVE остаётся `needs_review`.
-- [x] Локально отключить автоматический поиск соседних XML в XCCDF HTML: настоящий ARF с 18 правилами даёт тот же HTML, отдельный обычный fixture больше не подмешивает SCE XML. 635 web, typecheck/build, 132 HTTP прошли; рабочий образ пока не обновлён. [Протокол](../docs/native-export-isolation-2026-11-14.md).
+- [x] `ff5597d` установлен, образ `ac01def7`: отключить автоматический поиск соседних XML в XCCDF HTML. Настоящий ARF/18 правил даёт тот же HTML в отдельном новом образе и рабочем HTTP; обычный companion fixture больше не подмешивается. 635 web, typecheck/build, 132 HTTP; GitHub 20/20 и 28/28 после повтора Greenbone TLS timeout. 13 таблиц/152 файла и HMAC 311 сохранены; addon `44f5b8d7…` к прежнему полному backup, новый full-data restore не повторён. [Протокол](../docs/native-export-isolation-2026-11-14.md).
 
 - [x] `2eccf06` установлен: освободить chunks/raw/XML-дерево до native validation. RED/GREEN, 373 Ansible/Python без пропусков, build/typecheck, 132 HTTP; две свежие загрузки 171 МБ с SHA/XSD/Schematron прошли в 2 ГиБ. GitHub 20/20 и 28/28. Полный restore нового bundle `059330e3…`, 50/41 отчётов, HMAC 311, no-op/cache, XML/PDF/отзыв сессии проверены; 13 таблиц/152 файла сохранены. [Протокол](../docs/oval-download-memory-acceptance-2026-11-14.md).
 
