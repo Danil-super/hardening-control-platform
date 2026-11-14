@@ -6,9 +6,10 @@ import path from "node:path";
 import test, { after } from "node:test";
 import { compileServerModules } from "./_typescript-loader.mjs";
 
-const compiled = compileServerModules(["astra-oval-preparation"]);
+const compiled = compileServerModules(["astra-oval-preparation", "state-store"]);
 const { ovalPreparationStatus, preparedOvalExtraVars, startOvalPreparation } = await import(compiled.url("astra-oval-preparation"));
 const { validateAstraOvalConfig } = await import(compiled.url("astra-oval-config"));
+const store = await import(compiled.url("state-store"));
 const root = mkdtempSync(path.join(tmpdir(), "hcp-oval-preparation-"));
 process.env.HCP_STATE_DIR = root;
 after(() => { delete process.env.HCP_STATE_DIR; rmSync(root, { recursive: true, force: true }); rmSync(compiled.directory, { recursive: true, force: true }); });
@@ -92,4 +93,42 @@ test("local source keeps target-side validation and never fetches from the contr
   assert.equal(ovalPreparationStatus(c).state, "local");
   assert.deepEqual(preparedOvalExtraVars(c), {});
   assert.equal(startOvalPreparation(c, () => { throw new Error("network not allowed"); }).run, null);
+});
+
+
+test("saving an unchanged source preserves its prepared XML; changed settings require preparation", async (context) => {
+  const now = Date.now();
+  context.mock.timers.enable({ apis: ["Date"], now });
+  const original = store.upsertAstraOvalPolicy("unchanged-source", config());
+  await startOvalPreparation(original.config, execute).run();
+  const vars = preparedOvalExtraVars(original.config);
+  context.mock.timers.setTime(now + 60_000);
+  const saved = store.upsertAstraOvalPolicy("unchanged-source", { ...original.config, sourceReviewedAt: "2099-01-01T00:00:00.000Z" });
+  assert.deepEqual(saved, original);
+  assert.deepEqual(store.listAstraOvalPolicies().find(p => p.groupName === saved.groupName), original);
+  assert.equal(ovalPreparationStatus(saved.config).state, "ready");
+  assert.deepEqual(preparedOvalExtraVars(saved.config), vars);
+  assert.equal(startOvalPreparation(saved.config, () => { throw new Error("Unexpected download"); }).run, null);
+
+  for (const [index, change] of [
+    { url: "https://mirror.example/new.xml" }, { sha256: "b".repeat(64) },
+    { releasePattern: "1.8.*" }, { architectures: ["aarch64"] }, { maxAgeDays: 7 },
+    { sourceName: "Other source" }, { sourceReference: "OTHER-REFERENCE" },
+    { evidenceProjection: "detailed" },
+  ].entries()) {
+    context.mock.timers.setTime(now);
+    const group = `changed-source-${index}`;
+    const first = store.upsertAstraOvalPolicy(group, config());
+    assert.equal(ovalPreparationStatus(first.config).state, "ready");
+    context.mock.timers.setTime(now + 60_000);
+    const changed = store.upsertAstraOvalPolicy(group, { ...first.config, ...change });
+    assert.equal(changed.config.sourceReviewedAt, new Date(now + 60_000).toISOString());
+    assert.equal(ovalPreparationStatus(changed.config).state, "missing");
+    assert.throws(() => preparedOvalExtraVars(changed.config), /подготовьте/i);
+  }
+  context.mock.timers.setTime(now + 31 * 86400_000);
+  const expired = store.upsertAstraOvalPolicy("unchanged-source", original.config);
+  assert.deepEqual(expired, original);
+  assert.equal(ovalPreparationStatus(expired.config).state, "failed");
+  assert.throws(() => preparedOvalExtraVars(expired.config), /устарела/);
 });
