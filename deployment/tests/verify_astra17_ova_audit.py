@@ -180,6 +180,31 @@ def native_guest_scap_schema_presence(native_ssh):
                     (digit == "1" for digit in raw.split(","))))
 
 
+def native_guest_apt(native_ssh, arguments, protocol):
+    demand(os.environ.get("GITHUB_ACTIONS") == "true"
+           and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
+           "native_apt_forbidden_outside_ci")
+    demand(arguments and arguments[0] in ("update", "install"),
+           "native_apt_operation_invalid")
+    observation = {"operation": arguments[0], "exitCode": None}
+    protocol["nativeHcp"]["lastGuestApt"] = observation
+    # Stop APT inside the guest before the outer SSH deadline can expire.
+    status = native_ssh(
+        "umask 077; log=$(mktemp) || exit 1; "
+        "trap 'rm -f \"$log\"' EXIT; code=0; "
+        "sudo -n env DEBIAN_FRONTEND=noninteractive "
+        "timeout --kill-after=10s 840s apt-get "
+        "-o Acquire::Retries=2 -o Acquire::http::Timeout=35 "
+        "-o Acquire::https::Timeout=35 " + shlex.join(arguments) +
+        " </dev/null >\"$log\" 2>&1 || code=$?; printf '%s\\n' \"$code\"",
+        timeout=900).strip()
+    demand(re.fullmatch(r"(?:0|[1-9][0-9]{0,2})", status)
+           and int(status) <= 255, "native_apt_status_invalid")
+    observation["exitCode"] = int(status)
+    reason = {"124": "timeout", "137": "killed"}.get(status, "failed")
+    demand(status == "0", "native_vendor_apt_" + arguments[0] + "_" + reason)
+
+
 def provision_missing_scap_schemas_on_disposable_guest(native_ssh, protocol):
     """Only official guest-repository openscap-common on disposable KVM.
 
@@ -204,18 +229,13 @@ def provision_missing_scap_schemas_on_disposable_guest(native_ssh, protocol):
     protocol["nativeHcp"]["vendorOpenScapCommonPreviouslyInstalled"] = installed
     demand(not installed,
            "native_scap_required_schema_missing_despite_installed_package")
-    native_ssh(
-        "sudo -n apt-get update -o Acquire::Retries=2 "
-        "-o Acquire::http::Timeout=35 -o Acquire::https::Timeout=35",
-        timeout=900)
+    native_guest_apt(native_ssh, ["update"], protocol)
     try:
         native_ssh("apt-cache show openscap-common >/dev/null", timeout=30)
     except RuntimeError:
         raise RuntimeError("native_vendor_scap_schema_package_unavailable")
-    native_ssh(
-        "sudo -n apt-get install -y --no-install-recommends "
-        "--no-upgrade openscap-common",
-        timeout=900)
+    native_guest_apt(native_ssh, ["install", "-y", "--no-install-recommends",
+                                 "--no-upgrade", "openscap-common"], protocol)
     protocol["nativeHcp"]["vendorOpenScapCommonInstalledForTest"] = True
     after = native_guest_scap_schema_presence(native_ssh)
     protocol["nativeHcp"]["originalScapSchemasPresentAfter"] = after
@@ -666,13 +686,13 @@ def run_native_audit(work, protocol, *, port, known_hosts, ssh_options,
         # Installation is strictly limited to the isolated CI guest. If the
         # real vendor repositories are not usable, fail and record that scope.
         stage("native_openscap_install_on_disposable_vm")
-        native_ssh("sudo -n apt-get update -o Acquire::Retries=2",
-                   timeout=900)
-        native_ssh(
-            "if apt-cache show openscap-scanner >/dev/null 2>&1; "
-            "then sudo -n apt-get install -y --no-install-recommends openscap-scanner; "
-            "else sudo -n apt-get install -y --no-install-recommends libopenscap8; fi",
-            timeout=900)
+        native_guest_apt(native_ssh, ["update"], protocol)
+        try:
+            native_ssh("apt-cache show openscap-scanner >/dev/null 2>&1", timeout=30)
+            package = "openscap-scanner"
+        except RuntimeError:
+            package = "libopenscap8"
+        native_guest_apt(native_ssh, ["install", "-y", "--no-install-recommends", package], protocol)
     oscap_about = native_ssh("oscap --version", timeout=30)
     protocol["nativeHcp"]["nativeOpenScapBinaryVerified"] = True
     protocol["nativeHcp"]["observedNativeOpenScapCliVersion"] = (

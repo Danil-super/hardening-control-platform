@@ -28,6 +28,32 @@ def synthetic_tar(items):
 
 
 class OvaNativePreflightTests(unittest.TestCase):
+    def test_public_protocol_preserves_only_known_apt_failure_and_exit_code(self):
+        import os
+        from unittest.mock import patch
+        for failure, operation, code in [("native_vendor_apt_install_timeout", "install", 124),
+                                         ("native_vendor_apt_update_failed", "update", 100),
+                                         ("SECRET private stderr", "install", 100)]:
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                output = root / "public.json"
+                def experiment(_work, protocol, **_options):
+                    protocol["nativeHcp"] = {"lastGuestApt": {"operation": operation, "exitCode": code}}
+                    raise RuntimeError(failure)
+                with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                                             "RUNNER_ENVIRONMENT": "github-hosted",
+                                             "RUNNER_TEMP": tmp}), \
+                        patch("sys.argv", ["verify", "--work-dir", str(root / "private"),
+                                           "--public-protocol", str(output)]), \
+                        patch.object(smoke, "experiment", side_effect=experiment):
+                    with self.assertRaises(RuntimeError):
+                        smoke.main()
+                actual = json.loads(output.read_text())
+                self.assertEqual(actual["failureCode"], failure if "SECRET" not in failure else "unclassified")
+                self.assertEqual(actual["nativeHcp"]["lastGuestApt"], {"operation": operation, "exitCode": code})
+                self.assertFalse(actual["fullNative18RuleAcceptance"])
+                self.assertNotIn("SECRET", output.read_text())
+
     def test_ci_caches_only_exact_vendor_public_ova_even_when_scan_fails(self):
         workflow = (Path(__file__).resolve().parents[2] /
                     ".github/workflows/astra17-ova-hcp.yml").read_text()
