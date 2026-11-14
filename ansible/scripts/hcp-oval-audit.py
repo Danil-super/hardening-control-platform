@@ -529,6 +529,7 @@ def prepare(config, output, validate=False):
     if expected_size is not None and size != expected_size:
         raise ValueError('Источник оборвал загрузку OVAL; файл получен не полностью после трёх попыток.')
     raw = b''.join(chunks)
+    del chunks
     # Check pinned bytes before allocating a potentially large XML tree.
     if hashlib.sha256(raw).hexdigest() != config['sha256']:
         raise ValueError('SHA-256 OVAL не совпадает с ожидаемым: выполнение остановлено.')
@@ -537,11 +538,13 @@ def prepare(config, output, validate=False):
     metadata, reasons = source_metadata(root, raw, config)
     write_bytes(output, raw)
     result = {'ok': True, 'path': output, 'database': metadata, 'warnings': reasons}
+    # Native validation reads the file; do not retain a second XML tree in RAM.
+    del root, raw
     if validate:
         binary = shutil.which('oscap')
         if not binary:
             raise ValueError('OpenSCAP не установлен на control node: XML нельзя проверить перед передачей.')
-        result['sourceValidation'] = validate_for_transfer(binary, output, metadata['sha256'], len(raw), os.path.dirname(output))
+        result['sourceValidation'] = validate_for_transfer(binary, output, metadata['sha256'], metadata['bytes'], os.path.dirname(output))
     return result
 
 

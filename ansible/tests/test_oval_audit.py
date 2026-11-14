@@ -10,6 +10,7 @@ import shutil
 from pathlib import Path
 import tempfile
 import unittest
+import weakref
 from unittest.mock import patch
 import urllib.request
 
@@ -467,6 +468,30 @@ class OvalAuditTests(unittest.TestCase):
                     self.assertEqual(oval.safe_xml(raw).text, 'a' * 2048)
                     self.assertEqual(len(header), 1024)
         self.assertEqual(oval.safe_xml(b'<x/>').tag, 'x')
+
+    def test_preparation_releases_python_tree_before_native_validator(self):
+        raw = source(timestamp=datetime.datetime.now(oval.UTC).isoformat())
+        parsed = []
+        original_parser = oval.safe_xml
+        class Response(io.BytesIO):
+            headers = {'Content-Length': str(len(raw))}
+            def geturl(self): return 'https://mirror.example/db.xml'
+            def getcode(self): return 200
+        class Opener:
+            def open(self, request, timeout): return Response(raw)
+        def parse(value):
+            root = original_parser(value)
+            parsed.append(weakref.ref(root))
+            return root
+        def validate(binary, target, digest, size, directory):
+            self.assertIsNone(parsed[0](), 'Python XML tree overlaps the native validator')
+            self.assertEqual(Path(target).read_bytes(), raw)
+            self.assertEqual((digest, size), (hashlib.sha256(raw).hexdigest(), len(raw)))
+            return {'schemaExitCode': 0, 'schematronExitCode': 0}
+        with tempfile.TemporaryDirectory() as directory, patch.object(urllib.request, 'build_opener', return_value=Opener()), patch.object(oval, 'safe_xml', side_effect=parse), patch.object(oval, 'validate_for_transfer', side_effect=validate), patch.object(oval.shutil, 'which', return_value='/usr/bin/oscap'):
+            result = oval.prepare(config(raw, mode='online', url='https://mirror.example/db.xml'), str(Path(directory) / 'source.xml'), validate=True)
+            self.assertTrue(result['ok'])
+            self.assertEqual(result['sourceValidation']['schematronExitCode'], 0)
 
     def test_preparation_enforces_header_contract_before_native_validation(self):
         for encoding in (b'ISO-8859-1', b'UTF-8'):
