@@ -4,6 +4,9 @@
 
 ## Текущий срез — кандидат для локальной сдачи, 14 ноября
 
+- [x] Общая restore-проверка требует внешний manifest pin до SQLite/чтения HMAC-ключа: `07742a8`, 237 deployment-тестов, GitHub 20/20 workflow и 28/28 checks. Нативная SQLite не обновлялась, CVE остаётся `needs_review`.
+- [x] Локально отключить автоматический поиск соседних XML в XCCDF HTML: настоящий ARF с 18 правилами даёт тот же HTML, отдельный обычный fixture больше не подмешивает SCE XML. 635 web, typecheck/build, 132 HTTP прошли; рабочий образ пока не обновлён. [Протокол](../docs/native-export-isolation-2026-11-14.md).
+
 - [x] `2eccf06` установлен: освободить chunks/raw/XML-дерево до native validation. RED/GREEN, 373 Ansible/Python без пропусков, build/typecheck, 132 HTTP; две свежие загрузки 171 МБ с SHA/XSD/Schematron прошли в 2 ГиБ. GitHub 20/20 и 28/28. Полный restore нового bundle `059330e3…`, 50/41 отчётов, HMAC 311, no-op/cache, XML/PDF/отзыв сессии проверены; 13 таблиц/152 файла сохранены. [Протокол](../docs/oval-download-memory-acceptance-2026-11-14.md).
 
 - [x] `d47ff46` установлен: неизменное сохранение источника сохраняет дату и проверенную OVAL-копию. RED/GREEN, 635 web, build/typecheck, 132 HTTP; настоящее API без сети и рабочий 200/ready, восемь изменений/возраст блокируют reuse. GitHub 20/20 и 28/28, пять ZIP сверены; 13 таблиц/152 файла и HMAC 311 сохранены. Комплект `7ce4f2cd…` обновлён, полный restore нового образа не повторялся. [Протокол](../docs/oval-resave-acceptance-2026-11-14.md).

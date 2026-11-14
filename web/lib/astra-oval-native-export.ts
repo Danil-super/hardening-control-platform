@@ -189,7 +189,9 @@ async function generateHtml(work: string, input: string, output: string, signal:
   // Fixed controller executable and installed stylesheet; never evaluate on the target.
   // OVAL's installed report stylesheet has no document() or remote imports.
   const file = await open(output, "wx", 0o600);
-  const child = spawn("/usr/bin/prlimit", ["--as=1610612736", "--cpu=90", `--fsize=${MAX_HTML}`, "--", "/usr/bin/oscap", generator, "generate", "report", input], {
+  // ARF already embeds results; disable automatic companion-file discovery.
+  const templates = generator === "xccdf" ? ["--oval-template", "", "--sce-template", ""] : [];
+  const child = spawn("/usr/bin/prlimit", ["--as=1610612736", "--cpu=90", `--fsize=${MAX_HTML}`, "--", "/usr/bin/oscap", generator, "generate", "report", ...templates, input], {
     cwd: work, shell: false, stdio: ["ignore", "pipe", "pipe"],
     env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: "/usr/bin:/bin", HOME: work, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", XML_CATALOG_FILES: "/dev/null" },
     signal, killSignal: "SIGKILL",

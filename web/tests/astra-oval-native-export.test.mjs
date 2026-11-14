@@ -289,6 +289,7 @@ test("OpenSCAP configuration reports use its XCCDF generator; historical inline 
   const response = await download(reports, f.id, "html", signal());
   await response.arrayBuffer();
   assert.equal(generator.calls[0].args[5], "xccdf");
+  assert.deepEqual(generator.calls[0].args.slice(8, -1), ["--oval-template", "", "--sce-template", ""]);
   delete f.raw.rawEvidence; f.raw.scanner = { rawReport: "must not fabricate original" }; f.save();
   assert.ok((await reportAvailability(reports, f.id, f.raw)).every(item => !item.available));
   await assert.rejects(download(reports, f.id, "xml", signal()), error => error.status === 404);
