@@ -5,6 +5,9 @@ import io
 import json
 import os
 import ssl
+import subprocess
+import sys
+import time
 from pathlib import Path
 import tempfile
 import unittest
@@ -12,7 +15,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import urllib.error
 
-from verify_astra_vm import download, exercise_guest, installed_control_versions, record_failure, verify_baseline_report, verify_oval_report, PROFILE, RULE
+from verify_astra_vm import download, exercise_guest, installed_control_versions, record_failure, run, verify_baseline_report, verify_oval_report, PROFILE, RULE
 
 
 class DownloadResponse(io.BytesIO):
@@ -21,6 +24,41 @@ class DownloadResponse(io.BytesIO):
 
 
 class AstraVmAcceptanceTests(unittest.TestCase):
+    def test_timeout_preserves_exact_partial_stdout_stderr_and_reaps_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "guest-install.log"
+            script = "import os,time; os.write(1,str(os.getpid()).encode()+b'\\nAPT waiting\\xff\\n'); os.write(2,b'stderr before timeout\\n'); time.sleep(60)"
+            started = time.monotonic()
+            with self.assertRaises(subprocess.TimeoutExpired) as stopped:
+                run([sys.executable, "-c", script], output=output, timeout=1)
+            self.assertLess(time.monotonic() - started, 5)
+            data = output.read_bytes()
+            self.assertEqual(data, stopped.exception.output)
+            self.assertIn(b"APT waiting\xff\nstderr before timeout\n", data)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(data.splitlines()[0]), 0)
+
+    def test_silent_timeout_writes_empty_diagnostic_only_when_requested(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "silent.log"
+            for destination in (None, output):
+                with self.subTest(output=destination), self.assertRaises(subprocess.TimeoutExpired):
+                    run([sys.executable, "-c", "import time; time.sleep(60)"], output=destination, timeout=0.1)
+            self.assertEqual(output.read_bytes(), b"")
+            self.assertEqual(list(Path(temporary).iterdir()), [output])
+
+    def test_completed_commands_keep_logs_text_results_and_exit_code_validation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "completed.log"
+            result = run([sys.executable, "-c", "print('completed')"], output=output)
+            self.assertEqual(result.stdout, "completed\n")
+            self.assertEqual(output.read_text(), result.stdout)
+            command = [sys.executable, "-c", "print('failed'); raise SystemExit(7)"]
+            with self.assertRaisesRegex(RuntimeError, "exit 7"):
+                run(command, output=output)
+            self.assertEqual(output.read_text(), "failed\n")
+            self.assertEqual(run(command, accepted=(7,)).returncode, 7)
+
     def test_failed_and_cancelled_protocol_records_stop_point_and_bounded_error(self):
         for error in (RuntimeError("fixture error " * 1000), InterruptedError("CI cancellation"), KeyboardInterrupt()):
             with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as temporary:

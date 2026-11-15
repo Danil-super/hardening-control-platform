@@ -41,8 +41,14 @@ def write_json(path, value):
 
 
 def run(argv, output=None, timeout=120, accepted=(0,), env=None):
-    result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, timeout=timeout, env=env)
+    try:
+        result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired as error:
+        if output:
+            # TimeoutExpired keeps captured bytes even with text=True.
+            output.write_bytes(error.output or b"")
+        raise
     if output:
         output.write_text(result.stdout)
     if result.returncode not in accepted:
