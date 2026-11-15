@@ -42,11 +42,39 @@ SSH не задавал отдельного срока APT внутри гос�
 без сети и рабочих секретов. Graphify обновлён, Code Graph review выполнен;
 его предупреждения о вызовах `apt`/`sudo` относятся к локальным переменным
 `Path` в тестовом fixture, а не к функциям с изменённой сигнатурой.
-Реальный повтор нового native CI должен проверяться отдельно по новому SHA.
+Реальный native CI коммита `1da6be883e883f1761e31b6a99d17b342d2e9c8d`
+[завершён успешно](https://github.com/Danil-super/hardening-control-platform/actions/runs/43622178281).
+Public result подтверждает `lastGuestApt: install / exitCode: 0`, настоящий
+OpenSCAP 1.3.6 и наличие исходных XCCDF/OVAL/CPE-схем после установки.
+Все 18 правил сверены на трёх этапах: 14 pass / 4 fail → 13 / 5 → 14 / 4;
+исходный режим восстановлен и новый SSH к тому же гостю успешен.
+Полная выбранная OVAL-база: 20 062 определения, 346 true / 19 716 false,
+SHA-256 источника `87bc54ce8fd972921c1fb51f7a7515dcfed51a5f0f74aa97c5ec17aa1feb4afc`.
+Это отдельная одноразовая CI-ВМ, её находки не подменяют отчёты рабочей Astra.
+
+ZIP `native-astra17-full-oval-source-status-only` сверён с digest GitHub:
+`cfca6498cb143f218dfe376d6284e517812ec0b7e7132ea1efef22577ef8affb`.
+Протокол сохраняет `fullNative18RuleAcceptance=false`, ограничения enrollment,
+независимой подписи производителя и полного отката ОС; успешные проверки
+этого ограниченного эксперимента не означают production-ready.
 
 Материалы: `~/.local/state/hcp-evidence/native-apt-20261114/`.
 Сохранён исходный отказ. Доступность стороннего репозитория этим изменением
 не гарантируется; неисправная установка не выдаётся за выполненный аудит.
+
+15 ноября проверено окончание всей матрицы `1da6be8`: **20/20 workflow,
+28/28 checks**. OVA smoke и Astra 1.8.6 первоначально остановились на сетевом
+чтении образа/OVAL с сервера производителя; сохранены оба журнала, повторены
+только упавшие jobs того же SHA. Повторы прошли без изменения pins или тестов.
+Astra 1.8.6: полный OVAL 15 625 определений, partial=false, контрольная CVE
+сверена с установленными версиями; 18-rule изменение/восстановление подтверждены.
+Greenbone live scan также прошёл: настоящий TRACE VT на отдельной внутренней
+тестовой цели, два результата, nativeErrors пуст, cleanup успешен.
+Это ограниченный тест VT и импорта, не полный аудит ОС.
+
+ZIP повторного Astra 1.8.6 сверён с digest GitHub:
+`cd90948cb55c3612959005800e503a48cb356f03f8a3481aa0f8368af5a30f69`;
+ZIP Greenbone: `fea92f70091ba3560fe9e5f85926ebed5cfde7a803c435f4fc7db2e90286bb1d`.
 
 Документация: [GNU timeout](https://www.gnu.org/software/coreutils/manual/html_node/timeout-invocation.html),
 [APT configuration](https://manpages.debian.org/bookworm/apt/apt.conf.5.en.html).
