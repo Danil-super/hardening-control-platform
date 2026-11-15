@@ -189,18 +189,20 @@ async function generateHtml(work: string, input: string, output: string, signal:
   // Fixed controller executable and installed stylesheet; never evaluate on the target.
   // OVAL's installed report stylesheet has no document() or remote imports.
   const file = await open(output, "wx", 0o600);
-  // ARF already embeds results; disable automatic companion-file discovery.
-  const templates = generator === "xccdf" ? ["--oval-template", "", "--sce-template", ""] : [];
-  const child = spawn("/usr/bin/prlimit", ["--as=1610612736", "--cpu=90", `--fsize=${MAX_HTML}`, "--", "/usr/bin/oscap", generator, "generate", "report", ...templates, input], {
+  const script = path.resolve(process.cwd(), "..", "ansible", "scripts", "hcp-report-render.py");
+  const state = path.resolve(process.env.HCP_STATE_DIR || path.join(process.cwd(), "..", "ansible"));
+  const child = spawn("/usr/bin/python3", [script, generator, input], {
     cwd: work, shell: false, stdio: ["ignore", "pipe", "pipe"],
-    env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: "/usr/bin:/bin", HOME: work, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", XML_CATALOG_FILES: "/dev/null" },
+    env: { NODE_ENV: process.env.NODE_ENV ?? "production", PATH: "/usr/bin:/bin", HOME: work, LANG: "C.UTF-8", LC_ALL: "C.UTF-8", XML_CATALOG_FILES: "/dev/null", HCP_STATE_DIR: state },
     signal, killSignal: "SIGKILL",
   });
   let stderrBytes = 0;
   child.stderr.on("data", (chunk: Buffer) => { stderrBytes += chunk.length; if (stderrBytes > 1024 * 1024) child.kill("SIGKILL"); });
   const exited = new Promise<void>((resolve, reject) => {
     child.once("error", reject);
-    child.once("close", (code) => code === 0 ? resolve() : reject(new Error("OpenSCAP generation failed")));
+    child.once("close", (code) => code === 0 ? resolve() : reject(code === 75
+      ? new NativeExportError("native_export_busy", "Экспорт занят. Повторите загрузку позже.", 429)
+      : new Error("OpenSCAP generation failed")));
   });
   let bytes = 0;
   const limit = new Transform({ transform(chunk: Buffer, _encoding, callback) {
@@ -211,10 +213,11 @@ async function generateHtml(work: string, input: string, output: string, signal:
   try {
     await Promise.all([written, exited]);
     if (!bytes) throw new Error("Empty OpenSCAP report");
-  } catch {
+  } catch (error) {
     child.kill("SIGKILL");
     await Promise.allSettled([written, exited]);
     signal.throwIfAborted();
+    if (error instanceof NativeExportError) throw error;
     throw new NativeExportError("native_html_unavailable", "OpenSCAP не смог создать HTML на управляющем узле (инструмент недоступен или превышен лимит). Исходный XML доступен отдельно.", 503);
   } finally { await file.close().catch(() => {}); }
 }

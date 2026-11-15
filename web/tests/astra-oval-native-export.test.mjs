@@ -21,7 +21,7 @@ export let calls = [];
 export function configure(value) { behavior = value; calls.length = 0; }
 export function spawn(command, args, options) {
   calls.push({ command, args, options });
-  const program = behavior === "failure" ? "process.exit(3)" : behavior === "hang" ? "setInterval(() => {}, 1000)" : "process.stdout.write('<!DOCTYPE html><html><body>native report</body></html>')";
+  const program = behavior === "busy" ? "process.exit(75)" : behavior === "failure" ? "process.exit(3)" : behavior === "hang" ? "setInterval(() => {}, 1000)" : "process.stdout.write('<!DOCTYPE html><html><body>native report</body></html>')";
   return actualSpawn(process.execPath, ["-e", program], options);
 }
 `);
@@ -78,10 +78,11 @@ test("historical preserved XML/source bytes stream exactly; generated HTML is an
       assert.match(content.toString(), /native report/);
       assert.equal(generator.calls.length, 1);
       const call = generator.calls[0];
-      assert.equal(call.command, "/usr/bin/prlimit");
-      assert.deepEqual(call.args.slice(4, 9), ["/usr/bin/oscap", "oval", "generate", "report", path.join(call.options.cwd, "original.xml")]);
+      assert.equal(call.command, "/usr/bin/python3");
+      assert.deepEqual(call.args, [path.join(web, "..", "ansible/scripts/hcp-report-render.py"), "oval", path.join(call.options.cwd, "original.xml")]);
       assert.equal(call.options.shell, false);
       assert.equal(call.options.env.XML_CATALOG_FILES, "/dev/null");
+      assert.equal(call.options.env.HCP_STATE_DIR, path.resolve(process.env.HCP_STATE_DIR || path.join(web, "..", "ansible")));
     }
     noWork();
   }
@@ -100,6 +101,19 @@ test("preserved result remains downloadable without the source; absent original 
   rmSync(f.result);
   assert.equal(await availability(reports, f.id, f.raw), false);
   await assert.rejects(download(reports, f.id, "xml", signal()), (error) => error.code === "native_original_unavailable");
+  noWork();
+});
+
+test("a renderer busy in another process returns 429; the original and later HTML stay available", async () => {
+  const f = fixture();
+  generator.configure("busy");
+  await assert.rejects(download(reports, f.id, "html", signal()), error => error.status === 429 && error.code === "native_export_busy");
+  noWork();
+  const original = await download(reports, f.id, "xml", signal());
+  assert.deepEqual(Buffer.from(await original.arrayBuffer()), f.xml);
+  generator.configure("success");
+  const retry = await download(reports, f.id, "html", signal());
+  assert.match(await retry.text(), /native report/);
   noWork();
 });
 
@@ -288,8 +302,7 @@ test("OpenSCAP configuration reports use its XCCDF generator; historical inline 
   generator.configure("success");
   const response = await download(reports, f.id, "html", signal());
   await response.arrayBuffer();
-  assert.equal(generator.calls[0].args[5], "xccdf");
-  assert.deepEqual(generator.calls[0].args.slice(8, -1), ["--oval-template", "", "--sce-template", ""]);
+  assert.equal(generator.calls[0].args[1], "xccdf");
   delete f.raw.rawEvidence; f.raw.scanner = { rawReport: "must not fabricate original" }; f.save();
   assert.ok((await reportAvailability(reports, f.id, f.raw)).every(item => !item.available));
   await assert.rejects(download(reports, f.id, "xml", signal()), error => error.status === 404);

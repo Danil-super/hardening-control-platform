@@ -11,6 +11,7 @@ ansible/inventory.ini
 ansible/incidents.json
 ansible/scheduler.json
 ansible/*.sqlite*
+ansible/render-locks
 ansible/reports
 ansible/ssh-host-keys
 ansible/playbooks/custom

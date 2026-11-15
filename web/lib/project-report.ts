@@ -84,7 +84,7 @@ export class PdfExportBusyError extends Error {
 
 export async function runPdfRenderer(snapshot: Record<string, unknown>): Promise<Buffer> {
   // Next can bundle the two routes separately within the same Node process.
-  // shortcut: per-process capacity; share admission before adding web workers.
+  // Fast rejection before serialization; the launcher also shares capacity across processes and HTML.
   const capacity = globalThis as typeof globalThis & { hcpActivePdfRenders?: number };
   if ((capacity.hcpActivePdfRenders ?? 0) >= 2) throw new PdfExportBusyError();
   capacity.hcpActivePdfRenders = (capacity.hcpActivePdfRenders ?? 0) + 1;
@@ -94,8 +94,8 @@ export async function runPdfRenderer(snapshot: Record<string, unknown>): Promise
     // Raw scanner trees never enter this bounded, projected snapshot.
     if (input.length > 32 * 1024 * 1024) throw new Error("Снимок отчёта превышает допустимый размер (32 МБ).");
     return await new Promise<Buffer>((resolve, reject) => {
-      const script = path.join(process.cwd(), "..", "ansible", "scripts", "hcp-final-report-pdf.py");
-      const child = spawn("/usr/bin/python3", [script], { stdio: ["pipe", "pipe", "pipe"] });
+      const script = path.join(process.cwd(), "..", "ansible", "scripts", "hcp-report-render.py");
+      const child = spawn("/usr/bin/python3", [script, "pdf"], { stdio: ["pipe", "pipe", "pipe"] });
       const chunks: Buffer[] = [];
       let size = 0;
       let stopped = false;
@@ -112,6 +112,7 @@ export async function runPdfRenderer(snapshot: Record<string, unknown>): Promise
         clearTimeout(timer);
         const output = Buffer.concat(chunks);
         if (unavailable) reject(new Error("Средство формирования PDF недоступно. Пересоберите HCP из актуального Dockerfile."));
+        else if (!stopped && code === 75) reject(new PdfExportBusyError());
         else if (stopped || code !== 0 || !output.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
           reject(new Error("Не удалось безопасно сформировать итоговый PDF-отчёт."));
         } else resolve(output);

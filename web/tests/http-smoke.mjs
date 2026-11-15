@@ -138,6 +138,32 @@ async function request(endpoint, { method = "GET", body, auth = true, origin = b
   return response;
 }
 
+async function withRenderBudget(mode, check) {
+  const script = path.resolve(webDir, "..", "ansible/scripts/hcp-report-render.py");
+  const holder = spawn("/usr/bin/python3", ["-c", `
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('render', sys.argv[1])
+module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
+fds = module.acquire(sys.argv[2], sys.argv[3])
+print('READY', flush=True)
+sys.stdin.buffer.read()
+`, script, mode, temporary], { stdio: ["pipe", "pipe", "pipe"] });
+  const exited = new Promise(resolve => holder.once("close", resolve));
+  try {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error("Render budget holder timed out")), 5000);
+      holder.once("error", error => { clearTimeout(timer); reject(error); });
+      holder.once("close", () => { clearTimeout(timer); reject(new Error("Render budget holder exited")); });
+      holder.stdout.once("data", bytes => {
+        clearTimeout(timer);
+        if (bytes.toString() === "READY\n") resolve();
+        else reject(new Error("Invalid render budget holder response"));
+      });
+    });
+    await check();
+  } finally { holder.kill("SIGKILL"); await exited; }
+}
+
 try {
   // Host routes intentionally manage inventory in normal operation. Keep this
   // process-level smoke test isolated and restore any developer inventory even
@@ -173,6 +199,28 @@ try {
   assert.match(auditPdf.headers.get("content-disposition"), /hcp\.pdf/);
   assert.equal(auditPdf.headers.get("x-source-sha256"), createHash("sha256").update(readFileSync(path.join(reports, `${reportId}.json`))).digest("hex"));
   assert.equal(Buffer.from(await auditPdf.arrayBuffer()).subarray(0, 5).toString(), "%PDF-");
+  const finalBody = { hostAlias: "smoke", subject: { clientName: "HTTP fixture", projectName: "Render budget", period: "Test", specialist: "Fixture" } };
+  await withRenderBudget("xccdf", async () => {
+    const before = await (await request("/api/ansible/project-reports")).json();
+    await request(`/api/ansible/reports/${reportId}/pdf`, { status: 429 });
+    await request("/api/ansible/project-reports", { method: "POST", body: finalBody, status: 429 });
+    await request("/api/ansible/reports/smoke-native-openscap/native?format=html", { status: 429 });
+    const original = await request("/api/ansible/reports/smoke-native-openscap/native?format=xml");
+    assert.equal(await original.text(), '<asset-report-collection/>\n');
+    await request("/api/ansible/jobs");
+    const after = await (await request("/api/ansible/project-reports")).json();
+    assert.deepEqual(after, before, "busy export must not persist an unfinished final report");
+  });
+  await withRenderBudget("pdf", async () => {
+    await request("/api/ansible/reports/smoke-native-openscap/native?format=html", { status: 429 });
+    const pdf = await request(`/api/ansible/reports/${reportId}/pdf`);
+    assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0, 5).toString(), "%PDF-");
+  });
+  const afterRelease = await request(`/api/ansible/reports/${reportId}/pdf`);
+  assert.equal(Buffer.from(await afterRelease.arrayBuffer()).subarray(0, 5).toString(), "%PDF-");
+  const finalCreated = await (await request("/api/ansible/project-reports", { method: "POST", body: finalBody })).json();
+  const finalPdf = await request(finalCreated.downloadUrl);
+  assert.equal(Buffer.from(await finalPdf.arrayBuffer()).subarray(0, 5).toString(), "%PDF-");
   await request("/api/ansible/reports/missing-report/pdf", { status: 404 });
   const historicalOvalPage = await (await request(`/reports/agentless/${ovalReportId}`)).text();
   assert.match(historicalOvalPage, /Оригинальный отчёт инструмента для этого запуска не сохранён/);

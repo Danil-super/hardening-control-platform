@@ -60,6 +60,14 @@ test('serialization, input size and synchronous spawn failures release capacity'
   children.slice(-2).forEach(finish); await Promise.all([first, second]);
 });
 
+test('a busy renderer in another process returns the existing retryable error and frees the local slot', async () => {
+  const pending = firstBundle({});
+  const rejection = assert.rejects(pending, busy);
+  children.at(-1).emit('close', 75);
+  await rejection;
+  const retry = secondBundle({}); finish(children.at(-1)); await retry;
+});
+
 test('spawn error and timeout retain capacity until close, then allow retry', async t => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const first = firstBundle({}), second = secondBundle({});
