@@ -60,6 +60,21 @@ jobs:
       - run: docker build --tag hardening-control-platform:test .
       - name: Verify all Python installers and vendored dependency floors
         run: docker run --rm -i --network none --entrypoint python3 hardening-control-platform:test < deployment/tests/verify_tool_installers.py
+      - name: Verify Ansible core and all shipped playbooks without community collections
+        run: |
+          docker run --rm -i --network none --entrypoint python3 hardening-control-platform:test <<'PY'
+          import importlib.util
+          import pathlib
+          import subprocess
+          import ansible.release
+          assert importlib.util.find_spec("ansible_collections") is None, "Unexpected bundled community collections"
+          playbooks = sorted(pathlib.Path("/app/ansible/playbooks").glob("*.yml"))
+          assert playbooks, "No shipped playbooks found"
+          for playbook in playbooks:
+              subprocess.run(["ansible-playbook", "-i", "/app/ansible/inventory.example.ini",
+                              str(playbook), "--syntax-check"], check=True, timeout=60)
+          print(f"Ansible core {ansible.release.__version__}: {len(playbooks)} playbooks checked; no community collections")
+          PY
 
   lab:
     needs: [web, ansible]
