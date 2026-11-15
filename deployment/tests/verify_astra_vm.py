@@ -331,7 +331,7 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
 
     write_json(artifacts / "protocol.json", protocol)
     cache_root_value = os.environ.get("HCP_ASTRA_IMAGE_CACHE_DIR", "")
-    cache_file = None
+    cache_file, oval_cache_file = None, None
     if cache_root_value:
         # Never let a workflow/env error turn a cache optimization into an
         # arbitrary filesystem read. Only runner-temp caches are supported.
@@ -339,10 +339,11 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
         runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve()
         assert cache_root != runner_temp and cache_root.is_relative_to(runner_temp)
         cache_file = cache_root / "source.qcow2"
+        oval_cache_file = cache_root.parent / "oval" / (oval["sha256"] + ".xml")
     download(image, work / "source.qcow2", max_seconds=2400, cache_path=cache_file)
     info = json.loads(run(["qemu-img", "info", "--output=json", str(work / "source.qcow2")]).stdout)
     assert info["format"] == "qcow2" and not info.get("backing-filename") and info["virtual-size"] <= 50 * 1024**3
-    download(oval, work / "vendor.xml", max_seconds=1200)
+    download(oval, work / "vendor.xml", max_seconds=1200, cache_path=oval_cache_file)
     real_oval_definition_count = verify_vendor_control(work / "vendor.xml", oval)
     checkpoint("Publisher images and full OVAL verified by SHA-256", {
         "imageBytes": image["bytes"], "ovalBytes": oval["bytes"],

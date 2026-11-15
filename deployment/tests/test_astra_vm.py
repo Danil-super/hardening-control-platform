@@ -3,14 +3,16 @@ import copy
 import hashlib
 import io
 import json
+import os
 import ssl
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import Mock, patch
 import urllib.error
 
-from verify_astra_vm import download, installed_control_versions, record_failure, verify_baseline_report, verify_oval_report, PROFILE, RULE
+from verify_astra_vm import download, exercise_guest, installed_control_versions, record_failure, verify_baseline_report, verify_oval_report, PROFILE, RULE
 
 
 class DownloadResponse(io.BytesIO):
@@ -62,6 +64,26 @@ class AstraVmAcceptanceTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), content)
             self.assertEqual(cache.read_bytes(), content)
             self.assertFalse((work / "image.qcow2.download").exists())
+
+    def test_native_releases_share_only_the_verified_vendor_xml_cache(self):
+        class BeforeGuest(Exception):
+            pass
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            oval = {"sha256": "b" * 64}
+            sources = {"images": {"1.8.1": {}, "1.8.6": {}}, "oval": oval}
+            for release in sources["images"]:
+                for enabled in (True, False):
+                    cache = str(root / "public-cache" / release) if enabled else ""
+                    with self.subTest(release=release, enabled=enabled), patch.dict(os.environ, {
+                        "HCP_ASTRA_IMAGE_CACHE_DIR": cache, "RUNNER_TEMP": str(root),
+                    }), patch("verify_astra_vm.download", side_effect=[None, BeforeGuest()]) as fetch, patch(
+                        "verify_astra_vm.run", return_value=SimpleNamespace(stdout='{"format":"qcow2","virtual-size":1048576}'),
+                    ):
+                        with self.assertRaises(BeforeGuest):
+                            exercise_guest(SimpleNamespace(release=release), root, root, root, sources, {"checks": []})
+                        expected = root / "public-cache" / "oval" / (oval["sha256"] + ".xml") if enabled else None
+                        self.assertEqual(fetch.call_args_list[1].kwargs.get("cache_path"), expected)
 
     def test_download_restarts_after_partial_read_timeout_with_fresh_hash_and_bytes(self):
         content = b"pinned publisher bytes"
