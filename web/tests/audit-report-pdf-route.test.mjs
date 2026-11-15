@@ -4,11 +4,13 @@ import { readFileSync } from 'node:fs';
 import ts from 'typescript';
 const source=ts.transpileModule(readFileSync(new URL('../app/api/ansible/reports/[reportId]/pdf/route.ts',import.meta.url),'utf8'),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.CommonJS}}).outputText;
 let authenticated=false, render=async()=>null, calls=0;
+class PdfExportBusyError extends Error {}
 const module={exports:{}};
 const stubs={
   'next/headers':{cookies:async()=>({get:()=>({value:authenticated?'valid':''})})},
   '@/lib/auth':{authCookieName:'session',isAuthConfigured:()=>true,isValidSessionToken:token=>token==='valid'},
   '@/lib/audit-report-pdf':{renderAuditReportPdf:async id=>{calls++;return render(id);}},
+  '@/lib/project-report':{PdfExportBusyError},
 };
 new Function('require','module','exports',source)(name=>stubs[name],module,module.exports);
 const request=new Request('https://hcp.example/api/ansible/reports/run/pdf');
@@ -20,6 +22,14 @@ test('authentication precedes PDF generation; errors are explicit and never disc
   assert.equal((await module.exports.GET(request,context('missing'))).status,404);
   render=async()=>{throw new Error('private password or command');};
   const failure=await module.exports.GET(request,context('run'));assert.equal(failure.status,503);assert.equal((await failure.text()).includes('private password'),false);
+});
+test('a final PDF occupying the shared renderer returns a retryable one-run PDF response', async()=>{
+  authenticated=true;
+  render=async()=>{throw new PdfExportBusyError('Формирование PDF занято. Повторите позже.');};
+  const response=await module.exports.GET(request,context('run'));
+  assert.equal(response.status,429);
+  assert.match((await response.json()).message,/Повторите позже/);
+  assert.equal(response.headers.get('cache-control'),'private, no-store');
 });
 test('two bounded PDF exports can run; the next gets 429 and completed exports release capacity',async()=>{
   const releases=[];render=id=>new Promise(resolve=>releases.push(()=>resolve({id,pdf:Buffer.from('%PDF-fixture'),sourceSha256:'a'.repeat(64)})));

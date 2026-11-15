@@ -1,6 +1,7 @@
 import { cookies } from "next/headers";
 import { authCookieName, isAuthConfigured, isValidSessionToken } from "@/lib/auth";
 import { renderAuditReportPdf } from "@/lib/audit-report-pdf";
+import { PdfExportBusyError } from "@/lib/project-report";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -21,7 +22,8 @@ export async function GET(_request: Request, { params }: { params: Promise<{ rep
       "Content-Type": "application/pdf", "Content-Disposition": `attachment; filename="${result.id}-hcp.pdf"`,
       "Content-Length": String(result.pdf.length), "X-Source-SHA256": result.sourceSha256,
     } });
-  } catch {
+  } catch (error) {
+    if (error instanceof PdfExportBusyError) return Response.json({ ok: false, message: error.message }, { status: 429, headers });
     return Response.json({ ok: false, message: "Не удалось сформировать PDF. Исходные данные не изменены; доступны отчёт на сайте и JSON HCP." }, { status: 503, headers });
   } finally { active--; }
 }
