@@ -1,7 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
+  // Keep build workers within the controller's memory budget on many-core hosts.
+  experimental: { cpus: 2 },
 };
 
 export default nextConfig;
