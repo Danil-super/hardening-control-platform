@@ -25,6 +25,18 @@ test("OVAL settings persist isolated sources for different Astra groups and surv
   assert.equal(store.listAstraOvalPolicies().length, 1);
 });
 
+test("OVAL projection survives validation and SQLite reload, with compact default for legacy policies", () => {
+  assert.equal(validateAstraOvalConfig(local()).evidenceProjection, "bounded");
+  for (const evidenceProjection of ["bounded", "detailed"]) {
+    store.upsertAstraOvalPolicy("projection-fixture", { ...local(), evidenceProjection });
+    assert.equal(store.listAstraOvalPolicies().find((p) => p.groupName === "projection-fixture").config.evidenceProjection, evidenceProjection);
+  }
+  for (const evidenceProjection of [null, true, {}, "lite", ""]) {
+    assert.throws(() => validateAstraOvalConfig({ ...local(), evidenceProjection }), /проекц|представлен/i);
+  }
+  store.deleteAstraOvalPolicy("projection-fixture");
+});
+
 test("OVAL group selection rejects ambiguity and does not silently select an unrelated database", () => {
   const policies = ["linux_hosts", "astra-a", "astra-b"].map((groupName) => ({ groupName, config: local() }));
   assert.equal(selectAstraOvalPolicy(["linux_hosts", "astra-a"], policies).groupName, "astra-a");

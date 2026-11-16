@@ -108,7 +108,7 @@ try {
     writeFileSync(path.join(stage, file), bytes, { flag: "wx", mode: 0o600 });
     return { ...expected, id, file, native, nativeSha256: digest(bytes) };
   });
-  publishCapturedAssetReports(stage, new Map(inputs.map(({ file }) => [file, binding])));
+  await publishCapturedAssetReports(stage, new Map(inputs.map(({ file }) => [file, binding])));
   for (const input of inputs) {
     const { id, phase, native } = input;
     const report = readAnsibleReport(id);

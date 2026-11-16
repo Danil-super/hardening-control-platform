@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import childProcess, { execFileSync } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import path from "node:path";
@@ -32,7 +33,7 @@ writeFileSync(path.join(compiled.directory, "ssh-access.mjs"), [
 ].join("\n"));
 const { installObservation } = await import(compiled.url("ssh-access"));
 const { prepareAssetExecution } = await import(compiled.url("asset-execution"));
-const { freezeInventoryTargets, connectionFromInventoryVariables, explicitInventoryConnectionId } = await import(compiled.url("inventory"));
+const { freezeInventoryTargets, connectionFromInventoryVariables, explicitInventoryConnectionId, withInventoryConnectionView } = await import(compiled.url("inventory"));
 const { runAnsiblePlaybook } = await import(compiled.url("ansible-control"));
 const { runScheduledInventoryAudit } = await import(compiled.url("scheduled-audit"));
 const credentials = await import(compiled.url("host-credentials"));
@@ -86,8 +87,8 @@ afterEach(() => {
 });
 after(() => rmSync(compiled.directory, { recursive: true, force: true }));
 
-test("native inventory resolves the repository's default key template without evaluating arbitrary Jinja", native, () => {
-  const frozen = freezeInventoryTargets("fixture-one");
+test("native inventory resolves the repository's default key template without evaluating arbitrary Jinja", native, async () => {
+  const frozen = await freezeInventoryTargets("fixture-one");
   try {
     const target = frozen.targets[0];
     assert.match(target.variables.ansible_ssh_private_key_file, /lookup\('env', 'HCP_STATE_DIR'\)/,
@@ -354,15 +355,146 @@ test("a default-port inventory change excludes the old machine and endpoint with
   assert.equal(buildHostCorrelation(alias).findings.length, 0, "unresolved live configuration cannot reuse the old identity as evidence");
 });
 
-test("current evidence uses effective host_vars rather than a shadowed inline endpoint", native, () => {
+test("current evidence uses effective host_vars rather than a shadowed inline endpoint", native, async () => {
   const alias = "fixture-one";
   writeInventory([alias + " ansible_host=192.0.2.10 ansible_user=audit ansible_port=22"]);
   mkdirSync(path.join(directory, "ansible/host_vars"));
   writeFileSync(path.join(directory, "ansible/host_vars/fixture-one.yml"), "ansible_host: 192.0.2.99\n");
-  const frozen = freezeInventoryTargets(alias);
+  const frozen = await freezeInventoryTargets(alias);
   try {
     const effective = frozen.targets[0].connection;
     assert.equal(effective.address, "192.0.2.99", "the real Ansible resolver applies host_vars precedence");
     assert.equal(explicitInventoryConnectionId(alias), identity.assetConnectionId(effective), "displayed current endpoint must agree with actual execution");
   } finally { rmSync(frozen.directory, { recursive: true, force: true }); }
+});
+
+test("one native inventory lookup serves all displayed hosts and notices variable edits immediately", native, () => {
+  const aliases = Array.from({ length: 5 }, (_, index) => `fixture-${index + 1}`);
+  writeInventory(aliases.map((alias, index) => `${alias} ansible_host=192.0.2.${index + 10}`));
+  const groupVars = path.join(directory, "ansible/group_vars/linux_hosts.yml");
+  writeFileSync(groupVars, "ansible_user: audit\nansible_port: 2222\n");
+  mkdirSync(path.join(directory, "ansible/host_vars"));
+  const hostVars = path.join(directory, "ansible/host_vars/fixture-3.yml");
+  writeFileSync(hostVars, "ansible_host: 192.0.2.99\n");
+  const invoke = childProcess.execFileSync;
+  let calls = 0;
+  childProcess.execFileSync = (command, ...args) => {
+    if (command === "ansible-inventory") calls++;
+    return invoke(command, ...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    const expected = (index, port = 2222, override = "192.0.2.99") => identity.assetConnectionId({
+      address: index === 2 ? override : `192.0.2.${index + 10}`, port, user: "audit",
+    });
+    aliases.forEach((alias, index) => assert.equal(explicitInventoryConnectionId(alias), expected(index)));
+    assert.equal(calls, 1, "displaying five hosts must not block on five native child processes");
+    writeFileSync(hostVars, "ansible_host: 192.0.2.88\n");
+    aliases.forEach((alias, index) => assert.equal(explicitInventoryConnectionId(alias), expected(index, 2222, "192.0.2.88")));
+    assert.equal(calls, 2, "a host_vars edit invalidates the entire view before the TTL expires");
+    writeFileSync(groupVars, "ansible_user: audit\nansible_port: 3333\n");
+    aliases.forEach((alias, index) => assert.equal(explicitInventoryConnectionId(alias), expected(index, 3333, "192.0.2.88")));
+    assert.equal(calls, 3, "a group_vars edit invalidates all affected endpoints immediately");
+    writeFileSync(hostVars, "ansible_port: not-a-port\n");
+    assert.equal(explicitInventoryConnectionId(aliases[2]), "unresolved");
+    assert.equal(explicitInventoryConnectionId(aliases[0]), expected(0, 3333));
+    assert.equal(calls, 4, "an invalid endpoint must not discard the other hosts or reuse its old identity");
+  } finally {
+    childProcess.execFileSync = invoke;
+    syncBuiltinESMExports();
+  }
+});
+
+test("failed or malformed inventory snapshots cannot reuse a previously resolved endpoint", () => {
+  const invoke = childProcess.execFileSync;
+  let output = JSON.stringify({ _meta: { hostvars: { "fixture-one": { ansible_host: "192.0.2.10", ansible_user: "audit" } } } });
+  childProcess.execFileSync = () => {
+    if (output === null) throw new Error("Controlled inventory failure");
+    return output;
+  };
+  syncBuiltinESMExports();
+  try {
+    assert.equal(explicitInventoryConnectionId("fixture-one"), identity.assetConnectionId({ address: "192.0.2.10", port: 22, user: "audit" }));
+    const invalid = [null, "not-json", "{}", '{"_meta":{"hostvars":[]}}', '{"_meta":{"hostvars":{"fixture-one":null}}}'];
+    invalid.forEach((value, index) => {
+      output = value;
+      writeFileSync(inventoryPath, `# changed configuration ${index}\n[linux_hosts]\nfixture-one ansible_host=192.0.2.99 ansible_user=audit\n`);
+      assert.equal(explicitInventoryConnectionId("fixture-one"), "unresolved");
+    });
+  } finally {
+    childProcess.execFileSync = invoke;
+    syncBuiltinESMExports();
+  }
+});
+
+test("a slow native resolver lets other requests run while preserving the launch inventory snapshot", native, async () => {
+  const executable = execFileSync("which", ["ansible-inventory"], { encoding: "utf8" }).trim();
+  writeFileSync(path.join(directory, "bin/ansible-inventory"), [
+    "#!/usr/bin/python3", "import os, sys, time", "time.sleep(0.25)",
+    `os.execv(${JSON.stringify(executable)}, [${JSON.stringify(executable)}] + sys.argv[1:])`,
+  ].join("\n"), { mode: 0o700 });
+  let frozen; let settled = false;
+  const pending = Promise.resolve(freezeInventoryTargets("fixture-one")).then((value) => {
+    frozen = value; settled = true; return value;
+  });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(settled, false, "inventory resolution must not block the event loop");
+    writeInventory(["fixture-one ansible_host=192.0.2.99 ansible_user=other ansible_port=22"]);
+    await pending;
+    assert.equal(frozen.targets[0].connection.address, "192.0.2.10");
+    assert.equal(frozen.targets[0].connection.user, "audit");
+    assert.equal(frozen.targets[0].connection.port, 2222);
+  } finally {
+    await pending;
+    if (frozen) rmSync(frozen.directory, { recursive: true, force: true });
+  }
+});
+
+test("concurrent host views share a nonblocking native inventory lookup", native, async () => {
+  const executable = execFileSync("which", ["ansible-inventory"], { encoding: "utf8" }).trim();
+  const calls = path.join(directory, "view-calls");
+  writeFileSync(path.join(directory, "bin/ansible-inventory"), [
+    "#!/usr/bin/python3", "import os, sys, time",
+    `with open(${JSON.stringify(calls)}, 'a') as f: f.write('call\\n')`,
+    "time.sleep(0.25)",
+    `os.execv(${JSON.stringify(executable)}, [${JSON.stringify(executable)}] + sys.argv[1:])`,
+  ].join("\n"), { mode: 0o700 });
+  let settled = false;
+  const pending = Promise.all([1, 2, 3].map(() => withInventoryConnectionView(() => explicitInventoryConnectionId("fixture-one"))))
+    .then((value) => { settled = true; return value; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, "host views must yield while Ansible resolves variables");
+  const expected = identity.assetConnectionId({ address: "192.0.2.10", port: 2222, user: "audit" });
+  assert.deepEqual(await pending, [expected, expected, expected]);
+  assert.equal(readFileSync(calls, "utf8"), "call\n", "concurrent misses and nested lookups must share one native process");
+});
+
+test("an inventory edit during an async host view cannot inherit the old endpoint", native, async () => {
+  const executable = execFileSync("which", ["ansible-inventory"], { encoding: "utf8" }).trim();
+  writeFileSync(path.join(directory, "bin/ansible-inventory"), [
+    "#!/usr/bin/python3", "import os, sys, time", "time.sleep(0.25)",
+    `os.execv(${JSON.stringify(executable)}, [${JSON.stringify(executable)}] + sys.argv[1:])`,
+  ].join("\n"), { mode: 0o700 });
+  const pending = withInventoryConnectionView(() => explicitInventoryConnectionId("fixture-one"));
+  await new Promise((resolve) => setImmediate(resolve));
+  writeInventory(["fixture-one ansible_host=192.0.2.99 ansible_user=other ansible_port=2222"]);
+  assert.equal(await pending, "unresolved");
+  const expected = identity.assetConnectionId({ address: "192.0.2.99", port: 2222, user: "other" });
+  assert.equal(await withInventoryConnectionView(() => explicitInventoryConnectionId("fixture-one")), expected);
+  assert.equal(explicitInventoryConnectionId("fixture-one"), expected);
+});
+
+test("failed async host views cannot reuse a valid old connection or leak request context", native, async () => {
+  const expected = identity.assetConnectionId({ address: "192.0.2.10", port: 2222, user: "audit" });
+  assert.equal(await withInventoryConnectionView(() => explicitInventoryConnectionId("fixture-one")), expected);
+  for (const [index, script] of ["raise SystemExit(1)", "print('{}')", "print('not-json')"].entries()) {
+    writeInventory([`# changed ${index}`, "fixture-one ansible_host=192.0.2.99 ansible_user=other"]);
+    writeFileSync(path.join(directory, "bin/ansible-inventory"), "#!/usr/bin/python3\n" + script + "\n", { mode: 0o700 });
+    await withInventoryConnectionView(() => assert.equal(explicitInventoryConnectionId("fixture-one"), "unresolved"));
+  }
+  rmSync(path.join(directory, "bin/ansible-inventory"));
+  writeInventory(["fixture-one ansible_host=192.0.2.10 ansible_user=audit ansible_port=2222"]);
+  await assert.rejects(withInventoryConnectionView(() => { throw new Error("view failed"); }), /view failed/);
+  assert.equal(explicitInventoryConnectionId("fixture-one"), expected, "a completed or failed request must release its scoped snapshot");
 });

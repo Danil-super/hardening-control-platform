@@ -43,6 +43,10 @@ services:
       HCP_PRODUCTION_MODE: ${HCP_PRODUCTION_MODE:-true}
       HCP_TRUSTED_TLS_PROXY: ${HCP_TRUSTED_TLS_PROXY:-false}
       HCP_CONTROL_IPS: ${HCP_CONTROL_IPS:-}
+      # Optional outbound proxy for controller-side HTTPS sources such as Astra OVAL.
+      HTTP_PROXY: ${HCP_HTTP_PROXY:-}
+      HTTPS_PROXY: ${HCP_HTTPS_PROXY:-}
+      NO_PROXY: ${HCP_NO_PROXY:-127.0.0.1,localhost}
     volumes:
       - hcp-runtime:/var/lib/hcp
       - type: bind

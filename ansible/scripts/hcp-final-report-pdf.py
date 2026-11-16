@@ -115,6 +115,57 @@ def font_path(name):
     raise RuntimeError('Шрифт DejaVu не установлен.')
 
 
+def audit_story(snapshot, body, small, title, heading):
+    from reportlab.platypus import Paragraph, Spacer
+    def full(value):
+        return esc(value, len(str(value)) if value is not None else 0)
+    findings = snapshot.get('findings', [])
+    state = 'Сканер не выполнил проверку' if not snapshot.get('available') else 'Проверка выполнена с ограничениями' if snapshot.get('partial') else 'Проверка завершена'
+    story = [Paragraph('Отчёт HCP по отдельной проверке', title)]
+    for label, value in [('Хост', snapshot.get('hostAlias')), ('Инструмент', snapshot.get('mode')),
+                         ('Профиль', snapshot.get('profileId')), ('Дата проверки', snapshot.get('createdAt')),
+                         ('Сформирован PDF', snapshot.get('exportedAt')), ('Результат', state),
+                         ('Отчёт', snapshot.get('id')), ('SHA-256 исходного JSON HCP', snapshot.get('sourceSha256'))]:
+        story.append(Paragraph(full(label) + ': ' + full(value), body))
+    story.append(Paragraph('Привязка идентичности некорректна.' if snapshot.get('assetBindingInvalid') else full(asset_binding_label(snapshot.get('assetBinding'))), small))
+    if snapshot.get('contentId'):
+        story.append(Paragraph('Контрольная сумма базы или профиля: ' + full(snapshot['contentId']), small))
+    if snapshot.get('mode') == 'nmap':
+        story.append(Paragraph(full(nmap_scope_label(snapshot.get('scanScope'))), body))
+    if snapshot.get('mode') == 'lynis':
+        story.append(Paragraph('Индекс Lynis: ' + full(snapshot.get('score')) + '/100. Это индекс усиления, не процент безопасности.', body))
+    if not snapshot.get('reportTimeValid'):
+        story.append(Paragraph('Дата исходного отчёта не подтверждена.', body))
+    for reason in snapshot.get('limitations', []):
+        story.append(Paragraph(full(reason), body))
+    story.append(Paragraph('Интерпретация HCP одного сохранённого запуска. Область определяется инструментом и его базой или профилем. Сравнение с прежними запусками в этот документ не входит. Оригинал инструмента скачивается отдельно.', small))
+    for label, value in snapshot.get('facts', {}).items():
+        story.append(Paragraph(full(label) + ': ' + full(value), body))
+    if snapshot.get('packages'):
+        story.append(Paragraph('Инвентарь пакетов', heading))
+        for item in snapshot['packages']:
+            story.append(Paragraph(full(item.get('name')) + ' · ' + full(item.get('version')) + ' · ' + full(item.get('architecture')), body))
+    story.append(Paragraph('Результаты проверок: %d' % len(findings), heading))
+    statuses = {'passed': 'Пройдено', 'failed': 'Не пройдено', 'manual': 'Вручную', 'fixed': 'Исправлено'}
+    for index, item in enumerate(findings, 1):
+        story.append(Paragraph('%d. %s' % (index, full(item.get('title'))), heading))
+        level = ('Lynis · ' + {'warning': 'предупреждение', 'suggestion': 'совет по усилению'}.get(item.get('lynisKind'), 'состояние проверки')) if snapshot.get('mode') == 'lynis' else finding_risk_label(item)
+        story.append(Paragraph(full(level) + ' · ' + full(statuses.get(item.get('status'), item.get('status'))), body))
+        assessment = item.get('severityAssessment') or {}
+        origin = {'chromium_description': 'оценка Chromium, явно указанная в описании OVAL; не CVSS', 'oval_metadata': 'метаданные OVAL', 'scanner_metadata': 'метаданные сканера'}.get(assessment.get('source'))
+        if origin:
+            story.append(Paragraph('Источник критичности: ' + full(origin), small))
+        story.append(Paragraph(full(item.get('description')), body))
+        story.append(Paragraph('Рекомендация: ' + full(item.get('recommendation')), body))
+        story.append(Paragraph('ID: ' + full(item.get('id')) + ' · источник: ' + full(item.get('source')), small))
+    if snapshot.get('events'):
+        story.append(Paragraph('События', heading))
+        for item in snapshot['events']:
+            story.append(Paragraph(full(item.get('source')) + ': ' + full(item.get('message')), body))
+    story.append(Spacer(1, 8))
+    return story
+
+
 def render(snapshot):
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER
@@ -136,7 +187,16 @@ def render(snapshot):
 
     output = io.BytesIO()
     document = SimpleDocTemplate(output, pagesize=A4, leftMargin=16 * mm, rightMargin=16 * mm, topMargin=17 * mm, bottomMargin=18 * mm,
-                                 title='Итоговый отчёт HCP', author=clean(snapshot.get('subject', {}).get('specialist'), 200))
+                                 title='Отчёт HCP по проверке' if snapshot.get('kind') == 'audit' else 'Итоговый отчёт HCP', author='HCP' if snapshot.get('kind') == 'audit' else clean(snapshot.get('subject', {}).get('specialist'), 200))
+    if snapshot.get('kind') == 'audit':
+        def audit_footer(canvas, doc):
+            canvas.saveState()
+            canvas.setFont('HCPDejaVu', 7)
+            canvas.drawString(16 * mm, 10 * mm, 'HCP · отдельная проверка')
+            canvas.drawRightString(A4[0] - 16 * mm, 10 * mm, 'Страница %d' % canvas.getPageNumber())
+            canvas.restoreState()
+        document.build(audit_story(snapshot, body, small, title, heading), onFirstPage=audit_footer, onLaterPages=audit_footer)
+        return output.getvalue()
     story = []
     subject = snapshot.get('subject', {}) if isinstance(snapshot.get('subject'), dict) else {}
     manifest = snapshot.get('sourceManifest', []) if isinstance(snapshot.get('sourceManifest'), list) else []

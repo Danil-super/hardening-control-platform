@@ -6,17 +6,20 @@ import path from 'node:path';
 import { tmpdir } from 'node:os';
 import ts from 'typescript';
 import { compileServerModules } from './_typescript-loader.mjs';
-const compiled = compileServerModules(['state-store', 'astra-oval-config']);
+const compiled = compileServerModules(['state-store', 'astra-oval-config', 'audit-progress']);
 const store = await import(compiled.url('state-store'));
 const tasks = [], calls = [], directories = [];
-let release, audit, cve;
+let release, audit, cve, ovalReady = false;
 const source = ts.transpileModule(readFileSync(new URL('../app/api/ansible/jobs/route.ts', import.meta.url), 'utf8'), { compilerOptions:{ target:ts.ScriptTarget.ES2022, module:ts.ModuleKind.CommonJS } }).outputText;
 const require = createRequire(import.meta.url);
 const module = { exports:{} };
 const stubs = {
  'next/server': { after: task => tasks.push(task), NextResponse: { json: (body, init) => Response.json(body, init) } },
  '@/lib/state-store': store,
- '@/lib/ansible-control': { isPlaybookAction: action => ['collectFacts','packageInventory','closePort'].includes(action), playbooks: {collectFacts:{kind:'audit'}, packageInventory:{kind:'audit'},closePort:{kind:'response'}}, normalizeProfileId: ()=>'basic_linux', inventoryHostExists: alias => alias==='host-one' },
+ '@/lib/audit-progress': await import(compiled.url('audit-progress')),
+ '@/lib/ansible-control': { isPlaybookAction: action => ['collectFacts','packageInventory','closePort','astraOvalAudit'].includes(action), playbooks: {collectFacts:{kind:'audit'}, packageInventory:{kind:'audit'},closePort:{kind:'response'},astraOvalAudit:{kind:'audit'}}, normalizeProfileId: ()=>'basic_linux', inventoryHostExists: alias => alias==='host-one' },
+ '@/lib/astra-oval-policy': { resolveAstraOvalPolicyForHost: () => ({ config: {} }) },
+ '@/lib/astra-oval-preparation': { preparedOvalExtraVars: () => { if (!ovalReady) throw new Error('Подготовьте OVAL-базу'); return {}; } },
  '@/lib/ssh-bootstrap': { credentialTransportAllowed: () => true },
  '@/app/api/ansible/run/route': { POST: async request => {calls.push(await request.json()); await audit; return Response.json({ok:true,reportId:'inventory-one'});} },
  '@/app/api/ansible/vulnerabilities/check/route': { POST: async () => {calls.push('cve'); return Response.json(cve);} },
@@ -41,6 +44,17 @@ test('response returns before the test completes and disconnection does not stop
  const job=store.listAuditJobs()[0]; assert.equal(job.status,'partial'); assert.equal(job.result.reportId,'cve-one');
  assert.deepEqual(calls.slice(1),['cve']);
  assert.equal(JSON.stringify(job).includes('ephemeral-test-password'),false);
+});
+test('OVAL is not queued until source preparation is verified', async () => {
+ ovalReady=false;
+ const blocked=await route.POST(request('astraOvalAudit'));
+ assert.equal(blocked.status,409); assert.equal(tasks.length,0); assert.equal(store.listAuditJobs().length,0);
+ assert.match((await blocked.json()).message,/Подготовьте/);
+ ovalReady=true;
+ const accepted=await route.POST(request('astraOvalAudit'));
+ assert.equal(accepted.status,202); assert.equal(tasks.length,1);
+ release(); await tasks.shift()();
+ assert.equal(store.listAuditJobs()[0].status,'completed');
 });
 test('changes are never queued via the audit endpoint',async()=>{
  const response=await route.POST(request('closePort'));

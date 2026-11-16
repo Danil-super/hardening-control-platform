@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { reportAuditProgress } from "@/lib/audit-progress";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -265,7 +266,10 @@ export async function runAnsiblePlaybook({
   let executionDispatched = false;
   let assetExecution: Awaited<ReturnType<typeof prepareAssetExecution>> | null = null;
   let reportStage = "";
+  let reportRunId: string | null = null;
   const expectedReports = new Map<string, AssetBinding>();
+  const preserveRaw = action === "openScapAudit" || action === "astraOvalAudit"
+    || action === "networkPortScan" || action === "sshCryptoAudit" || action === "lynisTemporaryAudit";
   try {
     const repoRoot = getRepoRoot();
     const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
@@ -292,13 +296,14 @@ export async function runAnsiblePlaybook({
     if (process.env.HCP_REPORTS_DIR) {
       args.push("-e", ansibleLiteralExtraVars({ hcp_reports_dir: getReportsDir(repoRoot) }));
     }
-    const reportRunId = selected.kind === "audit" && !("internal" in selected && selected.internal) && action !== "ping" ? newReportRunId() : null;
+    reportRunId = selected.kind === "audit" && !("internal" in selected && selected.internal) && action !== "ping" ? newReportRunId() : null;
     if (reportRunId) {
       args.push("-e", ansibleLiteralExtraVars({ report_run_id: reportRunId }));
     }
     if (Object.keys(extraVars).length) {
       args.push("-e", ansibleLiteralExtraVars(extraVars));
     }
+    if (preserveRaw) args.push("-e", ansibleLiteralExtraVars({ hcp_preserve_raw_evidence: true }));
     if (limit) {
       args.push("--limit", limit);
     }
@@ -306,6 +311,7 @@ export async function runAnsiblePlaybook({
       args.push("--check", "--diff");
     }
 
+    reportAuditProgress("prepare");
     assetExecution = await prepareAssetExecution(limit, { authenticate: actionRequiresTargetSudo(action), remediationId, expectedAssetBinding });
     args[1] = assetExecution.inventoryPath;
     if (reportRunId) {
@@ -319,13 +325,18 @@ export async function runAnsiblePlaybook({
     }
 
     executionDispatched = true;
+    reportAuditProgress("scan");
     const result = await executeAnsiblePlaybook({ args, timeout: selected.timeout, becomePassword, sshTrust: assetExecution.sshTrust, ansibleRuntime: assetExecution.ansibleRuntime });
     return { ...result, reportRunId };
   } catch (error) {
     if (!executionDispatched && error instanceof Error) Object.assign(error, { remoteOutcome: "not_started" });
+    // The finally block can publish a partial report even when Ansible fails.
+    // Retain this run's identity so callers can find that exact saved evidence.
+    if (reportRunId && error && typeof error === "object") Object.assign(error, { reportRunId });
     throw error;
   } finally {
-    try { if (reportStage) publishCapturedAssetReports(reportStage, expectedReports); }
+    if (reportStage && action !== "packageInventory") reportAuditProgress("report");
+    try { if (reportStage) await publishCapturedAssetReports(reportStage, expectedReports, { preserveRaw }); }
     finally {
       if (reportStage) rmSync(reportStage, { recursive: true, force: true });
       assetExecution?.release();

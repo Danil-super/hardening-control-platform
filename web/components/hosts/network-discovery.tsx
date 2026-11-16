@@ -19,8 +19,8 @@ export function NetworkDiscovery({ cidr, result, loading, onCidr, onDetect, onSc
   return <section id="network-discovery" className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 sm:p-5" aria-labelledby="network-discovery-title">
     <div className="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 id="network-discovery-title" className="text-lg font-semibold text-white">1. Сканирование сети</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-400">Найдите машины с открытым SSH-портом 22 в своей подсети. Если адрес уже известен, переходите к подключению SSH ниже.</p>
+        <h2 id="network-discovery-title" className="text-lg font-semibold text-white">Поиск хостов</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-400">Поиск открытого SSH-порта 22.</p>
       </div>
       <a href="#host-form" className="text-sm text-sky-300 underline underline-offset-4">Адрес уже известен</a>
     </div>
@@ -32,7 +32,7 @@ export function NetworkDiscovery({ cidr, result, loading, onCidr, onDetect, onSc
       <Button variant="secondary" onClick={onDetect} disabled={Boolean(loading)}><Search size={16} className={loading === "detect" ? "animate-pulse" : ""} aria-hidden="true" />{loading === "detect" ? "Определяем…" : "Подставить подсеть"}</Button>
       <Button onClick={onScan} disabled={Boolean(loading) || !cidr.trim()}><Search size={16} className={loading === "scan" ? "animate-pulse" : ""} aria-hidden="true" />{loading === "scan" ? "Ищем хосты…" : "Найти SSH-хосты"}</Button>
     </div>
-    <p className="mt-3 text-xs leading-5 text-slate-400">Разрешены приватные диапазоны /24–/30, до 254 адресов. Сканирование выполняется с Ubuntu и ничего не добавляет автоматически. Другой SSH-порт укажите при ручном добавлении.</p>
+    <p className="mt-3 text-xs leading-5 text-slate-400">Приватная подсеть /24–/30, до 254 адресов.</p>
     {result?.message ? <p className="mt-3 text-sm leading-6 text-slate-300" role="status">{result.message}</p> : null}
     {result?.candidates?.length ? <div className="mt-3 flex flex-wrap gap-2">
       {result.candidates.map((candidate) => <button type="button" key={candidate.cidr} disabled={Boolean(loading)} onClick={() => onCidr(candidate.cidr)} title={candidate.label}

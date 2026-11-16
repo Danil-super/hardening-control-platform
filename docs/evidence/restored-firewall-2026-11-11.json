@@ -1,0 +1,125 @@
+{
+  "date": "2026-11-11",
+  "code": {
+    "image": "sha256:2bba2977f1305cf777d2c33e7f61d6609b550f7138465319de39a1a64dcaa753",
+    "revision": "327ecbe870704d442a323997ba18b8125c85392f",
+    "baseImage": "sha256:84828d4e8ac95b42abe69343153ab7aa042135959a42fe59a9f2d2bee72a329d",
+    "baseLayersPreserved": true,
+    "configMatchesGit": true
+  },
+  "installation": {
+    "previousImage": "sha256:84828d4e8ac95b42abe69343153ab7aa042135959a42fe59a9f2d2bee72a329d",
+    "image": "sha256:2bba2977f1305cf777d2c33e7f61d6609b550f7138465319de39a1a64dcaa753",
+    "revision": "327ecbe870704d442a323997ba18b8125c85392f",
+    "checkedTables": 13,
+    "checkedReportFiles": 98,
+    "ok": true,
+    "dataAndConfigurationPreserved": true
+  },
+  "regressions": {
+    "web": 618,
+    "pythonAnsible": 368,
+    "deployment": 235,
+    "http": 125,
+    "delayedSudoPromptTestsPerRuntime": 2,
+    "githubCiRun": false,
+    "cleanFullImageBuild": false
+  },
+  "restoredUbuntu": {
+    "baselineCode": "4bcb500e6b287f72d64ae91bb4d95ee2862b1252",
+    "imageUpdatedBeforeCycle": true,
+    "acceleration": "TCG",
+    "separatePhysicalHost": false
+  },
+  "firewallCycle": {
+    "ok": true,
+    "startedAt": "2026-11-11T12:13:21.545309+00:00",
+    "completedAt": "2026-11-11T12:22:19.355356+00:00",
+    "consecutiveIdentityChecks": 3,
+    "externalCanaryReachableBefore": true,
+    "previewDidNotChangeFirewall": true,
+    "transactionId": "txn-20261111T121640917Z-60c8298d",
+    "partialPostAudit": true,
+    "externalCanaryBlockedAfterApply": true,
+    "freshSshAfterApply": true,
+    "browser": {
+      "ok": true,
+      "errors": [],
+      "hostShownWithoutRetyping": true,
+      "onlySudoInputRequired": true,
+      "rollbackStatus": "rolled_back",
+      "passwordCleared": true
+    },
+    "rollbackVerified": true,
+    "externalCanaryReachableAfterRollback": true,
+    "rollbackBytesOwnershipLabelsIpv4Ipv6Match": true,
+    "fixtureRemovedAndOriginalFirewallRestored": true,
+    "postRollbackOpenScap": {
+      "reportId": "host-172.16.95.128-openscap-run-20261111T122029546Z-3959cf25",
+      "rules": 18,
+      "passed": 14,
+      "failed": 4
+    },
+    "restoredUbuntuStopped": true,
+    "originalTablesAndReportsPreserved": true,
+    "originalHealthyAtEnd": true
+  },
+  "restoredIntegrity": {
+    "ok": true,
+    "networkRestricted": true,
+    "restoredHcpConfirmedStopped": true,
+    "liveHeadAndCountMatched": true,
+    "sourcePrefixEntries": 280,
+    "postRunEntries": 290,
+    "originalFilesPreserved": 117,
+    "strictHmacValidAfterLiveRun": true,
+    "guestStoppedAtEnd": true
+  },
+  "primaryAudit": {
+    "ok": true,
+    "startedAt": "2026-11-11T12:28:53.083519+00:00",
+    "completedAt": "2026-11-11T12:29:33.906585+00:00",
+    "reportId": "host-172.16.95.128-openscap-run-20261111T122857575Z-e9918401",
+    "rules": 18,
+    "passed": 14,
+    "failed": 4,
+    "browser": {
+      "ok": true,
+      "errors": [],
+      "unauthorizedAndForeignOriginRejected": true,
+      "nativeArfBytesAndShaMatch": true,
+      "pdfDownloadedFromButton": true,
+      "liveHmacEntries": 270
+    },
+    "previousReportFilesPreserved": 98,
+    "currentReportFiles": 101,
+    "changedTables": [
+      "audit_events",
+      "audit_jobs"
+    ],
+    "originalHealthyAtEnd": true
+  },
+  "primaryExports": {
+    "ok": true,
+    "nativeIdsAndStatesMatchHcp": true,
+    "rules": 18,
+    "states": {
+      "passed": 14,
+      "failed": 4
+    },
+    "allFindingIdsInPdf": true,
+    "pdfSourceJsonSha256MatchesStoredFile": true,
+    "sourceJsonSha256": "6c00530fe60dbd4a1c21412bb0490a68542498b1399421ca507b54426ab0cf79",
+    "arfSha256": "2863fff5e4f595c3f46d5d555e47f9b6c13e7d48bd313ef87b4e03f7f0c745cc",
+    "pdfSha256": "42fb31b1e61a0aa0d150da38c8428a8d62ba13bb92924a662fa710dbd492d38e",
+    "pdfBytes": 55839,
+    "pdfPages": 4
+  },
+  "limits": [
+    "IPv4 TCP reachability tested; IPv6 configuration compared without external IPv6 traffic",
+    "Legacy packet filtering remains manual; partial post-audit retained",
+    "Four OpenSCAP configuration failures remain",
+    "No new complete cold backup acceptance at code 327ecbe",
+    "No new GitHub CI, multi-host load, external anchors, HTTPS or operator sign-off"
+  ]
+}

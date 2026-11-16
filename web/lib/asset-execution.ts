@@ -18,7 +18,7 @@ function booleanVariable(value: unknown) {
 export async function prepareAssetExecution(limit: string | undefined, options: {
   authenticate: boolean; remediationId?: string; expectedAssetBinding?: VerifiedAssetBinding;
 }) {
-  const frozen = freezeInventoryTargets(limit);
+  const frozen = await freezeInventoryTargets(limit);
   let lease = "";
   try {
     const hosts: Record<string, Record<string, unknown>> = {};

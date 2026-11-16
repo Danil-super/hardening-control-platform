@@ -9,6 +9,10 @@ on:
       - deployment/tests/download_astra17_ova.py
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -27,7 +31,14 @@ jobs:
           if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
       - name: Offline negative source and guest identity tests
         run: python3 -m unittest discover -s deployment/tests -p test_astra17_ova_kvm.py -v
+      - name: Restore only the byte-verified original public OVA
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-public-ova-cache
+          key: hcp-astra17-public-ova-72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e
       - name: Real official exact-pinned Astra 1.7.6.UU2 guest SSH proof
+        env:
+          HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR: ${{ runner.temp }}/hcp-astra17-public-ova-cache
         run: |
           python3 deployment/tests/verify_astra17_ova_kvm.py \
             --work-dir "$RUNNER_TEMP/hcp-native-astra17-ova-private" \

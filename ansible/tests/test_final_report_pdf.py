@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 import zlib
 from pathlib import Path
 
@@ -81,6 +82,31 @@ def decoded_pdf_streams(pdf):
 
 
 class FinalReportIdentityPdfTest(unittest.TestCase):
+    def test_report_image_markup_stays_text_in_both_pdf_formats(self):
+        markup = '<img src="file:///hcp-img"/> &lt;img src="https://invalid.test/img"/&gt;'
+        project = identity_fixture()
+        project['hostAlias'] = markup
+        project['subject'] = {key: markup for key in project['subject']}
+        for item in project['findings'] + project['unplannedFindings']:
+            item.update(title=markup, description=markup, recommendation=markup)
+        audit = {'kind': 'audit', 'id': 'image-markup', 'available': True,
+                 'hostAlias': markup, 'mode': 'lynis', 'coverageIssues': [markup],
+                 'findings': [{'id': markup, 'title': markup, 'description': markup,
+                               'recommendation': markup, 'source': markup}],
+                 'events': [{'source': markup, 'message': markup}]}
+        for snapshot in (project, audit):
+            with self.subTest(kind=snapshot.get('kind', 'project')):
+                with patch('reportlab.platypus.paraparser.ImageReader',
+                           side_effect=AssertionError('report text reached image loading')) as reader, \
+                     patch('PIL.Image.open',
+                           side_effect=AssertionError('report text reached Pillow')) as opener:
+                    pdf = RENDERER.render(snapshot)
+                    reader.assert_not_called()
+                    opener.assert_not_called()
+                self.assertTrue(pdf.startswith(b'%PDF-'))
+                self.assertTrue(b'file:///hcp-img' in decoded_pdf_streams(pdf),
+                                'literal image filename disappeared from PDF text')
+
     def test_identity_exclusions_are_distinct_from_historical_scan_scope(self):
         expected = {
             'asset_identity_changed': 'другая машина',

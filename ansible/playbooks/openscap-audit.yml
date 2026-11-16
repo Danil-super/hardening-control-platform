@@ -405,8 +405,7 @@
             flat: true
           no_log: true
           when:
-            - openscap_builtin_astra | bool
-            - hcp_openscap_keep_arf | default(false) | bool
+            - (hcp_preserve_raw_evidence | default(false) | bool) or ((openscap_builtin_astra | bool) and (hcp_openscap_keep_arf | default(false) | bool))
             - openscap_evaluated_content.stat.isreg | default(false) | bool
             - openscap_prepared | bool
 
@@ -588,9 +587,9 @@
             state: absent
           delegate_to: localhost
           become: false
-          # Explicit opt-in for acceptance/provenance workflows. ARF can
-          # contain target configuration; ordinary audits still remove it.
-          when: not (hcp_openscap_keep_arf | default(false) | bool)
+          # App launches publish originals in the private report store before
+          # removing their controller staging directory. Standalone CLI stays opt-in.
+          when: not ((hcp_openscap_keep_arf | default(false) | bool) or (hcp_preserve_raw_evidence | default(false) | bool))
       when:
         - (openscap_datastream | length) > 0 and (openscap_profile | length) > 0
         - (openscap_binary.rc | default(1)) == 0

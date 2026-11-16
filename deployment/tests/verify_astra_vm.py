@@ -20,6 +20,7 @@ import signal
 import socket
 import subprocess
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -40,8 +41,14 @@ def write_json(path, value):
 
 
 def run(argv, output=None, timeout=120, accepted=(0,), env=None):
-    result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, timeout=timeout, env=env)
+    try:
+        result = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                text=True, timeout=timeout, env=env)
+    except subprocess.TimeoutExpired as error:
+        if output:
+            # TimeoutExpired keeps captured bytes even with text=True.
+            output.write_bytes(error.output or b"")
+        raise
     if output:
         output.write_text(result.stdout)
     if result.returncode not in accepted:
@@ -111,30 +118,47 @@ def download(source, target, opener=urllib.request.urlopen, max_seconds=600, cac
         # Cache is only a performance optimization; do not trust corrupt bytes.
         cached.unlink()
 
-    start, count, digest = time.monotonic(), 0, hashlib.sha256()
-    last_update = start
+    start = time.monotonic()
     try:
-        with opener(source["url"], timeout=60) as response, temporary.open("xb") as stream:
-            assert urllib.parse.urlsplit(response.geturl()).scheme == "https"
-            while True:
-                chunk = response.read(1024 * 1024)
-                if not chunk:
-                    break
-                count += len(chunk)
-                elapsed = time.monotonic() - start
-                if count > source["bytes"] or elapsed > max_seconds:
-                    raise ValueError("Download exceeded pinned byte/time limit "
-                                     "(received %d/%d bytes in %d sec, cap %d sec)" %
-                                     (count, source["bytes"], elapsed, max_seconds))
-                digest.update(chunk)
-                stream.write(chunk)
-                if elapsed - (last_update - start) >= 30:
-                    print("Official publisher download: %d/%d MiB received (elapsed %d sec)" %
-                          (count // (1024**2), source["bytes"] // (1024**2), elapsed),
-                          flush=True)
-                    last_update = time.monotonic()
-        if count != source["bytes"] or digest.hexdigest() != source["sha256"]:
-            raise ValueError("Publisher SHA-256 or byte count mismatch")
+        for attempt in range(3):
+            remaining = max_seconds - (time.monotonic() - start)
+            if remaining <= 0:
+                raise ValueError("Download exceeded pinned time limit")
+            count, digest, last_update = 0, hashlib.sha256(), time.monotonic()
+            try:
+                with opener(source["url"], timeout=min(60, remaining)) as response, temporary.open("xb") as stream:
+                    assert urllib.parse.urlsplit(response.geturl()).scheme == "https"
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        count += len(chunk)
+                        elapsed = time.monotonic() - start
+                        if count > source["bytes"] or elapsed > max_seconds:
+                            raise ValueError("Download exceeded pinned byte/time limit "
+                                             "(received %d/%d bytes in %d sec, cap %d sec)" %
+                                             (count, source["bytes"], elapsed, max_seconds))
+                        if not chunk:
+                            break
+                        digest.update(chunk)
+                        stream.write(chunk)
+                        if time.monotonic() - last_update >= 30:
+                            print("Official publisher download: %d/%d MiB received (elapsed %d sec)" %
+                                  (count // (1024**2), source["bytes"] // (1024**2), elapsed),
+                                  flush=True)
+                            last_update = time.monotonic()
+            except (TimeoutError, ConnectionResetError, urllib.error.URLError) as error:
+                if (isinstance(error, urllib.error.URLError)
+                        and not isinstance(error.reason, (TimeoutError, ConnectionResetError))):
+                    raise
+                if attempt == 2 or time.monotonic() - start >= max_seconds:
+                    raise
+                # Restart from byte zero; never combine different HTTP responses.
+                temporary.unlink(missing_ok=True)
+                print("Retrying official source after temporary connection failure (attempt %d/3)." % (attempt + 2),
+                      flush=True)
+                continue
+            if count != source["bytes"] or digest.hexdigest() != source["sha256"]:
+                raise ValueError("Publisher SHA-256 or byte count mismatch")
+            break
         temporary.replace(target)
         if cached is not None:
             cached.parent.mkdir(parents=True, exist_ok=True)
@@ -313,7 +337,7 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
 
     write_json(artifacts / "protocol.json", protocol)
     cache_root_value = os.environ.get("HCP_ASTRA_IMAGE_CACHE_DIR", "")
-    cache_file = None
+    cache_file, oval_cache_file = None, None
     if cache_root_value:
         # Never let a workflow/env error turn a cache optimization into an
         # arbitrary filesystem read. Only runner-temp caches are supported.
@@ -321,10 +345,11 @@ def exercise_guest(args, work, artifacts, reports, sources, protocol):
         runner_temp = Path(os.environ["RUNNER_TEMP"]).resolve()
         assert cache_root != runner_temp and cache_root.is_relative_to(runner_temp)
         cache_file = cache_root / "source.qcow2"
+        oval_cache_file = cache_root.parent / "oval" / (oval["sha256"] + ".xml")
     download(image, work / "source.qcow2", max_seconds=2400, cache_path=cache_file)
     info = json.loads(run(["qemu-img", "info", "--output=json", str(work / "source.qcow2")]).stdout)
     assert info["format"] == "qcow2" and not info.get("backing-filename") and info["virtual-size"] <= 50 * 1024**3
-    download(oval, work / "vendor.xml", max_seconds=1200)
+    download(oval, work / "vendor.xml", max_seconds=1200, cache_path=oval_cache_file)
     real_oval_definition_count = verify_vendor_control(work / "vendor.xml", oval)
     checkpoint("Publisher images and full OVAL verified by SHA-256", {
         "imageBytes": image["bytes"], "ovalBytes": oval["bytes"],

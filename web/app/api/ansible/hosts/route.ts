@@ -2,11 +2,12 @@ import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } fro
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { NextResponse } from "next/server";
-import { getReportsDir, listAnsibleReports, targetAliasFromReport } from "@/lib/ansible-reports";
+import { getReportsDir, listAnsibleReportsAsync, type AnsibleReportSummary, targetAliasFromReport } from "@/lib/ansible-reports";
 import { buildHostRiskSummary, isSecurityAudit, type HostRiskSummary } from "@/lib/host-risk-summary";
 import { isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 import { HostCredentialError, credentialKeyPath, publicCredentialSummary, validateHostCredential } from "@/lib/host-credentials";
 import { assertAssetIdle, hasActiveRemediationForHost } from "@/lib/state-store";
+import { withInventoryConnectionView } from "@/lib/inventory";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -254,11 +255,7 @@ function identityCollides(current: string, alias: string, group: string) {
   return alias === group || groups.has(alias) || hostAliases.includes(group);
 }
 
-function attachReports(hosts: InventoryHost[], reportsPath: string) {
-  // A fresh installation has no reports directory yet. It still needs an
-  // explicit zero-audit, evidence-bound summary for each inventory host;
-  // missing metadata must not masquerade as an API failure or completed audit.
-  const reports = existsSync(reportsPath) ? listAnsibleReports() : [];
+function attachReports(hosts: InventoryHost[], reports: AnsibleReportSummary[]) {
 
   return hosts.map((host) => {
     const hostReports = reports.filter((report) => targetAliasFromReport(report) === host.alias);
@@ -273,10 +270,15 @@ function attachReports(hosts: InventoryHost[], reportsPath: string) {
 }
 
 export async function GET() {
+  const reports = await listAnsibleReportsAsync();
+  return withInventoryConnectionView(() => hostListResponse(reports));
+}
+
+function hostListResponse(reports: AnsibleReportSummary[]) {
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
   const reportsPath = getReportsDir(repoRoot);
-  const hosts = attachReports(readInventoryHosts(inventoryPath), reportsPath).map((host) => ({ ...host, ...publicCredentialSummary(host.credentialId) }));
+  const hosts = attachReports(readInventoryHosts(inventoryPath), reports).map((host) => ({ ...host, ...publicCredentialSummary(host.credentialId) }));
 
   const withReports = hosts.filter((host) => host.lastReport).length;
   const becomeEnabled = hosts.filter((host) => host.become).length;

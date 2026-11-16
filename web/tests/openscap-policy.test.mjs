@@ -249,6 +249,7 @@ test("scheduled OpenSCAP resolves each host's policy and returns a partial resul
 test("manual audit exposes annotation failures instead of reporting full success", async () => {
   const endpoint = load("app/api/ansible/run/route.ts", {
     "@/lib/astra-oval-policy": {},
+    "@/lib/astra-oval-preparation": {},
     "next/server": { NextResponse: { json: (body, options) => Response.json(body, options) } },
     "@/lib/ansible-control": {
       isPlaybookAction: () => true, isSafeLimit: () => true, normalizeProfileId: () => "basic_linux",
@@ -279,6 +280,7 @@ test("manual audit requires explicit confirmation when the same completed audit 
   let started = false;
   const endpoint = load("app/api/ansible/run/route.ts", {
     "@/lib/astra-oval-policy": {},
+    "@/lib/astra-oval-preparation": {},
     "next/server": { NextResponse: { json: (body, options) => Response.json(body, options) } },
     "@/lib/ansible-control": {
       isPlaybookAction: () => true, isSafeLimit: () => true, normalizeProfileId: () => "basic_linux",

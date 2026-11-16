@@ -1,12 +1,12 @@
 import { NextResponse } from "next/server";
-import { createProjectReport, listProjectReports } from "@/lib/project-report";
+import { createProjectReport, listProjectReports, PdfExportBusyError } from "@/lib/project-report";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 180;
 
 function failure(error: unknown, status = 400) {
-  return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "Не удалось подготовить итоговый отчёт." }, { status });
+  return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "Не удалось подготовить итоговый отчёт." }, { status: error instanceof PdfExportBusyError ? 429 : status });
 }
 
 async function requestBody(request: Request) {

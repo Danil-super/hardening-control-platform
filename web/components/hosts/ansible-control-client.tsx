@@ -33,6 +33,7 @@ import { AssetIdentityPanel } from "@/components/hosts/asset-identity-panel";
 import { useAuditJobs, AuditJobHistory } from "@/components/hosts/audit-jobs-provider";
 import { HostRiskSummary } from "@/components/hosts/host-risk-summary";
 import { HostAuditNextStep } from "@/components/hosts/host-audit-next-step";
+import { OvalPreparation } from "@/components/hosts/oval-preparation";
 import { auditReportLabels, auditCompletionMessage } from "@/lib/audit-job-status";
 import type { HostRiskSummary as RiskSummary } from "@/lib/host-risk-summary";
 
@@ -300,6 +301,7 @@ function reportHref(fileName: string) {
 export function AnsibleControlClient() {
   const notify = useNotify();
   const formRef = useRef<HTMLElement>(null);
+  const [connectionFormOpen, setConnectionFormOpen] = useState(false);
   const [editingHost, setEditingHost] = useState("");
   const [health, setHealth] = useState<HealthPayload | null>(null);
   const [hosts, setHosts] = useState<HostsPayload | null>(null);
@@ -662,6 +664,20 @@ export function AnsibleControlClient() {
       setRunResult({ ok: false, action, message: "Выберите хост." });
       return;
     }
+    if (action === "astraOvalAudit") {
+      setLoading("oval-readiness");
+      try {
+        const response = await fetch(`/api/ansible/hosts/oval-preparation?alias=${encodeURIComponent(selectedAlias)}`, { cache: "no-store" });
+        const value = await readApiResponse(response) as { ok?: boolean; message?: string; preparation?: { state: string; message: string } };
+        if (!response.ok || !value.ok || !["ready", "local"].includes(value.preparation?.state ?? "")) {
+          setAdditionalAuditActionId("astraOvalAudit");
+          throw new Error(value.message ?? value.preparation?.message ?? "Сначала подготовьте OVAL-базу перед запуском.");
+        }
+      } catch (cause) {
+        const message = errorMessage(cause, "Готовность OVAL-базы не подтверждена.");
+        setRunResult({ ok: false, action, message }); notify(message, "error"); return;
+      } finally { setLoading(""); }
+    }
     const isResponse = responseActions.some((item) => item.id === action);
     const actionMeta = auditActions.find((item) => item.id === action);
     const runsOnlyOnControlNode = controlNodeOnlyAuditActionIds.has(action);
@@ -729,7 +745,7 @@ export function AnsibleControlClient() {
       : action === "openScapAudit"
         ? "OpenSCAP проверит выбранный профиль на ВМ. Встроенный профиль HCP временно передаётся по SSH. Настройки не меняются; проверка может занять до 30 минут. Продолжить?"
       : action === "astraOvalAudit"
-        ? "OpenSCAP проверит хост по OVAL-базе, назначенной его группе в «Источниках». Крупная база может потребовать до 35 минут. Настройки хоста не меняются. Продолжить?"
+        ? "OpenSCAP проверит хост по подготовленной OVAL-копии назначенного источника (локальный XML проверяется на хосте). Повторная загрузка сетевой базы не требуется. Настройки хоста не меняются. Продолжить?"
       : action === "networkPortScan"
         ? nmapScanScope === "full_tcp"
           ? "Nmap проверит все TCP-порты 1–65535 выбранного хоста с control node. Это может занять до 30 минут и создаст много сетевых соединений. UDP не проверяется. Продолжить?"
@@ -884,6 +900,8 @@ export function AnsibleControlClient() {
   }
 
   function startNewHost(address = "", alias = "") {
+    setConnectionFormOpen(true);
+    requestAnimationFrame(() => formRef.current?.scrollIntoView({ block: "start" }));
     setEditingHost("");
     invalidateCredential();
     setManualAlias(alias);
@@ -898,6 +916,7 @@ export function AnsibleControlClient() {
 
   function fillHostForm(host: ManagedHost) {
     if (loading || accessLoading) return;
+    setConnectionFormOpen(true);
     setEditingHost(host.alias);
     setManualCredentialId(host.credentialId ?? null);
     setCredentialResult(host.credentialId && host.credentialReady ? { ok: true, credentialId: host.credentialId, publicKey: host.credentialPublicKey, fingerprint: host.credentialFingerprint, sudoMode: host.sudoMode } : null);
@@ -923,47 +942,111 @@ export function AnsibleControlClient() {
     <div className="space-y-6">
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">Управление хостами</p>
-          <h1 className="mt-2 text-3xl font-semibold text-white">Проверка безопасности</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">
-            Выберите хост, запустите аудит и просмотрите результат. Изменения firewall выполняются отдельно, с планом и откатом.
-          </p>
+
+          <h1 className="text-3xl font-semibold text-white">Хосты</h1>
+
         </div>
         <Button variant="secondary" onClick={() => refreshAll(true)} disabled={dataLoading}>
           <RefreshCw size={16} className={dataLoading ? "animate-spin" : ""} aria-hidden="true" />
           Обновить данные
         </Button>
       </header>
-      {dataLoading ? <p role="status" className="text-sm text-slate-400">Загружаю состояние HCP, список хостов и сохранённую историю. Проверки на хостах не запускаются.</p> : null}
+      {dataLoading ? <p role="status" className="text-sm text-slate-400">Загрузка хостов…</p> : null}
 
-      <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Сводка">
+      <section id="managed-hosts" className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
+        <div className="flex flex-col gap-3 border-b border-slate-800 p-4 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold text-white">1. Управляемые хосты</h2>
+            <p className="mt-1 text-xs text-slate-400">Сводка по последним проверкам каждого инструмента.</p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)}>Подключить хост</Button>
+            <LinkButton href="/reports" variant="secondary">
+              <FileText size={16} aria-hidden="true" />
+              Отчеты
+            </LinkButton>
+          </div>
+        </div>
+
+        {hosts?.hosts?.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[880px] text-left text-sm">
+              <thead className="bg-slate-900/70 text-xs uppercase text-slate-500">
+                <tr>
+                  <th className="px-3 py-2">Хост</th>
+                  <th className="px-3 py-2">SSH</th>
+                  <th className="px-3 py-2">Находки по последним проверкам</th>
+                  <th className="px-3 py-2">Последняя проверка</th>
+                  <th className="px-3 py-2">Действия</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800">
+                {hosts.hosts.map((host) => (
+                  <tr key={host.alias} className={selectedAlias === host.alias ? "bg-sky-500/5" : ""}>
+                    <td className="px-3 py-2">
+                      <button onClick={() => { setSelectedAlias(host.alias); document.getElementById("ansible-actions")?.scrollIntoView({ block: "start" }); }} title={host.alias} className="block max-w-36 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300">
+                        <span className="block truncate font-semibold text-white">{host.alias}</span>
+                        <span className="block text-xs text-slate-500">{host.address}</span>
+                      </button>
+                    </td>
+                    <td className="px-3 py-2 text-slate-300">
+                      <span className="block max-w-28 truncate" title={host.user ?? undefined}>{host.user ?? "не указан"}</span>
+                      <span className={`block text-xs ${host.become ? "text-emerald-200" : "text-slate-500"}`}>
+                        {host.become ? host.sudoMode === "on_demand" ? "sudo по паролю" : "административный режим" : "права учётной записи"}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 text-xs">
+                      <HostRiskSummary summary={host.riskSummary} hostAlias={host.alias} />
+                    </td>
+                    <td className="px-3 py-2 text-xs text-slate-300"><p className="max-w-32">{formatDate(host.lastReport?.createdAt)}</p>{host.lastReport ? <p title={auditReportLabels[host.lastReport.mode] ?? host.lastReport.mode} className="max-w-32 truncate text-[11px] text-slate-400">{auditReportLabels[host.lastReport.mode] ?? host.lastReport.mode}</p> : null}</td>
+                    <td className="px-3 py-2">
+                      <div className="flex max-w-60 flex-wrap items-center gap-1.5">
+                        <Button variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" onClick={() => { setSelectedAlias(host.alias); document.getElementById("ansible-actions")?.scrollIntoView({ block: "start" }); }}>Проверки</Button>
+                        <Button variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" onClick={() => fillHostForm(host)}>
+                          Настроить
+                        </Button>
+                        {host.lastReport ? (
+                          <LinkButton href={reportHref(host.lastReport.fileName)} prefetch={false} variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" aria-label={`Последний отчёт хоста ${host.alias}`} title="Последний отчёт">
+                            Отчёт
+                          </LinkButton>
+                        ) : null}
+                        <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host.alias)}`} prefetch={false} variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs">
+                          История ({host.reportCount})
+                        </LinkButton>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <div className="p-5 text-sm leading-6 text-slate-400">Нет хостов. Нажмите «Подключить хост».</div>
+        )}
+      </section>
+
+      <details open={Boolean(health && (!health.ansibleInstalled || !health.inventoryReady))} className="rounded-lg border border-slate-800 px-4 py-3"><summary className="cursor-pointer text-sm text-slate-400">Состояние платформы</summary>
+      <section className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Сводка">
         <StatusTile label="Ansible" value={!health ? "Загрузка…" : health.ansibleInstalled ? "Готов" : "Не готов"} good={health ? Boolean(health.ansibleInstalled) : undefined} />
         <StatusTile label="Список хостов" value={!hosts ? "Загружаем…" : hosts.inventoryReady ? "Готов" : "Не готов"} good={hosts ? Boolean(hosts.inventoryReady) : undefined} />
         <StatusTile label="Хосты" value={summary?.total ?? 0} />
         <StatusTile label="Хосты с аудитом" value={summary?.withReports ?? 0} />
-      </section>
-
-      <HostAuditNextStep
-        hosts={hosts?.hosts ?? []}
-        host={selectedHost}
-        onSelectHost={setSelectedAlias}
-        controlReady={Boolean(health?.ansibleInstalled && health?.inventoryReady)}
-        activeJob={Boolean(activeJob)}
-        recoveryRequired={transactions.some((transaction) => transaction.hostAlias === selectedAlias
-          && (transaction.recoveryRequired || ["interrupted", "recovery_ready", "rollback_failed"].includes(transaction.status)))}
-      />
-
-      <NetworkDiscovery cidr={scanCidr} result={discovery} loading={loading || accessLoading}
-        onCidr={setScanCidr} onDetect={detectNetwork} onScan={scanNetwork} onChoose={startNewHost} />
+      </section></details>
 
       <section id="host-form" ref={formRef} className="scroll-mt-6 rounded-xl border border-slate-800 bg-slate-950/70 p-4 sm:p-5" aria-labelledby="host-form-title">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <details open={connectionFormOpen || Boolean(hosts?.hosts && !hosts.hosts.length)} onToggle={event => setConnectionFormOpen(event.currentTarget.open)}>
+          <summary id="host-form-title" className="cursor-pointer font-semibold text-white">{editingHost ? `Подключение: ${editingHost}` : "Подключить хост"}</summary>
+        <div className="mt-4 mb-4 flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 id="host-form-title" className="text-lg font-semibold text-white">{editingHost ? `2. Подключение: ${editingHost}` : "2. Подключение по паролю"}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-400">Вы вводите данные на сайте. HCP входит на Linux-сервер по паролю, затем настраивает ключ и сохраняет подключение.</p>
+            <p className="text-sm text-slate-300">HCP настроит SSH-ключ после проверки доступа.</p>
+
       </div>
           {editingHost ? <Button variant="secondary" onClick={() => startNewHost()} disabled={Boolean(loading) || Boolean(accessLoading)}>Добавить другой хост</Button> : null}
         </div>
+        <details className="mb-4 rounded-lg border border-slate-800 p-3"><summary className="cursor-pointer text-sm text-slate-300">Найти хост в сети</summary>
+      <NetworkDiscovery cidr={scanCidr} result={discovery} loading={loading || accessLoading}
+        onCidr={setScanCidr} onDetect={detectNetwork} onScan={scanNetwork} onChoose={startNewHost} />
+        </details>
         <fieldset disabled={Boolean(loading) || Boolean(accessLoading)} className="grid min-w-0 gap-3 sm:grid-cols-2">
           <Field label="Адрес сервера" value={manualAddress} onChange={(value) => { setManualAddress(value); invalidateCredential(); }} placeholder="192.168.1.10" />
           <Field label="Администратор сервера" value={manualUser} onChange={(value) => { setManualUser(value); invalidateCredential(); }} placeholder="root или логин администратора" />
@@ -1035,122 +1118,26 @@ export function AnsibleControlClient() {
           ) : preflight.readinessError ? <p className="mt-2 text-sm text-amber-200" role="status">Готовность к аудиту не подтверждена: {preflight.readinessError}</p> : null}
           </>
         ) : null}
-      </section>
-
-      <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
-        <div className="flex flex-col gap-3 border-b border-slate-800 p-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h2 className="text-lg font-semibold text-white">Управляемые хосты</h2>
-            <p className="mt-1 text-sm text-slate-400">Нажмите «Настроить» для выбора хоста и инструмента. Сводка объединяет последние проверки каждого инструмента и профиля; история запусков не суммируется.</p>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <LinkButton href="/reports" variant="secondary">
-              <FileText size={16} aria-hidden="true" />
-              Отчеты
-            </LinkButton>
-          </div>
-        </div>
-
-        {hosts?.hosts?.length ? (
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[880px] text-left text-sm">
-              <thead className="bg-slate-900/70 text-xs uppercase text-slate-500">
-                <tr>
-                  <th className="px-3 py-2">Хост</th>
-                  <th className="px-3 py-2">SSH</th>
-                  <th className="px-3 py-2">Находки по последним проверкам</th>
-                  <th className="px-3 py-2">Последняя проверка</th>
-                  <th className="px-3 py-2">Действия</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-800">
-                {hosts.hosts.map((host) => (
-                  <tr key={host.alias} className={selectedAlias === host.alias ? "bg-sky-500/5" : ""}>
-                    <td className="px-3 py-2">
-                      <button onClick={() => fillHostForm(host)} title={host.alias} className="block max-w-36 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300">
-                        <span className="block truncate font-semibold text-white">{host.alias}</span>
-                        <span className="block text-xs text-slate-500">{host.address}</span>
-                      </button>
-                    </td>
-                    <td className="px-3 py-2 text-slate-300">
-                      <span className="block max-w-28 truncate" title={host.user ?? undefined}>{host.user ?? "не указан"}</span>
-                      <span className={`block text-xs ${host.become ? "text-emerald-200" : "text-slate-500"}`}>
-                        {host.become ? host.sudoMode === "on_demand" ? "sudo по паролю" : "административный режим" : "права учётной записи"}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-xs">
-                      <HostRiskSummary summary={host.riskSummary} hostAlias={host.alias} />
-                    </td>
-                    <td className="px-3 py-2 text-xs text-slate-300"><p className="max-w-32">{formatDate(host.lastReport?.createdAt)}</p>{host.lastReport ? <p title={auditReportLabels[host.lastReport.mode] ?? host.lastReport.mode} className="max-w-32 truncate text-[11px] text-slate-400">{auditReportLabels[host.lastReport.mode] ?? host.lastReport.mode}</p> : null}</td>
-                    <td className="px-3 py-2">
-                      <div className="flex max-w-60 flex-wrap items-center gap-1.5">
-                        <Button variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" onClick={() => fillHostForm(host)}>
-                          Настроить
-                        </Button>
-                        {host.lastReport ? (
-                          <LinkButton href={reportHref(host.lastReport.fileName)} prefetch={false} variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" aria-label={`Последний отчёт хоста ${host.alias}`} title="Последний отчёт">
-                            Отчёт
-                          </LinkButton>
-                        ) : null}
-                        <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host.alias)}`} prefetch={false} variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs">
-                          История ({host.reportCount})
-                        </LinkButton>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="p-5 text-sm leading-6 text-slate-400">Добавьте первый хост через форму выше. После проверки подключения он появится здесь.</div>
-        )}
+        </details>
       </section>
 
       <section className="grid grid-cols-[minmax(0,1fr)] gap-5">
-        <div className="rounded-md border border-sky-400/20 bg-sky-400/5 p-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-sky-200">Без доступа к ОС</p>
-              <h2 className="mt-1 text-lg font-semibold text-white">Внешний аудит</h2>
-              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-300">Проверка выполняется с control node: HCP не входит по SSH, не использует sudo и не запускает команды на целевом сервере. Она показывает только сетевую поверхность и параметры SSH, а не заменяет аудит локальной конфигурации.</p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {controlNodeOnlyAuditActions.map((action) => {
-                const Icon = action.icon;
-                return (
-                  <Button key={action.id} variant={action.id === "networkPortScan" ? "primary" : "secondary"} onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
-                    <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
-                    {action.id === "networkPortScan" ? "Проверить порты" : "Проверить SSH"}
-                  </Button>
-                );
-              })}
-            </div>
-          </div>
-          <div className="mt-3 grid gap-3 border-t border-sky-400/15 pt-3 md:grid-cols-[minmax(0,320px)_1fr] md:items-end">
-            <label className="block">
-              <span className="text-xs font-semibold uppercase text-slate-400">Охват проверки портов</span>
-              <Select
-                value={nmapScanScope}
-                onValueChange={(value) => setNmapScanScope(value as NmapScanScope)}
-                disabled={Boolean(loading) || !selectedHost}
-                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
-              >
-                {nmapScanScopeOptions.map((scope) => <option key={scope.id} value={scope.id}>{scope.label}</option>)}
-              </Select>
-            </label>
-            <p className="text-xs leading-5 text-slate-400">{selectedNmapScanScope.description} Внешняя проверка создаёт сетевые соединения с выбранным хостом, но не изменяет его.</p>
-          </div>
-        </div>
-
         <div id="ansible-actions" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
-              <h2 className="text-lg font-semibold text-white">Проверки выбранного хоста</h2>
+              <h2 className="text-lg font-semibold text-white">2. Проверки выбранного хоста</h2>
               <p className="mt-1 text-sm text-slate-400">
                 Хост: <span className="font-semibold text-slate-100">{selectedHost?.alias ?? "не выбран"}</span>
               </p>
-              <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-400">Выберите нужный инструмент ниже. Проверка подключения подтверждает доступ по SSH и готовность Ansible; настройки безопасности она не оценивает.</p>
+      <HostAuditNextStep
+        hosts={hosts?.hosts ?? []}
+        host={selectedHost}
+        onSelectHost={setSelectedAlias}
+        controlReady={Boolean(health?.ansibleInstalled && health?.inventoryReady)}
+        activeJob={Boolean(activeJob)}
+        recoveryRequired={transactions.some((transaction) => transaction.hostAlias === selectedAlias
+          && (transaction.recoveryRequired || ["interrupted", "recovery_ready", "rollback_failed"].includes(transaction.status)))}
+      />
             </div>
             <div className="flex flex-wrap gap-2">
               {primaryAuditActions.map((action) => {
@@ -1165,20 +1152,8 @@ export function AnsibleControlClient() {
             </div>
           </div>
 
-          {selectedHost?.sudoMode === "on_demand" ? (
-            <div className="mt-4 rounded-md border border-sky-400/20 bg-sky-400/5 p-3">
-              <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr] lg:items-end">
-                <Field label="Пароль sudo для проверки на хосте" value={operationSudoPassword} onChange={setOperationSudoPassword}
-                  type="password" placeholder="Тот же пароль, что принимает sudo su" disabled={Boolean(loading) || !secureCredentialTransport} />
-                <p className="text-xs leading-5 text-slate-300">На этом сервере права root подтверждены через обычный sudo по паролю. Он нужен только для основного и других локальных аудитов; кнопки «Проверить порты» и «Проверить SSH» выше не используют пароль, вход по SSH или команды на сервере. HCP не сохраняет пароль и не меняет <code>/etc/sudoers.d</code>.</p>
-              </div>
-              {!secureCredentialTransport ? <p className="mt-2 text-xs leading-5 text-amber-100">Для ввода пароля откройте HCP через HTTPS либо http://127.0.0.1 на управляющем узле.</p> : null}
-            </div>
-          ) : null}
+          <div className="mt-4 border-t border-slate-800 pt-3">
 
-          <details open className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Инструменты проверки</summary>
-            <p className="mt-1 text-xs leading-5 text-slate-400">Эти инструменты получают сведения с Linux-сервера через уже настроенный доступ. Они не меняют настройки хоста; выберите только одну нужную проверку.</p>
             <div className="mt-3 grid min-w-0 gap-x-3 gap-y-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
               <div className={`grid min-w-0 gap-3 ${additionalAuditActionId === "agentlessAudit" ? "md:grid-cols-[minmax(0,360px)_minmax(0,250px)]" : ""}`}>
                 <label className="block min-w-0 max-w-[360px]">
@@ -1214,30 +1189,67 @@ export function AnsibleControlClient() {
                   </label>
                 ) : null}
               </div>
-              <Button variant="secondary" onClick={() => runAction(selectedAdditionalAction.id)} disabled={Boolean(loading) || !selectedHost}>
-                <SelectedAdditionalActionIcon size={16} className={loading === selectedAdditionalAction.id ? "animate-spin" : ""} aria-hidden="true" />
-                Запустить проверку
-              </Button>
-              <p className="text-xs leading-5 text-slate-400 sm:col-span-2">{selectedAdditionalAction.description}</p>
+
+              <details className="text-xs text-slate-400 sm:col-span-2"><summary className="cursor-pointer text-sky-200">О проверке</summary><p className="mt-2 leading-5">{selectedAdditionalAction.description}</p></details>
               {additionalAuditActionId === "openScapAudit" ? <LinkButton href="/policies" variant="secondary" className="justify-self-start text-xs">Настроить профиль OpenSCAP</LinkButton> : null}
             </div>
-          </details>
+            {additionalAuditActionId === "astraOvalAudit" && selectedAlias ? <OvalPreparation key={selectedAlias} alias={selectedAlias} /> : null}
+          {selectedHost?.sudoMode === "on_demand" ? (
+            <div className="mt-4 rounded-md border border-sky-400/20 bg-sky-400/5 p-3">
+              <div className="grid gap-3 lg:grid-cols-[minmax(0,360px)_1fr] lg:items-end">
+                <Field label="Пароль sudo для проверки на хосте" value={operationSudoPassword} onChange={setOperationSudoPassword}
+                  type="password" placeholder="Тот же пароль, что принимает sudo su" disabled={Boolean(loading) || !secureCredentialTransport} />
+                <p className="text-xs leading-5 text-slate-300">Только для текущей операции. Пароль не сохраняется.</p>
+              </div>
+              {!secureCredentialTransport ? <p className="mt-2 text-xs leading-5 text-amber-100">Для ввода пароля откройте HCP через HTTPS либо http://127.0.0.1 на управляющем узле.</p> : null}
+            </div>
+          ) : null}
+
+            <div className="mt-3"><Button variant="secondary" onClick={() => runAction(selectedAdditionalAction.id)} disabled={Boolean(loading) || !selectedHost}>
+                <SelectedAdditionalActionIcon size={16} className={loading === selectedAdditionalAction.id ? "animate-spin" : ""} aria-hidden="true" />
+                Запустить проверку
+              </Button></div>
+          </div>
+
+        <div className="mt-5 rounded-md border border-sky-400/20 bg-sky-400/5 p-4">
+          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div>
+
+              <h3 className="font-semibold text-white">Сетевые проверки</h3>
+              <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-300">Без входа по SSH и без sudo.</p>
+            </div>
+
+          </div>
+          <div className="mt-3 grid gap-3 border-t border-sky-400/15 pt-3 md:grid-cols-[minmax(0,320px)_1fr] md:items-end">
+            <label className="block">
+              <span className="text-xs font-semibold uppercase text-slate-400">Охват проверки портов</span>
+              <Select
+                value={nmapScanScope}
+                onValueChange={(value) => setNmapScanScope(value as NmapScanScope)}
+                disabled={Boolean(loading) || !selectedHost}
+                className="mt-2 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {nmapScanScopeOptions.map((scope) => <option key={scope.id} value={scope.id}>{scope.label}</option>)}
+              </Select>
+            </label>
+            <p className="text-xs leading-5 text-slate-400">{selectedNmapScanScope.description}</p>
+          </div>
+            <div className="mt-4 flex flex-wrap gap-3">
+              {controlNodeOnlyAuditActions.map((action) => {
+                const Icon = action.icon;
+                return (
+                  <Button key={action.id} variant={action.id === "networkPortScan" ? "primary" : "secondary"} onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
+                    <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
+                    {action.id === "networkPortScan" ? "Проверить порты" : "Проверить SSH"}
+                  </Button>
+                );
+              })}
+            </div>
+        </div>
 
           <details className="mt-4 rounded-md border border-slate-800 bg-slate-900/70 p-3">
-            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Сетевой сканер Greenbone / OpenVAS — импорт XML</summary>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-400">
-              Установите Greenbone на управляющем узле отдельным Docker-проектом или на отдельной ВМ сканера. Linux-сервер является целью проверки. Задача запускается в веб-интерфейсе Greenbone; сюда загружается её готовый XML-отчёт.
-            </p>
-            <ol className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 md:grid-cols-2">
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">1. Greenbone: цель</span><br />В браузере откройте Greenbone: на узле со сканером это <code>https://localhost</code>. В Configuration → Targets укажите адрес именно того хоста, который выбран выше в HCP. Возьмите его из настроек подключения.</li>
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">2. Greenbone: запуск</span><br />В Scans → Tasks создайте задачу для этой цели, выберите Full and fast и запустите. Дождитесь <code>Done</code>. Первый запуск — без учётных данных сервера.</li>
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">3. Greenbone: скачивание</span><br />В Scans → Reports скачайте завершённый отчёт в формате <strong>XML</strong>, со всеми результатами. Anonymous XML заменяет адреса хостов и не подходит. Файл появится в загрузках компьютера с браузером.</li>
-              <li className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-sky-200">4. HCP: импорт</span><br />Вернитесь сюда, оставьте выбранным тот же сервер и выберите скачанный XML в поле ниже. Нажмите «Импортировать XML»: новая проверка при этом не запускается.</li>
-            </ol>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <LinkButton href="/guide#greenbone" variant="secondary">Полная инструкция Greenbone</LinkButton>
-              <p className="text-xs leading-5 text-slate-400">В отчёт попадут OID, CVE, порт, severity и QoD. Низкий QoD или неполный экспорт помечаются как требующие проверки.</p>
-            </div>
+            <summary className="cursor-pointer text-sm font-semibold text-slate-200">Greenbone / OpenVAS — импорт XML</summary>
+            <div className="mt-3 flex flex-wrap items-center gap-3"><p className="text-xs text-slate-400">XML завершённого сканирования с исходными адресами.</p><LinkButton href="/guide#greenbone" variant="secondary">Инструкция Greenbone</LinkButton></div>
             <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end">
               <label className="block min-w-0 flex-1">
                 <span className="text-xs font-semibold text-slate-400">XML-отчёт Greenbone (до 20 МБ)</span>
@@ -1257,24 +1269,53 @@ export function AnsibleControlClient() {
             {greenboneMessage ? <p className="mt-3 text-xs leading-5 text-slate-300" role="status">{greenboneMessage}</p> : null}
           </details>
 
+        </div>
+
+        <aside id="host-results" className="scroll-mt-6 rounded-md border border-slate-800 bg-slate-950/70 p-4">
+          <h2 className="text-lg font-semibold text-white">3. Результат</h2>
+          <AuditJobHistory hostAlias={selectedAlias} />
+          {runResult ? (
+            <div className="mt-3 space-y-3 text-sm">
+              <div className={`rounded-md border p-3 ${
+                !runResult.ok ? "border-red-400/30 bg-red-500/10 text-red-100" : runResult.skipped ? "border-sky-400/30 bg-sky-500/10 text-sky-100" : runResult.partial ? "border-amber-400/30 bg-amber-500/10 text-amber-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+              }`}>
+                <p className="font-semibold">{!runResult.ok ? "Ошибка" : runResult.skipped ? "Не запущено" : runResult.partial ? "Выполнено с ограничениями" : "Выполнено"}</p>
+                {runResult.message ? <p className="mt-1">{runResult.message}</p> : null}
+                {runResult.warnings?.length ? <ul className="mt-2 list-inside list-disc space-y-1">{runResult.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul> : null}
+                {freshReportHref ? (
+                  <LinkButton href={freshReportHref} variant="secondary" className="mt-3 w-full bg-slate-950/60">
+                    Открыть отчет
+                  </LinkButton>
+                ) : null}
+                {runResult.action === "packageInventory" && runResult.nextStep ? (
+                  runResult.nextStep.ready ? <Button className="mt-3 w-full" disabled={Boolean(loading)} onClick={() => void runAction("astraOvalAudit")}>Проверить CVE Astra по OVAL</Button>
+                    : <LinkButton href="/data-sources#astra-oval-title" variant="secondary" className="mt-3 w-full">Исправить OVAL-источник</LinkButton>
+                ) : null}
+              </div>
+              {(runResult.stdout || runResult.stderr) ? (
+                <details className="rounded-md border border-slate-800 bg-slate-900/70 p-3">
+                  <summary className="cursor-pointer text-xs font-semibold text-slate-300">Технический вывод запуска</summary>
+                  <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-slate-200">
+{`${runResult.stdout ?? ""}${runResult.stderr ? `\n\nSTDERR:\n${runResult.stderr}` : ""}`}
+                  </pre>
+                </details>
+              ) : null}
+            </div>
+          ) : (
+            <p className="mt-3 text-sm leading-6 text-slate-400">Запустите проверку.</p>
+          )}
+        </aside>
+
+        <section id="firewall-actions" className="scroll-mt-6">
           <details className="mt-4 rounded-md border border-amber-400/20 bg-amber-500/5 p-3">
-            <summary className="cursor-pointer text-sm font-semibold text-amber-100">Обратимые изменения firewall</summary>
-            <p className="mt-1 text-xs leading-5 text-slate-400">
-              Безопасный порядок: предварительная проверка → исходная точка firewall → резервная копия → изменение → повторный аудит → откат при необходимости. HCP не закрывает текущий SSH-порт и не включает firewall сам.
-            </p>
-            <div className="mt-3 grid gap-2 text-xs leading-5 text-slate-300 md:grid-cols-3">
-              <p className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-amber-100">Проверить план</span><br />Не меняет хост. Проверяет параметры и активный UFW/firewalld для выбранного действия.</p>
-              <p className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-amber-100">Применить</span><br />Автоматически проверяет состояние firewall и список портов, создаёт backup, затем добавляет правило.</p>
-              <p className="rounded-md border border-slate-800 bg-slate-950/60 p-3"><span className="font-semibold text-amber-100">Откатить</span><br />Восстанавливает сохранённую конфигурацию. Не меняйте правила вручную между применением и откатом.</p>
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-3">
-              <LinkButton href="/guide#firewall" variant="secondary">Полная инструкция firewall</LinkButton>
-              <p className="text-xs leading-5 text-slate-400">Несвязанные ограничения основного аудита больше не блокируют изменение. Если защита остановит действие, она назовёт именно непроверенный firewall или список портов.</p>
-            </div>
+            <summary className="cursor-pointer text-sm font-semibold text-amber-100">4. Обратимые изменения firewall</summary>
+            <p className="mt-2 text-xs leading-5 text-amber-100">Применение меняет правила firewall после проверки и резервного копирования. SSH-порт защищён.</p>
+            <a href="/guide#firewall" className="mt-2 inline-block text-xs text-sky-200 underline">Инструкция firewall</a>
+            {selectedHost?.sudoMode === "on_demand" ? <div className="mt-3 max-w-sm"><Field label="Пароль sudo для изменения" value={operationSudoPassword} onChange={setOperationSudoPassword} type="password" disabled={Boolean(loading) || !secureCredentialTransport} /></div> : null}
             <div className="mt-3 grid gap-3 lg:grid-cols-3">
               <Field label="Причина изменения" value={changeReason} onChange={setChangeReason} placeholder="Например: закрытие Telnet по результату аудита" />
               <Field label="Подтверждение" value={confirmedHost} onChange={setConfirmedHost} placeholder={selectedHost?.alias ?? "Введите alias хоста"} />
-              <p className="self-end pb-2 text-xs leading-5 text-slate-400">Для плана и применения введите точный alias выбранного хоста.</p>
+              <p className="self-end pb-2 text-xs leading-5 text-slate-400">Введите точное имя выбранного хоста.</p>
             </div>
             <div className="mt-3 grid gap-3 lg:grid-cols-2">
               <div className="rounded-md border border-slate-800 bg-slate-950/60 p-3">
@@ -1298,13 +1339,13 @@ export function AnsibleControlClient() {
               </div>
             </div>
           </details>
-        </div>
+        </section>
 
         <section id="recent-remediations" className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
           <div className="flex items-center justify-between gap-3">
             <div>
               <h2 className="text-lg font-semibold text-white">Незавершённые и последние изменения</h2>
-              <p className="mt-1 text-sm text-slate-400">После начатого изменения можно восстановить резервную копию. Операцию, остановленную до создания копии, можно отменить без подключения к хосту.</p>
+              <p className="mt-1 text-sm text-slate-400">Восстановление из копии или отмена неначатой операции.</p>
             </div>
             <Button variant="secondary" onClick={refreshRemediations} disabled={remediationsRefreshing}>
               <RefreshCw size={16} aria-hidden="true" />
@@ -1347,11 +1388,11 @@ export function AnsibleControlClient() {
                   {rollbackTargetId === transaction.id ? (
                     <form aria-label="Подтверждение отката firewall" className="mt-3 space-y-3 border-t border-slate-700 pt-3" onSubmit={(event) => { event.preventDefault(); void rollbackTransaction(transaction); }}>
                       <p className="text-sm text-slate-200">Восстановить firewall на <strong className="break-all">{transaction.hostAlias}</strong> из копии перед изменением{transaction.parameters?.target_port ? ` порта ${transaction.parameters.target_port}/${transaction.parameters.target_protocol ?? "tcp"}` : ""}?</p>
-                      <p className="text-xs leading-5 text-slate-400">Настройки firewall, изменённые после этой резервной копии, будут заменены. Другие настройки хоста откат не затрагивает.</p>
+                      <p className="text-xs leading-5 text-slate-400">Откат заменит настройки firewall на сохранённые в копии.</p>
                       {requiresSudo ? (
                         <div className="max-w-md">
                           <Field label="Пароль sudo для отката" value={rollbackSudoPassword} onChange={setRollbackSudoPassword} type="password" disabled={Boolean(loading)} />
-                          <p className="mt-1 text-xs leading-5 text-slate-400">Пароль пользователя SSH нужен для восстановления файлов на сервере. HCP не сохраняет его; после попытки поле очищается.</p>
+                          <p className="mt-1 text-xs leading-5 text-slate-400">Пароль не сохраняется.</p>
                         </div>
                       ) : null}
                       <div className="flex flex-wrap gap-2">
@@ -1370,40 +1411,6 @@ export function AnsibleControlClient() {
           ) : <p className="mt-4 text-sm text-slate-300">Текущих изменений нет. Отменённые операции сохранены в журнале действий.</p>}
         </section>
 
-        <aside className="rounded-md border border-slate-800 bg-slate-950/70 p-4">
-          <h2 className="text-lg font-semibold text-white">Последний запуск</h2>
-          <AuditJobHistory hostAlias={selectedAlias} />
-          {runResult ? (
-            <div className="mt-3 space-y-3 text-sm">
-              <div className={`rounded-md border p-3 ${
-                !runResult.ok ? "border-red-400/30 bg-red-500/10 text-red-100" : runResult.skipped ? "border-sky-400/30 bg-sky-500/10 text-sky-100" : runResult.partial ? "border-amber-400/30 bg-amber-500/10 text-amber-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
-              }`}>
-                <p className="font-semibold">{!runResult.ok ? "Ошибка" : runResult.skipped ? "Не запущено" : runResult.partial ? "Выполнено с ограничениями" : "Выполнено"}</p>
-                {runResult.message ? <p className="mt-1">{runResult.message}</p> : null}
-                {runResult.warnings?.length ? <ul className="mt-2 list-inside list-disc space-y-1">{runResult.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul> : null}
-                {freshReportHref ? (
-                  <LinkButton href={freshReportHref} variant="secondary" className="mt-3 w-full bg-slate-950/60">
-                    Открыть отчет
-                  </LinkButton>
-                ) : null}
-                {runResult.action === "packageInventory" && runResult.nextStep ? (
-                  runResult.nextStep.ready ? <Button className="mt-3 w-full" disabled={Boolean(loading)} onClick={() => void runAction("astraOvalAudit")}>Проверить CVE Astra по OVAL</Button>
-                    : <LinkButton href="/data-sources#astra-oval-title" variant="secondary" className="mt-3 w-full">Исправить OVAL-источник</LinkButton>
-                ) : null}
-              </div>
-              {(runResult.stdout || runResult.stderr) ? (
-                <details className="rounded-md border border-slate-800 bg-slate-900/70 p-3">
-                  <summary className="cursor-pointer text-xs font-semibold text-slate-300">Технический вывод запуска</summary>
-                  <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-words text-xs leading-5 text-slate-200">
-{`${runResult.stdout ?? ""}${runResult.stderr ? `\n\nSTDERR:\n${runResult.stderr}` : ""}`}
-                  </pre>
-                </details>
-              ) : null}
-            </div>
-          ) : (
-            <p className="mt-3 text-sm leading-6 text-slate-400">Выберите хост и запустите аудит. Здесь появится понятный результат и ссылка на отчёт.</p>
-          )}
-        </aside>
       </section>
       {decommissionHost ? <DecommissionHostDialog host={decommissionHost} onClose={() => setDecommissionHost(null)} onCompleted={async () => {
         setSelectedAlias(""); setEditingHost(""); setManualAlias(""); setManualAddress(""); setManualCredentialId(null); setCredentialResult(null);

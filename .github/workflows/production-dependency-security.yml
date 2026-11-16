@@ -5,16 +5,22 @@ on:
   push:
     branches: [main]
     paths:
+      - Dockerfile
       - web/package.json
       - web/package-lock.json
       - .github/workflows/production-dependency-security.yml
   pull_request:
     paths:
+      - Dockerfile
       - web/package.json
       - web/package-lock.json
       - .github/workflows/production-dependency-security.yml
   schedule:
     - cron: '27 5 * * 1'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -40,3 +46,8 @@ jobs:
         # An advisory service outage is a FAILURE, not a clean vulnerability count.
         # Keep results unmodified and non-cached; npm audit exits nonzero for high+.
         run: npm audit --omit=dev --audit-level=high --no-fund
+      - name: Audit the complete application dependency tree shipped in the image
+        # Dockerfile currently copies the complete npm ci tree, including dev tools.
+        # NODE_ENV=production does not remove packages from that copied directory.
+        # Global npm, Python and OS packages need a separate whole-image review.
+        run: npm audit --audit-level=high --no-fund

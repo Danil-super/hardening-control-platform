@@ -1,0 +1,382 @@
+{
+  "date": "2026-11-11",
+  "loadCode": "327ecbe870704d442a323997ba18b8125c85392f",
+  "loadImage": "sha256:2bba2977f1305cf777d2c33e7f61d6609b550f7138465319de39a1a64dcaa753",
+  "startedAt": "2026-11-11T13:03:05Z",
+  "completedAt": "2026-11-11T13:07:55Z",
+  "limits": {
+    "controllerCpu": 2,
+    "controllerMemoryBytes": 4294967296,
+    "targetCount": 5,
+    "targetMemoryMiB": 768,
+    "targetCpu": 1,
+    "emulation": "TCG"
+  },
+  "distinctAssetsVerified": true,
+  "sameAssetDuplicateCoalescedAndConflictRejected": true,
+  "rounds": [
+    {
+      "hosts": 1,
+      "action": "collectFacts",
+      "seconds": 22.147,
+      "reports": 1,
+      "statuses": [
+        "completed"
+      ],
+      "pdfMaxSeconds": 0.134,
+      "pdfBusy429Responses": 0,
+      "exports": [
+        {
+          "reportId": "hcp-load-1-facts-run-20261111T130341563Z-130090ee",
+          "sha256": "a21ab271fe6d628281283af0c1be45b81e01fd7aae2092f528fa1475a56bf0cc",
+          "sourceSha256": "078162789c847e53f052294b45c127cf094419bd6aee435eccb6949cfe78fd9b",
+          "bytes": 49555
+        }
+      ]
+    },
+    {
+      "hosts": 1,
+      "action": "agentlessAudit",
+      "seconds": 36.696,
+      "reports": 1,
+      "statuses": [
+        "completed"
+      ],
+      "pdfMaxSeconds": 0.142,
+      "pdfBusy429Responses": 0,
+      "exports": [
+        {
+          "reportId": "hcp-load-1-basic_linux-run-20261111T130403823Z-99c81e5d",
+          "sha256": "540aa8d2e1f923bcde584551b4e09629a753f6b466f8cd618791237fe299688e",
+          "sourceSha256": "5d06632af55674249c4cb6db583d8f5b0b42d7e5d0d8d7fbca09a5ed8923f190",
+          "bytes": 59369
+        }
+      ]
+    },
+    {
+      "hosts": 3,
+      "action": "collectFacts",
+      "seconds": 31.609,
+      "reports": 3,
+      "statuses": [
+        "completed"
+      ],
+      "pdfMaxSeconds": 0.566,
+      "pdfBusy429Responses": 1,
+      "exports": [
+        {
+          "reportId": "hcp-load-1-facts-run-20261111T130440652Z-96746581",
+          "sha256": "984304065788bf3bc98a4b52d88bede04ee0e8cffca1c8417f8fddc360378f8a",
+          "sourceSha256": "f3aade3d193aa8be9676b401947b5d1b9b41be933f38f6b4b3a86b62677c680e",
+          "bytes": 49557
+        },
+        {
+          "reportId": "hcp-load-2-facts-run-20261111T130441125Z-b17bb1cd",
+          "sha256": "f87e1846c5b696c7496fcc4189637cdb8837e12fb938f5398226e2733bf1b53e",
+          "sourceSha256": "f8ce2fdb6608fb991d497c08e262ca892b4d138b52136ee30574d3ba7e58c0e8",
+          "bytes": 49560
+        },
+        {
+          "reportId": "hcp-load-3-facts-run-20261111T130441599Z-393e847b",
+          "sha256": "d55063a24267bacaee729504ea9a9557bfe987706eacdde31a820a8171995ce8",
+          "sourceSha256": "8487402c57d726f9de8f0c71d57f1b9a068baa497cc33f83ef69dcaf21bfd81b",
+          "bytes": 49552
+        }
+      ]
+    },
+    {
+      "hosts": 3,
+      "action": "agentlessAudit",
+      "seconds": 63.899,
+      "reports": 3,
+      "statuses": [
+        "completed"
+      ],
+      "pdfMaxSeconds": 0.564,
+      "pdfBusy429Responses": 1,
+      "exports": [
+        {
+          "reportId": "hcp-load-2-basic_linux-run-20261111T130512842Z-6bd0ea84",
+          "sha256": "6483d4c28ea5481a0c375eaa3a3edc5e5840634a42c027552f6b0d1c95b77860",
+          "sourceSha256": "2680991ca2e53bf3393d951db5a873b2fbb3c55bf606e5a6ad361a4f0fba2c3c",
+          "bytes": 59374
+        },
+        {
+          "reportId": "hcp-load-1-basic_linux-run-20261111T130513348Z-ad24b099",
+          "sha256": "e42b636ac9a09c3147e40c05a9bf41419de3ad07c8a6c336bb1577464825f044",
+          "sourceSha256": "2feeb889ea04b78948cbe7fc7a4286775f1ef5e3559d4739e18cd56a990c12cf",
+          "bytes": 59377
+        },
+        {
+          "reportId": "hcp-load-3-basic_linux-run-20261111T130513856Z-ac3cec89",
+          "sha256": "f987c08dc236b32478e58d2dc2ca0030742bafa4656868617ac212958fb6d8b2",
+          "sourceSha256": "65741011e26a1ceca0f3c2d7506900297938acc13d4bf455de07e2504f667392",
+          "bytes": 59364
+        }
+      ]
+    },
+    {
+      "hosts": 5,
+      "action": "collectFacts",
+      "seconds": 38.375,
+      "reports": 5,
+      "statuses": [
+        "completed"
+      ],
+      "pdfMaxSeconds": 0.958,
+      "pdfBusy429Responses": 4,
+      "exports": [
+        {
+          "reportId": "hcp-load-3-facts-run-20261111T130618266Z-e01de1b5",
+          "sha256": "28f3f3e16e19a6fefd8fccbf253be7b898f0153483c076ef8a482c3d5310b91d",
+          "sourceSha256": "562dc649a6e83a802f869541925613a2121d67d6e5bb54ab057408ad4b8383e1",
+          "bytes": 49556
+        },
+        {
+          "reportId": "hcp-load-2-facts-run-20261111T130617793Z-b9929ebb",
+          "sha256": "0c605d6ac11c596aef2c80a141a03f5770f99793e755417018b8a63bac7032c8",
+          "sourceSha256": "fc6d3d945f4dcfb24eed2bf941dd98cc6eb77e11bb5be8b3929ad4033e269218",
+          "bytes": 49561
+        },
+        {
+          "reportId": "hcp-load-4-facts-run-20261111T130618753Z-a243e016",
+          "sha256": "9e830750947c0dd5a3883cd264cb341478c835b1a00575bc13ac5174a4a23cac",
+          "sourceSha256": "4b37024e2a62bf93214fa6a83befb1c68815739505cf19d4e4ed31d62a31c358",
+          "bytes": 49561
+        },
+        {
+          "reportId": "hcp-load-5-facts-run-20261111T130619215Z-628d2cd8",
+          "sha256": "62b831592a3b805029d53620bfd9ecb968e5a6ff2d96a8b4b37950bc80af225a",
+          "sourceSha256": "cd20f23b4d70f1bca3c137d4c9ba19b3a0181d118bc865599414e240f97f1918",
+          "bytes": 49558
+        },
+        {
+          "reportId": "hcp-load-1-facts-run-20261111T130617306Z-96305f83",
+          "sha256": "1bd3b6b169ca04da2069e7f93bf997d8ecba5e8de1d3439ee0006324b05da2c4",
+          "sourceSha256": "1fe36ba639ecc99e5df8e8c12a7a83abe3b04cebaf24f45716d5ca7438c2cac7",
+          "bytes": 49550
+        }
+      ]
+    },
+    {
+      "hosts": 5,
+      "action": "agentlessAudit",
+      "seconds": 57.445,
+      "reports": 5,
+      "statuses": [
+        "completed"
+      ],
+      "pdfMaxSeconds": 0.967,
+      "pdfBusy429Responses": 4,
+      "exports": [
+        {
+          "reportId": "hcp-load-1-basic_linux-run-20261111T130656643Z-b4394e71",
+          "sha256": "986a6a04ce04f47436dec77badad4608642917e1b72798317b87c7cd9c5eb4fe",
+          "sourceSha256": "0fd22605c75af1225366d96a787161116750e87436e224129afd4d3f202c701a",
+          "bytes": 59364
+        },
+        {
+          "reportId": "hcp-load-4-basic_linux-run-20261111T130658603Z-d2a7a98a",
+          "sha256": "24f0f71321ee398f959b6d3204b7e55bdf7fb98172db1eb2e65fe1ef7a006c68",
+          "sourceSha256": "79055f0e463313a14faa8f656b9c4cd75dc1879a5a86db518f35a35a1399e71b",
+          "bytes": 59370
+        },
+        {
+          "reportId": "hcp-load-2-basic_linux-run-20261111T130657145Z-10a96981",
+          "sha256": "1b68cebd410c0a9217c9f65b8d71f404474c892ef11f5f12c0c54a9197b740c1",
+          "sourceSha256": "502315ff0224d8ef98278d160fa3d5ba891ab7eb1b7f88f99c67a7f7feac8564",
+          "bytes": 59377
+        },
+        {
+          "reportId": "hcp-load-5-basic_linux-run-20261111T130658142Z-e6ef9f78",
+          "sha256": "6b4e34c57bf14528d465751961ff6419ee2ca6e168478c97b08c0b78ce994d8d",
+          "sourceSha256": "b758086cf475b8983ac24c52f91fe7194209e3d6d0fdfe51112390ee9223bd3c",
+          "bytes": 59397
+        },
+        {
+          "reportId": "hcp-load-3-basic_linux-run-20261111T130657648Z-b0a56889",
+          "sha256": "4f83b3b639b949ee4b08ba18c565e77766ae4b466a89c90212b504b19264a4fd",
+          "sourceSha256": "5df3310c19a508f8ff46c2f6aa2fe02d4acd6a2bd4b3ed400dc83fb11275e267",
+          "bytes": 59373
+        }
+      ]
+    }
+  ],
+  "controllerPeakMemoryBytes": 621158400,
+  "loginLatencyMs": {
+    "samples": 549,
+    "p50": 4.47,
+    "p95": 8.68,
+    "max": 2238.77
+  },
+  "jobPollingLatencyMs": {
+    "samples": 479,
+    "p50": 2.84,
+    "p95": 4.39,
+    "max": 1644.93
+  },
+  "oomKilled": false,
+  "mainTablesAndReportBytesUnchanged": true,
+  "liveBrowser": {
+    "ok": true,
+    "errors": [],
+    "requestsFailed": [],
+    "navigation": [
+      {
+        "route": "/hosts",
+        "ms": 148
+      },
+      {
+        "route": "/reports",
+        "ms": 1918
+      },
+      {
+        "route": "/hosts",
+        "ms": 110
+      }
+    ],
+    "activeAtStart": 5,
+    "activeAtEnd": 4,
+    "expectedNavigationAborts": [
+      {
+        "path": "/api/ansible/health",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "path": "/api/ansible/remediations",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "path": "/api/ansible/hosts",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "path": "/remediation-plan",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "path": "/_next/static/chunks/3g0vty61gutc-.js",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "path": "/_next/static/chunks/0j-512i799wbb.js",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "path": "/_next/static/chunks/0lf1ckwtso75c.js",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "path": "/guide",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "path": "/remediation-plan",
+        "error": "net::ERR_ABORTED"
+      },
+      {
+        "path": "/project-reports",
+        "error": "net::ERR_ABORTED"
+      }
+    ]
+  },
+  "cleanup": {
+    "ok": true,
+    "guestsStopped": 5,
+    "controllerStopped": true,
+    "allMeasuredReportsMatchNativeGuestIdentity": true,
+    "publicAndHostEgressDenied": true,
+    "nativeChecksCompletedBeforeVerifierOutputPathRefusal": true,
+    "offlineChainMatchesLiveWitness": true,
+    "chainEntries": 27,
+    "mainHealthy": true
+  },
+  "uiCode": "334bfff736b6c0af5d20fba127b4c6650c2d0f96",
+  "uiImage": "sha256:47f833b532e38416f6a00dc541974a8e5a2e3d6c57251f0f65e703a464577d21",
+  "uiLayout": {
+    "before": {
+      "ok": true,
+      "errors": [],
+      "sizes": [
+        {
+          "width": 320,
+          "overflowingLabels": 15,
+          "pageOverflow": false
+        },
+        {
+          "width": 390,
+          "overflowingLabels": 10,
+          "pageOverflow": false
+        },
+        {
+          "width": 768,
+          "overflowingLabels": 0,
+          "pageOverflow": false
+        },
+        {
+          "width": 1440,
+          "overflowingLabels": 0,
+          "pageOverflow": false
+        }
+      ],
+      "mode": "before"
+    },
+    "after": {
+      "ok": true,
+      "errors": [],
+      "sizes": [
+        {
+          "width": 320,
+          "overflowingLabels": 0,
+          "pageOverflow": false
+        },
+        {
+          "width": 390,
+          "overflowingLabels": 0,
+          "pageOverflow": false
+        },
+        {
+          "width": 768,
+          "overflowingLabels": 0,
+          "pageOverflow": false
+        },
+        {
+          "width": 1440,
+          "overflowingLabels": 0,
+          "pageOverflow": false
+        }
+      ],
+      "mode": "after"
+    }
+  },
+  "uiChecks": {
+    "webPassed": 618,
+    "httpPassed": 125,
+    "productionBuild": true,
+    "ok": true,
+    "files": 1189,
+    "browserCheckedBundleMatchesInstalled": true
+  },
+  "installation": {
+    "previousImage": "sha256:815ce251a4bc7c1512896a574499bd4d549f59be5fdbb7a9bb1e51538a55cb04",
+    "image": "sha256:47f833b532e38416f6a00dc541974a8e5a2e3d6c57251f0f65e703a464577d21",
+    "revision": "334bfff736b6c0af5d20fba127b4c6650c2d0f96",
+    "checkedTables": 13,
+    "checkedReportFiles": 101,
+    "ok": true,
+    "dataAndConfigurationPreserved": true
+  },
+  "harnessSha256": {
+    "prepare.py": "8f6624c313a77116b08891e2d67446fc8f7a9d03b17f587d4037e1046bb30af8",
+    "measure.py": "752ee7e90646555b370d529d71a74c64c28d46ee2cbe2efab8191a87b80fabf0",
+    "browser.mjs": "022cc0a4281e76c88759b76ffb763cbcc8fe36e0ad13f3e65fd4f250ffa049e6",
+    "finish.py": "ec785b183ab339d984f790db9cc37e3dab0c34dd79e1cb16f8f437e7aca8e3f4",
+    "check-layout.mjs": "f2398c5422f66da093ef6b80ef801ca6d7e97e0e8e16cd52cbf5e0254c9914f1"
+  },
+  "limitsNotCovered": [
+    "Single warm matrix with TCG on the same controlling stand; no variance estimate or RPS stress",
+    "No concurrent full OVAL, Lynis, Greenbone or large PDF matrix",
+    "Tail latency root cause not profiled",
+    "No new full dependency rebuild, GitHub CI, public HTTPS, external anchors/DR or operator signature"
+  ]
+}

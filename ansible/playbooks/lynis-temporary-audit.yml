@@ -181,21 +181,21 @@
             path: "{{ lynis_remote_dir.path }}/report.dat"
           register: lynis_report_file
 
-        - name: Read temporary Lynis report
-          ansible.builtin.slurp:
+        - name: Fetch original Lynis report without text conversion
+          ansible.builtin.fetch:
             src: "{{ lynis_remote_dir.path }}/report.dat"
-          when: lynis_report_file.stat.exists
-          no_log: true
-          register: lynis_report_content
-
-        - name: Store transient raw Lynis report on control node
-          ansible.builtin.copy:
-            content: "{{ (lynis_report_content.content | default('')) | b64decode }}"
             dest: "{{ lynis_raw_report }}"
+            flat: true
+          when: lynis_report_file.stat.isreg | default(false) | bool
+          no_log: true
+
+        - name: Restrict original Lynis report on control node
+          ansible.builtin.file:
+            path: "{{ lynis_raw_report }}"
             mode: "0600"
+          when: lynis_report_file.stat.isreg | default(false) | bool
           delegate_to: localhost
           become: false
-          no_log: true
 
         - name: Preserve bounded startup diagnostics until normalization
           ansible.builtin.copy:
@@ -224,6 +224,8 @@
               - "{{ lynis_run.rc | default(1) | string }}"
               - --output
               - "{{ scanner_report_dir }}/{{ inventory_hostname }}-lynis-{{ report_suffix }}.json"
+          environment:
+            HCP_PRESERVE_RAW_EVIDENCE: "{{ (hcp_preserve_raw_evidence | default(false) | bool) | ternary('1', '0') }}"
           delegate_to: localhost
           become: false
           changed_when: false
@@ -246,6 +248,7 @@
             state: absent
           delegate_to: localhost
           become: false
+          when: not (hcp_preserve_raw_evidence | default(false) | bool)
 
         - name: Remove temporary Lynis bundle from control node
           ansible.builtin.file:

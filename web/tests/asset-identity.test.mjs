@@ -216,18 +216,18 @@ test("a newer completed mutation through another alias blocks stale rollback eve
   assert.equal(store.getRemediationTransaction("older").status, "applied");
 });
 
-test("launch identity is published before visibility and never inferred from a later alias binding", () => {
+test("launch identity is published before visibility and never inferred from a later alias binding", async () => {
   const first = bind(); const stage = path.join(directory, "stage"); mkdirSync(stage);
   const file = "host-one-basic_linux-run-fixture.json";
   writeFileSync(path.join(stage, file), JSON.stringify({ inventoryHost: first.alias, mode: "agentless", scanner: { error: "Scanner unavailable", partial: true }, findings: [] }));
   rebind(first.alias, first, observation("2"));
-  publishCapturedAssetReports(stage, new Map([[file, first]]));
+  await publishCapturedAssetReports(stage, new Map([[file, first]]));
   const savedReport = JSON.parse(readFileSync(path.join(process.env.HCP_REPORTS_DIR, file), "utf8"));
   assert.equal(savedReport.assetBinding.assetId, first.assetId);
   assert.equal(savedReport.scanner.error, "Scanner unavailable", "failed scanner diagnostics are retained");
-  assert.throws(() => publishCapturedAssetReports(stage, new Map([[file, first]])), /уже существует/);
+  await assert.rejects(() => publishCapturedAssetReports(stage, new Map([[file, first]])), /уже существует/);
   rmSync(path.join(stage, file)); symlinkSync(path.join(process.env.HCP_REPORTS_DIR, file), path.join(stage, file));
-  assert.throws(() => publishCapturedAssetReports(stage, new Map([[file, first]])), /ELOOP/);
+  await assert.rejects(() => publishCapturedAssetReports(stage, new Map([[file, first]])), /ELOOP/);
 });
 
 test("rebound alias cannot merge old findings or verify an old plan with a different machine's pass", () => {

@@ -1,6 +1,7 @@
 import type { FindingStatus, RiskLevel } from "@/types";
 
-const riskClasses: Record<RiskLevel, string> = {
+const riskClasses: Record<RiskLevel | "critical", string> = {
+  critical: "border-red-400/50 bg-red-500/20 text-red-100",
   high: "border-red-400/40 bg-red-500/15 text-red-200",
   medium: "border-amber-400/40 bg-amber-500/15 text-amber-100",
   low: "border-sky-400/40 bg-sky-500/15 text-sky-100",
@@ -14,7 +15,8 @@ const statusClasses: Record<FindingStatus, string> = {
   manual: "border-violet-400/40 bg-violet-500/15 text-violet-100",
 };
 
-const riskLabels: Record<RiskLevel, string> = {
+const riskLabels: Record<RiskLevel | "critical", string> = {
+  critical: "Критический",
   high: "Высокий",
   medium: "Средний",
   low: "Низкий",
@@ -28,10 +30,11 @@ const statusLabels: Record<FindingStatus, string> = {
   manual: "Вручную",
 };
 
-export function RiskBadge({ risk, unknown = false }: { risk: RiskLevel; unknown?: boolean }) {
+export function RiskBadge({ risk, unknown = false, critical = false }: { risk: RiskLevel; unknown?: boolean; critical?: boolean }) {
+  const level = critical && !unknown ? "critical" : risk;
   return (
-    <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold uppercase ${riskClasses[risk]}`}>
-      {unknown ? "Риск не оценён" : riskLabels[risk]}
+    <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold uppercase ${riskClasses[level]}`}>
+      {unknown ? "Риск не оценён" : riskLabels[level]}
     </span>
   );
 }

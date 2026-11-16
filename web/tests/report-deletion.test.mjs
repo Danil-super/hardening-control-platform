@@ -88,6 +88,22 @@ test("an unexpected config symlink stops cleanup before deleting evidence", () =
   assert.equal(existsSync(outside), true);
 });
 
+test("deletion removes only the fixed private originals directory, never a path from an imported manifest", () => {
+  const rawRoot = path.join(reports, ".raw-evidence");
+  const folder = path.join(rawRoot, "native"); mkdirSync(folder, { recursive: true, mode: 0o700 });
+  writeFileSync(path.join(folder, "nmap.xml"), "<nmaprun/>");
+  const unrelated = path.join(root, "unrelated"); mkdirSync(unrelated); writeFileSync(path.join(unrelated, "keep"), "keep");
+  save("native", { mode: "nmap", rawEvidence: { version: 1, artifacts: [{ path: unrelated }] } });
+  reportsApi.deleteAnsibleReport("native");
+  assert.equal(existsSync(folder), false);
+  assert.equal(existsSync(path.join(unrelated, "keep")), true);
+  save("linked", { mode: "nmap" });
+  symlinkSync(unrelated, path.join(rawRoot, "linked"));
+  assert.throws(() => reportsApi.deleteAnsibleReport("linked"), /недопустимый тип/);
+  assert.equal(existsSync(path.join(reports, "linked.json")), true);
+  assert.equal(existsSync(path.join(unrelated, "keep")), true);
+});
+
 test("package inventory remains protected while a CVE report depends on it", () => {
   save("host-1-packages-run-1", { mode: "packages", profileId: "packages" });
   save("host-1-vulnerabilities-run-1", {

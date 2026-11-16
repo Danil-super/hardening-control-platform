@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test, { after } from "node:test";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { compileServerModules } from "./_typescript-loader.mjs";
 
 const compiled = compileServerModules(["description-translation"]);
@@ -25,19 +27,29 @@ test("a translation cannot add, omit, or change CVEs, CWEs and affected versions
   for (const translated of ["CVE-2024-10487: версии до 131.0.6723.92, CWE-787.", "Версии до 130.0.6723.92, CWE-787.", "CVE-2024-10487: 130.0.6723.92, CWE-787; 1.2.", original]) assert.equal(verifyTranslation(original, translated), false);
 });
 
-test("content-addressed cache requires the exact original and model and rejects symlinks", async () => {
-  const original = "The Chromium vulnerability affects versions before 130.0.6723.92.";
-  const translated = "Уязвимость Chromium затрагивает версии до 130.0.6723.92.";
-  // A failed translator invocation still creates the private cache directory.
-  await assert.rejects(translateDescription(original));
-  const engine = "argos-en-ru-1.9-glossary-v4";
-  const key = createHash("sha256").update(engine + "\n" + original).digest("hex");
-  const pathname = path.join(state, "description-translations", key + ".json");
-  writeFileSync(pathname, JSON.stringify({ engine, text: translated, sourceSha256: createHash("sha256").update(original).digest("hex") }));
-  assert.equal((await translateDescription(original)).text, translated);
-  rmSync(pathname);
-  symlinkSync(path.join(state, "outside"), pathname);
-  await assert.rejects(translateDescription(original), /недопустимый тип/);
+test("content-addressed cache requires the exact original and model and rejects symlinks", async (context) => {
+  const nativeSpawn = childProcess.spawn;
+  const unavailable = context.mock.method(childProcess, "spawn", (_command, args, options) => nativeSpawn(path.join(state, "missing-translator"), args, options));
+  syncBuiltinESMExports();
+  try {
+    const original = "The Chromium vulnerability affects versions before 130.0.6723.92.";
+    const translated = "Уязвимость Chromium затрагивает версии до 130.0.6723.92.";
+    // Make translator failure deterministic, including images with Argos installed.
+    await assert.rejects(translateDescription(original));
+    const engine = "argos-en-ru-1.9-glossary-v4";
+    const key = createHash("sha256").update(engine + "\n" + original).digest("hex");
+    const pathname = path.join(state, "description-translations", key + ".json");
+    const sourceSha256 = createHash("sha256").update(original).digest("hex");
+    for (const invalid of [{ engine: "other-model", sourceSha256 }, { engine, sourceSha256: "0".repeat(64) }]) {
+      writeFileSync(pathname, JSON.stringify({ ...invalid, text: translated }));
+      await assert.rejects(translateDescription(original));
+    }
+    writeFileSync(pathname, JSON.stringify({ engine, text: translated, sourceSha256 }));
+    assert.equal((await translateDescription(original)).text, translated);
+    rmSync(pathname);
+    symlinkSync(path.join(state, "outside"), pathname);
+    await assert.rejects(translateDescription(original), /недопустимый тип/);
+  } finally { unavailable.mock.restore(); syncBuiltinESMExports(); }
 });
 
 

@@ -718,6 +718,14 @@ export function upsertAstraOvalPolicy(groupName: string, value: unknown) {
   const config = validateAstraOvalConfig(value);
   assertAstraOvalProvenance(config);
   return inTransaction((database) => {
+    const previous = database.prepare("SELECT config_json, updated_at FROM astra_oval_policies WHERE group_name = ?").get(groupName);
+    if (previous) {
+      const saved = validateAstraOvalConfig(JSON.parse(String(previous.config_json)));
+      // A no-op save must not invalidate the already validated preparation key.
+      if (JSON.stringify({ ...saved, sourceReviewedAt: null }) === JSON.stringify({ ...config, sourceReviewedAt: null })) {
+        return { groupName, config: saved, updatedAt: String(previous.updated_at) };
+      }
+    }
     const updatedAt = new Date().toISOString();
     const fixedConfig = { ...config, sourceReviewedAt: updatedAt };
     database.prepare(`INSERT INTO astra_oval_policies (group_name, config_json, updated_at) VALUES (?, ?, ?)

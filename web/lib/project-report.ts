@@ -77,35 +77,50 @@ function writeSecure(pathname: string, content: string | Buffer) {
   }
 }
 
-function runPdfRenderer(snapshot: Record<string, unknown>): Promise<Buffer> {
-  const input = Buffer.from(JSON.stringify(snapshot), "utf8");
-  // A complete 30,000-definition OVAL audit can produce thousands of CVEs.
-  // Raw scanner trees never enter this bounded, projected snapshot.
-  if (input.length > 32 * 1024 * 1024) return Promise.reject(new Error("Снимок отчёта превышает допустимый размер (32 МБ)."));
-  return new Promise((resolve, reject) => {
-    const script = path.join(process.cwd(), "..", "ansible", "scripts", "hcp-final-report-pdf.py");
-    const child = spawn("/usr/bin/python3", [script], { stdio: ["pipe", "pipe", "pipe"] });
-    const chunks: Buffer[] = [];
-    let size = 0;
-    let stopped = false;
-    const timer = setTimeout(() => { stopped = true; child.kill("SIGKILL"); }, 120_000);
-    child.stdout.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > 12 * 1024 * 1024) { stopped = true; child.kill("SIGKILL"); return; }
-      chunks.push(chunk);
+export class PdfExportBusyError extends Error {
+  readonly code = "pdf_export_busy";
+  constructor() { super("Формирование PDF занято. Повторите позже."); }
+}
+
+export async function runPdfRenderer(snapshot: Record<string, unknown>): Promise<Buffer> {
+  // Next can bundle the two routes separately within the same Node process.
+  // Fast rejection before serialization; the launcher also shares capacity across processes and HTML.
+  const capacity = globalThis as typeof globalThis & { hcpActivePdfRenders?: number };
+  if ((capacity.hcpActivePdfRenders ?? 0) >= 2) throw new PdfExportBusyError();
+  capacity.hcpActivePdfRenders = (capacity.hcpActivePdfRenders ?? 0) + 1;
+  try {
+    const input = Buffer.from(JSON.stringify(snapshot), "utf8");
+    // A complete 30,000-definition OVAL audit can produce thousands of CVEs.
+    // Raw scanner trees never enter this bounded, projected snapshot.
+    if (input.length > 32 * 1024 * 1024) throw new Error("Снимок отчёта превышает допустимый размер (32 МБ).");
+    return await new Promise<Buffer>((resolve, reject) => {
+      const script = path.join(process.cwd(), "..", "ansible", "scripts", "hcp-report-render.py");
+      const child = spawn("/usr/bin/python3", [script, "pdf"], { stdio: ["pipe", "pipe", "pipe"] });
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let stopped = false;
+      let unavailable = false;
+      const timer = setTimeout(() => { stopped = true; child.kill("SIGKILL"); }, 120_000);
+      child.stdout.on("data", (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > 12 * 1024 * 1024) { stopped = true; child.kill("SIGKILL"); return; }
+        chunks.push(chunk);
+      });
+      child.stderr.on("data", () => { /* renderer diagnostics may contain paths; never return or log them */ });
+      child.on("error", () => { unavailable = true; });
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        const output = Buffer.concat(chunks);
+        if (unavailable) reject(new Error("Средство формирования PDF недоступно. Пересоберите HCP из актуального Dockerfile."));
+        else if (!stopped && code === 75) reject(new PdfExportBusyError());
+        else if (stopped || code !== 0 || !output.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
+          reject(new Error("Не удалось безопасно сформировать итоговый PDF-отчёт."));
+        } else resolve(output);
+      });
+      child.stdin.on("error", () => {});
+      child.stdin.end(input);
     });
-    child.stderr.on("data", () => { /* renderer diagnostics may contain paths; never return or log them */ });
-    child.on("error", () => { clearTimeout(timer); reject(new Error("Средство формирования PDF недоступно. Пересоберите HCP из актуального Dockerfile.")); });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      const output = Buffer.concat(chunks);
-      if (stopped || code !== 0 || !output.subarray(0, 5).equals(Buffer.from("%PDF-"))) {
-        reject(new Error("Не удалось безопасно сформировать итоговый PDF-отчёт."));
-      } else resolve(output);
-    });
-    child.stdin.on("error", () => {});
-    child.stdin.end(input);
-  });
+  } finally { capacity.hcpActivePdfRenders = capacity.hcpActivePdfRenders! - 1; }
 }
 
 function evidenceSnapshot(value: { reportId: string; findingId: string; source: string; mode: string; createdAt: string | null; evidence: string; reportSha256: string }) {

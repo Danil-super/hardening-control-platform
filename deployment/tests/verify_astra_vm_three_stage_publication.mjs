@@ -66,7 +66,7 @@ try {
 
   // This is the actual production publisher, not a synthetic injection into
   // the three audit results. Raw source bytes remain separately preserved.
-  publishCapturedAssetReports(stage, publications);
+  await publishCapturedAssetReports(stage, publications);
   mkdirSync(outputDir, { recursive: true });
   for (let i = 0; i < names.length; i++) {
     const reportId = `hcp-real-astra-openscap-${names[i]}`;

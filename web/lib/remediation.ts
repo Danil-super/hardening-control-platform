@@ -41,6 +41,7 @@ type AuditRawFinding = {
 };
 
 type AuditRawPayload = {
+  agentless?: { firewallManagers?: unknown };
   scanner?: {
     available?: unknown;
     error?: unknown;
@@ -99,8 +100,17 @@ export function assessFirewallBaseline(report: ReturnType<typeof readAnsibleRepo
   const firewallFinding = findingFor("firewall_active");
   const firewallStatus = firewallFinding?.status;
   const portsUnavailable = statusFor("agentless_ports_unavailable");
+  const managerEvidence = asRecord(raw.agentless)?.firewallManagers;
+  const managers = Array.isArray(managerEvidence) ? managerEvidence.map(asRecord) : [];
+  const managerReady = managers.length === 2
+    && ["ufw", "firewalld"].every((backend) => managers.filter((manager) => manager?.backend === backend).length === 1)
+    && managers.every((manager) => manager?.state === "active" || manager?.state === "inactive" || manager?.state === "missing")
+    && managers.filter((manager) => manager?.state === "active").length === 1;
 
-  if (incompleteChecks.includes("firewall_active") || firewallStatus !== "passed") {
+  // Manager readiness is separate from the packet-path audit's manual result.
+  // Historical reports keep their stricter fallback.
+  if (!firewallFinding || (managerEvidence !== undefined ? !managerReady
+      : incompleteChecks.includes("firewall_active") || firewallStatus !== "passed")) {
     blockers.push("не подтверждено активное состояние поддерживаемого firewall");
   }
   const firewallEvidence = typeof firewallFinding?.evidence === "string" ? firewallFinding.evidence : "";
@@ -110,15 +120,21 @@ export function assessFirewallBaseline(report: ReturnType<typeof readAnsibleRepo
   else if (firewallBackend && !["ufw", "firewalld"].includes(firewallBackend)) {
     blockers.push(`обнаружен ${firewallBackend}; автоматические изменения пока поддерживают только UFW и firewalld`);
   }
+  else if (managerReady && firewallBackend && managers.find((manager) => manager?.state === "active")?.backend !== firewallBackend) {
+    blockers.push("сведения о менеджере firewall противоречат исходному аудиту");
+  }
   if (incompleteChecks.includes("open_ports") || portsUnavailable === "manual") {
     blockers.push("не получен список открытых портов перед изменением");
+  }
+  if (managerReady && (firewallStatus !== "passed" || incompleteChecks.includes("firewall_active"))) {
+    warnings.push("Активность менеджера подтверждена; аудит фильтрации не пройден или неполон. Изменение относится только к выбранному правилу.");
   }
 
   if (report.partial) {
     const unrelated = incompleteChecks.filter((check) => !["firewall_active", "open_ports"].includes(check));
     if (unrelated.length) {
       warnings.push(`Исходный аудит содержит несвязанные с firewall ограничения: ${incompleteCheckLabels(unrelated).join(", ")}.`);
-    } else if (!blockers.length) {
+    } else if (!blockers.length && !warnings.length) {
       warnings.push("Исходный аудит отмечен как неполный, но состояние firewall и открытые порты подтверждены.");
     }
   }

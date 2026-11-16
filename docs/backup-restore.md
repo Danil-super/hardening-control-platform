@@ -47,9 +47,33 @@ export HCP_BACKUP_DIR
   HCP_CONTAINER_ID=$(sudo docker compose ps -q hcp)
   test -n "$HCP_CONTAINER_ID"
   sudo docker inspect --format '{{.Image}}' "$HCP_CONTAINER_ID" > "$HCP_BACKUP_DIR/image-id.txt"
+  HCP_IMAGE_COMMIT=$(sudo docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$(cat "$HCP_BACKUP_DIR/image-id.txt")")
+  if [[ "$HCP_IMAGE_COMMIT" =~ ^[a-f0-9]{40}$ ]]; then
+    git cat-file -e "$HCP_IMAGE_COMMIT^{commit}"
+    printf '%s\n' "$HCP_IMAGE_COMMIT" > "$HCP_BACKUP_DIR/commit.txt"
+  fi
   sudo docker compose stop --timeout 60 hcp
-  sudo docker compose run --rm -T --no-deps --pull never --user 0 --entrypoint tar \
-    hcp -C /var/lib/hcp -czf - . > "$HCP_BACKUP_DIR/runtime.tar.gz"
+  sudo docker run --rm -i --network none --user node \
+    --volumes-from "$HCP_CONTAINER_ID" --entrypoint python3 \
+    "$(cat "$HCP_BACKUP_DIR/image-id.txt")" - <<'PY'
+from pathlib import Path
+import sqlite3
+root = Path('/var/lib/hcp')
+db_path = root / 'hcp.sqlite'
+assert db_path.is_file() and not db_path.is_symlink()
+db = sqlite3.connect(str(db_path))
+try:
+    assert db.execute('PRAGMA quick_check').fetchone()[0] == 'ok'
+    assert db.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0] == 0
+finally:
+    db.close()
+assert not (root / 'hcp.sqlite-wal').exists()
+assert not (root / 'hcp.sqlite-shm').exists()
+PY
+  sudo docker run --rm --network none --user 0 \
+    --volumes-from "$HCP_CONTAINER_ID:ro" --entrypoint tar \
+    "$(cat "$HCP_BACKUP_DIR/image-id.txt")" \
+    -C /var/lib/hcp -czf - . > "$HCP_BACKUP_DIR/runtime.tar.gz"
   tar -czf "$HCP_BACKUP_DIR/settings.tar.gz" .env secrets ansible/inventory.ini
   sudo docker image save "$(cat "$HCP_BACKUP_DIR/image-id.txt")" | gzip > "$HCP_BACKUP_DIR/image.tar.gz"
   gzip -t "$HCP_BACKUP_DIR/runtime.tar.gz" "$HCP_BACKUP_DIR/image.tar.gz"
@@ -77,6 +101,20 @@ sudo docker compose ps
 Убедитесь в `healthy` и наличии прежних отчётов. Копирование tar проверяет формат/байты; пригодность резервной копии подтверждает пробное восстановление по следующему разделу.
 
 ## 1.1. Автоматическая проверка архивов до восстановления
+
+Если образ содержит `org.opencontainers.image.revision`, `commit.txt` фиксирует
+именно её, а не более новый локальный коммит документации. Для образа без этой
+метки кодовый commit нужно сверить вручную с процедурой сборки: чистое рабочее
+дерево не доказывает, что запущен образ этого HEAD. Метка revision сама по себе
+не заменяет проверку содержимого и происхождения образа.
+
+Остановка приложения сама по себе не гарантирует отсутствие SQLite WAL.
+Checkpoint выше переносит зафиксированные транзакции в основной файл и закрывает
+последнее соединение. При busy, повреждении или оставшихся sidecar-файлах
+копирование прекращается: **нельзя удалять WAL/SHM вручную**, открывать только
+основной файл как immutable или ослаблять проверку восстановления. Исходные
+DB/WAL можно дополнительно сохранить отдельно перед обслуживанием. В фактическом
+прогоне RC `1306a2a` до и после checkpoint совпали логические данные всех 14 таблиц.
 
 После сохранения копии и **до запуска восстановления** проверяйте отдельным
 read-only инструментом полный набор архивов, список контрольных сумм и пути
@@ -177,6 +215,17 @@ YAML
 sudo docker compose -f docker-compose.yml -f compose.restore.yml config --quiet
 ```
 
+При переносе между разными Docker image stores команда `image tag` может не
+найти прежний ID: classic store использует config digest, а containerd store
+может показывать digest OCI-манифеста. Это наблюдалось при восстановлении на
+Docker 29. **Не выбирайте произвольный образ по имени или только по revision label.**
+В проверенном архиве сверьте SHA metadata blobs и связь `manifest.config.digest`
+с исходным config digest; затем сравните конфигурацию исполнения и весь список
+`rootfs.diff_ids` с `Config` / `RootFS.Layers` загруженного образа. Только после
+подтверждения этой связи присваивайте ему `hcp-restored:local` и продолжайте.
+Оба digest должны остаться в протоколе. Формат цепочки описан в
+[документации Docker](https://docs.docker.com/build/metadata/annotations/).
+
 Проверьте `.env`: панель должна оставаться на нужном локальном адресе; при новом IP Ubuntu обновите `HCP_CONTROL_IPS`. **Сохраните прежние ключ подписи журнала, пароль, секреты и все SSH-ключи.** Генерация новых значений не является восстановлением.
 
 Загрузите runtime в новый volume. Проверка перед распаковкой откажет, если в нём уже есть файлы или ссылки; пустые каталоги из образа допустимы:
@@ -188,11 +237,23 @@ sudo docker compose -f docker-compose.yml -f compose.restore.yml run --rm -T \
       echo "Volume уже содержит данные: восстановление остановлено." >&2
       exit 1
     fi
-    exec tar -C /var/lib/hcp -xzf -
+    tar -C /var/lib/hcp -xzf -
+    find -P /var/lib/hcp -type d -exec chmod u+rwx,go-rwx {} +
+    find -P /var/lib/hcp -type f -exec chmod go-rwx {} +
   ' < "$HCP_BACKUP_DIR/runtime.tar.gz"
 ```
 
-Продолжайте только при коде завершения `0`:
+Права закрываются только в новом восстановленном volume; символьные ссылки
+`find -P` не обходит. Это не меняет байты JSON, SSH-ключей или журнала. Среди
+реальных исторических отчётов встречались файлы с режимом `0644`: побайтовое
+совпадение не отменяет отдельного требования приватных прав.
+
+До запуска обязательны [read-only preflight с внешними pins](operator-restore-readiness.md)
+и [отзыв скопированных сессий](restored-admin-session-revocation.md). Исходный контроллер
+должен быть изолирован либо восстановленная копия должна быть отсечена от рабочей
+сети, чтобы две установки с теми же ключами не управляли одним хостом одновременно.
+Доступ к Astra открывается отдельно для согласованной SSH/rollback-приёмки.
+Продолжайте только при успешных проверках и коде завершения `0`:
 
 ```bash
 sudo docker compose -f docker-compose.yml -f compose.restore.yml up -d --no-build --wait --wait-timeout 180 hcp
@@ -214,4 +275,10 @@ sudo docker compose -f docker-compose.yml -f compose.restore.yml logs --tail=80 
 
 Основа Docker-процедуры: [одноразовые команды Compose](https://docs.docker.com/reference/cli/docker/compose/run/) и [резервирование volumes](https://docs.docker.com/engine/storage/volumes/#back-up-restore-or-migrate-data-volumes). Локальный разбор команд не заменяет реального испытания восстановления; его нужно выполнить на своём стенде до использования копии как единственного способа восстановления.
 
-11 сентября 2026 года проверены синтаксис Bash-блоков, соответствие путей конфигурации проекта и передача tar через stdin/stdout на временном наборе файлов с SQLite. После распаковки совпали хэши файлов, содержимое таблицы и `PRAGMA integrity_check=ok`. Этот контроль не запускал Docker и не восстанавливал настоящую рабочую установку HCP; полный цикл Docker-восстановления по этой новой инструкции пока не подтверждён.
+Исторический контроль 11 сентября 2026 года проверил синтаксис Bash, пути и tar
+на временном наборе SQLite-файлов; Docker в нём не запускался. 6 ноября для
+`1306a2a` выполнено восстановление настоящего HCP в отдельную Ubuntu KVM-ВМ,
+включая byte/HMAC-проверки, сессии, PDF и архивы. Выявлены необходимость checkpoint,
+приватных прав старых файлов и сопоставления config/manifest digest. Это проверка
+описанных компонентов, не аттестация всех команд для любой установки. Точные
+границы и открытые пункты: [текущий статус](release-status.md).

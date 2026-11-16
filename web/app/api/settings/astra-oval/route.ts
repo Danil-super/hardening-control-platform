@@ -17,7 +17,7 @@ export async function POST(request: Request) {
     const groupName = typeof body?.groupName === "string" ? body.groupName.trim() : "";
     if (!listInventoryGroups().includes(groupName)) throw new Error("Выберите существующую группу inventory.");
     upsertAstraOvalPolicy(groupName, body.config);
-    return NextResponse.json({ ...payload(), message: "Источник OVAL сохранён. Его содержимое и применимость будут проверены при аудите." });
+    return NextResponse.json({ ...payload(), message: "Источник OVAL сохранён. Для сетевого источника подготовьте и проверьте копию базы в «Хостах» перед запуском. Применимость проверяется при аудите." });
   } catch (error) { return failure(error); }
 }
 

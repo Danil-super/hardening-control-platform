@@ -36,6 +36,10 @@ on:
       - ansible/scap/astra/**
       - web/lib/ansible-reports.ts
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -73,6 +77,11 @@ jobs:
         with:
           path: ${{ runner.temp }}/hcp-pinned-astra-cache/${{ matrix.release }}
           key: hcp-astra-native-${{ matrix.release }}-${{ hashFiles('deployment/astra-vm/sources.json') }}
+      - name: Restore exact pinned public OVAL shared by both releases
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/hcp-pinned-astra-cache/oval
+          key: hcp-astra-native-oval-${{ hashFiles('deployment/astra-vm/sources.json') }}
       - name: Boot genuine Astra and verify collection, baseline and vendor CVE controls
         env:
           HCP_ASTRA_IMAGE_CACHE_DIR: ${{ runner.temp }}/hcp-pinned-astra-cache/${{ matrix.release }}

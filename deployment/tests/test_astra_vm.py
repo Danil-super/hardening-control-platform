@@ -3,11 +3,19 @@ import copy
 import hashlib
 import io
 import json
+import os
+import ssl
+import subprocess
+import sys
+import time
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+import urllib.error
 
-from verify_astra_vm import download, installed_control_versions, record_failure, verify_baseline_report, verify_oval_report, PROFILE, RULE
+from verify_astra_vm import download, exercise_guest, installed_control_versions, record_failure, run, verify_baseline_report, verify_oval_report, PROFILE, RULE
 
 
 class DownloadResponse(io.BytesIO):
@@ -16,6 +24,41 @@ class DownloadResponse(io.BytesIO):
 
 
 class AstraVmAcceptanceTests(unittest.TestCase):
+    def test_timeout_preserves_exact_partial_stdout_stderr_and_reaps_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "guest-install.log"
+            script = "import os,time; os.write(1,str(os.getpid()).encode()+b'\\nAPT waiting\\xff\\n'); os.write(2,b'stderr before timeout\\n'); time.sleep(60)"
+            started = time.monotonic()
+            with self.assertRaises(subprocess.TimeoutExpired) as stopped:
+                run([sys.executable, "-c", script], output=output, timeout=1)
+            self.assertLess(time.monotonic() - started, 5)
+            data = output.read_bytes()
+            self.assertEqual(data, stopped.exception.output)
+            self.assertIn(b"APT waiting\xff\nstderr before timeout\n", data)
+            with self.assertRaises(ProcessLookupError):
+                os.kill(int(data.splitlines()[0]), 0)
+
+    def test_silent_timeout_writes_empty_diagnostic_only_when_requested(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "silent.log"
+            for destination in (None, output):
+                with self.subTest(output=destination), self.assertRaises(subprocess.TimeoutExpired):
+                    run([sys.executable, "-c", "import time; time.sleep(60)"], output=destination, timeout=0.1)
+            self.assertEqual(output.read_bytes(), b"")
+            self.assertEqual(list(Path(temporary).iterdir()), [output])
+
+    def test_completed_commands_keep_logs_text_results_and_exit_code_validation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "completed.log"
+            result = run([sys.executable, "-c", "print('completed')"], output=output)
+            self.assertEqual(result.stdout, "completed\n")
+            self.assertEqual(output.read_text(), result.stdout)
+            command = [sys.executable, "-c", "print('failed'); raise SystemExit(7)"]
+            with self.assertRaisesRegex(RuntimeError, "exit 7"):
+                run(command, output=output)
+            self.assertEqual(output.read_text(), "failed\n")
+            self.assertEqual(run(command, accepted=(7,)).returncode, 7)
+
     def test_failed_and_cancelled_protocol_records_stop_point_and_bounded_error(self):
         for error in (RuntimeError("fixture error " * 1000), InterruptedError("CI cancellation"), KeyboardInterrupt()):
             with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as temporary:
@@ -59,6 +102,125 @@ class AstraVmAcceptanceTests(unittest.TestCase):
             self.assertEqual(target.read_bytes(), content)
             self.assertEqual(cache.read_bytes(), content)
             self.assertFalse((work / "image.qcow2.download").exists())
+
+    def test_native_releases_share_only_the_verified_vendor_xml_cache(self):
+        class BeforeGuest(Exception):
+            pass
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            oval = {"sha256": "b" * 64}
+            sources = {"images": {"1.8.1": {}, "1.8.6": {}}, "oval": oval}
+            for release in sources["images"]:
+                for enabled in (True, False):
+                    cache = str(root / "public-cache" / release) if enabled else ""
+                    with self.subTest(release=release, enabled=enabled), patch.dict(os.environ, {
+                        "HCP_ASTRA_IMAGE_CACHE_DIR": cache, "RUNNER_TEMP": str(root),
+                    }), patch("verify_astra_vm.download", side_effect=[None, BeforeGuest()]) as fetch, patch(
+                        "verify_astra_vm.run", return_value=SimpleNamespace(stdout='{"format":"qcow2","virtual-size":1048576}'),
+                    ):
+                        with self.assertRaises(BeforeGuest):
+                            exercise_guest(SimpleNamespace(release=release), root, root, root, sources, {"checks": []})
+                        expected = root / "public-cache" / "oval" / (oval["sha256"] + ".xml") if enabled else None
+                        self.assertEqual(fetch.call_args_list[1].kwargs.get("cache_path"), expected)
+
+    def test_download_restarts_after_partial_read_timeout_with_fresh_hash_and_bytes(self):
+        content = b"pinned publisher bytes"
+        source = {"url": "https://publisher.invalid/pinned-image", "bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        interrupted = DownloadResponse(b"")
+        interrupted.read = Mock(side_effect=[content[:5], TimeoutError("read timed out")])
+        opener = Mock(side_effect=[interrupted, DownloadResponse(content)])
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "image"
+            download(source, target, opener=opener)
+            self.assertEqual(target.read_bytes(), content)
+            self.assertEqual(opener.call_count, 2)
+            self.assertEqual(list(Path(temporary).iterdir()), [target])
+
+    def test_download_retries_wrapped_connection_timeouts_and_resets_only(self):
+        content = b"verified bytes"
+        source = {"url": "https://publisher.invalid/pinned-image", "bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        for error in (urllib.error.URLError(TimeoutError()), ConnectionResetError()):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as temporary:
+                opener = Mock(side_effect=[error, DownloadResponse(content)])
+                target = Path(temporary) / "image"
+                download(source, target, opener=opener)
+                self.assertEqual(target.read_bytes(), content)
+                self.assertEqual(opener.call_count, 2)
+
+    def test_download_exhaustion_preserves_previous_target_and_cleans_partial(self):
+        source = {"url": "https://publisher.invalid/pinned-image", "bytes": 5,
+                  "sha256": hashlib.sha256(b"bytes").hexdigest()}
+        def interrupted(*_args, **_kwargs):
+            response = DownloadResponse(b"")
+            response.read = Mock(side_effect=[b"by", TimeoutError("fixture timeout")])
+            return response
+        opener = Mock(side_effect=interrupted)
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary) / "image"
+            target.write_bytes(b"previous verified target")
+            with self.assertRaises(TimeoutError):
+                download(source, target, opener=opener)
+            self.assertEqual(opener.call_count, 3)
+            self.assertEqual(target.read_bytes(), b"previous verified target")
+            self.assertEqual(list(Path(temporary).iterdir()), [target])
+
+    def test_download_retries_share_time_budget_and_reject_late_valid_bytes(self):
+        content = b"verified bytes"
+        source = {"url": "https://publisher.invalid/pinned-image", "bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        clock, timeouts = [0], []
+        def opener(_url, timeout):
+            timeouts.append(timeout)
+            clock[0] += 4 if len(timeouts) == 1 else 2
+            if len(timeouts) == 1:
+                raise TimeoutError()
+            return DownloadResponse(content)
+        with tempfile.TemporaryDirectory() as temporary, patch("verify_astra_vm.time.monotonic", side_effect=lambda: clock[0]):
+            target = Path(temporary) / "image"
+            with self.assertRaisesRegex(ValueError, "time limit"):
+                download(source, target, opener=opener, max_seconds=5)
+            self.assertEqual(timeouts, [5, 1])
+            self.assertFalse(target.exists())
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_download_checks_deadline_after_end_of_stream_too(self):
+        content = b"verified bytes"
+        source = {"url": "https://publisher.invalid/pinned-image", "bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        clock = [0]
+        response = DownloadResponse(content)
+        original_read = response.read
+        def read(size):
+            data = original_read(size)
+            if not data:
+                clock[0] = 6
+            return data
+        response.read = read
+        with tempfile.TemporaryDirectory() as temporary, patch("verify_astra_vm.time.monotonic", side_effect=lambda: clock[0]):
+            target = Path(temporary) / "image"
+            with self.assertRaisesRegex(ValueError, "time limit"):
+                download(source, target, opener=lambda *_args, **_kwargs: response, max_seconds=5)
+            self.assertEqual(list(Path(temporary).iterdir()), [])
+
+    def test_download_does_not_retry_tls_http_or_digest_failure(self):
+        content = b"verified bytes"
+        source = {"url": "https://publisher.invalid/pinned-image", "bytes": len(content),
+                  "sha256": hashlib.sha256(content).hexdigest()}
+        for error in (urllib.error.URLError(ssl.SSLCertVerificationError("fixture certificate")),
+                      urllib.error.HTTPError(source["url"], 403, "fixture denied", {}, None)):
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as temporary:
+                opener = Mock(side_effect=error)
+                with self.assertRaises(urllib.error.URLError):
+                    download(source, Path(temporary) / "image", opener=opener)
+                self.assertEqual(opener.call_count, 1)
+                self.assertEqual(list(Path(temporary).iterdir()), [])
+        with tempfile.TemporaryDirectory() as temporary:
+            opener = Mock(side_effect=lambda *_args, **_kwargs: DownloadResponse(b"x" * len(content)))
+            with self.assertRaisesRegex(ValueError, "SHA-256"):
+                download(source, Path(temporary) / "image", opener=opener)
+            self.assertEqual(opener.call_count, 1)
 
     def test_corrupt_cached_publisher_image_is_never_used_as_guest_backing(self):
         content = b"verified image bytes fixture"

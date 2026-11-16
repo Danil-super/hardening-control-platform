@@ -501,7 +501,7 @@ def main():
         record("Actual scan reaches Done", reportId=report_id)
         stage("export native XML and verify HCP normalization")
         native = gmp(element("get_reports", report_id=report_id, details="1", ignore_pagination="1",
-                             filter="first=1 rows=-1 levels=hmlgdf min_qod=0 apply_overrides=0"))
+                             filter="first=1 rows=-1 levels=chmlgdf min_qod=0 apply_overrides=0"))
         native_path = output / "native-report.xml"
         native_path.write_text(ET.tostring(native, encoding="unicode"))
         reports = [entry for entry in native.iter("report") if entry.find("results") is not None]

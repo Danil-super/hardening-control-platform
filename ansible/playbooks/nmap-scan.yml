@@ -34,6 +34,8 @@
           - "{{ report_suffix }}"
           - --output
           - "{{ scanner_report_dir }}/{{ inventory_hostname }}-nmap-{{ report_suffix }}.json"
+      environment:
+        HCP_PRESERVE_RAW_EVIDENCE: "{{ (hcp_preserve_raw_evidence | default(false) | bool) | ternary('1', '0') }}"
       delegate_to: localhost
       become: false
       changed_when: false

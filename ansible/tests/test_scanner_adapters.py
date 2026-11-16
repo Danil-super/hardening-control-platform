@@ -370,6 +370,24 @@ class ScannerAdaptersTest(unittest.TestCase):
             report = self.parse_file('<report>' + metadata + '<results>' + greenbone_result() + '</results></report>', scanner.greenbone_report)
             self.assertTrue(report["scanner"]["partial"])
 
+    def test_greenbone_filtered_export_explains_the_missing_results(self):
+        content = '<report><scan_run_status>Done</scan_run_status><scan_end>2025-01-01T01:00:00Z</scan_end><result_count><full>27</full><filtered>26</filtered><critical><full>1</full><filtered>0</filtered></critical></result_count><results>' + ''.join(greenbone_result(identifier=str(i)) for i in range(26)) + '</results></report>'
+        report = self.parse_file(content, scanner.greenbone_report)
+        self.assertTrue(report["scanner"]["partial"])
+        self.assertTrue(any("26 из 27" in reason and "Critical" in reason for reason in report["scanner"]["partialReasons"]))
+
+    def test_greenbone_preserves_explicit_critical_without_inferring_from_unversioned_score(self):
+        for threat in ("High", "Critical"):
+            with self.subTest(threat=threat):
+                result = greenbone_result(severity="9.8").replace("<threat>High</threat>", "<threat>" + threat + "</threat>")
+                report = self.parse_file('<report><scan_run_status>Done</scan_run_status><scan_end>2025-01-01T01:00:00Z</scan_end><results>' + result + '</results></report>', scanner.greenbone_report)
+                self.assertFalse(report["scanner"]["partial"])
+                finding = report["findings"][0]
+                if threat == "Critical":
+                    self.assertEqual(finding["severityAssessment"], {"level": "critical", "source": "scanner_metadata"})
+                else:
+                    self.assertNotIn("severityAssessment", finding)
+
     def test_greenbone_unknown_or_nonfinite_severity_is_not_clean(self):
         for severity in ("NaN", "", "Infinity"):
             report = self.parse_file('<report><scan_run_status>Done</scan_run_status><results>' + greenbone_result(severity=severity) + '</results></report>', scanner.greenbone_report)

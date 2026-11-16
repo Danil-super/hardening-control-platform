@@ -1,0 +1,93 @@
+name: Genuine native Astra 1.7.6.15 HCP 18-rule plus full vendor OVAL acceptance
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/astra17-ova-hcp-oval.yml
+      - deployment/tests/verify_astra17_ova_kvm.py
+      - deployment/tests/verify_astra17_ova_audit.py
+      - deployment/tests/verify_astra17_ova_oval.py
+      - deployment/tests/test_astra17_ova_oval.py
+      - ansible/playbooks/astra-oval-audit.yml
+      - ansible/scripts/hcp-oval-audit.py
+      - ansible/scap/astra/**
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  native-astra17-complete-source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 115
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install disposable QEMU native scanner and SSH tools
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          sudo apt-get update -o Acquire::Retries=2
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils openssh-client sshpass python3-venv openscap-scanner
+          if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
+      - name: Verify native OVAL source/test entrypoints are present before any CI download
+        run: |
+          test -s deployment/tests/verify_astra17_ova_oval.py
+          test -s deployment/tests/test_astra17_ova_oval.py
+          grep -q 'native_vendor_oval' deployment/tests/verify_astra17_ova_kvm.py
+      - name: Strict offline full-source and report multiset regression tests
+        run: |
+          python3 -m unittest discover -s deployment/tests -p test_astra17_ova_audit.py -v
+          python3 -m unittest discover -s deployment/tests -p test_astra17_ova_oval.py -v
+      - name: Isolated lab-only Ansible supporting original guest Python 3.7
+        run: |
+          set -euo pipefail
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)'
+          python3 -m venv "$RUNNER_TEMP/hcp-astra17-ansible217"
+          "$RUNNER_TEMP/hcp-astra17-ansible217/bin/python" -m pip install --no-cache-dir --only-binary=:all: 'ansible-core==2.17.14'
+          "$RUNNER_TEMP/hcp-astra17-ansible217/bin/ansible-playbook" --version
+          printf '%s\n' "$RUNNER_TEMP/hcp-astra17-ansible217/bin" >> "$GITHUB_PATH"
+          printf '%s\n' 'HCP_ASTRA17_CI_ANSIBLE_PIN=2.17.14' >> "$GITHUB_ENV"
+      - name: Cache only exact verified original public Astra OVA
+        id: public-ova-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-public-ova-cache
+          key: hcp-astra17-public-ova-72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e
+      - name: Real Astra 1.7 OVA SSH, HCP Ansible 18 rules and full vendor OVAL
+        env:
+          HCP_ASTRA17_PUBLIC_OVA_CACHE_DIR: ${{ runner.temp }}/hcp-astra17-public-ova-cache
+        run: |
+          python3 deployment/tests/verify_astra17_ova_kvm.py \
+            --work-dir "$RUNNER_TEMP/hcp-real-astra17-full-private" \
+            --public-protocol "$RUNNER_TEMP/hcp-astra17-full-public-result.json" \
+            --native-hcp-three-stage --native-vendor-oval
+      - name: Verify exact immutable public image for cache after scanner job
+        if: always()
+        id: verified-public-ova
+        run: |
+          set -euo pipefail
+          image="$RUNNER_TEMP/hcp-astra17-public-ova-cache/alse-1.7.6.uu2-base-virtualbox-mg15.3.1-amd64.ova"
+          if test -f "$image" && test ! -L "$image" \
+              && test "$(stat -c %s "$image")" -eq 427995648 \
+              && printf '%s  %s\n' '72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e' "$image" | sha256sum --check --strict --status; then
+            printf '%s\n' 'verified=true' >> "$GITHUB_OUTPUT"
+          fi
+      - name: Save only byte-verified ORIGINAL public OVA even if scanner fails
+        if: always() && steps.verified-public-ova.outputs.verified == 'true' && steps.public-ova-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/hcp-astra17-public-ova-cache
+          key: hcp-astra17-public-ova-72ccb335f4c46b5b6d1410cfe0c08f648f95a5e6fd1026f6e0b2d65d8b7ebf6e
+      - name: Publish only allowlisted evidence metadata and counts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-astra17-full-oval-source-status-only
+          path: ${{ runner.temp }}/hcp-astra17-full-public-result.json
+          retention-days: 14
+          if-no-files-found: warn

@@ -32,6 +32,10 @@ on:
       - web/lib/trivy-output.ts
       - web/lib/ansible-reports.ts
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -58,7 +62,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils
           if test -e /dev/kvm; then sudo chmod 0666 /dev/kvm; fi
           npm ci --ignore-scripts --prefix web
-          container=$(docker create aquasec/trivy:0.74.0)
+          container=$(docker create aquasec/trivy:0.76.2@sha256:8f6bb947dbc528902e11f2f5be52f7b519f6a39d5d148f41166f2040499768fb)
           docker cp "$container:/usr/local/bin/trivy" "$RUNNER_TEMP/trivy"
           docker rm "$container"
           chmod 755 "$RUNNER_TEMP/trivy"

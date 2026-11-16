@@ -6,6 +6,9 @@ import { POST as syncDependencyTrack } from '@/app/api/ansible/dependency-track/
 import { isPlaybookAction, playbooks, normalizeProfileId, inventoryHostExists } from '@/lib/ansible-control';
 import { createAuditJob, listAuditJobs, setAuditJobPhase, finishAuditJob } from '@/lib/state-store';
 import { credentialTransportAllowed } from '@/lib/ssh-bootstrap';
+import { resolveAstraOvalPolicyForHost } from '@/lib/astra-oval-policy';
+import { preparedOvalExtraVars } from '@/lib/astra-oval-preparation';
+import { withAuditProgress, reportAuditProgress } from '@/lib/audit-progress';
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 export const maxDuration = 2700;
@@ -27,6 +30,10 @@ export async function POST(request: Request) {
   if (body.sudoPassword !== undefined && (typeof body.sudoPassword !== 'string' || body.sudoPassword.length > 1024 || /[\r\n\0]/.test(body.sudoPassword))) {
     return NextResponse.json({ ok: false, message: 'Некорректный пароль sudo.' }, { status: 400 });
   }
+  if (action === 'astraOvalAudit') {
+    try { preparedOvalExtraVars(resolveAstraOvalPolicyForHost(hostAlias).config); }
+    catch (error) { return NextResponse.json({ ok: false, message: error instanceof Error ? error.message : 'Подготовьте OVAL-базу перед запуском.' }, { status: 409 }); }
+  }
   const profileId = normalizeProfileId(body.profileId);
   const requestKey = createHash('sha256').update(JSON.stringify({ action: body.action, profileId, hostAlias, extraVars: body.extraVars ?? {} })).digest('hex');
   let queued;
@@ -37,9 +44,9 @@ export async function POST(request: Request) {
   // Credentials live only in this callback's memory. after() is supported by
   // the self-hosted Node server and continues after navigation/disconnection.
   const makeRequest = (payload: unknown) => new Request(request.url, { method: 'POST', headers: request.headers, body: JSON.stringify(payload) });
-  after(async () => {
+  after(() => withAuditProgress(phase => setAuditJobPhase(queued.job.id, phase), async () => {
     try {
-      setAuditJobPhase(queued.job.id, 'Выполняется проверка хоста');
+      reportAuditProgress('prepare');
       let result = await (await executeAudit(makeRequest(body))).json();
       delete body.sudoPassword;
       if (result.ok && body.action === 'packageInventory') {
@@ -52,11 +59,12 @@ export async function POST(request: Request) {
           if (synced.configured || !synced.ok) result.message = `${result.message ?? ''} ${synced.message ?? ''}`.trim();
         }
       }
+      reportAuditProgress('report');
       finishAuditJob(queued.job.id, { ...result, action: body.action });
     } catch {
       // Do not persist exception text, which can contain request credentials.
       finishAuditJob(queued.job.id, { ok: false, action: body.action, message: 'Проверка не завершена. Подробности доступны в журнале действий.' });
     } finally { delete body.sudoPassword; }
-  });
+  }));
   return NextResponse.json({ ok: true, job: queued.job }, { status: 202 });
 }

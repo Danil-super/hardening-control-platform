@@ -1,6 +1,6 @@
 "use client";
 
-import { CheckCircle2, CircleAlert, Database, FileText, RefreshCw, Server, ShieldCheck } from "lucide-react";
+import { CheckCircle2, CircleAlert, FileText, RefreshCw, Server, ShieldCheck } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Button, LinkButton } from "@/components/ui/button";
@@ -116,9 +116,9 @@ export function WorkspaceDashboard() {
     <div className="space-y-6">
       <header className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-          <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-200">Контур безопасности</p>
+
           <h1 className="mt-2 text-3xl font-semibold tracking-tight text-white">Обзор</h1>
-          <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-400">После развёртывания не нужно искать следующий шаг: платформа показывает готовность контура, подключённые хосты и одно приоритетное действие.</p>
+
         </div>
         <Button variant="secondary" onClick={() => void load()} disabled={loading}>
           <RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" />
@@ -136,13 +136,23 @@ export function WorkspaceDashboard() {
         <SummaryCard label="Без свежего аудита" value={loading ? "…" : evidence.noFreshEvidenceHosts} detail="Аудита нет либо свежесть не подтверждена" icon={<FileText size={18} />} />
       </section>
 
+      <section className="rounded-2xl border border-sky-400/20 bg-[linear-gradient(135deg,rgba(14,116,144,.17),rgba(8,17,31,.92)_56%)] p-5 shadow-xl shadow-black/10 sm:p-6">
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="max-w-3xl">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-200">Следующий шаг</p>
+            <h2 className="mt-2 text-xl font-semibold text-white">{nextStep.title}</h2>
+            <details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer text-sky-200">Подробнее</summary><p className="mt-2">{nextStep.text}</p></details>
+          </div>
+          <LinkButton href={nextStep.href}>{nextStep.label}</LinkButton>
+        </div>
+      </section>
+
       <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-5" aria-labelledby="dashboard-evidence-title">
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
           <div>
             <h2 id="dashboard-evidence-title" className="text-lg font-semibold text-white">Достоверность аудита по хостам</h2>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">
-              Данные из последнего применимого отчёта каждого инструмента и профиля в пределах периода свежести.
-              Это не процент полного CVE-покрытия и не итоговая оценка защищённости.
+              Последние применимые проверки. Полнота CVE-покрытия не оценивается.
             </p>
           </div>
           <LinkButton href="/hosts" variant="secondary">Открыть хосты</LinkButton>
@@ -191,8 +201,7 @@ export function WorkspaceDashboard() {
         <div className="mt-4 rounded-lg border border-slate-800 bg-slate-900/50 p-4">
           <h3 className="text-sm font-semibold text-slate-200">Наблюдения по уровням критичности</h3>
           <p className="mt-1 text-xs leading-5 text-slate-400">
-            Только текущие находки из доступных свежих источников, суммированные по хостам.
-            Это не число уникальных CVE в инфраструктуре и не оценка всех потенциальных угроз.
+            Находки из свежих отчётов; одна CVE может встречаться на нескольких хостах.
           </p>
           {severityPeak > 0 ? (
             <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
@@ -255,37 +264,6 @@ export function WorkspaceDashboard() {
           ? "По выбранному фильтру хостов нет." : "Подключённых хостов пока нет."}</p> : null}
       </section>
 
-      <section className="rounded-2xl border border-sky-400/20 bg-[linear-gradient(135deg,rgba(14,116,144,.17),rgba(8,17,31,.92)_56%)] p-5 shadow-xl shadow-black/10 sm:p-6">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="max-w-3xl">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-200">Следующий шаг</p>
-            <h2 className="mt-2 text-xl font-semibold text-white">{nextStep.title}</h2>
-            <p className="mt-2 text-sm leading-6 text-slate-300">{nextStep.text}</p>
-          </div>
-          <LinkButton href={nextStep.href}>{nextStep.label}</LinkButton>
-        </div>
-      </section>
-
-      <section className="grid gap-4 lg:grid-cols-3">
-        <article className="rounded-xl border border-slate-800 bg-slate-950/70 p-5">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-400/10 text-sm font-semibold text-sky-200">1</span>
-          <h2 className="mt-4 font-semibold text-white">Проведите аудит</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-400">Основной профиль проверяет конфигурацию роли хоста. Специальные инструменты — CVE, OpenSCAP, Nmap и Lynis — запускаются только по необходимости.</p>
-          <LinkButton href="/hosts" variant="secondary" className="mt-4">Открыть хосты</LinkButton>
-        </article>
-        <article className="rounded-xl border border-slate-800 bg-slate-950/70 p-5">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-400/10 text-sm font-semibold text-sky-200">2</span>
-          <h2 className="mt-4 font-semibold text-white">Выберите изменения</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-400">В план попадают только выбранные подтверждённые находки. До выполнения решение можно изменить; после реального изменения сохраняется след и доступен откат там, где он поддерживается.</p>
-          <LinkButton href="/remediation-plan" variant="secondary" className="mt-4">Открыть план</LinkButton>
-        </article>
-        <article className="rounded-xl border border-slate-800 bg-slate-950/70 p-5">
-          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-sky-400/10 text-sm font-semibold text-sky-200">3</span>
-          <h2 className="mt-4 font-semibold text-white">Расширяйте охват</h2>
-          <p className="mt-2 text-sm leading-6 text-slate-400">Подключите актуальную CVE-базу, назначьте политики и используйте собственные сценарии только через контролируемый тестовый контур.</p>
-          <LinkButton href="/data-sources" variant="secondary" className="mt-4"><Database size={16} aria-hidden="true" />Источники</LinkButton>
-        </article>
-      </section>
     </div>
   );
 }

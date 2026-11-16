@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { LoaderCircle, CheckCircle2, AlertTriangle } from 'lucide-react';
 import type { AuditJob } from '@/lib/state-store';
 import { useNotify } from '@/components/ui/feedback';
-import { auditActionLabels as labels, isActiveAuditJob as active, completedAuditTransitions, auditCompletionMessage, mergeAuditSnapshot } from '@/lib/audit-job-status';
+import { auditActionLabels as labels, isActiveAuditJob as active, completedAuditTransitions, auditCompletionMessage, mergeAuditSnapshot, auditJobProgress, auditProgressStages } from '@/lib/audit-job-status';
 const JobsContext = createContext<{ jobs: AuditJob[]; refresh: () => Promise<void>; rememberJob: (job: AuditJob) => void; unavailable: boolean }>({ jobs: [], refresh: async () => {}, rememberJob: () => {}, unavailable: false });
 export const useAuditJobs = () => useContext(JobsContext);
 export function AuditJobsProvider({ children }: { children: ReactNode }) {
@@ -70,11 +70,22 @@ export function AuditJobActivity() {
   return <section aria-label="Выполняемые проверки" className="mb-6 space-y-3">
     {running.map(job => {
       const elapsed = Math.max(0, Math.floor(((now || Date.now()) - Date.parse(job.createdAt)) / 1000));
-      return <div key={job.id} role="status" className="flex flex-wrap items-center gap-4 rounded-xl border border-sky-400/30 bg-sky-400/5 p-4">
-        <LoaderCircle size={22} className="animate-spin text-sky-300" aria-hidden="true" />
-        <div className="min-w-0 flex-1"><p className="font-semibold text-sky-100">{labels[job.action] ?? job.action} · {job.hostAlias}</p>
-          <p className="mt-1 text-sm text-slate-300">{unavailable ? 'Связь потеряна. Последнее известное состояние: ' : ''}{job.phase}<span aria-hidden="true"> · {Math.floor(elapsed / 60)} мин {elapsed % 60} с</span></p>
-          <p className="mt-1 text-xs text-slate-400">Можно переходить между страницами: проверка выполняется на сервере.</p></div>
+      const progress = auditJobProgress(job);
+      return <div key={job.id} className="flex flex-wrap items-start gap-4 rounded-xl border border-sky-400/30 bg-sky-400/5 p-4">
+        <LoaderCircle size={22} className="mt-1 shrink-0 motion-safe:animate-spin text-sky-300" aria-hidden="true" />
+        <div className="min-w-0 flex-1 basis-56"><p className="font-semibold text-sky-100">{labels[job.action] ?? job.action} · {job.hostAlias}</p>
+          <p role="status" className="mt-1 text-sm text-slate-300">{unavailable ? 'Связь потеряна. Последнее известное состояние: ' : ''}{job.phase}</p>
+          <div role="progressbar" aria-label={`Этапы проверки ${job.hostAlias}`} aria-valuemin={0} aria-valuemax={3}
+            {...(progress.stage !== null && !unavailable ? { 'aria-valuenow': progress.completedStages } : {})}
+            aria-valuetext={unavailable ? 'Состояние не обновляется' : `${progress.stage === null ? '' : `Этап ${progress.stage + 1} из 3. `}${job.phase}. Оставшееся время неизвестно.`}
+            className="mt-3 grid grid-cols-3 gap-2">
+            {auditProgressStages.map((label, index) => <div key={label} className="min-w-0">
+              <div className={`h-1.5 rounded-full ${unavailable ? 'bg-amber-400/40' : index < progress.completedStages ? 'bg-sky-300' : index === progress.stage ? 'bg-sky-300/40 motion-safe:animate-pulse' : 'bg-slate-700'}`} />
+              <p className={`mt-1.5 wrap-anywhere text-xs ${index === progress.stage ? 'text-sky-100' : 'text-slate-400'}`}>{index + 1}. {label}</p>
+            </div>)}
+          </div>
+          <p className="mt-3 text-xs text-slate-400">Прошло: {Math.floor(elapsed / 60)} мин {elapsed % 60} с · Осталось: неизвестно</p>
+          </div>
         <Link href="/hosts" className="rounded-lg px-3 py-2 text-sm text-sky-200 underline underline-offset-4">К хосту</Link>
       </div>;
     })}

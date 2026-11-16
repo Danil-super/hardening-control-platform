@@ -1,14 +1,15 @@
 import { ArrowRight, CheckCircle2, KeyRound, ServerCog, ShieldCheck } from "lucide-react";
 import { LinkButton } from "@/components/ui/button";
 import { GreenboneGuide } from "@/components/guide/greenbone-guide";
+import { GuideTopics } from "@/components/guide/guide-topics";
 
 const manualUrl = "https://github.com/Danil-super/hardening-control-platform/blob/main/docs/ubuntu-astra-setup.md";
 const setupSteps = [
-  "Выберите Astra в результатах сканирования или введите её адрес вручную.",
+  "На странице «Хосты» нажмите «Подключить хост». Введите адрес или найдите его через «Найти хост в сети».",
   "Введите логин и пароль администратора Astra прямо на сайте. Входить через терминал и создавать ключи вручную не нужно.",
   "При первом входе вставьте отпечаток из доверенной консоли этой Astra или реестра и нажмите «Сверить и сохранить». HCP сам сравнит его с ключом сервера по сети. Затем нажмите «Подключить хост».",
   "HCP сам войдёт по паролю, создаст отдельную пару на Ubuntu, установит публичный ключ на Astra, проверит доступ и сохранит хост.",
-  "Дождитесь сообщения об успешном подключении. Выберите хост и профиль, затем запустите аудит.",
+  "Выберите подключённый хост → инструмент → параметры и пароль sudo → «Запустить проверку». Результат появится ниже.",
 ];
 
 const rules = [
@@ -36,17 +37,17 @@ const rules = [
 
 export default function GuidePage() {
   return (
-    <div className="space-y-6">
+    <GuideTopics>
       <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
           <p className="text-xs font-semibold uppercase tracking-wide text-sky-200">Начало работы</p>
-          <h1 className="mt-2 text-3xl font-semibold text-white">Подключение и работа с хостами</h1>
-          <p className="mt-2 max-w-3xl text-slate-400">На странице «Хосты» сначала идёт сканирование сети, затем форма подключения с одноразовым паролем и отдельным ключом. Все команды с местом выполнения и ожидаемым результатом собраны в основной инструкции.</p>
+          <h1 className="mt-2 text-3xl font-semibold text-white">Инструкция</h1>
+          <p className="mt-2 max-w-3xl text-slate-400">Подключение → проверка → результат → изменения и откат.</p>
         </div>
         <LinkButton href="/hosts">Открыть управление</LinkButton>
       </div>
 
-      <section id="host-onboarding" className="grid scroll-mt-6 gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
+      <details className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><summary className="cursor-pointer font-semibold text-slate-200">Единый порядок подключения</summary><div className="mt-4"><section id="host-onboarding" className="grid scroll-mt-6 gap-5 lg:grid-cols-[minmax(0,1fr)_340px]">
         <div className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
           <h2 className="text-xl font-semibold text-white">Единый порядок подключения</h2>
           <a href={`${manualUrl}#host-onboarding`} className="mt-3 inline-block text-sm text-sky-300 underline underline-offset-4">Полная инструкция Ubuntu → Astra на GitHub</a>
@@ -78,18 +79,18 @@ export default function GuidePage() {
           <a href={`${manualUrl}#host-trust-fleet`} className="inline-block text-sm text-sky-300 underline underline-offset-4">Как подготовить доверенные ключи для многих хостов</a>
           <p className="text-sm leading-6 text-slate-400">Пароль администратора используется только при первом подключении и не сохраняется. Затем HCP работает через индивидуальный ключ; для хоста с обычным sudo она запросит пароль снова только перед ручной привилегированной операцией.</p>
         </aside>
-      </section>
+      </section></div></details>
 
-      <section id="sudo-access" className="scroll-mt-6 rounded-xl border border-sky-400/20 bg-sky-400/5 p-5">
+      <details className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><summary className="cursor-pointer font-semibold text-slate-200">Административный доступ</summary><div className="mt-4"><section id="sudo-access" className="scroll-mt-6 rounded-xl border border-sky-400/20 bg-sky-400/5 p-5">
         <h2 className="text-xl font-semibold text-white">Административный доступ</h2>
         <p className="mt-3 text-sm leading-6 text-slate-300">Используйте root с разрешённым SSH-входом или администратора, у которого работает <code>sudo su</code>. При подключении HCP проверяет выполнение модуля Ansible с правами root, не меняет sudoers и не хранит пароль. Для ручного аудита или изменения такого хоста введите пароль sudo в появившееся поле.</p>
         <p className="mt-3 text-sm leading-6 text-slate-300">Для существующего хоста откройте «Настроить», укажите административную учётную запись и нажмите «Сохранить подключение». Если меняется пользователь SSH, введите его пароль для установки отдельного ключа. История хоста сохраняется.</p>
         <a href={`${manualUrl}#sudo-access`} className="mt-4 inline-block text-sm text-sky-300 underline underline-offset-4">Подготовка административной учётной записи</a>
-      </section>
+      </section></div></details>
 
-      <GreenboneGuide />
+      <details className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><summary className="cursor-pointer font-semibold text-slate-200">Greenbone / OpenVAS</summary><div className="mt-4"><GreenboneGuide /></div></details>
 
-      <section id="firewall" className="scroll-mt-6 rounded-xl border border-amber-400/25 bg-amber-500/5 p-5">
+      <details className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><summary className="cursor-pointer font-semibold text-slate-200">Как безопасно закрыть тестовый порт</summary><div className="mt-4"><section id="firewall" className="scroll-mt-6 rounded-xl border border-amber-400/25 bg-amber-500/5 p-5">
         <p className="text-xs font-semibold uppercase tracking-wide text-amber-200">Контролируемое изменение</p>
         <h2 className="mt-2 text-xl font-semibold text-white">Как безопасно закрыть тестовый порт</h2>
         <p className="mt-2 text-sm leading-6 text-slate-300">На Astra ошибка доступа к <code>/run/ufw.lock</code> может означать ограничение мандатной целостности даже с sudo. Сначала нужен административный контекст, которому разрешено управление UFW. Отмена операции, остановленной до резервной копии, выполняется одной кнопкой и не меняет хост; фактический откат уже применённых правил требует подтверждения.</p>
@@ -119,9 +120,9 @@ export default function GuidePage() {
             <p className="mt-3 text-sm leading-6 text-slate-400">Неполнота несвязанной проверки профиля — например, отсутствующий auditd или особенность <code>sshd -T</code> — отображается как ограничение отчёта, но не мешает этой операции, если firewall и порты подтверждены.</p>
           </article>
         </div>
-      </section>
+      </section></div></details>
 
-      <section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
+      <details className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><summary className="cursor-pointer font-semibold text-slate-200">Правила работы платформы</summary><div className="mt-4"><section className="rounded-md border border-slate-800 bg-slate-950/70 p-5">
         <h2 className="text-xl font-semibold text-white">Правила работы платформы</h2>
         <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
           {rules.map((rule) => {
@@ -135,9 +136,9 @@ export default function GuidePage() {
             );
           })}
         </div>
-      </section>
+      </section></div></details>
 
-      <section className="rounded-md border border-emerald-400/30 bg-emerald-500/10 p-5">
+      <details className="rounded-xl border border-slate-800 bg-slate-950/50 p-4"><summary className="cursor-pointer font-semibold text-slate-200">Важно</summary><div className="mt-4"><section className="rounded-md border border-emerald-400/30 bg-emerald-500/10 p-5">
         <div className="flex items-start gap-3">
           <CheckCircle2 size={22} className="mt-0.5 text-emerald-200" aria-hidden="true" />
           <div>
@@ -148,7 +149,7 @@ export default function GuidePage() {
             </p>
           </div>
         </div>
-      </section>
+      </section></div></details>
 
       <div className="flex justify-end">
         <LinkButton href="/hosts">
@@ -156,6 +157,6 @@ export default function GuidePage() {
           <ArrowRight size={16} aria-hidden="true" />
         </LinkButton>
       </div>
-    </div>
+    </GuideTopics>
   );
 }

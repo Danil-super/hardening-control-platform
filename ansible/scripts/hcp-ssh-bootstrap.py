@@ -29,6 +29,7 @@ class EnrollmentError(Exception):
 
 def key_install_script(public_key):
     # Preserve existing entries and reject symlinks/nonstandard authorized_keys.
+    # shortcut: an unterminated existing line keeps its separator on revoke; exact restoration would need its original metadata.
     return """set -eu
 umask 077
 [ ! -L "$HOME/.ssh" ] && [ ! -L "$HOME/.ssh/authorized_keys" ] || exit 71
@@ -38,7 +39,12 @@ mkdir "$HOME/.ssh/.hcp-key-lock" || exit 72
 trap 'rmdir "$HOME/.ssh/.hcp-key-lock"' EXIT HUP INT TERM
 touch "$HOME/.ssh/authorized_keys"
 chmod 600 "$HOME/.ssh/authorized_keys"
-grep -qxF -- %s "$HOME/.ssh/authorized_keys" || printf '\\n%%s\\n' %s >> "$HOME/.ssh/authorized_keys"
+grep -qxF -- %s "$HOME/.ssh/authorized_keys" || {
+  if [ -s "$HOME/.ssh/authorized_keys" ] && [ "$(tail -c 1 "$HOME/.ssh/authorized_keys" | wc -l)" -eq 0 ]; then
+    printf '\\n' >> "$HOME/.ssh/authorized_keys"
+  fi
+  printf '%%s\\n' %s >> "$HOME/.ssh/authorized_keys"
+}
 """ % (shlex.quote(public_key), shlex.quote(public_key))
 
 

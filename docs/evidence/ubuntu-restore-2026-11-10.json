@@ -1,0 +1,78 @@
+{
+  "schemaVersion": 1,
+  "scope": "current-HCP-restored-on-separate-Ubuntu-VM-same-physical-host",
+  "codeRevision": "4bcb500e6b287f72d64ae91bb4d95ee2862b1252",
+  "imageId": "sha256:84828d4e8ac95b42abe69343153ab7aa042135959a42fe59a9f2d2bee72a329d",
+  "ubuntuImage": {
+    "ok": true,
+    "sourceUrl": "https://cloud-images.ubuntu.com/releases/noble/release-20261017/ubuntu-24.04-server-cloudimg-amd64.img",
+    "bytes": 621284352,
+    "sha256": "04e8f2461a16a44e78a370284471f29616cdd9baf1893df25807b71f985b6c94",
+    "officialKeyringSignatureVerified": true
+  },
+  "preflight": {
+    "manifestSha256": "051527687b007818bff24c836f7aa20f2b031b4304223c06982f08736dc43ebb",
+    "criticalFilesCompared": 118,
+    "criticalBytesCompared": 1901031095,
+    "restoredCategories": {
+      "sqlite": 1,
+      "inventory": 1,
+      "sshTrust": 1,
+      "hostKeyFiles": 11,
+      "reports": 98,
+      "sbom": 6
+    },
+    "sqliteIntegrity": "ok",
+    "auditHmac": {
+      "entries": 269,
+      "legacyEntries": 0,
+      "payloadProtectedForAllEntries": true,
+      "lastEntryHash": "de85b787ce0e9fdac84a1422a6676f3ae82bdd4a6ff43f53a8a13f0b84f3853b"
+    },
+    "operatorSuppliedIndependentManifestPinMatched": true,
+    "operatorSuppliedIndependentAuditHeadMatched": true
+  },
+  "authentication": {
+    "copiedSessionsRevoked": 2,
+    "realOldSourceCookieRejected": true,
+    "freshLoginVerified": true,
+    "unauthorizedAndForeignOriginRejected": true
+  },
+  "newAstraAudit": {
+    "reportId": "host-172.16.95.128-openscap-run-20261110T190744273Z-f9e8f77e",
+    "assetBindingPreserved": true,
+    "ok": true,
+    "allNativeRuleIdsAndStatesMatchHcp": true,
+    "rules": 18,
+    "states": {
+      "passed": 14,
+      "failed": 4
+    },
+    "allFindingIdsPresentInPdf": true,
+    "pdfPages": 4,
+    "pdfBytes": 55840,
+    "pdfSha256": "214bedf2c119b65de2401ae8faf1bbf4e39ca9b6522d9f96c3387d50f7b99f44",
+    "arfSha256": "16cb30c16fe8e255e462a830e33206cc23269e017670f59e81d39c54578ddf96"
+  },
+  "afterRun": {
+    "ok": true,
+    "networkRestricted": true,
+    "restoredHcpConfirmedStopped": true,
+    "sourcePrefixEntries": 269,
+    "postRunEntries": 270,
+    "originalFilesPreserved": 117,
+    "strictHmacValidAfterLiveRun": true,
+    "guestStoppedAtEnd": true
+  },
+  "originalController": {
+    "originalTablesPreserved": 13,
+    "originalReportFilesPreserved": 98,
+    "healthyAtEnd": true
+  },
+  "knownLimits": [
+    "Same physical host; no offsite storage or independent authority attested.",
+    "Fresh SSH and read-only OpenSCAP verified; no firewall change from this Ubuntu.",
+    "One intermediate HTTP 409 identity rejection was not reproduced; its response body was not retained.",
+    "No new GitHub CI, multi-host load test, HTTPS or operator sign-off."
+  ]
+}

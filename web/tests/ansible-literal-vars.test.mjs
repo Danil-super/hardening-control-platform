@@ -89,3 +89,47 @@ test("invalid extra-var structures fail instead of becoming nested executable in
   assert.throws(() => ansibleLiteralExtraVars({ value: { __ansible_unsafe: "text" } }), /строковые/);
   assert.throws(() => ansibleLiteralExtraVars({ "bad key": "text" }), /имена/);
 });
+
+test("prepared OVAL validation proof remains JSON in the actual legacy and modern argv templates", () => {
+  const production = readFileSync(path.join(webDir, "..", "ansible/playbooks/astra-oval-audit.yml"), "utf8");
+  const variables = ["oval_config_value", "oval_settings", "oval_config_json"].map(name =>
+    production.split("\n").find(line => line.startsWith("    " + name + ":"))).join("\n");
+  const task = production.slice(production.indexOf("- name: Validate and evaluate OVAL locally on target"),
+    production.indexOf("- name: Fetch normalized OVAL report"));
+  const argument = name => {
+    const lines = task.split("\n");const index = lines.findIndex(line => line.trim() === "- " + name);
+    assert.ok(index >= 0);return lines[index + 1].trim().slice(2);
+  };
+  const proof = { sha256: "a".repeat(64), schemaExitCode: 0, schematronExitCode: 0, location: "control_node", validator: "OpenSCAP fixture" };
+  const config = { mode: "online", sha256: proof.sha256, sourceName: "Fixture" };
+  const capture = "import json,pathlib,sys; pathlib.Path(sys.argv[1]).write_text(json.dumps(sys.argv[2:]))";
+  const playbook = path.join(directory, "prepared-argv.yml"), output = path.join(directory, "prepared-argv.json");
+  writeFileSync(playbook, ["---", "- hosts: localhost", "  gather_facts: false", "  vars:", variables,
+    "    oval_download:", "      stdout: " + JSON.stringify(JSON.stringify({ sourceValidation: proof })),
+    "  tasks:", "    - ansible.builtin.command:", "        argv:", "          - /usr/bin/python3",
+    "          - -c", "          - " + JSON.stringify(capture), "          - " + JSON.stringify(output),
+    "          - " + argument("--config"), "          - " + argument("--source-validation"), "      changed_when: false", ""].join("\n"));
+  const varsFile = path.join(directory, "prepared-vars.json");
+  const marker = path.join(directory, "proof-lookup-must-not-run");
+  const literalProof = { ...proof, validator: "{{ lookup('ansible.builtin.pipe', 'touch " + marker + "') }}" };
+  const cases = [
+    { config, validation: proof, expected: proof },
+    { config, validation: literalProof, expected: literalProof },
+    { config, validation: null, expected: proof },
+    { config: { ...config, mode: "local" }, validation: null, expected: {} },
+  ];
+  for (const item of cases) {
+    writeFileSync(varsFile, ansibleLiteralExtraVars({ hcp_oval_config: JSON.stringify(item.config),
+      hcp_oval_prepared_input: item.validation ? "/tmp/fixture-prepared.xml" : "",
+      hcp_oval_source_validation: item.validation ? JSON.stringify(item.validation) : "" }), { mode: 0o600 });
+    for (const binary of ["ansible-playbook", "/opt/hcp-tools/ansible-modern/bin/ansible-playbook"].filter(item => !item.startsWith("/") || existsSync(item))) {
+      execFileSync(binary, ["-i", "localhost,", "-c", "local", playbook, "--extra-vars", "@" + varsFile], {
+        timeout: 30_000, env: { ...process.env, ANSIBLE_LOCAL_TEMP: path.join(directory, "prepared-local"), ANSIBLE_NOCOLOR: "1" },
+      });
+      const values = JSON.parse(readFileSync(output, "utf8"));
+      assert.deepEqual(JSON.parse(values[0]), item.config, binary);
+      assert.deepEqual(JSON.parse(values[1]), item.expected, binary);
+      assert.equal(existsSync(marker), false, "proof metadata must remain literal");
+    }
+  }
+});

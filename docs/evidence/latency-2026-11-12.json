@@ -1,0 +1,573 @@
+{
+  "date": "2026-11-12",
+  "codeRevision": "05b2c5b892e81f56370b9e870eaf605299a526ab",
+  "rcRevision": "89b25ac5506985adde50db702988d108cd86dd45",
+  "scope": {
+    "maxHosts": 3,
+    "fiveHostsExcludedByOperator": true,
+    "desktopWidths": [
+      1280,
+      1440,
+      1920
+    ],
+    "narrowScreensExcludedByOperator": true
+  },
+  "build": {
+    "unitTestsPassed": 630,
+    "httpChecksPassed": 129,
+    "productionBuildPassed": true,
+    "dependenciesReusedFromAcceptedImage": true,
+    "workstationPdfTests": "not passed: ReportLab absent; full PDF suite passed in runtime container"
+  },
+  "inventoryResolver": {
+    "before": [
+      {
+        "run": 1,
+        "syncCalls": 6,
+        "eventLoopMaxMs": 336.068607,
+        "http": {
+          "ok": true,
+          "/login": {
+            "samples": 456,
+            "errors": 0,
+            "p50": 3.3864974975585938,
+            "p95": 6.711721420288086,
+            "max": 471.94695472717285
+          },
+          "/api/ansible/jobs": {
+            "samples": 464,
+            "errors": 0,
+            "p50": 2.7185678482055664,
+            "p95": 5.217075347900391,
+            "max": 469.5112705230713
+          },
+          "/api/ansible/hosts": {
+            "samples": 464,
+            "errors": 0,
+            "p50": 2.778172492980957,
+            "p95": 4.130125045776367,
+            "max": 455.2299976348877
+          }
+        }
+      },
+      {
+        "run": 2,
+        "syncCalls": 6,
+        "eventLoopMaxMs": 279.707647,
+        "http": {
+          "ok": true,
+          "/login": {
+            "samples": 452,
+            "errors": 0,
+            "p50": 3.3005475997924805,
+            "p95": 6.846427917480469,
+            "max": 410.322904586792
+          },
+          "/api/ansible/jobs": {
+            "samples": 461,
+            "errors": 0,
+            "p50": 2.7341842651367188,
+            "p95": 5.767822265625,
+            "max": 237.75291442871094
+          },
+          "/api/ansible/hosts": {
+            "samples": 460,
+            "errors": 0,
+            "p50": 2.755880355834961,
+            "p95": 4.336357116699219,
+            "max": 400.21300315856934
+          }
+        }
+      },
+      {
+        "run": 3,
+        "syncCalls": 6,
+        "eventLoopMaxMs": 220.463103,
+        "http": {
+          "ok": true,
+          "/login": {
+            "samples": 453,
+            "errors": 0,
+            "p50": 3.248453140258789,
+            "p95": 7.839441299438477,
+            "max": 422.27888107299805
+          },
+          "/api/ansible/jobs": {
+            "samples": 463,
+            "errors": 0,
+            "p50": 2.7382373809814453,
+            "p95": 5.961418151855469,
+            "max": 236.85908317565918
+          },
+          "/api/ansible/hosts": {
+            "samples": 462,
+            "errors": 0,
+            "p50": 2.7408599853515625,
+            "p95": 4.190206527709961,
+            "max": 415.7595634460449
+          }
+        }
+      }
+    ],
+    "after": [
+      {
+        "run": 1,
+        "syncCalls": 0,
+        "eventLoopMaxMs": 233.439231,
+        "http": {
+          "ok": true,
+          "/login": {
+            "samples": 478,
+            "errors": 0,
+            "p50": 3.614187240600586,
+            "p95": 7.087469100952148,
+            "max": 358.15930366516113
+          },
+          "/api/ansible/jobs": {
+            "samples": 490,
+            "errors": 0,
+            "p50": 2.8058290481567383,
+            "p95": 5.682706832885742,
+            "max": 187.4849796295166
+          },
+          "/api/ansible/hosts": {
+            "samples": 467,
+            "errors": 0,
+            "p50": 2.9337406158447266,
+            "p95": 4.6405792236328125,
+            "max": 625.1857280731201
+          }
+        }
+      },
+      {
+        "run": 2,
+        "syncCalls": 0,
+        "eventLoopMaxMs": 221.511679,
+        "http": {
+          "ok": true,
+          "/login": {
+            "samples": 470,
+            "errors": 0,
+            "p50": 3.8878917694091797,
+            "p95": 7.010459899902344,
+            "max": 307.4817657470703
+          },
+          "/api/ansible/jobs": {
+            "samples": 485,
+            "errors": 0,
+            "p50": 2.5408267974853516,
+            "p95": 4.406452178955078,
+            "max": 160.7215404510498
+          },
+          "/api/ansible/hosts": {
+            "samples": 462,
+            "errors": 0,
+            "p50": 2.948880195617676,
+            "p95": 4.865169525146484,
+            "max": 523.5788822174072
+          }
+        }
+      },
+      {
+        "run": 3,
+        "syncCalls": 0,
+        "eventLoopMaxMs": 243.793919,
+        "http": {
+          "ok": true,
+          "/login": {
+            "samples": 496,
+            "errors": 0,
+            "p50": 3.9780139923095703,
+            "p95": 7.769584655761719,
+            "max": 306.4277172088623
+          },
+          "/api/ansible/jobs": {
+            "samples": 509,
+            "errors": 0,
+            "p50": 2.8505325317382812,
+            "p95": 5.510807037353516,
+            "max": 162.29248046875
+          },
+          "/api/ansible/hosts": {
+            "samples": 476,
+            "errors": 0,
+            "p50": 3.1685829162597656,
+            "p95": 5.002021789550781,
+            "max": 530.8434963226318
+          }
+        }
+      }
+    ],
+    "sameHostResponseSha256": "0f51138ac192d779c1393e8ab90bdc76d5a09736615679fe56c1ae9c8f0022d7",
+    "medianMaximumLoginBeforeMs": 422.27888107299805,
+    "medianMaximumLoginAfterMs": 307.4817657470703,
+    "coldHostListTradeoff": "Cold concurrent host-list maxima increased; inventory waiting no longer blocks neighboring requests. No general host-list speedup is claimed."
+  },
+  "pairedArtifacts": {
+    "ok": true,
+    "nativeDownloads": 18,
+    "pdfInputChecks": 18,
+    "fullPdfIdChecks": 6,
+    "sourceSha256": "c6945c01c4f829dc7c3a9ea8d83d9149b172c565eccc4ba376b58b5dd80402a2",
+    "sourceFindingCount": 4135
+  },
+  "legacyArchive": {
+    "ok": true,
+    "activeReports": 33,
+    "archivedReports": 41,
+    "originalFilesUnchanged": 116,
+    "limits": {
+      "cpu": 2,
+      "memoryBytes": 3221225472,
+      "containerSwap": false
+    },
+    "runs": [
+      {
+        "kind": "before",
+        "run": 1,
+        "phaseMs": [
+          468.1,
+          4038.92,
+          10.83,
+          4008.88
+        ],
+        "maxNeighborMs": 4410.09,
+        "memoryPeakBytes": 2736254976,
+        "oom": false,
+        "responseSha256": [
+          "fec8c142c619ed21f81d1ab4b3e3c84241945754677d907f871d1bedc8a83e6e",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "101b9248215f2c8eed7e85b54c1ea956266b551b93dd2c3587d1fb6ed0d4ae6c"
+        ]
+      },
+      {
+        "kind": "before",
+        "run": 2,
+        "phaseMs": [
+          285.59,
+          3336.21,
+          11.08,
+          4129.79
+        ],
+        "maxNeighborMs": 4059.29,
+        "memoryPeakBytes": 2766045184,
+        "oom": false,
+        "responseSha256": [
+          "fec8c142c619ed21f81d1ab4b3e3c84241945754677d907f871d1bedc8a83e6e",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "101b9248215f2c8eed7e85b54c1ea956266b551b93dd2c3587d1fb6ed0d4ae6c"
+        ]
+      },
+      {
+        "kind": "before",
+        "run": 3,
+        "phaseMs": [
+          412.02,
+          4093.21,
+          10.17,
+          3955.59
+        ],
+        "maxNeighborMs": 4408.47,
+        "memoryPeakBytes": 2935169024,
+        "oom": false,
+        "responseSha256": [
+          "fec8c142c619ed21f81d1ab4b3e3c84241945754677d907f871d1bedc8a83e6e",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "101b9248215f2c8eed7e85b54c1ea956266b551b93dd2c3587d1fb6ed0d4ae6c"
+        ]
+      },
+      {
+        "kind": "after",
+        "run": 1,
+        "phaseMs": [
+          488.32,
+          3875.11,
+          2.8,
+          95.26
+        ],
+        "maxNeighborMs": 93.63,
+        "memoryPeakBytes": 2565922816,
+        "oom": false,
+        "responseSha256": [
+          "fec8c142c619ed21f81d1ab4b3e3c84241945754677d907f871d1bedc8a83e6e",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "101b9248215f2c8eed7e85b54c1ea956266b551b93dd2c3587d1fb6ed0d4ae6c"
+        ]
+      },
+      {
+        "kind": "after",
+        "run": 2,
+        "phaseMs": [
+          484.55,
+          3356.14,
+          2.49,
+          96.39
+        ],
+        "maxNeighborMs": 85.71,
+        "memoryPeakBytes": 2630922240,
+        "oom": false,
+        "responseSha256": [
+          "fec8c142c619ed21f81d1ab4b3e3c84241945754677d907f871d1bedc8a83e6e",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "101b9248215f2c8eed7e85b54c1ea956266b551b93dd2c3587d1fb6ed0d4ae6c"
+        ]
+      },
+      {
+        "kind": "after",
+        "run": 3,
+        "phaseMs": [
+          313.23,
+          2817.27,
+          3.0,
+          52.44
+        ],
+        "maxNeighborMs": 30.39,
+        "memoryPeakBytes": 2396745728,
+        "oom": false,
+        "responseSha256": [
+          "fec8c142c619ed21f81d1ab4b3e3c84241945754677d907f871d1bedc8a83e6e",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "0409553a2629634efab01de2b77cf23e89faa85c652204e6acbc777bfccaca57",
+          "101b9248215f2c8eed7e85b54c1ea956266b551b93dd2c3587d1fb6ed0d4ae6c"
+        ]
+      }
+    ],
+    "phaseOrder": [
+      "active list",
+      "cold archive list",
+      "warm archive list",
+      "dependency preview"
+    ],
+    "identicalApiBytesAcrossAllSixRuns": true,
+    "defaultHeapValidation": {
+      "ok": true,
+      "workerOldGenerationRequestedMb": 1536,
+      "parentMaxOldSpaceOverride": false,
+      "runs": [
+        {
+          "run": 1,
+          "phaseMs": [
+            611.4,
+            4043.12,
+            3.07,
+            96.94
+          ],
+          "maxNeighborMs": 95.0,
+          "memoryPeakBytes": 2905042944,
+          "oom": false
+        },
+        {
+          "run": 2,
+          "phaseMs": [
+            364.22,
+            2311.66,
+            2.82,
+            53.87
+          ],
+          "maxNeighborMs": 24.22,
+          "memoryPeakBytes": 2232467456,
+          "oom": false
+        },
+        {
+          "run": 3,
+          "phaseMs": [
+            303.54,
+            2307.33,
+            2.67,
+            54.94
+          ],
+          "maxNeighborMs": 58.16,
+          "memoryPeakBytes": 2206994432,
+          "oom": false
+        }
+      ],
+      "identicalApiBytesAcrossAllNineRuns": true
+    }
+  },
+  "realThreeHosts": {
+    "ok": true,
+    "runtimeImage": "sha256:937eebf397a75380fe4074f4fb69c9d4c64f2167bc68677f65b783acd33bf0c3",
+    "rounds": [
+      {
+        "action": "lynisTemporaryAudit",
+        "concurrency": 3,
+        "seconds": 509.514,
+        "jobDurationsSeconds": [
+          508.864,
+          504.72,
+          503.574
+        ],
+        "allAuditsOverlapped": true,
+        "findingCounts": [
+          43,
+          43,
+          43
+        ],
+        "pdfs": 3,
+        "nativeDownloads": 3,
+        "sourceBytesAndPdfFindingIdsVerified": true
+      },
+      {
+        "action": "sshCryptoAudit",
+        "concurrency": 3,
+        "seconds": 3.056,
+        "jobDurationsSeconds": [
+          2.479,
+          2.494,
+          2.465
+        ],
+        "allAuditsOverlapped": true,
+        "findingCounts": [
+          6,
+          6,
+          6
+        ],
+        "pdfs": 3,
+        "nativeDownloads": 3,
+        "sourceBytesAndPdfFindingIdsVerified": true
+      }
+    ],
+    "readRequests": 3049,
+    "readErrors": 0,
+    "readMaxMs": 722.13,
+    "offlineHmacEntries": 32,
+    "preservedPriorHmacEntries": 26,
+    "preservedPriorReportFiles": 45,
+    "allTestGuestsStopped": true,
+    "testControllerStopped": true,
+    "mainDataUnchanged": true,
+    "finalControllerCgroupStatisticsUnavailableAfterStop": true,
+    "finalControllerOomKilled": false
+  },
+  "browser": {
+    "ok": true,
+    "navigation": [
+      {
+        "route": "/hosts",
+        "ms": 136
+      },
+      {
+        "route": "/reports",
+        "ms": 532
+      },
+      {
+        "route": "/hosts",
+        "ms": 65
+      }
+    ],
+    "activeAtStart": 3,
+    "activeAtEnd": 3,
+    "reloadVerified": true,
+    "javascriptErrors": 0,
+    "unexpectedRequestFailures": 0
+  },
+  "memory": {
+    "guardThresholdBytes": 2147483648,
+    "minimumAvailableBytes": 3160969216,
+    "guardTripped": false
+  },
+  "promotion": {
+    "image": "sha256:79cee278f3ac4c96c64e5782a053b8ade478c1d7f5686bcf88e1a53785559902",
+    "revision": "89b25ac5506985adde50db702988d108cd86dd45",
+    "runtimeBuiltFrom": "05b2c5b892e81f56370b9e870eaf605299a526ab",
+    "runtimeLayersUnchanged": true,
+    "metadataOnlyPromotion": true,
+    "verifiedRuntimeImage": "sha256:937eebf397a75380fe4074f4fb69c9d4c64f2167bc68677f65b783acd33bf0c3",
+    "changedOnlyCiFiles": [
+      ".github/workflows/debian-tracker-live.yml",
+      ".github/workflows/dependency-track-sources.yml",
+      ".github/workflows/dependency-track.yml",
+      ".github/workflows/linux-deb-vm-integration.yml",
+      ".github/workflows/openscap.yml",
+      "deployment/lab/verify-trivy-matching.sh"
+    ]
+  },
+  "ci": {
+    "state": "passed",
+    "revision": "89b25ac5506985adde50db702988d108cd86dd45",
+    "checks": 28,
+    "workflows": 20,
+    "nativeAstraRerun": {
+      "run": 43242930552,
+      "attempt": 2,
+      "firstAttempt": "timeout installing OpenSCAP in disposable CI guest before HCP audit",
+      "finalResult": "success"
+    }
+  },
+  "installation": {
+    "previousImage": "sha256:fe8d8b1a79f08837161bc913fb3434fae3eba6d3b574f1617d0abbd8916eec45",
+    "image": "sha256:79cee278f3ac4c96c64e5782a053b8ade478c1d7f5686bcf88e1a53785559902",
+    "revision": "89b25ac5506985adde50db702988d108cd86dd45",
+    "checkedTables": 13,
+    "checkedReportFiles": 119,
+    "ok": true,
+    "dataAndConfigurationPreserved": true,
+    "composeDefaultTagUpdated": true,
+    "postInstall": {
+      "ok": true,
+      "phase": "after",
+      "responses": [
+        {
+          "kind": "hosts",
+          "sha256": "b7ca8f903c46cd334d89f5ca19f0fab055577c6713216717f09bc154df15e259",
+          "ms": 234.72
+        },
+        {
+          "kind": "active",
+          "sha256": "01e24a9083b4b6911255a4e404ac1441eecfebcc0669958e9215d9f52436c898",
+          "ms": 3.49
+        },
+        {
+          "kind": "archive",
+          "sha256": "30da4c53a6f103979e3c2611a1e05beb6ff5b42dbad9809db1b05cd6ba084a93",
+          "ms": 2.92
+        }
+      ],
+      "pdfFindingIdsVerified": 4135,
+      "originalXmlDigestVerified": true,
+      "pageCount": 7,
+      "unauthenticatedDenied": true,
+      "activeReports": 34
+    },
+    "desktopBrowser": {
+      "ok": true,
+      "pages": 7,
+      "jsErrors": 0,
+      "onlyExpectedNavigationAborts": true
+    },
+    "finalSourceDataAndConfigurationPreserved": true
+  },
+  "remaining": [
+    "Original rare 6.96s maximum not directly reproduced",
+    "Cold archive generation still takes seconds",
+    "Synchronous detail and transaction paths not fully profiled",
+    "No three simultaneous full Astra OVAL scans",
+    "No independent external backup/anchors or DR acceptance",
+    "Existing dependency/CVE and operator approval items remain"
+  ],
+  "beforeUpgradeBackup": {
+    "ok": true,
+    "image": "sha256:fe8d8b1a79f08837161bc913fb3434fae3eba6d3b574f1617d0abbd8916eec45",
+    "revision": "5c536e1ad44b5f08e4e8f74e3e42d543a24371d0",
+    "manifestSha256": "94e756bff7c37b42140187103b0dae7307953d7c9109525bffd8689cff61c339",
+    "reportsPreserved": 119,
+    "checkedTables": 13,
+    "primaryPauseSeconds": 46.991,
+    "healthyAtEnd": true,
+    "separateMachineStorage": false,
+    "isolatedRestore": {
+      "ok": true,
+      "reportCount": 34,
+      "restoredLoginAndAuthCsrfVerified": true,
+      "previouslyValidRestoredCookieRejectedAfterRevocation": true,
+      "sourceDataPreserved": true,
+      "primaryHealthyAtEnd": true,
+      "offlineHmacEntries": 277
+    }
+  }
+}

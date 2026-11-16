@@ -2,7 +2,10 @@
 from copy import deepcopy
 import json
 import os
+import shutil
+import subprocess
 import tempfile
+import time
 from pathlib import Path
 import unittest
 
@@ -524,6 +527,75 @@ class NativeAstra17AuditTests(unittest.TestCase):
             audit.native_guest_scap_schema_presence(
                 lambda *_a, **_k: "guest-private-path-UNKNOWN\n")
 
+    def test_guest_apt_is_ci_only_bounded_and_reports_safe_failure_codes(self):
+        from unittest.mock import patch
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                                     "RUNNER_ENVIRONMENT": "self-hosted"}):
+            with self.assertRaisesRegex(RuntimeError, "native_apt_forbidden_outside_ci"):
+                audit.native_guest_apt(lambda *_a, **_k: self.fail("APT started"), ["update"], {"nativeHcp": {}})
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                                     "RUNNER_ENVIRONMENT": "github-hosted"}):
+            calls = []
+            def guest(command, timeout):
+                calls.append(command)
+                self.assertEqual(timeout, 900)
+                self.assertIn("timeout --kill-after=10s 840s apt-get", command)
+                self.assertIn("Acquire::Retries=2", command)
+                self.assertIn("Acquire::http::Timeout=35", command)
+                self.assertIn("Acquire::https::Timeout=35", command)
+                self.assertIn("DEBIAN_FRONTEND=noninteractive", command)
+                self.assertIn("</dev/null", command)
+                return "0\n"
+            proof = {"nativeHcp": {}}
+            audit.native_guest_apt(guest, ["update"], proof)
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(proof["nativeHcp"]["lastGuestApt"], {"operation": "update", "exitCode": 0})
+            for code, reason in [("124", "timeout"), ("137", "killed"), ("100", "failed")]:
+                with self.subTest(code=code), self.assertRaisesRegex(
+                        RuntimeError, "native_vendor_apt_install_" + reason):
+                    audit.native_guest_apt(lambda *_a, **_k: code, ["install", "openscap-common"], proof)
+                self.assertEqual(proof["nativeHcp"]["lastGuestApt"], {"operation": "install", "exitCode": int(code)})
+            with self.assertRaisesRegex(RuntimeError, "native_apt_status_invalid"):
+                audit.native_guest_apt(lambda *_a, **_k: "SECRET private log", ["update"], proof)
+            self.assertEqual(proof["nativeHcp"]["lastGuestApt"], {"operation": "update", "exitCode": None})
+            self.assertNotIn("SECRET", json.dumps(proof))
+
+    def test_guest_apt_remote_deadline_terminates_a_real_stalled_command(self):
+        from unittest.mock import patch
+        self.assertIsNotNone(shutil.which("timeout"))
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            sudo = root / "sudo"
+            sudo.write_text('#!/bin/sh\nshift\nexec "$@"\n')
+            apt = root / "apt-get"
+            apt.write_text('#!/bin/sh\necho SECRET >&2\nsleep 60 &\necho $! > "$APT_CHILD_PID"\nwait\n')
+            sudo.chmod(0o700)
+            apt.chmod(0o700)
+            def guest(command, timeout):
+                self.assertIn("840s", command)
+                command = command.replace("840s", "0.5s").replace("10s", "0.1s")
+                result = subprocess.run(["/bin/sh", "-c", command], timeout=3,
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn("SECRET", result.stdout + result.stderr)
+                return result.stdout
+            started = time.monotonic()
+            with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
+                                         "RUNNER_ENVIRONMENT": "github-hosted",
+                                         "APT_CHILD_PID": str(root / "child.pid"),
+                                         "PATH": tmp + os.pathsep + os.environ["PATH"]}):
+                with self.assertRaisesRegex(RuntimeError, "native_vendor_apt_update_timeout"):
+                    audit.native_guest_apt(guest, ["update"], {"nativeHcp": {}})
+            self.assertLess(time.monotonic() - started, 3)
+            child = (root / "child.pid").read_text().strip()
+            process = Path("/proc") / child / "stat"
+            try:
+                state = process.read_text().split()[2]
+            except FileNotFoundError:
+                pass
+            else:
+                self.assertEqual(state, "Z", "APT child survived deadline")
+
     def test_schema_dependency_only_installs_vendor_package_in_disposable_ci(self):
         from unittest.mock import patch
         queries = []
@@ -536,13 +608,12 @@ class NativeAstra17AuditTests(unittest.TestCase):
                 raise RuntimeError("not installed")
             if command.startswith("apt-cache show openscap-common"):
                 return ""
-            if command.startswith("sudo -n apt-get update "):
-                return ""
-            if command.startswith("sudo -n apt-get install "):
-                self.assertIn("--no-install-recommends", command)
-                self.assertIn("--no-upgrade", command)
-                self.assertIn("openscap-common", command)
-                return ""
+            if command.startswith("umask 077; log="):
+                if " install " in command:
+                    self.assertIn("--no-install-recommends", command)
+                    self.assertIn("--no-upgrade", command)
+                    self.assertIn("openscap-common", command)
+                return "0\n"
             raise AssertionError("Unexpected executable or user-host action: " + command)
         proof = {"nativeHcp": {}}
         with patch.dict(os.environ, {
@@ -556,7 +627,7 @@ class NativeAstra17AuditTests(unittest.TestCase):
                          {"xccdf": False, "oval": False, "cpe": False})
         self.assertTrue(proof["nativeHcp"]["vendorOpenScapCommonInstalledForTest"])
         self.assertFalse(proof["nativeHcp"]["vendorOpenScapCommonPreviouslyInstalled"])
-        self.assertEqual(len([q for q in queries if "apt-get install" in q]), 1)
+        self.assertEqual(len([q for q in queries if " install " in q]), 1)
         self.assertNotIn("user host", json.dumps(proof))
         self.assertNotIn("http://", json.dumps(proof))
         self.assertNotIn("https://", json.dumps(proof))

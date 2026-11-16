@@ -3,8 +3,8 @@
 
 For a separate STOPPED restored control node only. This cannot attest Docker
 health, browser authorization, physical SSH, vendor images or firewall rollback.
-Independent manifest and audit-head pins must be retained outside the backup;
-otherwise an untrusted self-consistent copy cannot pass the strict preflight.
+An independent manifest pin is required before opening SQLite. Manifest and
+audit-head pins must be retained outside the backup for a trusted preflight.
 """
 import argparse
 from datetime import datetime, timezone
@@ -61,6 +61,7 @@ def external_output_allowed(output, inputs):
 def run_preflight(backup, runtime, env_file, *,
                   manifest_sha=None, audit_head=None, audit_entries=None,
                   require_full_payload=False):
+    require(manifest_sha is not None, "independent_manifest_pin_required")
     optional_operator_pins(manifest_sha, audit_head, audit_entries)
     moments = {}
     begin = time.monotonic()
@@ -84,8 +85,6 @@ def run_preflight(backup, runtime, env_file, *,
         require(audit["entries"] == audit_entries, "audit_anchor_entry_count_mismatch")
         require(audit["lastEntryHash"] == audit_head, "audit_anchor_head_mismatch")
     problems = []
-    if manifest_sha is None:
-        problems.append("independent_manifest_pin_missing")
     if audit_head is None:
         problems.append("independent_audit_head_pin_missing")
     if not audit["payloadProtectedForAllEntries"]:
@@ -134,7 +133,7 @@ def main(argv=None):
     parser.add_argument("--restored-runtime", required=True)
     parser.add_argument("--env", required=True, help="Original protected restored .env")
     parser.add_argument("--expected-manifest-sha256",
-                        help="Externally retained SHA-256 of the original backup SHA256SUMS")
+                        help="Required: externally retained SHA-256 of the original backup SHA256SUMS")
     parser.add_argument("--expected-head-hmac",
                         help="Externally retained original last HMAC from the stopped controller")
     parser.add_argument("--expected-entry-count", type=int,

@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -175,13 +176,29 @@ class OfflineReadinessTests(unittest.TestCase):
         self.assertNotIn(FAKE_HMAC, proc.stdout + proc.stderr)
         self.assertNotIn(str(self.runtime), proc.stdout + proc.stderr)
 
-    def test_local_self_consistent_archive_without_external_pins_never_gets_complete_status(self):
+    def test_local_self_consistent_archive_without_manifest_pin_is_blocked(self):
         proc = self.cli(include_pins=False)
+        self.assertEqual(proc.returncode, 1, proc.stdout + proc.stderr)
+        result = json.loads(proc.stdout)
+        self.assertEqual(result["status"], "blocked")
+        self.assertEqual(result["reasonCode"], "independent_manifest_pin_required")
+
+    def test_missing_or_wrong_manifest_pin_stops_before_sqlite_and_secrets(self):
+        for digest, reason in ((None, "independent_manifest_pin_required"),
+                               ("0" * 64, "independent_manifest_digest_mismatch")):
+            with self.subTest(digest=digest), \
+                    patch.object(sqlite3, "connect", side_effect=AssertionError("SQLite opened")), \
+                    patch.object(MOD, "read_env_file", side_effect=AssertionError("Secret read")):
+                with self.assertRaises((MOD.ReadinessFailure, MOD.VerificationFailure)) as caught:
+                    MOD.run_preflight(self.backup, self.runtime, self.env, manifest_sha=digest)
+                self.assertEqual(caught.exception.code, reason)
+
+    def test_trusted_archive_without_audit_anchor_remains_incomplete(self):
+        proc = self.cli("--expected-manifest-sha256", self.manifest_sha, include_pins=False)
         self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
         result = json.loads(proc.stdout)
         self.assertEqual(result["status"], "local-preflight-incomplete-authority")
-        self.assertIn("independent_manifest_pin_missing", result["reviewRequired"])
-        self.assertIn("independent_audit_head_pin_missing", result["reviewRequired"])
+        self.assertEqual(result["reviewRequired"], ["independent_audit_head_pin_missing"])
 
     def test_archive_tampering_is_distinct_from_restored_file_mismatch(self):
         with (self.backup / "runtime.tar.gz").open("ab") as stream:

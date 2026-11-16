@@ -84,8 +84,8 @@ export function selectHostAuditNextStep(input: HostAuditWorkflowInput): HostAudi
     action: "Повторить проверку", href: "#ansible-actions", tone: "attention",
   };
   if (assessment.state === "needs_review") return {
-    id: "coverage", title: "Разберите неполные результаты",
-    detail: "Обнаружены неполные, устаревшие, исключённые по идентичности или противоречивые данные. Сверьте применимость профиля и состояние источников до выбора исправлений.",
+    id: "coverage", title: "Проверьте состояние отчётов",
+    detail: "Есть ограничения сбора, устаревшие отчёты или несопоставимые результаты прошлых запусков. Это разные состояния: причина указана у соответствующего отчёта.",
     action: "Открыть сводку", href: `/reports/correlation/${encodeURIComponent(alias)}`, tone: "attention",
   };
   const observedFindings = ["critical", "high", "medium", "low", "unknown"]

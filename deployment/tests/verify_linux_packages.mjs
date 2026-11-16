@@ -207,7 +207,7 @@ export async function main(args = process.argv.slice(2)) {
   const runtime = mkdtempSync(path.join(tmpdir(), "hcp-linux-package-acceptance-"));
   const cache = path.resolve(process.env.HCP_TRIVY_CACHE_DIR || path.join(runtime, "trivy-cache"));
   const protocol = {
-    startedAt: new Date().toISOString(), status: "running", expectedTrivyVersion: "0.74.0",
+    startedAt: new Date().toISOString(), status: "running", expectedTrivyVersion: "0.76.2",
     scope: "Native inventory -> production SBOM -> real Trivy -> saved and normalized HCP report, plus independent vendor-labelled metadata controls",
     installedVulnerablePackages: false,
     controlsOnly: Boolean(controlsOnly), nativeInventoryEvaluated: false,

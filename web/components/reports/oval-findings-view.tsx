@@ -37,7 +37,7 @@ export function OvalFindingsView({ findings, reportId }: { findings: Finding[]; 
   return <section className="space-y-4" aria-label="Обнаруженные уязвимости OVAL">
     <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
       <h2 className="text-lg font-semibold text-white">Обнаруженные уязвимости</h2>
-      <p className="mt-2 text-sm leading-6 text-slate-400">Общее действие: проверьте бюллетени Astra и доступные обновления затронутых пакетов. После обновления повторите аудит. Разные определения одной CVE сохранены отдельно: они могут проверять разные пакеты или условия.</p>
+      <p className="mt-2 text-sm leading-6 text-slate-400">Проверьте обновления пакетов; после установки повторите аудит.</p>
       <div className="mt-4 flex flex-wrap gap-2">
         {(Object.keys(labels) as Level[]).map((value) => <button key={value} aria-pressed={level === value}
           onClick={() => { setLevel(value); setPage(1); }}
