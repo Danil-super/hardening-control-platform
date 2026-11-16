@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { closeSync, existsSync, lstatSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync } from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import type { Finding } from "@/types";
@@ -669,8 +669,16 @@ export function hashAnsibleReport(reportId: string) {
   const reportPath = path.join(reportsDir, fileName);
   if (!reportPath.startsWith(reportsDir + path.sep) || !existsSync(reportPath)) return null;
   try {
-    const data = readFileSync(reportPath);
-    return createHash("sha256").update(data).digest("hex");
+    const fd = openSync(reportPath, "r");
+    try {
+      const hash = createHash("sha256"), buffer = Buffer.allocUnsafe(1024 * 1024);
+      for (;;) {
+        const count = readSync(fd, buffer, 0, buffer.length, null);
+        if (!count) break;
+        hash.update(buffer.subarray(0, count));
+      }
+      return hash.digest("hex");
+    } finally { closeSync(fd); }
   } catch {
     return null;
   }
