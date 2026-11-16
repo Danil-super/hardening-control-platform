@@ -30,10 +30,11 @@ PORT = 8088
 # Keep immutable filenames and reviewed SHA-256 values; never resolve "latest".
 SOURCES = {
     "almalinux": {
-        "url": "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/AlmaLinux-9-GenericCloud-9.8-20261005.x86_64.qcow2",
+        # Minor releases leave the rolling repository; the vault retains this pinned image.
+        "url": "https://vault.almalinux.org/9.8/cloud/x86_64/images/AlmaLinux-9-GenericCloud-9.8-20261005.x86_64.qcow2",
         "sha256": "25942b554efaac077e2f60d6bb27bd3332c171454cc21bbd33e5f79244d7570f",
         "bytes": 572850176,
-        "checksumUrl": "https://repo.almalinux.org/almalinux/9/cloud/x86_64/images/CHECKSUM",
+        "checksumUrl": "https://vault.almalinux.org/9.8/cloud/x86_64/images/CHECKSUM",
     },
     "rocky": {
         "url": "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
