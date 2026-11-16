@@ -30,7 +30,8 @@ FROM ${NODE_IMAGE} AS runtime
 
 # Disable the inherited APT retry path until its security update is installed.
 # Explicit base packages are refreshed even when the base image is cached.
-RUN apt-get -o Acquire::Retries=0 update \
+# Refuse partial index downloads instead of installing from incomplete metadata.
+RUN apt-get -o Acquire::Retries=0 -o APT::Update::Error-Mode=any update \
   && apt-get -o Acquire::Retries=0 install -y --no-install-recommends apt libpcre2-8-0 liblzma5 tzdata ansible-core ca-certificates fonts-dejavu-core iproute2 iputils-ping lynis nmap openscap-scanner openssh-client python3 python3-paramiko python3-reportlab python3-venv util-linux \
   && dpkg --compare-versions "$(dpkg-query -W -f='${Version}' apt)" ge 2.6.2 \
   && rm -rf /var/lib/apt/lists/*
