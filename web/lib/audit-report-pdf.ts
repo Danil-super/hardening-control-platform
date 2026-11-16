@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { readAnsibleReport, type AnsibleReportDetail } from "@/lib/ansible-reports";
 import { readNativeReportFile } from "@/lib/native-report-storage";
 import { runPdfRenderer } from "@/lib/project-report";
@@ -39,7 +40,7 @@ export async function renderAuditReportPdf(reportId: string) {
     const report = readAnsibleReport(reportId);
     if (!report) return null;
     const original = readNativeReportFile(report.path, 64 * 1024 * 1024);
-    if (JSON.stringify(JSON.parse(original.toString("utf8"))) !== JSON.stringify(report.raw)) throw new Error("report_changed");
+    if (!isDeepStrictEqual(JSON.parse(original.toString("utf8")), report.raw)) throw new Error("report_changed");
     return auditPdfSnapshot(report, createHash("sha256").update(original).digest("hex"));
   });
   if (!snapshot) return null;
