@@ -1,5 +1,7 @@
 """Offline contract/negative checks; actual Astra 1.7 CI is separate."""
 from copy import deepcopy
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import os
 import shutil
@@ -545,7 +547,7 @@ class NativeAstra17AuditTests(unittest.TestCase):
                 self.assertIn("Acquire::https::Timeout=35", command)
                 self.assertIn("DEBIAN_FRONTEND=noninteractive", command)
                 self.assertIn("</dev/null", command)
-                return "0\n"
+                return "0|0|0\n"
             proof = {"nativeHcp": {}}
             audit.native_guest_apt(guest, ["update"], proof)
             self.assertEqual(len(calls), 1)
@@ -553,7 +555,7 @@ class NativeAstra17AuditTests(unittest.TestCase):
             for code, reason in [("124", "timeout"), ("137", "killed"), ("100", "failed")]:
                 with self.subTest(code=code), self.assertRaisesRegex(
                         RuntimeError, "native_vendor_apt_install_" + reason):
-                    audit.native_guest_apt(lambda *_a, **_k: code, ["install", "openscap-common"], proof)
+                    audit.native_guest_apt(lambda *_a, **_k: code + "|0|0", ["install", "openscap-common"], proof)
                 self.assertEqual(proof["nativeHcp"]["lastGuestApt"], {"operation": "install", "exitCode": int(code)})
             with self.assertRaisesRegex(RuntimeError, "native_apt_status_invalid"):
                 audit.native_guest_apt(lambda *_a, **_k: "SECRET private log", ["update"], proof)
@@ -568,7 +570,7 @@ class NativeAstra17AuditTests(unittest.TestCase):
             sudo = root / "sudo"
             sudo.write_text('#!/bin/sh\nshift\nexec "$@"\n')
             apt = root / "apt-get"
-            apt.write_text('#!/bin/sh\necho SECRET >&2\nsleep 60 &\necho $! > "$APT_CHILD_PID"\nwait\n')
+            apt.write_text('#!/bin/sh\necho "Get:1 SECRET private package origin" >&2\necho "Temporary failure resolving SECRET" >&2\nsleep 60 &\necho $! > "$APT_CHILD_PID"\nwait\n')
             sudo.chmod(0o700)
             apt.chmod(0o700)
             def guest(command, timeout):
@@ -580,12 +582,16 @@ class NativeAstra17AuditTests(unittest.TestCase):
                 self.assertNotIn("SECRET", result.stdout + result.stderr)
                 return result.stdout
             started = time.monotonic()
+            output = StringIO()
             with patch.dict(os.environ, {"GITHUB_ACTIONS": "true",
                                          "RUNNER_ENVIRONMENT": "github-hosted",
                                          "APT_CHILD_PID": str(root / "child.pid"),
-                                         "PATH": tmp + os.pathsep + os.environ["PATH"]}):
+                                         "PATH": tmp + os.pathsep + os.environ["PATH"]}), redirect_stdout(output):
                 with self.assertRaisesRegex(RuntimeError, "native_vendor_apt_update_timeout"):
                     audit.native_guest_apt(guest, ["update"], {"nativeHcp": {}})
+            self.assertIn("phase=download", output.getvalue())
+            self.assertIn("error=dns", output.getvalue())
+            self.assertNotIn("SECRET", output.getvalue())
             self.assertLess(time.monotonic() - started, 3)
             child = (root / "child.pid").read_text().strip()
             process = Path("/proc") / child / "stat"
@@ -613,7 +619,7 @@ class NativeAstra17AuditTests(unittest.TestCase):
                     self.assertIn("--no-install-recommends", command)
                     self.assertIn("--no-upgrade", command)
                     self.assertIn("openscap-common", command)
-                return "0\n"
+                return "0|0|0\n"
             raise AssertionError("Unexpected executable or user-host action: " + command)
         proof = {"nativeHcp": {}}
         with patch.dict(os.environ, {

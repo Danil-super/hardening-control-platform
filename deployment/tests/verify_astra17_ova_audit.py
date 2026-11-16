@@ -180,6 +180,35 @@ def native_guest_scap_schema_presence(native_ssh):
                     (digit == "1" for digit in raw.split(","))))
 
 
+GUEST_APT_DIAGNOSTIC = """import os, sys
+phase = 0
+error = 0
+try:
+    with open(sys.argv[2], 'rb') as log:
+        log.seek(max(0, os.fstat(log.fileno()).st_size - 65536))
+        lines = log.read(65536).decode('utf-8', 'replace').splitlines()
+    for line in lines:
+        if line.startswith(('Reading package lists', 'Building dependency tree', 'Reading state information')):
+            phase = 1
+        elif line.startswith(('Get:', 'Hit:', 'Ign:', 'Err:', 'Fetched ')):
+            phase = 2
+        elif line.startswith(('Selecting ', 'Preparing to unpack', 'Unpacking ')):
+            phase = 3
+        elif line.startswith(('Setting up ', 'Processing triggers')):
+            phase = 4
+        for code, markers in enumerate((('Temporary failure resolving',),
+                ('Could not connect', 'Connection refused'), ('Connection timed out',),
+                ('Could not get lock', 'Unable to acquire'), ('No space left on device',),
+                ('Permission denied', 'Operation not permitted'),
+                ('dpkg: error', 'dpkg was interrupted')), 1):
+            if any(marker in line for marker in markers):
+                error = code
+except OSError:
+    pass
+print(sys.argv[1] + '|' + str(phase) + '|' + str(error))
+"""
+
+
 def native_guest_apt(native_ssh, arguments, protocol):
     demand(os.environ.get("GITHUB_ACTIONS") == "true"
            and os.environ.get("RUNNER_ENVIRONMENT") == "github-hosted",
@@ -192,14 +221,20 @@ def native_guest_apt(native_ssh, arguments, protocol):
     status = native_ssh(
         "umask 077; log=$(mktemp) || exit 1; "
         "trap 'rm -f \"$log\"' EXIT; code=0; "
-        "sudo -n env DEBIAN_FRONTEND=noninteractive "
+        "sudo -n env DEBIAN_FRONTEND=noninteractive LC_ALL=C "
         "timeout --kill-after=10s 840s apt-get "
         "-o Acquire::Retries=2 -o Acquire::http::Timeout=35 "
         "-o Acquire::https::Timeout=35 " + shlex.join(arguments) +
-        " </dev/null >\"$log\" 2>&1 || code=$?; printf '%s\\n' \"$code\"",
+        " </dev/null >\"$log\" 2>&1 || code=$?; python3 -c "
+        + shlex.quote(GUEST_APT_DIAGNOSTIC) + " \"$code\" \"$log\"",
         timeout=900).strip()
-    demand(re.fullmatch(r"(?:0|[1-9][0-9]{0,2})", status)
-           and int(status) <= 255, "native_apt_status_invalid")
+    parsed = re.fullmatch(r"(0|[1-9][0-9]{0,2})\|([0-4])\|([0-7])", status)
+    demand(parsed is not None and int(parsed[1]) <= 255, "native_apt_status_invalid")
+    status = parsed[1]
+    phase = ("unknown", "resolve", "download", "unpack", "configure")[int(parsed[2])]
+    error = ("unknown", "dns", "connect", "timeout", "lock", "space", "permission", "dpkg")[int(parsed[3])]
+    print("NATIVE GUEST APT: operation=" + arguments[0] + " exitCode=" + status
+          + " phase=" + phase + " error=" + error, flush=True)
     observation["exitCode"] = int(status)
     reason = {"124": "timeout", "137": "killed"}.get(status, "failed")
     demand(status == "0", "native_vendor_apt_" + arguments[0] + "_" + reason)
