@@ -173,6 +173,7 @@ try {
   await request("/api/ansible/hosts", { auth: false, status: 401 });
   await request("/api/ansible/session", { auth: false, status: 401 });
   await request("/api/settings/astra-oval", { auth: false, status: 401 });
+  await request("/api/settings/astra-oval/catalog", { method: "POST", auth: false, body: { groupName: "linux_hosts", release: "1.7" }, status: 401 });
   await request("/api/ansible/hosts/oval-preparation?alias=smoke", { auth: false, status: 401 });
   await request(`/api/ansible/reports/${ovalReportId}/native?format=xml`, { auth: false, status: 401 });
   await request(`/api/ansible/reports/${reportId}/pdf`, { auth: false, status: 401 });
@@ -182,6 +183,8 @@ try {
   const login = await request("/api/ansible/auth/login", { method: "POST", body: { password: "http-smoke-password" }, auth: false });
   cookie = login.headers.get("set-cookie").split(";", 1)[0];
   assert.match(cookie, /^hcp_admin_session=/);
+  await request("/api/settings/astra-oval/catalog", { method: "POST", origin: "https://foreign.invalid", body: { groupName: "linux_hosts", release: "1.7" }, status: 403 });
+  await request("/api/settings/astra-oval/catalog", { method: "POST", body: { groupName: "linux_hosts", release: "9.9" }, status: 400 });
   await request("/api/ansible/session");
   // Exercise cold metadata before another endpoint can warm the server cache.
   const reportList = await (await request("/api/ansible/reports")).json();
