@@ -594,7 +594,7 @@
                       visible[key] = value
                   elif "xt" in expression:
                       xt = expression["xt"]
-                      if not isinstance(xt, dict) or set(xt) != {"type", "name"} or xt["type"] != "match" or xt["name"] not in {"conntrack", "icmp", "icmp6", "addrtype", "hl", "rt"}:
+                      if not isinstance(xt, dict) or set(xt) != {"type", "name"} or xt["type"] != "match" or xt["name"] not in {"conntrack", "icmp", "icmp6", "addrtype", "hl", "rt", "tcp", "udp"}:
                           raise ValueError("unsupported xt projection")
                       if xt["name"] in modules:
                           raise ValueError("duplicate xt extension")
@@ -612,7 +612,7 @@
               return {"visible": visible, "modules": modules, "limit": limit, "verdict": verdict, "comment": comment}
 
 
-          def compat_iptables_rule_shape(words, family):
+          def compat_iptables_rule_shape(words, family, legacy_transport=False):
               visible, modules, seen_modules, options = {}, [], set(), set()
               limit, states, comment, verdict, current = None, None, None, None, None
               index = 2
@@ -644,6 +644,8 @@
                       if value in {"tcp", "udp"}:
                           if visible.get("l4proto") != value:
                               raise ValueError("decoded protocol/module mismatch")
+                          if legacy_transport:
+                              modules.append(value)
                       elif value == "limit":
                           limit = [3, "hour", 5]
                       elif value != "comment":
@@ -679,7 +681,7 @@
               return {"visible": visible, "modules": modules, "limit": limit, "verdict": verdict, "comment": comment}, states
 
 
-          def compat_conntrack_projection(entries, family, output):
+          def compat_conntrack_projection(entries, family, output, input_only=False):
               decoded, policies = {}, {}
               for raw in output.splitlines():
                   if not raw.strip():
@@ -724,6 +726,16 @@
                       raise ValueError("unmapped compatibility table object")
               if tables != 1 or set(chains) != set(decoded) or not {"INPUT", "FORWARD", "OUTPUT"}.issubset(chains):
                   raise ValueError("compatibility chain/table coverage mismatch")
+              # Only chains reachable from INPUT contribute to this model. Keep
+              # other hooks in the native graph, without decoding their predicates.
+              reachable, pending = set(), ["INPUT"]
+              while pending:
+                  name = pending.pop()
+                  if name in reachable:
+                      continue
+                  reachable.add(name)
+                  for rule in rules.get(name, []):
+                      pending.extend(expression[kind]["target"] for expression in rule["expr"] for kind in ("jump", "goto") if kind in expression)
               restored = {}
               for name, chain in chains.items():
                   policy = policies[name]
@@ -734,9 +746,21 @@
                       raise ValueError("unmapped base chain")
                   if len(rules[name]) != len(decoded[name]) or len(rules[name]) > 4096:
                       raise ValueError("compatibility rule count mismatch")
+                  if input_only and name not in reachable:
+                      continue
                   for index, (rule, words) in enumerate(zip(rules[name], decoded[name])):
                       native_shape = compat_native_rule_shape(rule)
-                      decoded_shape, states = compat_iptables_rule_shape(words, family)
+                      transport = next((module for module in native_shape["modules"] if module in {"tcp", "udp"}), None)
+                      decoded_shape, states = compat_iptables_rule_shape(words, family, legacy_transport=transport is not None)
+                      ports = {}
+                      if transport:
+                          if native_shape["modules"] != [transport] or native_shape["visible"].get("l4proto") != transport:
+                              raise ValueError("unsupported hidden transport combination")
+                          for field in ("sport", "dport"):
+                              if field in native_shape["visible"]:
+                                  raise ValueError("duplicate hidden transport predicate")
+                              if field in decoded_shape["visible"]:
+                                  ports[field] = decoded_shape["visible"].pop(field)
                       if native_shape != decoded_shape:
                           raise ValueError("native/decoded visible rule projection mismatch")
                       if states is not None:
@@ -745,6 +769,10 @@
                           if native_shape["modules"] != ["conntrack"] or set(native_shape["visible"]) - {"l4proto"} or native_shape["comment"] is not None or native_shape["verdict"][0] not in {"accept", "drop", "return", "jump"}:
                               raise ValueError("conntrack enrichment shape not supported")
                           restored[(family, "filter", name, index)] = {"set": [state.lower() for state in states]}
+                      if transport:
+                          replacement = [{"match": {"op": "==", "left": {"payload": {"protocol": transport, "field": field}}, "right": port}} for field, port in ports.items()]
+                          rule["expr"] = [part for expression in rule["expr"] for part in
+                                          (replacement if expression == {"xt": {"type": "match", "name": transport}} else [expression])]
               return restored
 
 
@@ -757,15 +785,77 @@
               return value
 
 
+          def nft_legacy_extension_names(output):
+              """Join nft 0.9.6 debug names to JSON by rule handle, never by chain name."""
+              boundary = re.search(r'(?m)^\{"nftables"\s*:', output)
+              if boundary is None:
+                  raise ValueError("legacy nft JSON boundary missing")
+              data = json.loads(output[boundary.start():])
+              entries = data["nftables"]
+              if not isinstance(entries, list) or len(entries) > 10000:
+                  raise ValueError("legacy nft observation exceeds bounds")
+              metadata = [entry["metainfo"] for entry in entries if "metainfo" in entry]
+              if len(metadata) != 1 or metadata[0].get("version") != "0.9.6":
+                  raise ValueError("unverified legacy nft debug version")
+              blocks, current = {}, None
+              revisions = {"conntrack": 3, "tcp": 0, "udp": 0, "icmp": 0, "icmp6": 0,
+                           "rt": 0, "hl": 0, "addrtype": 1, "LOG": 0, "REJECT": 0}
+              for line in output[:boundary.start()].splitlines():
+                  if not line.strip():
+                      continue
+                  if not line.startswith(" "):
+                      header = re.fullmatch(r"(ip6?|inet|arp|bridge|netdev) ([A-Za-z0-9_.-]+) ([A-Za-z0-9_.-]+) ([1-9][0-9]*)(?: [0-9]+)?\s*", line)
+                      if not header:
+                          raise ValueError("unsupported legacy nft debug header")
+                      family, table, chain, handle = header.groups()
+                      current = (family, table, chain, int(handle))
+                      if current in blocks:
+                          raise ValueError("duplicate legacy nft debug handle")
+                      blocks[current] = []
+                  else:
+                      if current is None or not re.fullmatch(r"  \[ .* \]", line):
+                          raise ValueError("unsupported legacy nft debug statement")
+                      extension = re.fullmatch(r"  \[ (match|target) name ([A-Za-z0-9_-]+) rev ([0-9]+) \]", line)
+                      if extension:
+                          kind, name, revision = extension.groups()
+                          extension = {"type": kind, "name": name}
+                          if revisions.get(name) != int(revision) or (kind == "target") != (name in {"LOG", "REJECT"}):
+                              # Unsupported extensions stay opaque to evaluation.
+                              extension["revision"] = int(revision)
+                          blocks[current].append(extension)
+                      elif line.startswith(("  [ match ", "  [ target ")):
+                          raise ValueError("malformed legacy xt statement")
+              for entry in entries:
+                  rule = entry.get("rule")
+                  if rule is None:
+                      continue
+                  key = (rule["family"], rule["table"], rule["chain"], rule["handle"])
+                  extensions = blocks.pop(key, None)
+                  slots = [expression for expression in rule["expr"] if "xt" in expression]
+                  if extensions is None or len(extensions) != len(slots):
+                      raise ValueError("legacy nft debug/JSON coverage mismatch")
+                  for slot, extension in zip(slots, extensions):
+                      if set(slot) != {"xt"} or slot["xt"] not in (None, extension):
+                          raise ValueError("legacy nft extension mismatch")
+                      slot["xt"] = extension
+              if blocks:
+                  raise ValueError("unmapped legacy nft debug rules")
+              return json.dumps(data)
+
+
           def nft_compat_observations(initial_output, proof):
               """Bounded repeated observations, not an atomic kernel snapshot lock."""
               try:
                   before_generation = nft_ruleset_generation()
                   if before_generation is None:
                       raise ValueError("nft generation unavailable")
-                  code, before, error = run(["nft", "-j", "list", "ruleset"])
+                  legacy = any(expression == {"xt": None} for entry in json.loads(initial_output)["nftables"] for expression in entry.get("rule", {}).get("expr", []))
+                  command = ["nft", "-j", "-d", "netlink", "list", "ruleset"] if legacy else ["nft", "-j", "list", "ruleset"]
+                  code, before, error = run(command)
                   if code != 0 or error or len(before) > 4 * 1024 * 1024:
                       raise ValueError("nft before observation unavailable")
+                  if legacy:
+                      before = nft_legacy_extension_names(before)
                   entries = json.loads(before)["nftables"]
                   if not isinstance(entries, list) or len(entries) > 10000:
                       raise ValueError("nft observation exceeds bounds")
@@ -777,7 +867,7 @@
                   for family in families:
                       binary = "iptables" if family == "ip" else "ip6tables"
                       code, version, error = run([binary, "--version"])
-                      if code != 0 or error or not re.match(r"^" + binary + r" v1\.8\.(?:9|10) \(nf_tables\)\s*$", version):
+                      if code != 0 or error or not re.match(r"^" + binary + (r" v1\.8\.5 \(nf_tables\)\s*$" if legacy else r" v1\.8\.(?:9|10) \(nf_tables\)\s*$"), version):
                           raise ValueError("unverified nf_tables decoder version")
                       versions[family] = version.strip()
                       code, output, error = run([binary, "-S"])
@@ -789,20 +879,24 @@
                       code, output, error = run([binary, "-S"])
                       if code != 0 or error or output != observations[family]:
                           raise ValueError("compatibility observation changed")
-                  code, after, error = run(["nft", "-j", "list", "ruleset"])
+                  code, after, error = run(command)
                   after_generation = nft_ruleset_generation()
                   if code != 0 or error or len(after) > 4 * 1024 * 1024 or before_generation != after_generation:
                       raise ValueError("nft observation generation changed or unavailable")
+                  if legacy:
+                      after = nft_legacy_extension_names(after)
                   if nft_snapshot_semantics(json.loads(before)) != nft_snapshot_semantics(json.loads(after)):
                       raise ValueError("nft observation changed")
                   restored = {}
                   for family in families:
-                      restored.update(compat_conntrack_projection(entries, family, observations[family]))
+                      restored.update(compat_conntrack_projection(entries, family, observations[family], input_only=legacy))
                   proof["compatibility_bridge"] = {"status": "verified", "scope": "repeated_observations_not_atomic_lock", "families": families,
                                                    "generation": before_generation, "decoder_versions": versions, "restored_conntrack_rules": len(restored),
                                                    "native_graph_preserved": True, "nft_semantics_equal": True, "decoded_snapshots_equal": True,
                                                    "decoder_snapshots": observations}
-                  return before, restored
+                  if legacy:
+                      proof["compatibility_bridge"]["extension_names_source"] = "nft_netlink_debug"
+                  return json.dumps({"nftables": entries}), restored
               except (ValueError, KeyError, TypeError, AttributeError, IndexError) as error:
                   proof["compatibility_bridge"] = {"status": "unavailable", "reason": str(error)}
                   return initial_output, {}
@@ -820,11 +914,12 @@
                           for entry in entries for expression in entry.get("rule", {}).get("expr", [])):
                       proof["extensionDetailsMissing"] = True
                   restored_states = {}
-                  if any(expression.get("xt") == {"type": "match", "name": "conntrack"}
+                  if any(expression == {"xt": None} or expression.get("xt") == {"type": "match", "name": "conntrack"}
                          for entry in entries for expression in entry.get("rule", {}).get("expr", [])):
                       output, restored_states = nft_compat_observations(output, proof if proof is not None else {})
                       entries = json.loads(output)["nftables"]
-                      evidence = command_evidence("nftables", output, "")
+                      # Keep the original tool output in evidence; recovered
+                      # names and decoder snapshots are recorded in the proof.
                   chains, inputs = {}, []
                   dormant_tables = set()
                   for entry in entries:
@@ -1599,7 +1694,7 @@
               "scanner": {"source": "agentless", "partial": bool(incomplete_checks), "incompleteChecks": sorted(set(incomplete_checks)), "partialReasons": incomplete_reasons},
               "agentless": {
                   "version": rules.get("audit_rules_version", "0.2.0"),
-                  "evaluatorVersion": "1.3.0",
+                  "evaluatorVersion": "1.3.1",
                   "control": "ansible",
                   "persistentAgent": False,
                   "rulesFile": os.environ.get("AUDIT_RULES_FILE", "ansible/audit-rules/basic-linux.yml"),
