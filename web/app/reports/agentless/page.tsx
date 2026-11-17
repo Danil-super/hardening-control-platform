@@ -1,7 +1,6 @@
-import { AlertTriangle, FileText, Server, ShieldCheck } from "lucide-react";
+import { Server } from "lucide-react";
 import Link from "next/link";
 import { LinkButton } from "@/components/ui/button";
-import { SummaryCard } from "@/components/ui/summary-card";
 import { DeleteRecordButton } from "@/components/reports/delete-record-button";
 import { ArchiveControls } from "@/components/reports/archive-controls";
 import { readIncidents } from "@/lib/ansible-control";
@@ -121,16 +120,6 @@ export default async function AgentlessReportsPage({
   const incidents = readIncidents(journalView);
   const viewHref = (nextReportView: string, nextJournalView: string) => `/reports/agentless?${new URLSearchParams({ ...(hostFilter ? { host: hostFilter } : {}), view: nextReportView, journal: nextJournalView })}`;
   const auditIntegrity = verifyAuditChain();
-  const auditReports = scopedReports.filter((report) => report.mode === "agentless");
-  const latestAuditsByHost = new Map<string, (typeof auditReports)[number]>();
-  for (const report of auditReports) {
-    if (!report.reportTimeValid) continue;
-    const alias = targetAliasFromReport(report);
-    if (!latestAuditsByHost.has(alias)) {
-      latestAuditsByHost.set(alias, report);
-    }
-  }
-  const latestAudits = Array.from(latestAuditsByHost.values());
   const reportsByHost = new Map<string, typeof reports>();
   for (const report of reports) {
     const alias = targetAliasFromReport(report);
@@ -140,8 +129,7 @@ export default async function AgentlessReportsPage({
   }
   const hostRows = Array.from(reportsByHost, ([host, hostReports]) => {
     const latestReport = hostReports[0];
-    const mainAudit = hostReports.find((report) => report.mode === "agentless" && report.reportTimeValid) ?? null;
-    return { host, hostReports, latestReport, mainAudit };
+    return { host, hostReports, latestReport };
   });
   return (
     <div className="space-y-6">
@@ -150,9 +138,7 @@ export default async function AgentlessReportsPage({
 
           <h1 className="mt-2 text-3xl font-semibold text-white">{reportView === "archive" ? "Архив отчётов" : "Отчёты"}</h1>
           <p className="mt-2 max-w-3xl text-slate-400">
-            {hostFilter
-              ? `История всех запусков для хоста ${hostFilter}.`
-              : null}
+            {hostFilter ? `${hostFilter} · ` : ""}Отчётов: {scopedReports.length}
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -164,18 +150,10 @@ export default async function AgentlessReportsPage({
         </div>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-        <SummaryCard label="Всего отчётов" value={scopedReports.length} detail={hostFilter ? "По выбранному хосту" : "Сохранённые результаты"} icon={<FileText size={18} />} />
-        <SummaryCard label="Аудиты" value={auditReports.length} detail="Проверки конфигурации" icon={<ShieldCheck size={18} />} />
-        <SummaryCard label="Высокие риски" value={latestAudits.reduce((sum, report) => sum + report.high, 0)} detail="В последних аудитах" icon={<AlertTriangle size={18} />} />
-      </div>
-
       <section className="overflow-hidden rounded-md border border-slate-800 bg-slate-950/70">
         {hostFilter ? (
           <>
-            <div className="border-b border-slate-800 px-4 py-3 text-sm text-slate-400">
-              Все проверки и отчёты хоста <span className="font-semibold text-slate-200">{hostFilter}</span>. Ненужные тестовые отчёты можно удалить; записи, уже используемые в плане устранения, изменении или итоговом PDF, защищены от удаления.
-            </div>
+            <details className="border-b border-slate-800 px-4 py-3 text-xs text-slate-400"><summary className="cursor-pointer text-sky-200">Удаление и архив</summary><p className="mt-2">Связанные с планом, изменениями или итоговым PDF отчёты защищены от удаления. Очистка списка сохраняет доказательства в архиве.</p></details>
             {scopedReports.length ? (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[980px] text-left text-sm">
@@ -204,7 +182,7 @@ export default async function AgentlessReportsPage({
                     </td>
                     <td className="px-4 py-4 text-slate-300">
                       <p>{reportModeLabel(report.mode)}</p>
-                      <p className="mt-1 text-xs text-slate-500">{report.profileId ?? "без профиля"}</p>
+                      {report.profileId && report.profileId !== report.mode ? <p className="mt-1 text-xs text-slate-500">{report.profileId}</p> : null}
                     </td>
                     <td className="px-4 py-4">
                       <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${reportResultTone(report)}`}>
@@ -254,51 +232,38 @@ export default async function AgentlessReportsPage({
           </>
         ) : hostRows.length ? (
           <>
-            <div className="border-b border-slate-800 px-4 py-3 text-sm text-slate-400">
-              Одна строка на хост. Нажмите на имя хоста или «Все тесты», чтобы открыть его полную историю.
-            </div>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[860px] text-left text-sm">
                 <thead className="border-b border-slate-800 bg-slate-900/70 text-xs uppercase text-slate-500">
                   <tr>
                     <th className="px-4 py-3">Хост</th>
-                    <th className="px-4 py-3">Основной аудит</th>
-                    <th className="px-4 py-3">Последний тест</th>
-                    <th className="px-4 py-3">Тестов</th>
+                    <th className="px-4 py-3">Последняя проверка</th>
+                    <th className="px-4 py-3">Результат</th>
+                    <th className="px-4 py-3">Отчётов</th>
                     <th className="px-4 py-3">Действие</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800">
-                  {hostRows.map(({ host, hostReports, latestReport, mainAudit }) => (
+                  {hostRows.map(({ host, hostReports, latestReport }) => (
                     <tr key={host} className="align-top">
                       <td className="px-4 py-4">
                         <Link href={`/reports/agentless?host=${encodeURIComponent(host)}&view=${reportView}&journal=${journalView}`} className="inline-flex items-start gap-3 rounded-md text-left outline-none transition hover:text-sky-200 focus:ring-2 focus:ring-sky-300">
                           <Server size={18} className="mt-0.5 text-sky-200" aria-hidden="true" />
                           <span>
                             <span className="block font-semibold text-white">{host}</span>
-                            <span className="mt-1 block text-xs text-slate-500">Открыть все тесты хоста</span>
                           </span>
                         </Link>
-                      </td>
-                      <td className="px-4 py-4">
-                        {mainAudit ? (
-                          <>
-                            <span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${reportResultTone(mainAudit)}`}>
-                              {reportResultLabel(mainAudit)}
-                            </span>
-                            <p className="mt-1 text-xs text-slate-500">agentless-аудит</p>
-                          </>
-                        ) : <span className="text-slate-500">нет основного аудита</span>}
                       </td>
                       <td className="px-4 py-4 text-slate-300">
                         <p>{reportModeLabel(latestReport.mode)}</p>
                         <p className="mt-1 text-xs text-slate-500">{formatDate(latestReport.createdAt ?? (latestReport.mode === "greenbone" ? null : latestReport.modifiedAt))}</p>
                       </td>
+                      <td className="px-4 py-4"><span className={`inline-flex rounded-md border px-2 py-1 text-xs font-semibold ${reportResultTone(latestReport)}`}>{reportResultLabel(latestReport)}</span></td>
                       <td className="px-4 py-4 text-slate-300">{hostReports.length}</td>
                       <td className="px-4 py-4">
                         <div className="flex flex-wrap gap-2">
                           <LinkButton href={`/reports/correlation/${encodeURIComponent(host)}`} variant="secondary">Сводка</LinkButton>
-                          <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host)}&view=${reportView}&journal=${journalView}`} variant="secondary">Все тесты ({hostReports.length})</LinkButton>
+                          <LinkButton href={`/reports/agentless?host=${encodeURIComponent(host)}&view=${reportView}&journal=${journalView}`} variant="secondary">История</LinkButton>
                         </div>
                       </td>
                     </tr>
@@ -318,7 +283,6 @@ export default async function AgentlessReportsPage({
         <summary className="cursor-pointer p-4 font-semibold text-slate-200">Журнал действий</summary>
         <div className="flex flex-col gap-2 border-b border-slate-800 p-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h2 className="text-lg font-semibold text-white">Журнал действий</h2>
             <p className="mt-1 text-sm text-slate-400">{journalView === "archive" ? "Архив журнала. Полная подписанная история сохранена." : "Очистка убирает записи в архив и сохраняет подписанную историю."}</p>
           </div>
           <div className="flex flex-wrap gap-2"><LinkButton href={viewHref(reportView, journalView === "archive" ? "active" : "archive")} prefetch={false} variant="secondary">{journalView === "archive" ? "Активный журнал" : "Архив журнала"}</LinkButton><ArchiveControls key={journalView} target="journal" archived={journalView === "archive"} /></div>

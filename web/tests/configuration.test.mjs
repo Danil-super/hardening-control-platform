@@ -65,7 +65,8 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.ok(positions.every((position, index) => position >= 0 && (!index || position > positions[index - 1])), "host actions follow selection, audit, result, change, recovery");
   assert.match(reports, /Журнал действий/);
   assert.match(reports, /DeleteRecordButton/);
-  assert.match(reports, /Ненужные тестовые отчёты можно удалить/);
+  assert.match(reports, /Связанные с планом, изменениями или итоговым PDF отчёты защищены от удаления/);
+  assert.match(reports, /Очистка списка сохраняет доказательства в архиве/);
   assert.match(reportDetail, /Что не удалось проверить/);
   assert.match(reportDetail, /Основной аудит профиля/);
   assert.match(dashboard, /Следующий шаг/);

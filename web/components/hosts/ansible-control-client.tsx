@@ -160,10 +160,6 @@ const profileOptions = [
   { id: "docker_host", label: "Docker-хост" },
 ] as const;
 
-const primaryAuditActions = [
-  { id: "ping", label: "Проверить подключение SSH", icon: Server },
-] as const;
-
 const additionalAuditActions = [
   {
     id: "agentlessAudit",
@@ -219,6 +215,13 @@ const additionalAuditActions = [
     requiresConfirmation: true,
   },
   {
+    id: "ping",
+    label: "Подключение SSH — Ansible",
+    group: "Диагностика",
+    description: "Проверяет подключение Ansible к выбранному хосту. Настройки не изменяются.",
+    icon: Server,
+  },
+  {
     id: "collectFacts",
     label: "Сведения о хосте — Ansible",
     group: "Диагностика",
@@ -234,7 +237,7 @@ const additionalAuditActions = [
   },
 ] as const;
 
-const auditActions = [...primaryAuditActions, ...additionalAuditActions] as const;
+const auditActions = additionalAuditActions;
 const additionalAuditGroups = ["CVE и пакеты", "Безопасность и конфигурация", "Диагностика"] as const;
 type AdditionalAuditActionId = (typeof additionalAuditActions)[number]["id"];
 
@@ -1126,9 +1129,6 @@ export function AnsibleControlClient() {
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div>
               <h2 className="text-lg font-semibold text-white">2. Проверки выбранного хоста</h2>
-              <p className="mt-1 text-sm text-slate-400">
-                Хост: <span className="font-semibold text-slate-100">{selectedHost?.alias ?? "не выбран"}</span>
-              </p>
       <HostAuditNextStep
         hosts={hosts?.hosts ?? []}
         host={selectedHost}
@@ -1138,17 +1138,6 @@ export function AnsibleControlClient() {
         recoveryRequired={transactions.some((transaction) => transaction.hostAlias === selectedAlias
           && (transaction.recoveryRequired || ["interrupted", "recovery_ready", "rollback_failed"].includes(transaction.status)))}
       />
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {primaryAuditActions.map((action) => {
-                const Icon = action.icon;
-                return (
-                  <Button key={action.id} variant="secondary" className="max-w-full whitespace-normal" onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
-                    <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
-                    {action.label}
-                  </Button>
-                );
-              })}
             </div>
           </div>
 
