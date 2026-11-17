@@ -141,7 +141,7 @@ export function OpenScapPoliciesClient() {
       <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
         <div>
 
-          <h1 className="mt-2 text-3xl font-semibold text-white">OpenSCAP и исключения</h1>
+          <h1 className="mt-2 text-3xl font-semibold text-white">Профили OpenSCAP</h1>
 
         </div>
         <Button variant="secondary" onClick={() => load(true)} disabled={loading || saving}><RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" />Обновить</Button>
@@ -152,7 +152,7 @@ export function OpenScapPoliciesClient() {
           <ShieldCheck size={22} className="mt-0.5 shrink-0 text-sky-200" aria-hidden="true" />
           <div>
             <h2 id="profile-title" className="text-xl font-semibold text-white">1. Профиль для группы</h2>
-            <p className="mt-1 text-sm leading-6 text-slate-400">Назначьте профиль перед запуском OpenSCAP.</p>
+            <p className="mt-1 text-sm leading-6 text-slate-400">Выберите, какие правила OpenSCAP проверяет на хостах группы. Настройки хостов не меняются.</p>
           </div>
         </div>
         <form className="mt-5 grid grid-cols-1 gap-4 lg:grid-cols-3" onSubmit={(event) => { event.preventDefault(); void submit({ kind: "profile", groupName: policyGroup, datastream: preset === "astra" ? ASTRA_BASELINE_DATASTREAM : datastream, profile: preset === "astra" ? ASTRA_BASELINE_PROFILE : profile }); }}>
@@ -177,7 +177,7 @@ export function OpenScapPoliciesClient() {
       </section>
 
       <section className="rounded-md border border-amber-400/25 bg-amber-500/5 p-5" aria-labelledby="exception-title">
-        <div className="flex gap-3"><FileWarning size={22} className="mt-0.5 shrink-0 text-amber-200" aria-hidden="true" /><div><h2 id="exception-title" className="text-xl font-semibold text-white">2. Исключения</h2><p className="mt-1 text-sm leading-6 text-amber-100">Укажите правило, причину и срок. Исходный риск останется в отчёте.</p></div></div>
+        <div className="flex gap-3"><FileWarning size={22} className="mt-0.5 shrink-0 text-amber-200" aria-hidden="true" /><div><h2 id="exception-title" className="text-xl font-semibold text-white">2. Согласованные исключения</h2><p className="mt-1 text-sm leading-6 text-amber-100">Разрешённое отступление от правила с причиной и сроком. Результат проверки и критичность сохраняются.</p></div></div>
         <details className="mt-4 rounded-md border border-amber-400/20 p-3"><summary className="cursor-pointer text-sm font-semibold text-sky-200">Добавить исключение</summary>
         <form className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-2" onSubmit={async (event) => { event.preventDefault(); const ok = await submit({ kind: "exception", groupName: exceptionGroup, ruleId, reason, expiresAt: `${expiresAt}T23:59:59.999Z` }); if (ok) { setRuleId(""); setReason(""); } }}>
           <label className="min-w-0 text-sm text-slate-300">Группа inventory<Select className={inputClassName} value={exceptionGroup} onValueChange={(value) => setExceptionGroup(value)}>{groups.map((group) => <option key={group} value={group}>{group}</option>)}</Select></label>

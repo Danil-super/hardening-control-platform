@@ -283,6 +283,19 @@ export function normalizeOvalFinding(finding: Finding, vendorMetadata?: { vendor
   return { ...finding, risk: level === "critical" ? "high" : level, severityUnknown: false, severityAssessment: { level, source } };
 }
 
+function normalizeXccdfFinding(finding: Finding): Finding {
+  if (finding.source !== "openscap" || finding.profileId === "astra-oval" || finding.severityAssessment) return finding;
+  // This fixed adapter prefix precedes any imported stdout or free-form prose.
+  const severity = finding.evidence?.match(/^rule=[^;\r\n]+; result=[^;\r\n]+; severity=([^;\r\n]+); instance=/)?.[1].trim().toLowerCase();
+  if (!severity) return finding;
+  if (["critical", "high", "medium", "low"].includes(severity)) {
+    const level = severity as "critical" | "high" | "medium" | "low";
+    return { ...finding, risk: level === "critical" ? "high" : level, severityUnknown: false, severityAssessment: { level, source: "scanner_metadata" } };
+  }
+  if (severity === "moderate") return { ...finding, risk: "medium", severityUnknown: false };
+  return { ...finding, risk: "info", severityUnknown: severity !== "info" };
+}
+
 function reportFindings(parsed: ReportJson, reportPath: string) {
   const metadata = new Map<string, { vendorSeverity?: unknown; cvss3?: unknown }>();
   if (parsed.mode === "astra-oval" && Array.isArray(parsed.scanner?.definitionResults)) {
@@ -295,7 +308,7 @@ function reportFindings(parsed: ReportJson, reportPath: string) {
   const cvss = legacyCvss ? readOvalCvssMetadata(parsed, reportPath) : {};
   for (const [id, value] of Object.entries(cvss)) metadata.set(id, { ...metadata.get(id), cvss3: metadata.get(id)?.cvss3 ?? value });
   return Array.isArray(parsed.findings) ? normalizeLynisFindings(parsed.findings.filter(isFinding)).map((finding) => {
-    const normalized = normalizeOvalFinding(finding, metadata.get(finding.id));
+    const normalized = normalizeOvalFinding(parsed.mode === "openscap" ? normalizeXccdfFinding(finding) : finding, metadata.get(finding.id));
     // Older Trivy/XCCDF adapters kept Critical in their structured evidence but
     // folded it into the high-priority band. Recover the explicit scanner label
     // without interpreting arbitrary prose or unversioned numerical scores.

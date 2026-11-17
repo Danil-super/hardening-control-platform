@@ -724,10 +724,10 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
         finding_id = f"openscap_{identifier}"
         if instance:
             finding_id += "_" + hashlib.sha256(instance.encode()).hexdigest()[:12]
-        findings.append(finding(
+        item = finding(
             identifier=finding_id,
             title=titles.get(identifier, identifier),
-            risk=risk_from_severity(severity) if status == "failed" else "info",
+            risk=risk_from_severity(severity),
             status=status,
             source="openscap",
             description=(
@@ -744,7 +744,13 @@ def openscap_arf(args: argparse.Namespace) -> dict[str, Any]:
             ),
             evidence=f"rule={identifier}; result={result or 'unknown'}; severity={severity or 'unknown'}; instance={instance}"
                      + ("; observation=" + "\n".join(observations) if observations else ""),
-        ))
+        )
+        level = severity.strip().lower()
+        if level in {"critical", "high", "medium", "low"}:
+            item["severityAssessment"] = {"level": level, "source": "scanner_metadata"}
+        elif level not in {"info", "moderate"}:
+            item["severityUnknown"] = True
+        findings.append(item)
 
     partial = not findings or args.exit_code not in {0, 2} or any(item["status"] == "manual" for item in findings)
     partial_reasons = []

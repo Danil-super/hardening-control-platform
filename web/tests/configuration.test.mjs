@@ -231,8 +231,8 @@ test("freshness, group profiles and expiring OpenSCAP exceptions are explicit", 
   assert.match(policies, /exceptionsApplied/);
   assert.match(route, /resolveOpenScapPolicyForHost/);
   assert.match(route, /applyOpenScapExceptions/);
-  assert.match(policyScreen, /2\. Исключения/);
-  assert.match(policyScreen, /Исходный риск останется в отчёте/);
+  assert.match(policyScreen, /2\. Согласованные исключения/);
+  assert.match(policyScreen, /Результат проверки и критичность сохраняются/);
   assert.match(playbook, /hcp_openscap_datastream/);
   assert.match(playbook, /datastream-checksum/);
 });
