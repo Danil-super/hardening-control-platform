@@ -209,7 +209,7 @@ test("operator can use an automatic shared Trivy source or select an offline mod
   assert.match(screen, /Локальная база/);
   assert.match(screen, /Сетевая база/);
   assert.match(screen, /Автоматическое обновление/);
-  assert.match(screen, /Обновить сейчас/);
+  assert.match(screen, /Обновить базу Trivy/);
   assert.match(screen, /Общая база Trivy/);
   assert.match(shell, /data-sources/);
   assert.match(proxy, /api\/settings/);
