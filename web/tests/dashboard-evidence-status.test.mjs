@@ -31,6 +31,12 @@ test("fresh sources with gaps or changed asset identity are not shown as fully a
   }).state, "stale");
 });
 
+test("host detail states the actual counts instead of a generic instruction to clarify results", () => {
+  const result = describeHostAuditEvidence({ alias: "astra", riskSummary: risk({ partialCount: 2, identityExcludedCount: 1 }) });
+  assert.equal(result.state, "needs_review"); assert.equal(result.stateLabel, "Есть ограничения");
+  assert.match(result.detail, /Неполных проверок: 2/); assert.match(result.detail, /Исторических отчётов вне сводки: 1/);
+});
+
 test("separate risk and unknown severity without inventing a security score", () => {
   const hosts = [
     { alias: "a", riskSummary: risk({}) },

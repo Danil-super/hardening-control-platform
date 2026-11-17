@@ -29,6 +29,7 @@ test("host risks combine latest tool results, never the entire history or diagno
   assert.equal(risks.low, 1);
   assert.equal(risks.total, 2);
   assert.equal(risks.auditCount, 2);
+  assert.equal(risks.reviewSources.length, 0);
 });
 
 test("critical and unknown are distinct from high and information; cache detects new evidence", () => {
@@ -55,6 +56,7 @@ test("stale and partial coverage stays visible, including expiry of cached summa
   save("partial", "lynis", [item("suggestion", { source: "lynis", risk: "low", status: "manual" })], 1, { scanner: { available: true, partial: true } });
   assert.equal(summary().staleCount, 1); assert.equal(summary().partialCount, 1);
   assert.equal(summary().low, 1);
+  assert.deepEqual(summary().reviewSources.map(item => item.mode).sort(), ["agentless", "lynis"]);
   const now = Date.now;
   try { Date.now = () => now() + 170 * 3600_000; assert.equal(summary().low, 0); assert.equal(summary().freshCount, 0); }
   finally { Date.now = now; }

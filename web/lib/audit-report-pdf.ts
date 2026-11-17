@@ -25,7 +25,7 @@ export function auditPdfSnapshot(report: AnsibleReportDetail, sourceSha256: stri
     score: report.mode === "lynis" ? report.score : null,
     limitations: auditReportLimitations(raw),
     findings: report.findings.map(item => ({ id: item.id, title: item.title, category: item.category,
-      risk: item.risk, severityUnknown: item.severityUnknown, severityAssessment: item.severityAssessment ? { level: item.severityAssessment.level, source: item.severityAssessment.source } : undefined,
+      risk: item.risk, severityUnknown: item.severityUnknown, severityAssessment: item.severityAssessment ? { level: item.severityAssessment.level, source: item.severityAssessment.source, score: item.severityAssessment.score, version: item.severityAssessment.version } : undefined,
       lynisKind: item.lynis?.kind,
       status: item.status, source: item.source, description: item.description, recommendation: item.recommendation })),
     events: report.events.map(item => ({ source: text(item.source), message: text(item.message) })),

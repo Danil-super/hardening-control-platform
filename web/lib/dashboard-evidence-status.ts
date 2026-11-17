@@ -9,6 +9,8 @@ export type DashboardHostEvidence = {
     critical: number; high: number; medium: number; low: number; unknown: number;
     auditCount: number; freshCount: number; partialCount: number; staleCount: number;
     identityExcludedCount?: number;
+    reviewSources?: { reportId: string; mode: string; reason: string }[];
+    unknownByTool?: Record<string, number>;
     lastSecurityAuditAt?: string | null;
     maxAgeHours: number;
   } | null;
@@ -78,8 +80,8 @@ export function describeHostAuditEvidence(host: DashboardHostEvidence): Dashboar
     "Инвентаризация и сбор фактов не считаются аудитом безопасности.");
   if (!freshCount) return make("stale", "Нет свежей проверки",
     "Сохранённые проверки устарели либо свежесть и доступность источников не подтверждены.");
-  if (partialCount || staleCount || identityExcluded) return make("needs_review", "Требует уточнения",
-    "Есть свежие данные, но часть источников неполная, устарела или исключена по идентичности.");
+  if (partialCount || staleCount || identityExcluded) return make("needs_review", "Есть ограничения",
+    [partialCount ? `Неполных проверок: ${partialCount}.` : "", staleCount ? `Устаревших: ${staleCount}.` : "", identityExcluded ? `Исторических отчётов вне сводки: ${identityExcluded}.` : ""].filter(Boolean).join(" "));
   return make("has_fresh_evidence", "Есть свежие доказательства",
     "Последние применимые проверки в наблюдаемой области; полнота всех CVE не установлена.");
 }

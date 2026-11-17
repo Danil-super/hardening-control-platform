@@ -6,7 +6,7 @@ import Link from "next/link";
 import { Button, LinkButton } from "@/components/ui/button";
 import { SummaryCard } from "@/components/ui/summary-card";
 import { errorMessage, readApiResponse } from "@/lib/client-api";
-import { filterDashboardAssessments, summarizeDashboardEvidence, type DashboardFilter } from "@/lib/dashboard-evidence-status";
+import { filterDashboardAssessments, summarizeDashboardEvidence, type DashboardFilter, type DashboardHostEvidence } from "@/lib/dashboard-evidence-status";
 
 type Health = {
   ansibleInstalled?: boolean;
@@ -15,16 +15,11 @@ type Health = {
   message?: string;
 };
 
-type Host = {
-  alias: string;
+type Host = DashboardHostEvidence & {
   reportCount: number;
-  lastReport: { createdAt: string | null; score: number | null } | null;
-  riskSummary?: {
-    critical: number; high: number; medium: number; low: number; unknown: number;
-    auditCount: number; freshCount: number; partialCount: number; staleCount: number;
-    identityExcludedCount?: number; lastSecurityAuditAt?: string | null; maxAgeHours: number;
-  };
 };
+const toolLabels: Record<string, string> = { agentless: "Локальные правила HCP", vulnerabilities: "Trivy", "astra-oval": "Astra OVAL", lynis: "Lynis", openscap: "OpenSCAP", nmap: "Nmap", "ssh-audit": "ssh-audit", greenbone: "Greenbone", multiple: "Несколько инструментов" };
+const toolLabel = (mode: string) => Object.hasOwn(toolLabels, mode) ? toolLabels[mode] : mode;
 
 type HostPayload = { ok?: boolean; hosts?: Host[]; message?: string };
 type DashboardState = { health: Health; hosts: Host[] };
@@ -85,7 +80,7 @@ export function WorkspaceDashboard() {
   const filterChoices = [
     { id: "all", label: "Все", count: evidence.totalHosts },
     { id: "fresh", label: "Свежие", count: evidence.freshEvidenceHosts },
-    { id: "review", label: "Требуют уточнения", count: evidence.needsReviewHosts },
+    { id: "review", label: "С ограничениями", count: evidence.needsReviewHosts },
     { id: "no_fresh", label: "Без свежего аудита", count: evidence.noFreshEvidenceHosts },
   ] as const;
   const controlReady = Boolean(state?.health.ansibleInstalled && state?.health.inventoryReady);
@@ -108,9 +103,9 @@ export function WorkspaceDashboard() {
           ? { title: "Запустите основной аудит", text: "Выберите подключённый хост и профиль. Инвентаризация и сбор фактов сами по себе не являются аудитом безопасности.", href: "/hosts", label: "Перейти к аудиту" }
           : evidence.noFreshEvidenceHosts > 0
             ? { title: "Проверьте хосты без свежего аудита", text: "Часть подключённых хостов не имеет подтверждённых свежих результатов. Запустите или повторите аудит для этих узлов.", href: "/hosts", label: "Открыть хосты" }
-            : evidence.needsReviewHosts > 0
-              ? { title: "Уточните неполные результаты", text: "Свежие проверки есть, но часть источников неполна, устарела или исключена по идентичности. Проверьте причины перед планом исправлений.", href: "/hosts", label: "Проверить источники" }
-              : { title: "Разберите подтверждённые результаты", text: "Откройте свежий отчёт, выберите только нужные изменения и добавьте их в план работ. Фактические изменения firewall остаются обратимыми.", href: "/remediation-plan", label: "Открыть план работ" };
+            : { title: "Разберите подтверждённые результаты", text: "Откройте свежий отчёт, выберите только нужные изменения и добавьте их в план работ. Фактические изменения firewall остаются обратимыми.", href: "/remediation-plan", label: "Открыть план работ" };
+  const showNextStep = !loading && (!controlReady || !summary.hosts.length || evidence.noFreshEvidenceHosts > 0
+    || evidence.assessed.some(host => host.state === "unknown_evidence"));
 
   return (
     <div className="space-y-6">
@@ -132,11 +127,11 @@ export function WorkspaceDashboard() {
         <SummaryCard label="Control node" value={loading ? "…" : controlReady ? "готов" : "требует внимания"} detail={controlDetail} icon={controlReady ? <CheckCircle2 size={18} /> : <CircleAlert size={18} />} />
         <SummaryCard label="Подключённые хосты" value={loading ? "…" : summary.hosts.length} detail={summary.hosts.length ? "Хосты из inventory" : "Добавьте первый хост"} icon={<Server size={18} />} />
         <SummaryCard label="Со свежими проверками" value={loading ? "…" : evidence.freshEvidenceHosts} detail="Свежие доказательства, без известных пробелов источников" icon={<ShieldCheck size={18} />} />
-        <SummaryCard label="Требуют уточнения" value={loading ? "…" : evidence.needsReviewHosts} detail="Есть неполные, устаревшие или исключённые источники" icon={<CircleAlert size={18} />} />
+        <SummaryCard label="С ограничениями" value={loading ? "…" : evidence.needsReviewHosts} detail="Причины указаны у хоста ниже" icon={<CircleAlert size={18} />} />
         <SummaryCard label="Без свежего аудита" value={loading ? "…" : evidence.noFreshEvidenceHosts} detail="Аудита нет либо свежесть не подтверждена" icon={<FileText size={18} />} />
       </section>
 
-      <section className="rounded-2xl border border-sky-400/20 bg-[linear-gradient(135deg,rgba(14,116,144,.17),rgba(8,17,31,.92)_56%)] p-5 shadow-xl shadow-black/10 sm:p-6">
+      {showNextStep ? <section className="rounded-2xl border border-sky-400/20 bg-[linear-gradient(135deg,rgba(14,116,144,.17),rgba(8,17,31,.92)_56%)] p-5 shadow-xl shadow-black/10 sm:p-6">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="max-w-3xl">
             <p className="text-xs font-semibold uppercase tracking-[0.16em] text-sky-200">Следующий шаг</p>
@@ -145,7 +140,7 @@ export function WorkspaceDashboard() {
           </div>
           <LinkButton href={nextStep.href}>{nextStep.label}</LinkButton>
         </div>
-      </section>
+      </section> : null}
 
       <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-5" aria-labelledby="dashboard-evidence-title">
         <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
@@ -174,7 +169,7 @@ export function WorkspaceDashboard() {
             </div>
             <div className="mt-3 flex flex-wrap gap-x-5 gap-y-2 text-xs text-slate-300">
               <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-emerald-500" />Свежие без известных пробелов: {evidence.freshEvidenceHosts}</span>
-              <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" />Требуют уточнения: {evidence.needsReviewHosts}</span>
+              <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" />С ограничениями: {evidence.needsReviewHosts}</span>
               <span className="inline-flex items-center gap-2"><span className="h-2.5 w-2.5 rounded-full bg-slate-500" />Нет свежего аудита: {evidence.noFreshEvidenceHosts}</span>
             </div>
           </div>
@@ -185,7 +180,7 @@ export function WorkspaceDashboard() {
             <p className="mt-1 text-2xl font-semibold text-white">{loading ? "…" : evidence.criticalHighFindings}</p>
           </div>
           <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-4">
-            <p className="text-sm text-slate-400">Находки с неизвестной критичностью</p>
+            <p className="text-sm text-slate-400">Критичность не определена</p>
             <p className="mt-1 text-2xl font-semibold text-white">{loading ? "…" : evidence.unknownSeverityFindings}</p>
           </div>
         </div>
@@ -239,7 +234,9 @@ export function WorkspaceDashboard() {
                 </tr>
               </thead>
               <tbody>
-                {filteredHosts.slice(0, 10).map(host => (
+                {filteredHosts.slice(0, 10).map(host => {
+                  const { reviewSources = [], unknownByTool = {} } = state?.hosts.find(item => item.alias === host.alias)?.riskSummary ?? {};
+                  return (
                   <tr key={host.alias} className="border-b border-slate-800/70">
                     <td className="px-2 py-3 font-medium text-slate-200"><Link href={`/hosts?host=${encodeURIComponent(host.alias)}#host-audit-flow`} className="text-sky-200 underline-offset-4 hover:underline" aria-label={`Открыть маршрут проверки хоста ${host.alias}`}>{host.alias}</Link></td>
                     <td className="px-2 py-3">
@@ -247,13 +244,14 @@ export function WorkspaceDashboard() {
                         : host.state === "needs_review" || host.state === "unknown_evidence" ? "text-amber-200" : "text-slate-300"}>
                         {host.stateLabel}
                       </span>
-                      <p className="mt-1 max-w-sm text-xs leading-5 text-slate-500">{host.detail}</p>
+                      <p className="mt-1 max-w-sm text-xs leading-5 text-slate-400">{host.detail}</p>
+                      {reviewSources.length ? <details className="mt-2 max-w-md text-xs text-slate-400"><summary className="cursor-pointer text-sky-200">Причины и отчёты</summary><ul className="mt-2 space-y-2">{reviewSources.slice(0, 8).map(source => <li key={source.reportId}><Link className="font-medium text-sky-200 underline underline-offset-4" href={`/reports/agentless/${encodeURIComponent(source.reportId)}`}>{toolLabel(source.mode)}</Link><p className="mt-1 leading-5">{source.reason}</p></li>)}</ul></details> : null}
                     </td>
                     <td className="whitespace-nowrap px-2 py-3 text-slate-300">{formatDate(host.lastAuditAt)}</td>
                     <td className="px-2 py-3 text-right text-slate-300">{host.criticalHigh}</td>
-                    <td className="px-2 py-3 text-right text-slate-300">{host.unknown}</td>
+                    <td className="px-2 py-3 text-right text-slate-300"><Link className="text-sky-200 underline underline-offset-4" href={`/reports/correlation/${encodeURIComponent(host.alias)}?risk=unknown`}>{host.unknown}</Link>{host.unknown > 0 ? <p className="mt-1 max-w-40 text-xs text-slate-400">{Object.entries(unknownByTool).map(([mode, count]) => `${toolLabel(mode)}: ${count}`).join(" · ")}</p> : null}</td>
                   </tr>
-                ))}
+                ); })}
               </tbody>
             </table>
             {filteredHosts.length > 10 ? (

@@ -331,6 +331,21 @@ class OvalAuditTests(unittest.TestCase):
             self.assertEqual(report['scanner']['unratedVulnerabilityCount'], int(expected))
             self.assertIsNone(failed[0]['vulnerability']['cvss'])
 
+    def test_bdu_cvss3_is_retained_and_rated_without_executing_its_serialized_text(self):
+        vector = 'AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H'
+        for score, level in ((0.1, 'low'), (3.9, 'low'), (4.0, 'medium'), (6.9, 'medium'), (7.0, 'high'), (8.9, 'high'), (9.0, 'critical'), (10.0, 'critical')):
+            raw = source().replace(b'</metadata>', ('<bdu><CVSS3.0>NistCVSS3(cvss=\'' + vector + '\', score=' + str(score) + ')</CVSS3.0></bdu></metadata>').encode())
+            report = oval.empty_report(arguments())
+            oval.parse_results(oval.safe_xml(results()), oval.source_definitions(oval.safe_xml(raw)), report)
+            item = report['findings'][0]
+            self.assertFalse(item['severityUnknown'])
+            self.assertEqual(item['severityAssessment']['level'], level)
+            self.assertEqual(item['severityAssessment']['source'], 'oval_cvss3')
+            self.assertEqual(item['vulnerability']['cvss']['score'], score)
+        for text in ('None', 'critical 9.8', "NistCVSS3(cvss='invalid', score=9.8)", "NistCVSS3(cvss='" + vector + "', score=11)", "__import__('os').system('false')"):
+            node = oval.ET.fromstring('<metadata><bdu><CVSS3.0>' + text + '</CVSS3.0></bdu></metadata>')
+            self.assertIsNone(oval.cvss3_metadata(node))
+
     def test_explicit_chromium_label_is_attributed_and_conflicts_stay_unrated(self):
         for level in ('Critical', 'High', 'Medium', 'Low'):
             description = 'Synthetic evidence (Chromium security severity: ' + level + ')'
@@ -345,6 +360,12 @@ class OvalAuditTests(unittest.TestCase):
         self.assertIsNone(oval.severity_assessment(None, 'chromium', 'critical vulnerability'))
         self.assertIsNone(oval.severity_assessment(None, 'chromium', '(Chromium security severity: High) (Chromium security severity: Low)'))
         self.assertIsNone(oval.severity_assessment('custom', 'chromium', '(Chromium security severity: Critical)'))
+
+    def test_cvss_metadata_index_rejects_unsafe_xml_and_duplicate_definitions(self):
+        for raw in (b'<!DOCTYPE x><oval_definitions/>', '<oval_definitions/>'.encode('utf-16'), b'<not_oval/>',
+                    source().replace(b'</definitions>', b'<definition id="oval:test:def:1"/></definitions>')):
+            with self.assertRaises(ValueError):
+                oval.cvss3_index(raw)
 
     def test_non_vulnerability_reference_never_becomes_cve(self):
         report = self.parse(('patch', 'compliance', 'inventory'), ('true',) * 3)
