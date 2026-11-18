@@ -31,7 +31,7 @@ def esc(value, limit=3000):
 
 def item_label(value):
     labels = {
-        'discovered': 'Найдено', 'proposed': 'Предложено', 'agreed': 'Согласовано',
+        'discovered': 'К выполнению', 'proposed': 'К выполнению', 'agreed': 'Согласовано',
         'completed': 'Выполнено', 'confirmed': 'Подтверждено', 'accepted_risk': 'Принято как риск',
     }
     return labels.get(value, clean(value, 60))

@@ -1437,7 +1437,7 @@ export function deleteDraftRemediationPlanItem(id: string) {
     if (!item) throw Object.assign(new Error("Пункт плана не найден."), { code: "plan_not_found" });
     const history = listRemediationPlanHistory(id);
     if (!["discovered", "proposed"].includes(item.status) || history.some((entry) => !["discovered", "proposed"].includes(entry.toStatus))) {
-      throw Object.assign(new Error("Удалить можно только черновой пункт, который ещё не согласовывался. Согласованные решения сохраняются в плане."), { code: "plan_delete_not_available" });
+      throw Object.assign(new Error("Удалить можно только черновик без истории согласования, выполнения или принятия риска."), { code: "plan_delete_not_available" });
     }
     // Keep the complete draft and its history in the append-only audit journal.
     appendAuditEvent("remediation_plan_deleted", id, { item, history });
@@ -1477,8 +1477,10 @@ export function createRemediationPlanItem(input: Omit<RemediationPlanItem, "id" 
 }
 
 const planTransitions: Record<RemediationPlanStatus, RemediationPlanStatus[]> = {
-  discovered: ["proposed"], proposed: ["agreed", "accepted_risk"], agreed: ["proposed", "completed", "accepted_risk"],
-  completed: ["agreed", "confirmed"], confirmed: [], accepted_risk: ["proposed"],
+  discovered: ["completed", "proposed", "accepted_risk"],
+  proposed: ["completed", "agreed", "accepted_risk"],
+  agreed: ["proposed", "completed", "accepted_risk"],
+  completed: ["proposed", "agreed", "confirmed"], confirmed: [], accepted_risk: ["proposed"],
 };
 
 export function transitionRemediationPlanItem(id: string, update: {
@@ -1497,10 +1499,8 @@ export function transitionRemediationPlanItem(id: string, update: {
     const approvalReference = update.approvalReference === undefined ? current.approvalReference : nullablePlanText(update.approvalReference, "ссылка на согласование", 3, 500);
     const verificationReportId = update.verificationReportId === undefined ? current.verificationReportId : (update.verificationReportId ? planIdentifier(update.verificationReportId, "ID повторного отчёта") : null);
     const riskAcceptedUntil = update.riskAcceptedUntil === undefined ? current.riskAcceptedUntil : futurePlanDate(update.riskAcceptedUntil, "срок принятого риска");
-    if (status === "proposed" && !note) throw new Error("Опишите предлагаемую меру и её возможный риск.");
     if (status === "agreed" && (!note || !owner || !dueAt || !approvalReference)) throw new Error("Для согласования укажите комментарий, ответственного, срок и ссылку на внешний документ или тикет.");
-    if (status === "completed" && !note) throw new Error("Опишите фактически выполненную меру.");
-    if (status === "confirmed" && (!note || !verificationReportId)) throw new Error("Для подтверждения укажите результат повторного аудита и комментарий.");
+    if (status === "confirmed" && !verificationReportId) throw new Error("Для подтверждения выберите повторный отчёт.");
     if (status === "accepted_risk" && (!note || !owner || !approvalReference || !riskAcceptedUntil)) throw new Error("Для принятия риска укажите причину, согласовавшего, ссылку на документ и срок действия.");
     const updatedAt = new Date().toISOString();
     database.prepare(`UPDATE remediation_plan_items SET status = ?, owner = ?, due_at = ?, approval_reference = ?,

@@ -41,15 +41,13 @@ async function completed(host, original = finding(), extra = {}) {
   const initial = correlation.buildHostCorrelation(host);
   assert.ok(initial.findings[0], JSON.stringify(initial));
   const item = plans.addCorrelatedFindingToPlan(host, initial.findings[0].id);
-  plans.advanceRemediationPlanItem({ id: item.id, status: "proposed", note: "Apply reviewed fixture change." });
-  plans.advanceRemediationPlanItem({ id: item.id, status: "agreed", note: "Approved through fixture ticket.",
-    owner: "Fixture owner", dueAt: new Date(Date.now() + 86400000).toISOString(), approvalReference: "FIXTURE-1" });
-  plans.advanceRemediationPlanItem({ id: item.id, status: "completed", note: "Approved fixture work was performed." });
+  const done = plans.advanceRemediationPlanItem({ id: item.id, status: "completed" });
+  assert.equal(done.status, "completed");
+  assert.equal(done.approvalReference, null);
   await delay();
   return { id: item.id, originalReportId };
 }
-const confirm = (item, verificationReportId) => plans.advanceRemediationPlanItem({ id: item.id, status: "confirmed", verificationReportId,
-  note: "The corresponding control was checked again." });
+const confirm = (item, verificationReportId) => plans.advanceRemediationPlanItem({ id: item.id, status: "confirmed", verificationReportId });
 
 test("confirmation rejects failed/manual evidence, missing coverage, unrelated facts and another profile", async () => {
   for (const [name, findings, extra, error] of [
@@ -100,6 +98,7 @@ print('visible' if b'profile_A' in b'\\n'.join(streams) else 'missing')
 
 test("the explicit successful same control confirms, while changed source bytes and superseded observations do not", async () => {
   const item = await completed("proof-good");
+  assert.throws(() => confirm(item, item.originalReportId), /полный свежий/);
   assert.equal(confirm(item, writeReport("proof-good", "after", [finding({ status: "passed", evidence: "PasswordAuthentication no" })])).status, "confirmed");
   const changed = await completed("proof-changed");
   const changedPath = path.join(reports, `${changed.originalReportId}.json`);

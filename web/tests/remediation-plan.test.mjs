@@ -58,3 +58,13 @@ test("a plan once agreed cannot be deleted after returning to proposed", () => {
   assert.throws(()=>store.deleteDraftRemediationPlanItem(item.id),{code:"plan_delete_not_available"});
   assert.equal(store.getRemediationPlanItem(item.id).canDeleteDraft,false);
 });
+
+test("returning completed work to the queue preserves its history and evidence", () => {
+  const item = draft("completed-reopened");
+  assert.equal(store.transitionRemediationPlanItem(item.id, { status: "completed" }).status, "completed");
+  const reopened = store.transitionRemediationPlanItem(item.id, { status: "proposed" });
+  assert.equal(reopened.canDeleteDraft, false);
+  assert.throws(() => store.deleteDraftRemediationPlanItem(item.id), { code: "plan_delete_not_available" });
+  assert.deepEqual(store.listRemediationPlanHistory(item.id).map((entry) => entry.toStatus), ["discovered", "completed", "proposed"]);
+  assert.deepEqual(reopened.evidence, item.evidence);
+});
