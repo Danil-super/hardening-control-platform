@@ -301,14 +301,19 @@ test("Trivy absence reconciles RPM trust records against the exact new inventory
   }
 });
 
-test("the plan and newly rendered PDFs preserve Critical/Unknown after a clean report", async () => {
+test("the plan and newly rendered PDFs preserve Critical/Unknown and source CVSS after a clean report", async () => {
   const host = "severity-history";
+  const cvss3 = { version: "3.0", score: 9.8, vector: "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" };
   const original = [
     finding({ id: "unknown", profileId: "astra-oval", source: "openscap", risk: "info", severityUnknown: true, title: "CVE-2026-10111: unrated", evidence: JSON.stringify({ vendorSeverity: null }) }),
     finding({ id: "critical", profileId: "astra-oval", source: "openscap", title: "CVE-2026-10112: critical", evidence: JSON.stringify({ vendorSeverity: "critical" }) }),
+    finding({ id: "cvss", profileId: "astra-oval", source: "openscap", title: "CVE-2026-10113: pyyaml", evidence: JSON.stringify({ vendorSeverity: null, cvss3 }) }),
   ];
   const reportId = writeReport(host, "before", original, { mode: "astra-oval", profileId: "astra-oval" });
-  for (const value of correlation.buildHostCorrelation(host).findings) plans.addCorrelatedFindingToPlan(host, value.id);
+  for (const value of correlation.buildHostCorrelation(host).findings) {
+    const item = plans.addCorrelatedFindingToPlan(host, value.id);
+    assert.equal(plans.addCorrelatedFindingToPlan(host, value.id).id, item.id);
+  }
   const snapshot = async () => {
     const result = await pdf.createProjectReport({ hostAlias: host, subject: { clientName: "Fixture client", projectName: "Rating history", period: "Fixture period", specialist: "Fixture reviewer" } });
     assert.equal(pdf.readProjectReportPdf(result.id).pdf.subarray(0, 5).toString(), "%PDF-");
@@ -323,6 +328,9 @@ test("the plan and newly rendered PDFs preserve Critical/Unknown after a clean r
   assert.deepEqual(ratings(plans.remediationPlanForHost(host).items), ratings(before));
   assert.equal(after.find((value) => value.title.includes("10111")).severityUnknown, true);
   assert.equal(after.find((value) => value.title.includes("10112")).severityAssessment.level, "critical");
+  const savedCvss = after.find((value) => value.title.includes("10113"));
+  assert.deepEqual(savedCvss.severityAssessment, { level: "critical", source: "oval_cvss3", ...cvss3 });
+  assert.equal(savedCvss.severityOrigin, "captured");
 
   // Simulate an old schema entry. Only the exact original bytes may recover it.
   const db = new DatabaseSync(path.join(state, "hcp.sqlite"));

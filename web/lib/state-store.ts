@@ -1361,7 +1361,7 @@ function savedPlanSeverity(value: unknown): PlanSeverity | null {
     if (!assessment || typeof assessment !== "object" || Array.isArray(assessment)) return null;
     const candidate = assessment as Record<string, unknown>;
     if (!["critical", "high", "medium", "low"].includes(String(candidate.level))
-      || !["oval_metadata", "chromium_description", "scanner_metadata"].includes(String(candidate.source))
+      || !["oval_metadata", "chromium_description", "scanner_metadata", "oval_cvss3"].includes(String(candidate.source))
       || data.severityUnknown) return null;
   }
   return { severityUnknown: data.severityUnknown, severityAssessment: assessment as PlanSeverity["severityAssessment"], severityOrigin: "captured" };
@@ -1458,7 +1458,7 @@ export function createRemediationPlanItem(input: Omit<RemediationPlanItem, "id" 
   const recommendation = planText(input.recommendation, "рекомендация", 1, 3000);
   const evidence = parsePlanEvidence(input.evidence);
   const severitySnapshot = { version: 1, severityUnknown: input.severityUnknown ?? true, severityAssessment: input.severityAssessment ?? null };
-  if (!savedPlanSeverity(severitySnapshot)) throw new Error("Укажите согласованную оценку серьёзности исходной находки.");
+  if (!savedPlanSeverity(severitySnapshot)) throw new Error("Не удалось сохранить оценку критичности из исходного отчёта.");
   return inTransaction((database) => {
     const existing = database.prepare(`SELECT * FROM remediation_plan_items WHERE host_alias = ? AND finding_key = ?
       AND status NOT IN ('confirmed', 'accepted_risk') ORDER BY updated_at DESC LIMIT 1`).get(hostAlias, findingKey);
