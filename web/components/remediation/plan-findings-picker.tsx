@@ -14,6 +14,16 @@ export function PlanRiskBadge({ finding }: { finding: Pick<PlanFinding, "risk" |
   return <span className={`inline-flex shrink-0 rounded-md border px-2 py-1 text-[11px] font-semibold ${level.tone}`}>{level.label}</span>;
 }
 
+export function PlanRecommendation({ title, recommendation }: Pick<PlanFinding, "title" | "recommendation">) {
+  const cves = [...new Set(title.match(/\bCVE-\d{4}-\d{4,}\b/gi)?.map((id) => id.toUpperCase()))];
+  return <div className="space-y-2 text-slate-200">
+    <p className="whitespace-pre-line"><span className="font-semibold">Что делать: </span>{recommendation}</p>
+    {cves.length ? <ul aria-label="Карточки уязвимостей" className="flex flex-wrap gap-x-3 gap-y-1 text-xs">
+      {cves.map((id) => <li key={id}><a href={`https://www.cve.org/CVERecord?id=${id}`} className="text-sky-200 underline underline-offset-4" target="_blank" rel="noreferrer">{id} · CVE.org</a></li>)}
+    </ul> : null}
+  </div>;
+}
+
 export function PlanFindingsPicker({ findings, planned, busy, onAdd }: { findings: CandidateFinding[]; planned: Set<string>; busy: boolean; onAdd: (id: string) => void }) {
   const [risk, setRisk] = useState("all");
   const [query, setQuery] = useState("");
@@ -34,7 +44,7 @@ export function PlanFindingsPicker({ findings, planned, busy, onAdd }: { finding
     <p className="text-xs text-slate-500" aria-live="polite">Показано {filtered.length ? (currentPage - 1) * 25 + 1 : 0}–{Math.min(currentPage * 25, filtered.length)} из {filtered.length}. Подробности раскрываются по нажатию на название.</p>
     <div className="divide-y divide-slate-800 rounded-lg border border-slate-800">{visible.map((finding) => <article key={finding.id} className="flex items-start gap-2 px-3 py-2">
       <details className="group min-w-0 flex-1"><summary className="flex min-h-8 cursor-pointer flex-wrap items-start gap-2 py-1 text-sm"><ChevronRight size={15} className="mt-0.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden="true" /><span className="min-w-0 flex-1 break-words font-medium text-white">{finding.title}</span><PlanRiskBadge finding={finding} /></summary>
-        <div className="space-y-2 py-2 pl-6 text-sm leading-6"><p className="text-slate-400">{finding.description}</p><p className="text-slate-200"><span className="font-semibold">Рекомендация: </span>{finding.recommendation}</p><p className="text-xs text-slate-500">{finding.category}</p><div className="flex flex-wrap gap-x-3 gap-y-1">{Array.from(new Map(finding.sources.map((source) => [source.reportId, source])).values()).map((source) => <Link key={source.reportId} href={`/reports/agentless/${encodeURIComponent(source.reportId)}`} prefetch={false} className="break-words text-xs text-sky-200 underline underline-offset-4">{auditReportLabels[source.mode] ?? source.mode}{source.createdAt ? ` · ${new Date(source.createdAt).toLocaleDateString("ru-RU")}` : ""}</Link>)}</div></div>
+        <div className="space-y-2 py-2 pl-6 text-sm leading-6"><p className="text-slate-400">{finding.description}</p><PlanRecommendation title={finding.title} recommendation={finding.recommendation} /><p className="text-xs text-slate-500">{finding.category}</p><div className="flex flex-wrap gap-x-3 gap-y-1">{Array.from(new Map(finding.sources.map((source) => [source.reportId, source])).values()).map((source) => <Link key={source.reportId} href={`/reports/agentless/${encodeURIComponent(source.reportId)}`} prefetch={false} className="break-words text-xs text-sky-200 underline underline-offset-4">{auditReportLabels[source.mode] ?? source.mode}{source.createdAt ? ` · ${new Date(source.createdAt).toLocaleDateString("ru-RU")}` : ""}</Link>)}</div></div>
       </details>
       <Button variant="secondary" className="[&]:min-h-8 [&]:px-2 [&]:py-1 [&]:text-xs" title="Добавить в план без применения настроек на хосте" aria-label={`Добавить в план: ${finding.title}`} disabled={busy || planned.has(finding.id)} onClick={() => onAdd(finding.id)}><Plus size={14} aria-hidden="true" />{planned.has(finding.id) ? "В плане" : "В план"}</Button>
     </article>)}</div>

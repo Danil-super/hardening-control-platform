@@ -53,6 +53,37 @@ def arguments(**values):
 
 
 class OvalAuditTests(unittest.TestCase):
+    def test_package_guidance_requires_literal_dpkg_threshold_and_native_item_match(self):
+        raw = source().replace(b'</oval_definitions>', b'''
+          <tests><dpkginfo_test xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux"
+              id="oval:test:tst:1" version="1"><object object_ref="pkg"/><state state_ref="threshold"/></dpkginfo_test></tests>
+          <objects><dpkginfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux"
+              id="pkg"><name>python3-yaml</name></dpkginfo_object></objects>
+          <states><dpkginfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux"
+              id="threshold"><evr datatype="debian_evr_string" operation="less than">0:5.1.2-1+ci1</evr></dpkginfo_state></states>
+          </oval_definitions>''')
+        native = b'''
+          <tests><test test_id="oval:test:tst:1" version="1" result="true"><tested_item item_id="1" result="true"/></test></tests>
+          <oval_system_characteristics xmlns="http://oval.mitre.org/XMLSchema/oval-system-characteristics-5"><system_data>
+            <dpkginfo_item xmlns="http://oval.mitre.org/XMLSchema/oval-system-characteristics-5#linux" id="1" status="exists">
+              <name>python3-yaml</name><evr>0:5.1.2-1+b1</evr>
+            </dpkginfo_item>
+          </system_data></oval_system_characteristics>'''
+        for source_xml, evidence, expected in (
+            (raw, native, True),
+            (raw, native.replace(b'python3-yaml', b'other-package'), False),
+            (raw, native.replace(b'item_id="1" result="true"', b'item_id="1" result="false"'), False),
+            (raw.replace(b'less than', b'equals'), native, False),
+            (raw.replace(b'test_ref="oval:test:tst:1"', b'negate="true" test_ref="oval:test:tst:1"'), native, False),
+        ):
+            root = oval.safe_xml(source_xml)
+            report = oval.empty_report(arguments())
+            oval.parse_results(oval.safe_xml(results(extra=evidence.decode())), oval.source_definitions(root),
+                               report, evidence_projection='bounded', source_root=root)
+            item = report['findings'][0]
+            self.assertEqual(item['status'], 'failed')
+            self.assertEqual('python3-yaml: в отчёте 0:5.1.2-1+b1, порог OVAL 0:5.1.2-1+ci1.' in item['recommendation'], expected)
+
     def test_indexed_stylesheet_preserves_all_template_priorities_and_rules(self):
         stylesheet = b'''<axsl:stylesheet xmlns:axsl="http://www.w3.org/1999/XSL/Transform"
           xmlns:oval-def="http://oval.mitre.org/XMLSchema/oval-definitions-5" version="1.0">

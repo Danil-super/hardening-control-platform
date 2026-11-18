@@ -29,6 +29,9 @@ import xml.etree.ElementTree as ET
 
 DEFINITIONS_NS = 'http://oval.mitre.org/XMLSchema/oval-definitions-5'
 RESULTS_NS = 'http://oval.mitre.org/XMLSchema/oval-results-5'
+LINUX_DEFINITIONS = '{' + DEFINITIONS_NS + '#linux}'
+SYSTEM_NS = 'http://oval.mitre.org/XMLSchema/oval-system-characteristics-5'
+LINUX_SYSTEM = '{' + SYSTEM_NS + '#linux}'
 # The official Astra 1.7 feed on 2026-10-06 has 131721258 bytes and
 # 796021 XML nodes. Keep bounded headroom for it and OpenSCAP results.
 MAX_SOURCE_BYTES = 192 * 1024 * 1024
@@ -773,7 +776,53 @@ def finish(report):
     return report
 
 
-def parse_results(root, definitions, report, evidence_projection='detailed'):
+def dpkg_update_guidance(source, system):
+    """Join exact native DPKG matches to simple vendor version thresholds."""
+    if source is None:
+        return {}
+    definitions_ns, results_ns, system_ns = ('{' + value + '}' for value in (DEFINITIONS_NS, RESULTS_NS, SYSTEM_NS))
+    objects = {node.get('id'): node for node in source.findall(definitions_ns + 'objects/' + LINUX_DEFINITIONS + 'dpkginfo_object')}
+    states = {node.get('id'): node for node in source.findall(definitions_ns + 'states/' + LINUX_DEFINITIONS + 'dpkginfo_state')}
+    native = {node.get('test_id'): node for node in system.findall(results_ns + 'tests/' + results_ns + 'test') if node.get('result') == 'true'}
+    items = {node.get('id'): node for node in system.findall(system_ns + 'oval_system_characteristics/' + system_ns + 'system_data/' + LINUX_SYSTEM + 'dpkginfo_item')
+             if node.get('status') in (None, 'exists')}
+    guidance = {}
+    for test in source.findall(definitions_ns + 'tests/' + LINUX_DEFINITIONS + 'dpkginfo_test'):
+        identifier = test.get('id')
+        result = native.get(identifier)
+        if result is None or len(test) != 2:
+            continue
+        if result.get('version') != test.get('version') or result.get('variable_instance', '1') != '1':
+            continue
+        obj, state = child(test, 'object'), child(test, 'state')
+        obj = objects.get(obj.get('object_ref')) if obj is not None else None
+        state = states.get(state.get('state_ref')) if state is not None else None
+        if obj is None or len(obj) != 1 or state is None or len(state) != 1:
+            continue
+        name, evr = obj[0], state[0]
+        if name.tag != LINUX_DEFINITIONS + 'name' or set(name.attrib) - {'operation'} or name.get('operation', 'equals') != 'equals':
+            continue
+        if evr.tag != LINUX_DEFINITIONS + 'evr' or evr.attrib != {'datatype': 'debian_evr_string', 'operation': 'less than'}:
+            continue
+        package, threshold = node_text(name), node_text(evr)
+        if not re.fullmatch(r'[a-z0-9][a-z0-9+.-]{0,127}', package) or not re.fullmatch(r'(?:[0-9]+:)?[0-9][a-zA-Z0-9.+~-]{0,159}', threshold):
+            continue
+        matches = []
+        for match in result:
+            if local_name(match.tag) != 'tested_item' or match.get('result') != 'true':
+                continue
+            item = items.get(match.get('item_id'))
+            if item is None or node_text(child(item, 'name')) != package:
+                continue
+            installed = node_text(child(item, 'evr'))
+            if re.fullmatch(r'(?:[0-9]+:)?[0-9][a-zA-Z0-9.+~-]{0,159}', installed):
+                matches.append((package, installed, threshold))
+        if matches:
+            guidance[identifier] = matches[:8]
+    return guidance
+
+
+def parse_results(root, definitions, report, evidence_projection='detailed', source_root=None):
     if root.tag != '{' + RESULTS_NS + '}oval_results':
         raise ValueError('OpenSCAP не вернул документ oval_results.')
     results = root.find('{' + RESULTS_NS + '}results')
@@ -781,6 +830,7 @@ def parse_results(root, definitions, report, evidence_projection='detailed'):
     if len(systems) != 1 or local_name(systems[0].tag) != 'system':
         raise ValueError('Ожидается результат OVAL ровно для одной локальной системы.')
     system = systems[0]
+    updates = dpkg_update_guidance(source_root, system)
     nodes = child(system, 'definitions')
     mapped = {}
     if nodes is not None:
@@ -862,6 +912,17 @@ def parse_results(root, definitions, report, evidence_projection='detailed'):
                 item['severityAssessment'] = assessment
             item['vulnerability'] = {'cveIds': entry['cveIds'], 'definitionId': identifier,
                 'severitySource': assessment['source'] if assessment else 'not_provided', 'cvss': entry.get('cvss3')}
+            criteria = child(source, 'criteria')
+            if criteria is not None and criteria.get('negate', 'false') == 'false':
+                matches = sorted(set(match for criterion in criteria
+                    if local_name(criterion.tag) == 'criterion' and criterion.get('negate', 'false') == 'false'
+                    and criterion.get('applicability_check', 'false') == 'false'
+                    for match in updates.get(criterion.get('test_ref'), [])))
+                if matches:
+                    versions = '\n'.join('{}: в отчёте {}, порог OVAL {}.'.format(package, installed, threshold)
+                                         for package, installed, threshold in matches[:5])
+                    item['recommendation'] = ('Сверьте доступные версии в репозитории Astra для выпуска хоста. '
+                        'После установки исправленного пакета повторите аудит с той же базой.\n' + versions)
             report['findings'].append(item)
         elif status == 'true' and entry['class'] not in ('vulnerability', 'inventory'):
             report['findings'].append(finding(identifier, 'OVAL ' + entry['class'] + ': ' + (entry['title'] or identifier),
@@ -954,7 +1015,7 @@ def evaluate(args):
             if getattr(args, 'raw_results_output', ''):
                 write_bytes(args.raw_results_output, result_raw)
             parse_results(safe_xml(result_raw), definitions, report,
-                          evidence_projection=config['evidenceProjection'])
+                          evidence_projection=config['evidenceProjection'], source_root=root)
     except (OSError, ValueError, ET.ParseError, UnicodeError, subprocess.SubprocessError) as error:
         scanner['partialReasons'].append(str(error))
     return finish(report)
