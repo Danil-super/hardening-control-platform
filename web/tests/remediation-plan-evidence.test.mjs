@@ -41,15 +41,13 @@ async function completed(host, original = finding(), extra = {}) {
   const initial = correlation.buildHostCorrelation(host);
   assert.ok(initial.findings[0], JSON.stringify(initial));
   const item = plans.addCorrelatedFindingToPlan(host, initial.findings[0].id);
-  plans.advanceRemediationPlanItem({ id: item.id, status: "proposed", note: "Apply reviewed fixture change." });
-  plans.advanceRemediationPlanItem({ id: item.id, status: "agreed", note: "Approved through fixture ticket.",
-    owner: "Fixture owner", dueAt: new Date(Date.now() + 86400000).toISOString(), approvalReference: "FIXTURE-1" });
-  plans.advanceRemediationPlanItem({ id: item.id, status: "completed", note: "Approved fixture work was performed." });
+  const done = plans.advanceRemediationPlanItem({ id: item.id, status: "completed" });
+  assert.equal(done.status, "completed");
+  assert.equal(done.approvalReference, null);
   await delay();
   return { id: item.id, originalReportId };
 }
-const confirm = (item, verificationReportId) => plans.advanceRemediationPlanItem({ id: item.id, status: "confirmed", verificationReportId,
-  note: "The corresponding control was checked again." });
+const confirm = (item, verificationReportId) => plans.advanceRemediationPlanItem({ id: item.id, status: "confirmed", verificationReportId });
 
 test("confirmation rejects failed/manual evidence, missing coverage, unrelated facts and another profile", async () => {
   for (const [name, findings, extra, error] of [
@@ -100,6 +98,7 @@ print('visible' if b'profile_A' in b'\\n'.join(streams) else 'missing')
 
 test("the explicit successful same control confirms, while changed source bytes and superseded observations do not", async () => {
   const item = await completed("proof-good");
+  assert.throws(() => confirm(item, item.originalReportId), /полный свежий/);
   assert.equal(confirm(item, writeReport("proof-good", "after", [finding({ status: "passed", evidence: "PasswordAuthentication no" })])).status, "confirmed");
   const changed = await completed("proof-changed");
   const changedPath = path.join(reports, `${changed.originalReportId}.json`);
@@ -301,14 +300,19 @@ test("Trivy absence reconciles RPM trust records against the exact new inventory
   }
 });
 
-test("the plan and newly rendered PDFs preserve Critical/Unknown after a clean report", async () => {
+test("the plan and newly rendered PDFs preserve Critical/Unknown and source CVSS after a clean report", async () => {
   const host = "severity-history";
+  const cvss3 = { version: "3.0", score: 9.8, vector: "AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H" };
   const original = [
     finding({ id: "unknown", profileId: "astra-oval", source: "openscap", risk: "info", severityUnknown: true, title: "CVE-2026-10111: unrated", evidence: JSON.stringify({ vendorSeverity: null }) }),
     finding({ id: "critical", profileId: "astra-oval", source: "openscap", title: "CVE-2026-10112: critical", evidence: JSON.stringify({ vendorSeverity: "critical" }) }),
+    finding({ id: "cvss", profileId: "astra-oval", source: "openscap", title: "CVE-2026-10113: pyyaml", evidence: JSON.stringify({ vendorSeverity: null, cvss3 }) }),
   ];
   const reportId = writeReport(host, "before", original, { mode: "astra-oval", profileId: "astra-oval" });
-  for (const value of correlation.buildHostCorrelation(host).findings) plans.addCorrelatedFindingToPlan(host, value.id);
+  for (const value of correlation.buildHostCorrelation(host).findings) {
+    const item = plans.addCorrelatedFindingToPlan(host, value.id);
+    assert.equal(plans.addCorrelatedFindingToPlan(host, value.id).id, item.id);
+  }
   const snapshot = async () => {
     const result = await pdf.createProjectReport({ hostAlias: host, subject: { clientName: "Fixture client", projectName: "Rating history", period: "Fixture period", specialist: "Fixture reviewer" } });
     assert.equal(pdf.readProjectReportPdf(result.id).pdf.subarray(0, 5).toString(), "%PDF-");
@@ -323,6 +327,9 @@ test("the plan and newly rendered PDFs preserve Critical/Unknown after a clean r
   assert.deepEqual(ratings(plans.remediationPlanForHost(host).items), ratings(before));
   assert.equal(after.find((value) => value.title.includes("10111")).severityUnknown, true);
   assert.equal(after.find((value) => value.title.includes("10112")).severityAssessment.level, "critical");
+  const savedCvss = after.find((value) => value.title.includes("10113"));
+  assert.deepEqual(savedCvss.severityAssessment, { level: "critical", source: "oval_cvss3", ...cvss3 });
+  assert.equal(savedCvss.severityOrigin, "captured");
 
   // Simulate an old schema entry. Only the exact original bytes may recover it.
   const db = new DatabaseSync(path.join(state, "hcp.sqlite"));

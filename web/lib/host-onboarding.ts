@@ -1,7 +1,7 @@
 import { readApiResponse } from "@/lib/client-api";
 
 export type HostConnection = {
-  alias: string; address: string; user: string; port: string; group: string; become: boolean; credentialId: string | null;
+  alias: string; address: string; user: string; port: string; group?: string; become: boolean; credentialId: string | null;
 };
 export type OnboardingSecrets = { password: string; sudoPassword: string; configureSudo: boolean };
 export type OnboardingStage = "trust" | "bootstrap" | "preflight" | "save";

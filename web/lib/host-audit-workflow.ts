@@ -73,8 +73,8 @@ export function selectHostAuditNextStep(input: HostAuditWorkflowInput): HostAudi
   const assessment = describeHostAuditEvidence({ alias, riskSummary: risk });
   if (assessment.state === "no_audit") {
     return {
-      id: "first_audit", title: "Запустите первый аудит безопасности",
-      detail: "Сбор системных фактов и инвентаря не заменяет аудит. Выберите применимый профиль и инструмент; запуск выполняется только после вашего действия.",
+      id: "first_audit", title: "Запустите аудит безопасности",
+      detail: "В активной сводке нет применимого аудита. Выберите профиль и инструмент; запуск выполняется только после вашего действия.",
       action: "Выбрать инструмент", href: "#ansible-actions", tone: "neutral",
     };
   }

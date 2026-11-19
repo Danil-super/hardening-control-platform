@@ -31,7 +31,7 @@ def esc(value, limit=3000):
 
 def item_label(value):
     labels = {
-        'discovered': 'Найдено', 'proposed': 'Предложено', 'agreed': 'Согласовано',
+        'discovered': 'К выполнению', 'proposed': 'К выполнению', 'agreed': 'Согласовано',
         'completed': 'Выполнено', 'confirmed': 'Подтверждено', 'accepted_risk': 'Принято как риск',
     }
     return labels.get(value, clean(value, 60))
@@ -152,7 +152,7 @@ def audit_story(snapshot, body, small, title, heading):
         level = ('Lynis · ' + {'warning': 'предупреждение', 'suggestion': 'совет по усилению'}.get(item.get('lynisKind'), 'состояние проверки')) if snapshot.get('mode') == 'lynis' else finding_risk_label(item)
         story.append(Paragraph(full(level) + ' · ' + full(statuses.get(item.get('status'), item.get('status'))), body))
         assessment = item.get('severityAssessment') or {}
-        origin = {'chromium_description': 'оценка Chromium, явно указанная в описании OVAL; не CVSS', 'oval_metadata': 'метаданные OVAL', 'scanner_metadata': 'метаданные сканера'}.get(assessment.get('source'))
+        origin = {'chromium_description': 'оценка Chromium, явно указанная в описании OVAL; не CVSS', 'oval_metadata': 'метаданные OVAL', 'scanner_metadata': 'метаданные сканера', 'oval_cvss3': 'БДУ в исходной Astra OVAL · CVSS %s: %s/10' % (assessment.get('version', ''), assessment.get('score', ''))}.get(assessment.get('source'))
         if origin:
             story.append(Paragraph('Источник критичности: ' + full(origin), small))
         story.append(Paragraph(full(item.get('description')), body))
@@ -321,7 +321,7 @@ def render(snapshot):
                 if not isinstance(item, dict):
                     continue
                 assessment = item.get('severityAssessment') or {}
-                origin = {'chromium_description': 'Chromium, описание OVAL', 'oval_metadata': 'Метаданные OVAL'}.get(assessment.get('source'), 'Исходный отчёт' if not item.get('severityUnknown') else 'Не предоставлен')
+                origin = {'chromium_description': 'Chromium, описание OVAL', 'oval_metadata': 'Метаданные OVAL', 'oval_cvss3': 'БДУ / OVAL · CVSS %s: %s' % (assessment.get('version', ''), assessment.get('score', ''))}.get(assessment.get('source'), 'Исходный отчёт' if not item.get('severityUnknown') else 'Не предоставлен')
                 observation = esc(item.get('title'), 500)
                 if item.get('recurring'):
                     observation += '<br/><b>Повторное наблюдение после подтверждения</b>'

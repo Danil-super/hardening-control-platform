@@ -165,7 +165,7 @@ export function buildHostCorrelation(hostAlias: string, availableReports?: Ansib
   const signature = JSON.stringify([ageHours, binding?.assetId, binding?.generation, configuredConnection, allReports.map((report) => {
     const info = statSync(report.path, { throwIfNoEntry: false });
     return [report.id, report.path, reportKey(report), report.reportTimeValid, report.partial, report.available,
-      reportTime(report) >= minimumTime, info?.dev, info?.ino, info?.size, info?.mtimeMs, info?.ctimeMs];
+      reportTime(report) >= minimumTime, report.critical, report.high, report.medium, report.low, report.unknown, info?.dev, info?.ino, info?.size, info?.mtimeMs, info?.ctimeMs];
   })]);
   const cached = correlationCache.get(hostAlias);
   if (cached?.signature === signature) return cached.result;

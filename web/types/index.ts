@@ -55,7 +55,10 @@ export type Finding = {
   severityUnknown?: boolean;
   severityAssessment?: {
     level: "critical" | "high" | "medium" | "low";
-    source: "oval_metadata" | "chromium_description" | "scanner_metadata";
+    source: "oval_metadata" | "chromium_description" | "scanner_metadata" | "oval_cvss3";
+    score?: number;
+    version?: "3.0" | "3.1";
+    vector?: string;
   };
   status: FindingStatus;
   cveApplicability?: CveApplicabilityAssessment;

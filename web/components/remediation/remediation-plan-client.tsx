@@ -5,21 +5,29 @@ import { Select } from "@/components/ui/select";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, FileWarning, ChevronRight, RefreshCw } from "lucide-react";
 import { DeleteRecordButton } from "@/components/reports/delete-record-button";
-import { PlanFindingsPicker, PlanRiskBadge, type CandidateFinding } from "@/components/remediation/plan-findings-picker";
+import { PlanFindingsPicker, PlanRecommendation, PlanRiskBadge, type CandidateFinding } from "@/components/remediation/plan-findings-picker";
 import { Button, LinkButton } from "@/components/ui/button";
 import { useFeedbackMessage } from "@/components/ui/feedback";
 import { errorMessage, readApiResponse } from "@/lib/client-api";
 
 type PlanStatus = "discovered" | "proposed" | "agreed" | "completed" | "confirmed" | "accepted_risk";
 type Evidence = { reportId: string; findingId: string; source: string; mode: string; createdAt: string | null; evidence: string; reportSha256: string };
-type PlanItem = { canDeleteDraft?: boolean; id: string; hostAlias: string; findingKey: string; title: string; category: string; risk: "high" | "medium" | "low" | "info"; severityUnknown: boolean; severityAssessment: { level: "critical" | "high" | "medium" | "low"; source: string } | null; severityOrigin: "captured" | "source_evidence" | "unknown_legacy"; description: string; recommendation: string; evidence: Evidence[]; status: PlanStatus; owner: string | null; dueAt: string | null; approvalReference: string | null; implementationNote: string | null; verificationReportId: string | null; riskAcceptedUntil: string | null; riskAcceptanceState?: "active" | "expired" | "unknown" | null; currentObservation?: { recurring: boolean; sources: { reportId: string }[] } | null; createdAt: string; updatedAt: string };
+type PlanItem = { canDeleteDraft?: boolean; id: string; hostAlias: string; findingKey: string; title: string; category: string; risk: "high" | "medium" | "low" | "info"; severityUnknown: boolean; severityAssessment: { level: "critical" | "high" | "medium" | "low"; source: string } | null; severityOrigin: "captured" | "source_evidence" | "unknown_legacy"; description: string; recommendation: string; evidence: Evidence[]; status: PlanStatus; owner: string | null; dueAt: string | null; approvalReference: string | null; implementationNote: string | null; verificationReportId: string | null; riskAcceptedUntil: string | null; riskAcceptanceState?: "active" | "expired" | "unknown" | null; currentObservation?: { recurring: boolean; recommendation?: string; sources: { reportId: string }[] } | null; createdAt: string; updatedAt: string };
 type CorrelationFinding = CandidateFinding;
 type Coverage = { reportId: string; mode: string; createdAt: string | null; fresh: boolean; partial: boolean; available: boolean; validTime: boolean; auditEvidence: boolean; coverageIssues?: string[] };
 type Host = { alias: string };
 type PlanData = { ok?: boolean; items?: PlanItem[]; correlation?: { findings?: CorrelationFinding[]; coverage?: Coverage[] }; message?: string };
+type PlanAction = "completed" | "confirmed" | "proposed" | "accepted_risk";
+type PlanFormAction = Extract<PlanAction, "confirmed" | "accepted_risk">;
 
-const labels: Record<PlanStatus, string> = { discovered: "Найдено", proposed: "Предложено", agreed: "Согласовано", completed: "Выполнено", confirmed: "Подтверждено", accepted_risk: "Принято как риск" };
-const transitions: Record<PlanStatus, PlanStatus[]> = { discovered: ["proposed"], proposed: ["agreed", "accepted_risk"], agreed: ["proposed", "completed", "accepted_risk"], completed: ["agreed", "confirmed"], confirmed: [], accepted_risk: ["proposed"] };
+const labels: Record<PlanStatus, string> = { discovered: "К выполнению", proposed: "К выполнению", agreed: "Согласовано", completed: "Выполнено", confirmed: "Подтверждено", accepted_risk: "Принято как риск" };
+const actions: Record<PlanStatus, PlanAction[]> = {
+  discovered: ["completed", "accepted_risk"], proposed: ["completed", "accepted_risk"], agreed: ["completed", "accepted_risk"],
+  completed: ["confirmed", "proposed"], confirmed: [], accepted_risk: ["proposed"],
+};
+const actionLabels: Record<PlanAction, string> = {
+  completed: "Отметить выполненным", confirmed: "Подтвердить проверкой", proposed: "Вернуть к выполнению", accepted_risk: "Принять риск",
+};
 const inputClass = "mt-1 h-10 w-full rounded-md border border-slate-700 bg-slate-950 px-3 text-sm text-slate-100 focus:border-sky-300 focus:outline-none";
 
 function formatDate(value: string | null) {
@@ -36,8 +44,9 @@ export function RemediationPlanClient({ initialHost = "" }: { initialHost?: stri
   const requestVersion = useRef(0);
   const [focusedId, setFocusedId] = useState("");
   const [updating, setUpdating] = useState<string>("");
+  const [saving, setSaving] = useState(false);
   const [message, setMessage] = useFeedbackMessage();
-  const [form, setForm] = useState({ note: "", owner: "", dueAt: "", approvalReference: "", verificationReportId: "", riskAcceptedUntil: "" });
+  const [form, setForm] = useState({ note: "", owner: "", approvalReference: "", verificationReportId: "", riskAcceptedUntil: "" });
 
   async function loadHosts() {
     try {
@@ -83,57 +92,86 @@ export function RemediationPlanClient({ initialHost = "" }: { initialHost?: stri
     finally { setUpdating(""); }
   }
 
-  function openTransition(item: PlanItem, status: PlanStatus) {
+  function openTransition(item: PlanItem, status: PlanFormAction) {
     setUpdating(`${item.id}:${status}`);
-    setForm({ note: "", owner: item.owner ?? "", dueAt: item.dueAt ? item.dueAt.slice(0, 10) : "", approvalReference: item.approvalReference ?? "", verificationReportId: "", riskAcceptedUntil: item.riskAcceptedUntil ? item.riskAcceptedUntil.slice(0, 10) : "" });
+    setForm({ note: "", owner: item.owner ?? "", approvalReference: item.approvalReference ?? "", verificationReportId: "", riskAcceptedUntil: item.riskAcceptedUntil ? item.riskAcceptedUntil.slice(0, 10) : "" });
   }
 
-  async function updateItem(item: PlanItem, status: PlanStatus) {
+  async function updateItem(item: PlanItem, status: PlanAction) {
+    setSaving(true);
     try {
       const response = await fetch(`/api/ansible/remediation-plans/${encodeURIComponent(item.id)}`, { method: "PATCH", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, note: form.note,
-          ...(["agreed", "accepted_risk"].includes(status) ? { owner: form.owner, approvalReference: form.approvalReference } : {}),
-          ...(status === "agreed" ? { dueAt: form.dueAt ? new Date(`${form.dueAt}T12:00:00Z`).toISOString() : "" } : {}),
-          ...(status === "accepted_risk" ? { riskAcceptedUntil: form.riskAcceptedUntil ? new Date(`${form.riskAcceptedUntil}T12:00:00Z`).toISOString() : "" } : {}),
+        body: JSON.stringify({ status,
+          ...(status === "accepted_risk" ? { note: form.note, owner: form.owner, approvalReference: form.approvalReference,
+            riskAcceptedUntil: form.riskAcceptedUntil ? new Date(`${form.riskAcceptedUntil}T12:00:00Z`).toISOString() : "" } : {}),
           ...(status === "confirmed" ? { verificationReportId: form.verificationReportId } : {}) }) });
       const payload = await readApiResponse(response) as PlanData;
       if (!response.ok || !payload.ok) throw new Error(payload.message ?? "Не удалось обновить пункт плана.");
       setMessage(payload.message ?? "Пункт плана обновлён.", "success"); setUpdating(""); await loadPlan();
     } catch (error) { setMessage(errorMessage(error, "Не удалось обновить пункт плана.")); }
+    finally { setSaving(false); }
   }
 
-  const transitionTarget = updating.includes(":") ? updating.split(":").at(-1) as PlanStatus : null;
+  const transitionTarget = updating.split(":").at(-1) as PlanFormAction;
   return <div className="space-y-6">
     <header className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
       <div><h1 className="mt-2 text-3xl font-semibold text-white">План устранения</h1>
         </div>
-      <Button variant="secondary" onClick={() => void loadPlan()} disabled={loading || !hostAlias}><RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" />Обновить</Button>
+      <Button variant="secondary" onClick={() => void loadPlan()} disabled={loading || saving || !hostAlias}><RefreshCw size={16} className={loading ? "animate-spin" : ""} aria-hidden="true" />Обновить</Button>
     </header>
     <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 sm:p-5"><label className="block max-w-md text-sm text-slate-300">1. Целевой хост
-      <Select className={inputClass} value={hostAlias} onValueChange={(value) => setHostAlias(value)} disabled={loading}>{hosts.map((host) => <option key={host.alias} value={host.alias}>{host.alias}</option>)}</Select>
+      <Select className={inputClass} value={hostAlias} onValueChange={(value) => { setUpdating(""); setHostAlias(value); }} disabled={loading || saving}>{hosts.map((host) => <option key={host.alias} value={host.alias}>{host.alias}</option>)}</Select>
     </label>{!hosts.length && !loading ? <p className="mt-3 text-sm text-amber-100">Сначала подключите хотя бы один хост.</p> : null}</section>
 
     {data.correlation?.findings?.length ? <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 sm:p-5">
       <div className="flex items-start gap-3"><FileWarning className="mt-0.5 text-amber-200" size={22} aria-hidden="true" /><div><h2 className="text-lg font-semibold text-white">2. Выберите находки</h2><p className="mt-1 text-sm leading-6 text-slate-400">Добавление в план не меняет настройки хоста.</p></div></div>
-      <PlanFindingsPicker key={hostAlias} findings={data.correlation.findings} planned={planned} busy={loading || Boolean(updating)} onAdd={(id) => void addFinding(id)} />
+      <PlanFindingsPicker key={hostAlias} findings={data.correlation.findings} planned={planned} busy={loading || saving || Boolean(updating)} onAdd={(id) => void addFinding(id)} />
     </section> : hostAlias && !loading ? <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-5 text-sm leading-6 text-slate-400">Нет свежих находок. Выполните аудит.</section> : null}
 
     <section className="rounded-xl border border-slate-800 bg-slate-950/70 p-4 sm:p-5"><div className="flex items-start gap-3"><CheckCircle2 className="mt-0.5 text-sky-200" size={22} aria-hidden="true" /><div><h2 className="text-lg font-semibold text-white">3. План работ</h2><p className="mt-1 text-sm leading-6 text-slate-400">Подтверждение исправления требует повторной проверки.</p></div></div>
-      <div className="mt-4 space-y-4">{data.items?.length ? data.items.map((item) => { const target = updating.startsWith(`${item.id}:`) ? transitionTarget : null; return <details id={item.id} key={item.id} open={Boolean(target) || focusedId === item.id} className="group scroll-mt-6 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2"><summary className="flex cursor-pointer flex-wrap items-start gap-2 py-1 text-sm"><ChevronRight size={15} className="mt-0.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden="true" /><span className="min-w-0 flex-1 break-words font-semibold text-white">{item.title}</span><PlanRiskBadge finding={item} /><span className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2 py-1 text-xs font-semibold text-sky-100">{labels[item.status]}</span>{item.riskAcceptanceState === "expired" ? <span className="text-xs font-semibold text-amber-200">Принятие риска просрочено</span> : null}{item.currentObservation?.recurring ? <span className="text-xs font-semibold text-amber-200">Повторное наблюдение</span> : null}</summary><div className="pb-2"><p className="mt-2 text-sm text-slate-400">{item.description}</p>
-        <p className="mt-3 text-sm text-slate-200">Рекомендация: {item.recommendation}</p><p className="mt-2 text-xs text-slate-500">Доказательства: {item.evidence.map((source) => source.reportId).join(", ")}. Создан: {formatDate(item.createdAt)}.</p>
+      <div className="mt-4 space-y-4">{data.items?.length ? data.items.map((item) => {
+        const target = updating.startsWith(`${item.id}:`) ? transitionTarget : null;
+        const reports = target === "confirmed" ? verificationReports.filter((report) =>
+          Date.parse(report.createdAt ?? "") > Date.parse(item.updatedAt) && item.evidence.some((source) => source.mode === report.mode)) : [];
+        return <details id={item.id} key={item.id} open={Boolean(target) || focusedId === item.id} className="group scroll-mt-6 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2"><summary className="flex cursor-pointer flex-wrap items-start gap-2 py-1 text-sm"><ChevronRight size={15} className="mt-0.5 shrink-0 transition-transform group-open:rotate-90" aria-hidden="true" /><span className="min-w-0 flex-1 break-words font-semibold text-white">{item.title}</span><PlanRiskBadge finding={item} /><span className="rounded-md border border-sky-400/30 bg-sky-500/10 px-2 py-1 text-xs font-semibold text-sky-100">{labels[item.status]}</span>{item.riskAcceptanceState === "expired" ? <span className="text-xs font-semibold text-amber-200">Принятие риска просрочено</span> : null}{item.currentObservation?.recurring ? <span className="text-xs font-semibold text-amber-200">Повторное наблюдение</span> : null}</summary><div className="pb-2"><p className="mt-2 text-sm text-slate-400">{item.description}</p>
+        <div className="mt-3 text-sm"><PlanRecommendation title={item.title} recommendation={item.currentObservation?.recommendation ?? item.recommendation} /></div><details className="mt-3 text-xs text-slate-400"><summary className="cursor-pointer text-sky-200">Источники: {item.evidence.length}</summary><ul className="mt-2 space-y-2">{item.evidence.map((source) => <li key={`${source.reportId}:${source.findingId}`}><a className="break-all text-sky-200 underline underline-offset-4" href={`/reports/agentless/${encodeURIComponent(source.reportId)}`}>{source.source} · {formatDate(source.createdAt)}</a><p className="mt-1 break-all text-slate-500">{source.reportId}</p></li>)}</ul><p className="mt-2">Добавлено в план: {formatDate(item.createdAt)}</p></details>
         {item.severityOrigin === "unknown_legacy" ? <p className="mt-2 text-xs text-amber-200">Исходная оценка серьёзности не восстановлена: сохранённое доказательство недоступно или изменилось.</p> : null}
         {item.owner || item.dueAt || item.approvalReference ? <p className="mt-2 text-xs text-slate-400">Ответственный: {item.owner ?? "не указан"} · срок: {formatDate(item.dueAt)} · согласование: {item.approvalReference ?? "не указано"}</p> : null}
         {item.status === "accepted_risk" ? <p className="mt-2 text-sm text-amber-200">Принятие риска до: {formatDate(item.riskAcceptedUntil)}. {item.riskAcceptanceState === "expired" ? "Срок истёк; требуется новое решение. Текущее наблюдение сохраняется в сводке." : item.riskAcceptanceState === "active" ? "Действует на момент обновления плана." : "Действующий срок не подтверждён; требуется проверка."}</p> : null}
-        {item.currentObservation ? <div className="mt-3 text-sm text-amber-100"><p>{item.currentObservation.recurring ? "После подтверждения получено новое наблюдение этого контроля. Историческое подтверждение сохранено; повторный результат требует отдельного решения." : "В текущей сводке наблюдение этого контроля сохраняется."}</p><div className="mt-2 flex flex-wrap gap-2">{Array.from(new Set(item.currentObservation.sources.map((source) => source.reportId))).map((id) => <LinkButton key={id} variant="secondary" href={`/reports/agentless/${encodeURIComponent(id)}`}>Текущее доказательство: {id}</LinkButton>)}</div></div> : null}
+        {item.currentObservation ? <div className="mt-3 text-sm text-amber-100"><p>{item.currentObservation.recurring ? "После подтверждения проверка снова обнаружила проблему. Нужно новое решение; история сохранена." : "Последние проверки по-прежнему обнаруживают проблему."}</p><div className="mt-2 flex flex-wrap gap-2">{Array.from(new Set(item.currentObservation.sources.map((source) => source.reportId))).map((id, index) => <LinkButton key={id} variant="secondary" href={`/reports/agentless/${encodeURIComponent(id)}`} title={id}>Отчёт {index + 1}</LinkButton>)}</div></div> : null}
         {item.implementationNote ? <p className="mt-2 text-xs text-slate-400">Выполнение: {item.implementationNote}</p> : null}
         {item.verificationReportId ? <LinkButton className="mt-3" variant="secondary" href={`/reports/agentless/${encodeURIComponent(item.verificationReportId)}`}>Повторный аудит</LinkButton> : null}
-        {!target ? <div className="mt-4 flex flex-wrap gap-2">{transitions[item.status].map((status) => <Button key={status} variant={status === "accepted_risk" ? "secondary" : "primary"} disabled={Boolean(updating)} onClick={() => openTransition(item, status)}>{labels[status]}</Button>)}{item.canDeleteDraft ? <DeleteRecordButton endpoint={`/api/ansible/remediation-plans/${encodeURIComponent(item.id)}`} body={{ confirmPlanId: item.id }} label="Удалить черновик" confirmation={`Удалить черновой пункт «${item.title}»? Его история останется в журнале; настройки хоста не изменятся.`} onDeleted={loadPlan} /> : null}</div> : <div className="mt-4 rounded-md border border-sky-400/25 bg-sky-500/5 p-4"><h4 className="font-semibold text-sky-100">Перевести в статус «{labels[target]}»</h4><label className="mt-3 block text-sm text-slate-300">Комментарий
-          <textarea className="mt-1 min-h-24 w-full rounded-md border border-slate-700 bg-slate-950 p-3 text-sm text-slate-100" value={form.note} onChange={(event) => setForm((value) => ({ ...value, note: event.target.value }))} placeholder={target === "proposed" ? "Мера и риск её применения" : target === "completed" ? "Что именно выполнил специалист" : "Основание решения"} />
-        </label>{["agreed", "accepted_risk"].includes(target) ? <div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm text-slate-300">Ответственный<input className={inputClass} value={form.owner} onChange={(event) => setForm((value) => ({ ...value, owner: event.target.value }))} placeholder="ФИО или роль" /></label><label className="text-sm text-slate-300">Ссылка на согласование<input className={inputClass} value={form.approvalReference} onChange={(event) => setForm((value) => ({ ...value, approvalReference: event.target.value }))} placeholder="Тикет, письмо, акт" /></label></div> : null}
-        {target === "agreed" ? <label className="mt-3 block text-sm text-slate-300">Срок выполнения<input className={inputClass} type="date" value={form.dueAt} onChange={(event) => setForm((value) => ({ ...value, dueAt: event.target.value }))} /></label> : null}
-        {target === "accepted_risk" ? <label className="mt-3 block text-sm text-slate-300">Срок действия принятого риска<input className={inputClass} type="date" value={form.riskAcceptedUntil} onChange={(event) => setForm((value) => ({ ...value, riskAcceptedUntil: event.target.value }))} /></label> : null}
-        {target === "confirmed" ? <label className="mt-3 block text-sm text-slate-300">Полный свежий повторный отчёт<Select className={inputClass} value={form.verificationReportId} onValueChange={(selectedValue) => setForm((value) => ({ ...value, verificationReportId: selectedValue }))}><option value="">Выберите отчёт</option>{verificationReports.map((report) => <option key={report.reportId} value={report.reportId}>{report.mode} · {formatDate(report.createdAt)}</option>)}</Select></label> : null}
-        <div className="mt-4 flex flex-wrap gap-2"><Button onClick={() => void updateItem(item, target)} disabled={Boolean(updating) && !updating.startsWith(item.id)}>{target === "confirmed" ? "Подтвердить результат" : "Сохранить решение"}</Button><Button variant="secondary" onClick={() => setUpdating("")}>Отмена</Button></div></div>}</div></details>; }) : <p className="text-sm text-slate-500">Пунктов плана пока нет.</p>}</div>
+        {!target ? <div className="mt-4 flex flex-wrap gap-2">
+          {actions[item.status].map((status) => <Button key={status} variant={status === "accepted_risk" || status === "proposed" ? "secondary" : "primary"}
+            disabled={loading || saving || Boolean(updating)} onClick={() => {
+              if (status === "confirmed" || status === "accepted_risk") openTransition(item, status);
+              else void updateItem(item, status);
+            }}>{actionLabels[status]}</Button>)}
+          {item.canDeleteDraft && !saving ? <DeleteRecordButton endpoint={`/api/ansible/remediation-plans/${encodeURIComponent(item.id)}`} body={{ confirmPlanId: item.id }} label="Удалить черновик" confirmation={`Удалить черновой пункт «${item.title}»? История останется в журнале.`} onDeleted={loadPlan} /> : null}
+        </div> : <div className="mt-4 rounded-md border border-sky-400/25 bg-sky-500/5 p-4">
+          {target === "confirmed" ? (
+            reports.length ? <label className="block text-sm text-slate-300">Повторный отчёт
+              <Select className={inputClass} value={form.verificationReportId} disabled={saving} onValueChange={(value) => setForm((current) => ({ ...current, verificationReportId: value }))}>
+                <option value="">Выберите отчёт</option>
+                {reports.map((report) => <option key={report.reportId} value={report.reportId}>{report.mode} · {formatDate(report.createdAt)}</option>)}
+              </Select>
+            </label> : <p className="text-sm text-slate-300">Запустите ту же проверку на хосте после отметки о выполнении.</p>
+          ) : <fieldset disabled={saving} className="grid gap-3 sm:grid-cols-2">
+            <legend className="text-sm font-semibold text-white">Принятие риска</legend>
+            <label className="text-sm text-slate-300 sm:col-span-2">Причина
+              <textarea className="mt-1 min-h-24 w-full rounded-md border border-slate-700 bg-slate-950 p-3 text-sm text-slate-100" value={form.note} onChange={(event) => setForm((value) => ({ ...value, note: event.target.value }))} />
+            </label>
+            <label className="text-sm text-slate-300">Ответственный<input className={inputClass} value={form.owner} onChange={(event) => setForm((value) => ({ ...value, owner: event.target.value }))} /></label>
+            <label className="text-sm text-slate-300">Ссылка на согласование<input className={inputClass} value={form.approvalReference} onChange={(event) => setForm((value) => ({ ...value, approvalReference: event.target.value }))} /></label>
+            <label className="text-sm text-slate-300">Действует до<input className={inputClass} type="date" value={form.riskAcceptedUntil} onChange={(event) => setForm((value) => ({ ...value, riskAcceptedUntil: event.target.value }))} /></label>
+          </fieldset>}
+          <div className="mt-4 flex flex-wrap gap-2">
+            {target === "accepted_risk" || reports.length ? <Button onClick={() => void updateItem(item, target)} disabled={saving || (target === "confirmed" && !form.verificationReportId)}>
+              {target === "confirmed" ? "Подтвердить результат" : "Сохранить решение"}
+            </Button> : null}
+            <Button variant="secondary" disabled={saving} onClick={() => setUpdating("")}>Закрыть</Button>
+          </div>
+        </div>}</div></details>; }) : <p className="text-sm text-slate-500">Пунктов плана пока нет.</p>}</div>
     </section>
   </div>;
 }

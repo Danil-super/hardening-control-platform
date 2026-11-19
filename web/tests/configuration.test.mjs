@@ -39,6 +39,7 @@ test("the old in-memory scheduler is not part of the application API", () => {
 test("operator interface keeps routine work visible and allows guarded report cleanup", () => {
   const shell = read(path.join("web", "components", "layout", "app-shell.tsx"));
   const hosts = read(path.join("web", "components", "hosts", "ansible-control-client.tsx"));
+  const toolLabels = read(path.join("web", "lib", "audit-tool-labels.ts"));
   const reports = read(path.join("web", "app", "reports", "agentless", "page.tsx"));
   const reportDetail = read(path.join("web", "app", "reports", "agentless", "[reportId]", "page.tsx"));
   const dashboard = read(path.join("web", "components", "dashboard", "workspace-dashboard.tsx"));
@@ -47,7 +48,8 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.match(shell, /w-60/);
   assert.doesNotMatch(shell, /label: "Вход"/);
   assert.match(hosts, /2\. Проверки выбранного хоста/);
-  assert.match(hosts, /Локальные правила HCP — Ansible/);
+  assert.match(hosts, /label: auditToolLabels\.agentlessAudit/);
+  assert.match(toolLabels, /agentlessAudit: "Локальные правила HCP — Ansible"/);
   assert.match(hosts, /Набор правил HCP/);
   assert.match(hosts, /Сетевые проверки/);
   assert.match(hosts, /Без входа по SSH и без sudo/);
@@ -65,7 +67,8 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.ok(positions.every((position, index) => position >= 0 && (!index || position > positions[index - 1])), "host actions follow selection, audit, result, change, recovery");
   assert.match(reports, /Журнал действий/);
   assert.match(reports, /DeleteRecordButton/);
-  assert.match(reports, /Ненужные тестовые отчёты можно удалить/);
+  assert.match(reports, /Связанные с планом, изменениями или итоговым PDF отчёты защищены от удаления/);
+  assert.match(reports, /Очистка списка сохраняет доказательства в архиве/);
   assert.match(reportDetail, /Что не удалось проверить/);
   assert.match(reportDetail, /Основной аудит профиля/);
   assert.match(dashboard, /Следующий шаг/);
@@ -209,7 +212,7 @@ test("operator can use an automatic shared Trivy source or select an offline mod
   assert.match(screen, /Локальная база/);
   assert.match(screen, /Сетевая база/);
   assert.match(screen, /Автоматическое обновление/);
-  assert.match(screen, /Обновить сейчас/);
+  assert.match(screen, /Обновить базу Trivy/);
   assert.match(screen, /Общая база Trivy/);
   assert.match(shell, /data-sources/);
   assert.match(proxy, /api\/settings/);
@@ -230,8 +233,8 @@ test("freshness, group profiles and expiring OpenSCAP exceptions are explicit", 
   assert.match(policies, /exceptionsApplied/);
   assert.match(route, /resolveOpenScapPolicyForHost/);
   assert.match(route, /applyOpenScapExceptions/);
-  assert.match(policyScreen, /2\. Исключения/);
-  assert.match(policyScreen, /Исходный риск останется в отчёте/);
+  assert.match(policyScreen, /2\. Согласованные исключения/);
+  assert.match(policyScreen, /Результат проверки и критичность сохраняются/);
   assert.match(playbook, /hcp_openscap_datastream/);
   assert.match(playbook, /datastream-checksum/);
 });

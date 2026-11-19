@@ -11,7 +11,7 @@ import type { Finding, RiskLevel } from "@/types";
 type RiskFilter = RiskLevel | "all" | "critical" | "unknown";
 const riskFilters: RiskFilter[] = ["all", "critical", "high", "medium", "low", "info", "unknown"];
 const riskFilterLabels: Record<RiskFilter, string> = {
-  all: "Все риски",
+  all: "Все уровни",
   critical: "Критический",
   high: "Высокий",
   medium: "Средний",

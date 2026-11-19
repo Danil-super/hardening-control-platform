@@ -82,9 +82,10 @@ export function DebianTrackerClient() {
   const candidate = data?.lastImportedManifest;
   const active = data?.selectedManifest;
   const selected = data?.selectedSha256;
+  const showCandidate = Boolean(data?.lastImportedSha256 && data.lastImportedSha256 !== selected);
   const candidateAvailable = Boolean(candidate && data?.lastImportedSha256 &&
     data?.lastImportedSha256 !== selected);
-  const noActions = busy !== null || loading;
+  const noActions = busy !== null || loading || !data;
   const offline = data?.mode === "offline";
   const candidateAgeHours = candidate ? Math.max(0, (Date.now() - Date.parse(candidate.capturedAt)) / 3600000) : null;
   const candidateStale = candidateAgeHours !== null && (candidateAgeHours > (data?.maxImportAgeHours ?? 168) || !Number.isInteger(data?.maxImportAgeHours) || (data?.maxImportAgeHours ?? 168) < 1 || (data?.maxImportAgeHours ?? 168) > 8760);
@@ -97,61 +98,63 @@ export function DebianTrackerClient() {
           <div>
             <h2 id="debian-tracker-title" className="text-xl font-semibold text-white">Debian Security Tracker</h2>
             <p className="mt-1 max-w-3xl text-sm leading-6 text-slate-400">
-              Предварительная сверка применимости CVE для Debian по исходному пакету и его версии.
-              Загрузка выполняется только на сервере HCP; на целевых машинах ничего устанавливать не требуется.
-              Адрес источника строго задан в платформе.
+              Для Debian 11–13: дополнительная сверка CVE из отчётов Trivy. Для Astra не используется.
             </p>
           </div>
         </div>
         <span className="w-fit shrink-0 rounded-full border border-slate-700 bg-slate-900 px-3 py-1 text-xs font-semibold text-slate-200">
-          {selected ? active ? "Снимок выбран" : "Источник недоступен" : "Отключено"}
+          {selected ? active ? "Копия выбрана" : "Источник недоступен" : "Сверка отключена"}
         </span>
       </div>
-      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+      <div className={`mt-4 grid gap-3 ${showCandidate ? "lg:grid-cols-2" : ""}`}>
         <div className="rounded-md border border-slate-800 bg-slate-900/60 p-4">
-          <p className="text-sm font-semibold text-slate-100">Источник новых CVE-отчётов</p>
+          <p className="text-sm font-semibold text-slate-100">Используется в новых отчётах Debian</p>
           <p className="mt-1 text-sm text-slate-300">{selected ? active
-            ? "Получен: " + stamp(active.capturedAt) + " · " + active.sourcePackageCount + " исходных пакетов"
+            ? "Получена: " + stamp(active.capturedAt) + " · " + active.sourcePackageCount + " исходных пакетов"
             : "Закреплённый снимок не удалось проверить. Предварительный вывод будет недоступен."
-            : "Не выбран. Основная CVE-проверка Trivy работает независимо."}</p>
-          {selected ? <p className="mt-2 break-all font-mono text-xs text-slate-500">SHA-256 {selected}</p> : null}
+            : "Сверка выключена. Проверка пакетов через Trivy работает без неё."}</p>
+          {selected ? <details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer">SHA-256 выбранной копии</summary><p className="mt-1 break-all font-mono">{selected}</p></details> : null}
         </div>
-        <div className="rounded-md border border-slate-800 bg-slate-900/60 p-4">
-          <p className="text-sm font-semibold text-slate-100">Последний импортированный снимок</p>
+        {showCandidate ? <div className="rounded-md border border-slate-800 bg-slate-900/60 p-4">
+          <p className="text-sm font-semibold text-slate-100">Новая копия: ещё не используется</p>
           <p className="mt-1 text-sm text-slate-300">{candidate
             ? stamp(candidate.capturedAt) + " · " + (candidate.bytes / (1024 * 1024)).toFixed(1) + " МиБ · " + candidate.issueCount + " записей"
-            : data?.lastImportedSha256 ? "Снимок отсутствует или повреждён." : "База ещё не загружена в HCP."}</p>
-          {candidate ? <p className="mt-2 break-all font-mono text-xs text-slate-500">SHA-256 {candidate.sha256}</p> : null}
-        </div>
+            : "Копия отсутствует или повреждена."}</p>
+          {candidate ? <details className="mt-2 text-xs text-slate-400"><summary className="cursor-pointer">SHA-256 загруженной копии</summary><p className="mt-1 break-all font-mono">{candidate.sha256}</p></details> : null}
+        </div> : null}
       </div>
       <div className="mt-4 flex flex-wrap gap-3">
         <Button onClick={() => void run("upload")} disabled={noActions || offline}>
           <RefreshCw size={16} className={busy === "upload" ? "animate-spin" : ""} aria-hidden="true" />
-          {busy === "upload" ? "Загружаем и проверяем…" : "Загрузить с Debian"}
+          {busy === "upload" ? "Загружаем и проверяем…" : "Загрузить бюллетени Debian"}
         </Button>
         {candidateAvailable ? <Button variant="secondary" onClick={() => void run("select")} disabled={noActions || candidateStale}>
-          Выбрать снимок для CVE-сверки
+          {selected ? "Использовать новую копию" : "Включить сверку Debian"}
         </Button> : null}
         {selected ? <Button variant="secondary" onClick={() => void run("disable")} disabled={noActions}>
           Отключить сверку Debian
         </Button> : null}
-        <Button variant="secondary" onClick={() => void load()} disabled={noActions}>Обновить состояние</Button>
       </div>
       {busy === "upload" ? <p role="status" className="mt-3 text-sm text-sky-200">
-        Идёт загрузка и проверка полной базы на контроллере. Действующий снимок не изменяется до отдельного подтверждения.
+        HCP загружает и проверяет бюллетени. После загрузки выберите, использовать ли новую копию.
       </p> : null}
       {offline ? <p className="mt-3 text-sm text-amber-200">
-        Выбран локальный режим CVE-баз. Для сетевой загрузки сначала включите сетевой режим Trivy выше.
+        Для загрузки включите сетевой режим баз выше.
       </p> : null}
       {candidateAvailable && candidateStale ? <p className="mt-3 text-sm text-amber-200">
         Превышен допустимый возраст локального снимка или политика некорректна. Повторите загрузку или проверьте настройки контроллера. Недавний импорт не доказывает актуальность у Debian.
       </p> : null}
       {message ? <p role="status" className={"mt-3 rounded-md border px-3 py-2 text-sm " +
         (message.error ? "border-rose-400/30 text-rose-200" : "border-sky-400/30 text-sky-100")}>{message.text}</p> : null}
-      <div className="mt-4 flex items-start gap-2 border-t border-slate-800 pt-4 text-sm leading-6 text-amber-100">
-        <ShieldAlert size={18} className="mt-1 shrink-0" aria-hidden="true" />
-        <p>Снимки неизменяемы. Повторная загрузка идентичных байтов не обновляет дату снимка. SHA-256 подтверждает целостность, но не подпись Debian или полноту CVE. Сверка не меняет находки Trivy и не разрешает автоматическое исправление пакетов.</p>
-      </div>
+      {!data && message?.error ? <Button variant="secondary" className="mt-3" onClick={() => void load()} disabled={loading}>Повторить загрузку состояния</Button> : null}
+      <p className="mt-3 text-xs text-slate-400">Сверка не меняет находки Trivy и не исправляет хост.</p>
+      <details className="mt-3 border-t border-slate-800 pt-3 text-xs leading-5 text-slate-400">
+        <summary className="cursor-pointer">Об источнике и ограничениях</summary>
+        <div className="mt-2 flex items-start gap-2">
+          <ShieldAlert size={16} className="mt-0.5 shrink-0" aria-hidden="true" />
+          <p>Снимки неизменяемы. Повторная загрузка идентичных байтов не обновляет дату снимка. SHA-256 подтверждает целостность, но не подпись Debian или полноту CVE. Сверка выполняется по исходному пакету и его версии; адрес загрузки задан в HCP. На целевых машинах ничего устанавливать не требуется.</p>
+        </div>
+      </details>
     </section>
   );
 }

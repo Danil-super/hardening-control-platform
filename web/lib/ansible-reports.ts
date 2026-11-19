@@ -8,6 +8,7 @@ import { normalizeLynisFindings } from "@/lib/lynis-findings";
 import { normalizeNmapScope, nmapPortCoverage, type NmapScanScope } from "@/lib/nmap-scope";
 import { parseAssetBinding, sameAssetEvidence, type AssetBinding } from "@/lib/asset-binding";
 import { assessAstraOvalEvidence, type AstraOvalEvidenceStatus } from "@/lib/astra-oval-evidence";
+import { parseOvalCvss3, readOvalCvssMetadata } from "@/lib/oval-cvss";
 
 export type AnsibleReportSummary = {
   id: string;
@@ -245,7 +246,7 @@ function isFinding(value: unknown): value is Finding {
     && (item.severityUnknown === undefined || typeof item.severityUnknown === "boolean")
     && (item.severityAssessment === undefined || (item.severityAssessment !== null && typeof item.severityAssessment === "object"
       && ["critical", "high", "medium", "low"].includes(String((item.severityAssessment as Record<string, unknown>).level))
-      && ["oval_metadata", "chromium_description", "scanner_metadata"].includes(String((item.severityAssessment as Record<string, unknown>).source))))
+      && ["oval_metadata", "chromium_description", "scanner_metadata", "oval_cvss3"].includes(String((item.severityAssessment as Record<string, unknown>).source))))
     && ["failed", "passed", "manual", "fixed"].includes(String(item.status))
     && ["agentless", "custom", "ssh_audit", "nmap", "lynis", "openscap", "trivy", "greenbone", "dependency_track"].includes(String(item.source))
     && (item.evidence === undefined || typeof item.evidence === "string");
@@ -253,11 +254,12 @@ function isFinding(value: unknown): value is Finding {
 
 /** Interpret explicit vendor labels only; never infer CVSS from prose. Historical
  * source JSON stays intact, including its digest and original classification. */
-export function normalizeOvalFinding(finding: Finding, vendorMetadata?: { vendorSeverity?: unknown }): Finding {
+export function normalizeOvalFinding(finding: Finding, vendorMetadata?: { vendorSeverity?: unknown; cvss3?: unknown }): Finding {
   if (finding.profileId !== "astra-oval" || finding.source !== "openscap" || finding.status !== "failed") return finding;
   let metadata: unknown = vendorMetadata?.vendorSeverity;
-  if (!vendorMetadata) {
-    try { metadata = JSON.parse(finding.evidence ?? "{}").vendorSeverity; } catch {
+  let cvss = parseOvalCvss3(vendorMetadata?.cvss3);
+  if (!vendorMetadata || vendorMetadata.vendorSeverity === undefined) {
+    try { const value = JSON.parse(finding.evidence ?? "{}"); metadata = value.vendorSeverity; cvss = cvss ?? parseOvalCvss3(value.cvss3); } catch {
       // Current adapters retain an explicit assessment even when criteria make
       // the evidence excerpt too long to remain valid JSON.
       if (finding.severityAssessment?.source === "oval_metadata") metadata = finding.severityAssessment.level;
@@ -273,19 +275,40 @@ export function normalizeOvalFinding(finding: Finding, vendorMetadata?: { vendor
     const unique = new Set(matches);
     if (unique.size === 1) { level = levels[matches[0]]; source = "chromium_description"; }
   }
+  if (!level && !metadata && cvss) {
+    const level = cvss.score >= 9 ? "critical" : cvss.score >= 7 ? "high" : cvss.score >= 4 ? "medium" : "low";
+    return { ...finding, risk: level === "critical" ? "high" : level, severityUnknown: false, severityAssessment: { level, source: "oval_cvss3", ...cvss } };
+  }
   if (!level) return { ...finding, risk: "info", severityUnknown: true, severityAssessment: undefined };
   return { ...finding, risk: level === "critical" ? "high" : level, severityUnknown: false, severityAssessment: { level, source } };
 }
 
-function reportFindings(parsed: ReportJson) {
-  const metadata = new Map<string, { vendorSeverity?: unknown }>();
+function normalizeXccdfFinding(finding: Finding): Finding {
+  if (finding.source !== "openscap" || finding.profileId === "astra-oval" || finding.severityAssessment) return finding;
+  // This fixed adapter prefix precedes any imported stdout or free-form prose.
+  const severity = finding.evidence?.match(/^rule=[^;\r\n]+; result=[^;\r\n]+; severity=([^;\r\n]+); instance=/)?.[1].trim().toLowerCase();
+  if (!severity) return finding;
+  if (["critical", "high", "medium", "low"].includes(severity)) {
+    const level = severity as "critical" | "high" | "medium" | "low";
+    return { ...finding, risk: level === "critical" ? "high" : level, severityUnknown: false, severityAssessment: { level, source: "scanner_metadata" } };
+  }
+  if (severity === "moderate") return { ...finding, risk: "medium", severityUnknown: false };
+  return { ...finding, risk: "info", severityUnknown: severity !== "info" };
+}
+
+function reportFindings(parsed: ReportJson, reportPath: string) {
+  const metadata = new Map<string, { vendorSeverity?: unknown; cvss3?: unknown }>();
   if (parsed.mode === "astra-oval" && Array.isArray(parsed.scanner?.definitionResults)) {
     for (const definition of parsed.scanner.definitionResults) {
       if (definition && typeof definition === "object" && typeof definition.id === "string") metadata.set(definition.id, definition);
     }
   }
+  const legacyCvss = parsed.mode === "astra-oval" && Array.isArray(parsed.findings) && parsed.findings.some(finding => isFinding(finding)
+    && finding.status === "failed" && !Object.hasOwn(metadata.get(finding.id) ?? {}, "cvss3"));
+  const cvss = legacyCvss ? readOvalCvssMetadata(parsed, reportPath) : {};
+  for (const [id, value] of Object.entries(cvss)) metadata.set(id, { ...metadata.get(id), cvss3: metadata.get(id)?.cvss3 ?? value });
   return Array.isArray(parsed.findings) ? normalizeLynisFindings(parsed.findings.filter(isFinding)).map((finding) => {
-    const normalized = normalizeOvalFinding(finding, metadata.get(finding.id));
+    const normalized = normalizeOvalFinding(parsed.mode === "openscap" ? normalizeXccdfFinding(finding) : finding, metadata.get(finding.id));
     // Older Trivy/XCCDF adapters kept Critical in their structured evidence but
     // folded it into the high-priority band. Recover the explicit scanner label
     // without interpreting arbitrary prose or unversioned numerical scores.
@@ -338,7 +361,7 @@ function buildReportSummary(fileName: string, fullPath: string, parsed = readRep
   // A digest label alone proves neither successful evaluation nor complete
   // original OVAL definition results. Never publish a truncated report as clean.
   const ovalEvidence = mode === "astra-oval" ? assessAstraOvalEvidence(parsed.scanner, parsed.findings) : undefined;
-  const findings = reportFindings(parsed);
+  const findings = reportFindings(parsed, fullPath);
   const events = Array.isArray(parsed.events) ? parsed.events : [];
   const observation: Pick<AnsibleReportSummary, "observedAt" | "importedAt"> = mode === "greenbone" ? greenboneObservation(parsed) : {};
   const createdAt = mode === "greenbone" ? observation.observedAt ?? null : typeof parsed.createdAt === "string" ? parsed.createdAt : null;
@@ -401,7 +424,8 @@ type ReportMetadata = {
 const summaryCache = new Map<string, ReportMetadata>();
 function reportSignature(fullPath: string) {
   const info = statSync(fullPath);
-  return `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+  const source = lstatSync(path.join(path.dirname(fullPath), ".raw-evidence", path.basename(fullPath, ".json"), "source.xml"), { throwIfNoEntry: false });
+  return `${info.ino}:${info.size}:${info.mtimeMs}:${info.ctimeMs}:${source ? `${source.dev}:${source.ino}:${source.size}:${source.mtimeMs}:${source.ctimeMs}` : ""}`;
 }
 
 // Only compact metadata crosses the worker boundary; raw scanner evidence stays on disk.
@@ -551,7 +575,7 @@ export function readAnsibleReport(reportId: string): AnsibleReportDetail | null 
     ...summary,
     hostname: parsed.hostname ?? null,
     os: parsed.os ?? null,
-    findings: reportFindings(parsed),
+    findings: reportFindings(parsed, reportPath),
     events: Array.isArray(parsed.events) ? parsed.events : [],
     raw: parsed,
   };

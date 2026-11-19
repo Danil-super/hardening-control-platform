@@ -243,6 +243,21 @@ class ScannerAdaptersTest(unittest.TestCase):
         self.assertEqual(report["summary"]["high"], 850)
         self.assertFalse(report["scanner"]["partial"])
 
+    def test_openscap_preserves_severity_independently_of_rule_result(self):
+        for result, status in (("pass", "passed"), ("fail", "failed"), ("error", "manual")):
+            for severity, risk in (("high", "high"), ("medium", "medium"), ("low", "low"), ("info", "info"), ("unknown", "info")):
+                with self.subTest(result=result, severity=severity):
+                    xml = '<TestResult><rule-result idref="rule" severity="' + severity + '"><result>' + result + '</result></rule-result></TestResult>'
+                    report = self.parse_file(xml, scanner.openscap_arf)
+                    item = report["findings"][0]
+                    self.assertEqual(item["status"], status)
+                    self.assertEqual(item["risk"], risk)
+                    self.assertEqual(item.get("severityUnknown", False), severity == "unknown")
+                    if result == "pass":
+                        self.assertEqual(report["summary"]["high"], 0)
+                        self.assertEqual(report["summary"]["medium"], 0)
+                        self.assertEqual(report["summary"]["low"], 0)
+
     def test_native_original_standalone_form_is_explicit_not_fabricated_sds_success(self):
         xml = ('<TestResult xmlns="http://checklists.nist.gov/xccdf/1.2">'
                '<rule-result idref="rule"><result>pass</result></rule-result>'

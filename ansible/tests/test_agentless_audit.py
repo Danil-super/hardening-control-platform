@@ -125,6 +125,18 @@ def captured_ubuntu_ufw():
     return captured_ufw_fixture("ufw-ubuntu2404-pr8-2026-11-01.", "1.8.10")
 
 
+def captured_astra17_ufw():
+    directory = Path(__file__).parent / "fixtures"
+    debug = (directory / "astra17-nft096-netlink-2026-11-17.txt").read_text()
+    native = debug[debug.index('{"nftables"'):]
+    commands = {("nft", "-j", "list", "ruleset"): (0, native, ""),
+                ("nft", "-j", "-d", "netlink", "list", "ruleset"): (0, debug, "")}
+    for binary in ("iptables", "ip6tables"):
+        commands[(binary, "--version")] = (0, binary + " v1.8.5 (nf_tables)", "")
+        commands[(binary, "-S")] = (0, (directory / ("astra17-" + binary + "185-2026-11-17.txt")).read_text(), "")
+    return commands
+
+
 def firewall_proofs(findings):
     return json.JSONDecoder().raw_decode(findings["firewall_active"]["evidence"].split("filter_proofs=", 1)[1])[0]
 
@@ -711,6 +723,71 @@ class AgentlessAuditTest(unittest.TestCase):
         self.assertEqual(findings["firewall_active"]["status"], "manual")
         self.assertEqual(firewall_proofs(findings)["nftables"]["compatibility_bridge"]["status"], "unavailable")
 
+    def test_astra17_null_extensions_are_restored_from_bound_netlink_debug(self):
+        commands = captured_astra17_ufw()
+        report, findings = self.execute_audit(commands, netlink_generations=(42, 42))
+        self.assertEqual(findings["firewall_active"]["status"], "passed")
+        self.assertNotIn("firewall_active", report["scanner"]["incompleteChecks"])
+        bridge = firewall_proofs(findings)["nftables"]["compatibility_bridge"]
+        self.assertEqual(bridge["extension_names_source"], "nft_netlink_debug")
+        self.assertGreater(bridge["restored_conntrack_rules"], 0)
+
+    def test_astra17_bridge_rejects_incomplete_or_inconsistent_observations(self):
+        key = ("nft", "-j", "-d", "netlink", "list", "ruleset")
+        for change in ("missing_extension", "duplicate_handle", "unknown_revision", "wrong_protocol",
+                       "generation_changed", "generation_missing", "decoder_changed", "debug_changed", "legacy_decoder", "stderr", "truncated"):
+            with self.subTest(change=change):
+                commands = captured_astra17_ufw()
+                debug, generations = commands[key][1], (42, 42)
+                if change == "missing_extension":
+                    commands[key] = (0, debug.replace("  [ match name conntrack rev 3 ]", "", 1), "")
+                elif change == "duplicate_handle":
+                    commands[key] = (0, debug.replace("ip6 filter INPUT 22\n", "ip6 filter INPUT 23\n", 1), "")
+                elif change == "unknown_revision":
+                    commands[key] = (0, debug.replace("[ match name conntrack rev 3 ]", "[ match name conntrack rev 99 ]"), "")
+                elif change == "wrong_protocol":
+                    value = commands[("ip6tables", "-S")][1].replace("-A ufw6-user-input -p tcp", "-A ufw6-user-input -p udp")
+                    commands[("ip6tables", "-S")] = (0, value, "")
+                elif change.startswith("generation_"):
+                    generations = (42, 43) if change == "generation_changed" else ()
+                elif change == "decoder_changed":
+                    original = commands[("ip6tables", "-S")]
+                    commands[("ip6tables", "-S")] = [original, (0, original[1].replace("--ctstate RELATED,ESTABLISHED", "--ctstate NEW"), "")]
+                elif change == "debug_changed":
+                    commands[key] = [commands[key], (0, debug.replace("[ match name conntrack rev 3 ]", "[ match name rt rev 0 ]", 1), "")]
+                elif change == "legacy_decoder":
+                    commands[("ip6tables", "--version")] = (0, "ip6tables v1.8.5 (legacy)", "")
+                elif change == "stderr":
+                    commands[key] = (0, debug, "partially unreadable")
+                else:
+                    commands[key] = (0, debug[:-10], "")
+                report, findings = self.execute_audit(commands, netlink_generations=generations)
+                self.assertEqual(findings["firewall_active"]["status"], "manual")
+                self.assertIn("firewall_active", report["scanner"]["incompleteChecks"])
+                bridge = firewall_proofs(findings)["nftables"]["compatibility_bridge"]
+                self.assertEqual(bridge["status"], "unavailable")
+                self.assertNotIn("decoder_snapshots", bridge)
+
+    def test_astra17_bridge_does_not_infer_protection_from_ufw_names(self):
+        commands = captured_astra17_ufw()
+        key = ("nft", "-j", "-d", "netlink", "list", "ruleset")
+        debug = commands[key][1]
+        boundary = debug.index('{"nftables"')
+        data, prefix = json.loads(debug[boundary:]), debug[:boundary]
+        for family, binary in (("ip", "iptables"), ("ip6", "ip6tables")):
+            position = next(i for i, entry in enumerate(data["nftables"]) if entry.get("rule", {}).get("family") == family and entry["rule"].get("table") == "filter" and entry["rule"].get("chain") == "INPUT")
+            data["nftables"].insert(position, {"rule": {"family": family, "table": "filter", "chain": "INPUT", "handle": 999999,
+                                                      "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"accept": None}]}})
+            prefix += family + " filter INPUT 999999 \n  [ counter pkts 0 bytes 0 ]\n  [ immediate reg 0 accept ]\n\n"
+            old = commands[(binary, "-S")][1]
+            first = old.index("-A INPUT ")
+            commands[(binary, "-S")] = (0, old[:first] + "-A INPUT -j ACCEPT\n" + old[first:], "")
+        commands[key] = (0, prefix + json.dumps(data), "")
+        commands[("nft", "-j", "list", "ruleset")] = (0, json.dumps(data), "")
+        report, findings = self.execute_audit(commands, netlink_generations=(42, 42))
+        self.assertEqual(findings["firewall_active"]["status"], "failed")
+        self.assertNotIn("firewall_active", report["scanner"]["incompleteChecks"])
+
     def test_compat_bridge_requires_stable_generation_decoded_and_native_observations(self):
         for change in ("generation_missing", "generation_changed", "decoded_changed", "nft_changed", "unknown_decoder", "partial_stderr"):
             with self.subTest(change=change):
@@ -1228,7 +1305,7 @@ class AgentlessAuditTest(unittest.TestCase):
                 report, findings = self.execute_audit(rules=dict(RULES, audit_rules_version=version, evaluatorVersion="custom-override"))
                 self.assertEqual(report["schemaVersion"], 1)
                 self.assertEqual(report["agentless"]["version"], version)
-                self.assertEqual(report["agentless"]["evaluatorVersion"], "1.3.0")
+                self.assertEqual(report["agentless"]["evaluatorVersion"], "1.3.1")
                 self.assertIn("filter_proofs=", findings["firewall_active"]["evidence"])
 
 

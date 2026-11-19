@@ -53,6 +53,37 @@ def arguments(**values):
 
 
 class OvalAuditTests(unittest.TestCase):
+    def test_package_guidance_requires_literal_dpkg_threshold_and_native_item_match(self):
+        raw = source().replace(b'</oval_definitions>', b'''
+          <tests><dpkginfo_test xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux"
+              id="oval:test:tst:1" version="1"><object object_ref="pkg"/><state state_ref="threshold"/></dpkginfo_test></tests>
+          <objects><dpkginfo_object xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux"
+              id="pkg"><name>python3-yaml</name></dpkginfo_object></objects>
+          <states><dpkginfo_state xmlns="http://oval.mitre.org/XMLSchema/oval-definitions-5#linux"
+              id="threshold"><evr datatype="debian_evr_string" operation="less than">0:5.1.2-1+ci1</evr></dpkginfo_state></states>
+          </oval_definitions>''')
+        native = b'''
+          <tests><test test_id="oval:test:tst:1" version="1" result="true"><tested_item item_id="1" result="true"/></test></tests>
+          <oval_system_characteristics xmlns="http://oval.mitre.org/XMLSchema/oval-system-characteristics-5"><system_data>
+            <dpkginfo_item xmlns="http://oval.mitre.org/XMLSchema/oval-system-characteristics-5#linux" id="1" status="exists">
+              <name>python3-yaml</name><evr>0:5.1.2-1+b1</evr>
+            </dpkginfo_item>
+          </system_data></oval_system_characteristics>'''
+        for source_xml, evidence, expected in (
+            (raw, native, True),
+            (raw, native.replace(b'python3-yaml', b'other-package'), False),
+            (raw, native.replace(b'item_id="1" result="true"', b'item_id="1" result="false"'), False),
+            (raw.replace(b'less than', b'equals'), native, False),
+            (raw.replace(b'test_ref="oval:test:tst:1"', b'negate="true" test_ref="oval:test:tst:1"'), native, False),
+        ):
+            root = oval.safe_xml(source_xml)
+            report = oval.empty_report(arguments())
+            oval.parse_results(oval.safe_xml(results(extra=evidence.decode())), oval.source_definitions(root),
+                               report, evidence_projection='bounded', source_root=root)
+            item = report['findings'][0]
+            self.assertEqual(item['status'], 'failed')
+            self.assertEqual('python3-yaml: в отчёте 0:5.1.2-1+b1, порог OVAL 0:5.1.2-1+ci1.' in item['recommendation'], expected)
+
     def test_indexed_stylesheet_preserves_all_template_priorities_and_rules(self):
         stylesheet = b'''<axsl:stylesheet xmlns:axsl="http://www.w3.org/1999/XSL/Transform"
           xmlns:oval-def="http://oval.mitre.org/XMLSchema/oval-definitions-5" version="1.0">
@@ -331,6 +362,21 @@ class OvalAuditTests(unittest.TestCase):
             self.assertEqual(report['scanner']['unratedVulnerabilityCount'], int(expected))
             self.assertIsNone(failed[0]['vulnerability']['cvss'])
 
+    def test_bdu_cvss3_is_retained_and_rated_without_executing_its_serialized_text(self):
+        vector = 'AV:N/AC:L/PR:N/UI:R/S:U/C:N/I:N/A:H'
+        for score, level in ((0.1, 'low'), (3.9, 'low'), (4.0, 'medium'), (6.9, 'medium'), (7.0, 'high'), (8.9, 'high'), (9.0, 'critical'), (10.0, 'critical')):
+            raw = source().replace(b'</metadata>', ('<bdu><CVSS3.0>NistCVSS3(cvss=\'' + vector + '\', score=' + str(score) + ')</CVSS3.0></bdu></metadata>').encode())
+            report = oval.empty_report(arguments())
+            oval.parse_results(oval.safe_xml(results()), oval.source_definitions(oval.safe_xml(raw)), report)
+            item = report['findings'][0]
+            self.assertFalse(item['severityUnknown'])
+            self.assertEqual(item['severityAssessment']['level'], level)
+            self.assertEqual(item['severityAssessment']['source'], 'oval_cvss3')
+            self.assertEqual(item['vulnerability']['cvss']['score'], score)
+        for text in ('None', 'critical 9.8', "NistCVSS3(cvss='invalid', score=9.8)", "NistCVSS3(cvss='" + vector + "', score=11)", "__import__('os').system('false')"):
+            node = oval.ET.fromstring('<metadata><bdu><CVSS3.0>' + text + '</CVSS3.0></bdu></metadata>')
+            self.assertIsNone(oval.cvss3_metadata(node))
+
     def test_explicit_chromium_label_is_attributed_and_conflicts_stay_unrated(self):
         for level in ('Critical', 'High', 'Medium', 'Low'):
             description = 'Synthetic evidence (Chromium security severity: ' + level + ')'
@@ -345,6 +391,12 @@ class OvalAuditTests(unittest.TestCase):
         self.assertIsNone(oval.severity_assessment(None, 'chromium', 'critical vulnerability'))
         self.assertIsNone(oval.severity_assessment(None, 'chromium', '(Chromium security severity: High) (Chromium security severity: Low)'))
         self.assertIsNone(oval.severity_assessment('custom', 'chromium', '(Chromium security severity: Critical)'))
+
+    def test_cvss_metadata_index_rejects_unsafe_xml_and_duplicate_definitions(self):
+        for raw in (b'<!DOCTYPE x><oval_definitions/>', '<oval_definitions/>'.encode('utf-16'), b'<not_oval/>',
+                    source().replace(b'</definitions>', b'<definition id="oval:test:def:1"/></definitions>')):
+            with self.assertRaises(ValueError):
+                oval.cvss3_index(raw)
 
     def test_non_vulnerability_reference_never_becomes_cve(self):
         report = self.parse(('patch', 'compliance', 'inventory'), ('true',) * 3)

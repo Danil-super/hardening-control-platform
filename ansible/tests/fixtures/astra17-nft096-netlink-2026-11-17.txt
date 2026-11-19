@@ -1,0 +1,1168 @@
+ip6 filter INPUT 22
+  [ counter pkts 46 bytes 9887 ]
+  [ immediate reg 0 jump -> ufw6-before-logging-input ]
+
+ip6 filter INPUT 23 22
+  [ counter pkts 46 bytes 9887 ]
+  [ immediate reg 0 jump -> ufw6-before-input ]
+
+ip6 filter INPUT 24 23
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-after-input ]
+
+ip6 filter INPUT 25 24
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-after-logging-input ]
+
+ip6 filter INPUT 26 25
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-reject-input ]
+
+ip6 filter INPUT 27 26
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-track-input ]
+
+ip6 filter FORWARD 34
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-before-logging-forward ]
+
+ip6 filter FORWARD 35 34
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-before-forward ]
+
+ip6 filter FORWARD 36 35
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-after-forward ]
+
+ip6 filter FORWARD 37 36
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-after-logging-forward ]
+
+ip6 filter FORWARD 38 37
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-reject-forward ]
+
+ip6 filter FORWARD 39 38
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-track-forward ]
+
+ip6 filter OUTPUT 28
+  [ counter pkts 177 bytes 19863 ]
+  [ immediate reg 0 jump -> ufw6-before-logging-output ]
+
+ip6 filter OUTPUT 29 28
+  [ counter pkts 177 bytes 19863 ]
+  [ immediate reg 0 jump -> ufw6-before-output ]
+
+ip6 filter OUTPUT 30 29
+  [ counter pkts 55 bytes 11011 ]
+  [ immediate reg 0 jump -> ufw6-after-output ]
+
+ip6 filter OUTPUT 31 30
+  [ counter pkts 55 bytes 11011 ]
+  [ immediate reg 0 jump -> ufw6-after-logging-output ]
+
+ip6 filter OUTPUT 32 31
+  [ counter pkts 55 bytes 11011 ]
+  [ immediate reg 0 jump -> ufw6-reject-output ]
+
+ip6 filter OUTPUT 33 32
+  [ counter pkts 55 bytes 11011 ]
+  [ immediate reg 0 jump -> ufw6-track-output ]
+
+ip6 filter ufw6-before-input 50
+  [ meta load iifname => reg 1 ]
+  [ cmp eq reg 1 0x00006f6c ]
+  [ counter pkts 13 bytes 932 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 52 50
+  [ match name rt rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip6 filter ufw6-before-input 55 52
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 58 55
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 59 58
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-logging-deny ]
+
+ip6 filter ufw6-before-input 60 59
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip6 filter ufw6-before-input 61 60
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 62 61
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 63 62
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 64 63
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 65 64
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 66 65
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 67 66
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 68 67
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 69 68
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 70 69
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 71 70
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 72 71
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 73 72
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 74 73
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 75 74
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 76 75
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 77 76
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 78 77
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 79 78
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 80 79
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 108 80
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 109 108
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 110 109
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 111 110
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 112 111
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ payload load 16b @ network header + 24 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 113 112
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ payload load 16b @ network header + 24 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0xffffffff 0xffffffff 0xffffffff 0xffffffff ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000002ff 0x00000000 0x00000000 0xfb000000 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 33 bytes 8955 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 114 113
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ payload load 16b @ network header + 24 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0xffffffff 0xffffffff 0xffffffff 0xffffffff ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000002ff 0x00000000 0x00000000 0x0f000000 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-input 139 114
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-user-input ]
+
+ip6 filter ufw6-before-output 51
+  [ meta load oifname => reg 1 ]
+  [ cmp eq reg 1 0x00006f6c ]
+  [ counter pkts 13 bytes 932 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 54 51
+  [ match name rt rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip6 filter ufw6-before-output 56 54
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 81 56
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 82 81
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 83 82
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 84 83
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 85 84
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 86 85
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 87 86
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 49 bytes 2352 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 88 87
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 89 88
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 8 bytes 576 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 90 89
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 91 90
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 92 91
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 93 92
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 94 93
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 95 94
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 96 95
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 52 bytes 4992 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 97 96
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 98 97
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 99 98
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 100 99
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 101 100
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ payload load 16b @ network header + 8 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000c0ff 0x00000000 0x00000000 0x00000000 ) ^ 0x00000000 0x00000000 0x00000000 0x00000000 ]
+  [ cmp eq reg 1 0x000080fe 0x00000000 0x00000000 0x00000000 ]
+  [ match name icmp6 rev 0 ]
+  [ match name hl rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-output 140 101
+  [ counter pkts 55 bytes 11011 ]
+  [ immediate reg 0 jump -> ufw6-user-output ]
+
+ip6 filter ufw6-before-forward 53
+  [ match name rt rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip6 filter ufw6-before-forward 57 53
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-forward 102 57
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-forward 103 102
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-forward 104 103
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-forward 105 104
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-forward 106 105
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-forward 107 106
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x0000003a ]
+  [ match name icmp6 rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-before-forward 141 107
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-user-forward ]
+
+ip6 filter ufw6-after-input 115
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-skip-to-policy-input ]
+
+ip6 filter ufw6-after-input 116 115
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-skip-to-policy-input ]
+
+ip6 filter ufw6-after-input 117 116
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000006 ]
+  [ match name tcp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-skip-to-policy-input ]
+
+ip6 filter ufw6-after-input 118 117
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000006 ]
+  [ match name tcp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-skip-to-policy-input ]
+
+ip6 filter ufw6-after-input 119 118
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-skip-to-policy-input ]
+
+ip6 filter ufw6-after-input 120 119
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw6-skip-to-policy-input ]
+
+ip6 filter ufw6-after-logging-input 131
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip6 filter ufw6-after-logging-forward 132
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip6 filter ufw6-track-output 40
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000006 ]
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-track-output 41 40
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name conntrack rev 3 ]
+  [ counter pkts 31 bytes 8707 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-logging-deny 133
+  [ match name conntrack rev 3 ]
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 return ]
+
+ip6 filter ufw6-logging-deny 134 133
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip6 filter ufw6-logging-allow 135
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip6 filter ufw6-skip-to-policy-input 47
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip6 filter ufw6-skip-to-policy-output 48
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-skip-to-policy-forward 49
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip6 filter ufw6-user-input 129
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000006 ]
+  [ match name tcp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-user-input 130 129
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip6 filter ufw6-user-limit 136
+  [ limit rate 3/minute burst 5 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip6 filter ufw6-user-limit 137 136
+  [ counter pkts 0 bytes 0 ]
+  [ target name REJECT rev 0 ]
+
+ip6 filter ufw6-user-limit-accept 138
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter INPUT 22
+  [ counter pkts 2007 bytes 1475839 ]
+  [ immediate reg 0 jump -> ufw-before-logging-input ]
+
+ip filter INPUT 23 22
+  [ counter pkts 2007 bytes 1475839 ]
+  [ immediate reg 0 jump -> ufw-before-input ]
+
+ip filter INPUT 24 23
+  [ counter pkts 108 bytes 16378 ]
+  [ immediate reg 0 jump -> ufw-after-input ]
+
+ip filter INPUT 25 24
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-after-logging-input ]
+
+ip filter INPUT 26 25
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-reject-input ]
+
+ip filter INPUT 27 26
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-track-input ]
+
+ip filter FORWARD 168
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> DOCKER-USER ]
+
+ip filter FORWARD 163 168
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> DOCKER-ISOLATION-STAGE-1 ]
+
+ip filter FORWARD 162 163
+  [ meta load oifname => reg 1 ]
+  [ cmp eq reg 1 0x6b636f64 0x00307265 ]
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter FORWARD 161 162
+  [ meta load oifname => reg 1 ]
+  [ cmp eq reg 1 0x6b636f64 0x00307265 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> DOCKER ]
+
+ip filter FORWARD 160 161
+  [ meta load iifname => reg 1 ]
+  [ cmp eq reg 1 0x6b636f64 0x00307265 ]
+  [ meta load oifname => reg 1 ]
+  [ cmp neq reg 1 0x6b636f64 0x00307265 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter FORWARD 159 160
+  [ meta load iifname => reg 1 ]
+  [ cmp eq reg 1 0x6b636f64 0x00307265 ]
+  [ meta load oifname => reg 1 ]
+  [ cmp eq reg 1 0x6b636f64 0x00307265 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter FORWARD 34 159
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-before-logging-forward ]
+
+ip filter FORWARD 35 34
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-before-forward ]
+
+ip filter FORWARD 36 35
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-after-forward ]
+
+ip filter FORWARD 37 36
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-after-logging-forward ]
+
+ip filter FORWARD 38 37
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-reject-forward ]
+
+ip filter FORWARD 39 38
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-track-forward ]
+
+ip filter OUTPUT 28
+  [ counter pkts 1973 bytes 967175 ]
+  [ immediate reg 0 jump -> ufw-before-logging-output ]
+
+ip filter OUTPUT 29 28
+  [ counter pkts 1973 bytes 967175 ]
+  [ immediate reg 0 jump -> ufw-before-output ]
+
+ip filter OUTPUT 30 29
+  [ counter pkts 260 bytes 44103 ]
+  [ immediate reg 0 jump -> ufw-after-output ]
+
+ip filter OUTPUT 31 30
+  [ counter pkts 260 bytes 44103 ]
+  [ immediate reg 0 jump -> ufw-after-logging-output ]
+
+ip filter OUTPUT 32 31
+  [ counter pkts 260 bytes 44103 ]
+  [ immediate reg 0 jump -> ufw-reject-output ]
+
+ip filter OUTPUT 33 32
+  [ counter pkts 260 bytes 44103 ]
+  [ immediate reg 0 jump -> ufw-track-output ]
+
+ip filter ufw-before-input 95
+  [ meta load iifname => reg 1 ]
+  [ cmp eq reg 1 0x00006f6c ]
+  [ counter pkts 598 bytes 131626 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-input 97 95
+  [ match name conntrack rev 3 ]
+  [ counter pkts 1170 bytes 1298210 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-input 100 97
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-logging-deny ]
+
+ip filter ufw-before-input 101 100
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip filter ufw-before-input 102 101
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000001 ]
+  [ match name icmp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-input 103 102
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000001 ]
+  [ match name icmp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-input 104 103
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000001 ]
+  [ match name icmp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-input 105 104
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000001 ]
+  [ match name icmp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-input 110 105
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 10 bytes 3280 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-input 111 110
+  [ counter pkts 229 bytes 42723 ]
+  [ immediate reg 0 jump -> ufw-not-local ]
+
+ip filter ufw-before-input 117 111
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ payload load 4b @ network header + 16 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0xffffffff ) ^ 0x00000000 ]
+  [ cmp eq reg 1 0xfb0000e0 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 83 bytes 24065 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-input 118 117
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ payload load 4b @ network header + 16 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0xffffffff ) ^ 0x00000000 ]
+  [ cmp eq reg 1 0xfaffffef ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-input 144 118
+  [ counter pkts 146 bytes 18658 ]
+  [ immediate reg 0 jump -> ufw-user-input ]
+
+ip filter ufw-before-output 96
+  [ meta load oifname => reg 1 ]
+  [ cmp eq reg 1 0x00006f6c ]
+  [ counter pkts 598 bytes 131626 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-output 98 96
+  [ match name conntrack rev 3 ]
+  [ counter pkts 1115 bytes 791446 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-output 145 98
+  [ counter pkts 260 bytes 44103 ]
+  [ immediate reg 0 jump -> ufw-user-output ]
+
+ip filter ufw-before-forward 99
+  [ match name conntrack rev 3 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-forward 106 99
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000001 ]
+  [ match name icmp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-forward 107 106
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000001 ]
+  [ match name icmp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-forward 108 107
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000001 ]
+  [ match name icmp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-forward 109 108
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000001 ]
+  [ match name icmp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-before-forward 146 109
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-user-forward ]
+
+ip filter ufw-after-input 119
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 64 bytes 6000 ]
+  [ immediate reg 0 jump -> ufw-skip-to-policy-input ]
+
+ip filter ufw-after-input 120 119
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 44 bytes 10378 ]
+  [ immediate reg 0 jump -> ufw-skip-to-policy-input ]
+
+ip filter ufw-after-input 121 120
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000006 ]
+  [ match name tcp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-skip-to-policy-input ]
+
+ip filter ufw-after-input 122 121
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000006 ]
+  [ match name tcp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-skip-to-policy-input ]
+
+ip filter ufw-after-input 123 122
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-skip-to-policy-input ]
+
+ip filter ufw-after-input 124 123
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-skip-to-policy-input ]
+
+ip filter ufw-after-input 125 124
+  [ match name addrtype rev 1 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-skip-to-policy-input ]
+
+ip filter ufw-after-logging-input 136
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip filter ufw-after-logging-forward 137
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip filter ufw-track-output 40
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000006 ]
+  [ match name conntrack rev 3 ]
+  [ counter pkts 1 bytes 60 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-track-output 41 40
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name conntrack rev 3 ]
+  [ counter pkts 227 bytes 42747 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-logging-deny 138
+  [ match name conntrack rev 3 ]
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 return ]
+
+ip filter ufw-logging-deny 139 138
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip filter ufw-logging-allow 140
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip filter ufw-skip-to-policy-input 47
+  [ counter pkts 108 bytes 16378 ]
+  [ immediate reg 0 drop ]
+
+ip filter ufw-skip-to-policy-output 48
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-skip-to-policy-forward 49
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip filter ufw-not-local 112
+  [ match name addrtype rev 1 ]
+  [ counter pkts 38 bytes 2280 ]
+  [ immediate reg 0 return ]
+
+ip filter ufw-not-local 113 112
+  [ match name addrtype rev 1 ]
+  [ counter pkts 83 bytes 24065 ]
+  [ immediate reg 0 return ]
+
+ip filter ufw-not-local 114 113
+  [ match name addrtype rev 1 ]
+  [ counter pkts 108 bytes 16378 ]
+  [ immediate reg 0 return ]
+
+ip filter ufw-not-local 115 114
+  [ limit rate 3/minute burst 10 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> ufw-logging-deny ]
+
+ip filter ufw-not-local 116 115
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip filter ufw-user-input 134
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000006 ]
+  [ match name tcp rev 0 ]
+  [ counter pkts 38 bytes 2280 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-user-input 135 134
+  [ meta load l4proto => reg 1 ]
+  [ cmp eq reg 1 0x00000011 ]
+  [ match name udp rev 0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter ufw-user-limit 141
+  [ limit rate 3/minute burst 5 type packets flags 0x0 ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name LOG rev 0 ]
+
+ip filter ufw-user-limit 142 141
+  [ counter pkts 0 bytes 0 ]
+  [ target name REJECT rev 0 ]
+
+ip filter ufw-user-limit-accept 143
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 accept ]
+
+ip filter DOCKER-ISOLATION-STAGE-1 164
+  [ meta load iifname => reg 1 ]
+  [ cmp eq reg 1 0x6b636f64 0x00307265 ]
+  [ meta load oifname => reg 1 ]
+  [ cmp neq reg 1 0x6b636f64 0x00307265 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> DOCKER-ISOLATION-STAGE-2 ]
+
+ip filter DOCKER-ISOLATION-STAGE-1 150 164
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 return ]
+
+ip filter DOCKER-ISOLATION-STAGE-2 165
+  [ meta load oifname => reg 1 ]
+  [ cmp eq reg 1 0x6b636f64 0x00307265 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 drop ]
+
+ip filter DOCKER-ISOLATION-STAGE-2 151 165
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 return ]
+
+ip filter DOCKER-USER 167
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 return ]
+
+ip nat PREROUTING 8
+  [ match name addrtype rev 1 ]
+  [ counter pkts 45 bytes 4576 ]
+  [ immediate reg 0 jump -> DOCKER ]
+
+ip nat POSTROUTING 10
+  [ meta load oifname => reg 1 ]
+  [ cmp neq reg 1 0x6b636f64 0x00307265 ]
+  [ payload load 4b @ network header + 12 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x0000ffff ) ^ 0x00000000 ]
+  [ cmp eq reg 1 0x000011ac ]
+  [ counter pkts 0 bytes 0 ]
+  [ target name MASQUERADE rev 0 ]
+
+ip nat OUTPUT 9
+  [ payload load 4b @ network header + 16 => reg 1 ]
+  [ bitwise reg 1 = (reg=1 & 0x000000ff ) ^ 0x00000000 ]
+  [ cmp neq reg 1 0x0000007f ]
+  [ match name addrtype rev 1 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 jump -> DOCKER ]
+
+ip nat DOCKER 11
+  [ meta load iifname => reg 1 ]
+  [ cmp eq reg 1 0x6b636f64 0x00307265 ]
+  [ counter pkts 0 bytes 0 ]
+  [ immediate reg 0 return ]
+
+{"nftables": [{"metainfo": {"version": "0.9.6", "release_name": "Capital Idea #2", "json_schema_version": 1}}, {"table": {"family": "ip6", "name": "filter", "handle": 1}}, {"chain": {"family": "ip6", "table": "filter", "name": "INPUT", "handle": 1, "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}}, {"rule": {"family": "ip6", "table": "filter", "chain": "INPUT", "handle": 22, "expr": [{"counter": {"packets": 46, "bytes": 9887}}, {"jump": {"target": "ufw6-before-logging-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "INPUT", "handle": 23, "expr": [{"counter": {"packets": 46, "bytes": 9887}}, {"jump": {"target": "ufw6-before-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "INPUT", "handle": 24, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-after-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "INPUT", "handle": 25, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-after-logging-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "INPUT", "handle": 26, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-reject-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "INPUT", "handle": 27, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-track-input"}}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "FORWARD", "handle": 2, "type": "filter", "hook": "forward", "prio": 0, "policy": "drop"}}, {"rule": {"family": "ip6", "table": "filter", "chain": "FORWARD", "handle": 34, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-before-logging-forward"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "FORWARD", "handle": 35, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-before-forward"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "FORWARD", "handle": 36, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-after-forward"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "FORWARD", "handle": 37, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-after-logging-forward"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "FORWARD", "handle": 38, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-reject-forward"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "FORWARD", "handle": 39, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-track-forward"}}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "OUTPUT", "handle": 3, "type": "filter", "hook": "output", "prio": 0, "policy": "accept"}}, {"rule": {"family": "ip6", "table": "filter", "chain": "OUTPUT", "handle": 28, "expr": [{"counter": {"packets": 177, "bytes": 19863}}, {"jump": {"target": "ufw6-before-logging-output"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "OUTPUT", "handle": 29, "expr": [{"counter": {"packets": 177, "bytes": 19863}}, {"jump": {"target": "ufw6-before-output"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "OUTPUT", "handle": 30, "expr": [{"counter": {"packets": 55, "bytes": 11011}}, {"jump": {"target": "ufw6-after-output"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "OUTPUT", "handle": 31, "expr": [{"counter": {"packets": 55, "bytes": 11011}}, {"jump": {"target": "ufw6-after-logging-output"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "OUTPUT", "handle": 32, "expr": [{"counter": {"packets": 55, "bytes": 11011}}, {"jump": {"target": "ufw6-reject-output"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "OUTPUT", "handle": 33, "expr": [{"counter": {"packets": 55, "bytes": 11011}}, {"jump": {"target": "ufw6-track-output"}}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-before-logging-input", "handle": 4}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-before-logging-output", "handle": 5}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-before-logging-forward", "handle": 6}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-before-input", "handle": 7}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 50, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "lo"}}, {"counter": {"packets": 13, "bytes": 932}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 52, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 55, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 58, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 59, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-logging-deny"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 60, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 61, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 62, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 63, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 64, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 65, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 66, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 67, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 68, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 69, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 70, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 71, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 72, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 73, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 74, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 75, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 76, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 77, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 78, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 79, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 80, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 108, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 109, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 110, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 111, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 112, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "daddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 113, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "daddr"}}, "right": "ff02::fb"}}, {"xt": null}, {"counter": {"packets": 33, "bytes": 8955}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 114, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "daddr"}}, "right": "ff02::f"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-input", "handle": 139, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-user-input"}}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-before-output", "handle": 8}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 51, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "lo"}}, {"counter": {"packets": 13, "bytes": 932}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 54, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 56, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 81, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 82, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 83, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 84, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 85, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 86, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 87, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 49, "bytes": 2352}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 88, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 89, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 8, "bytes": 576}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 90, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 91, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 92, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 93, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 94, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 95, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 96, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"counter": {"packets": 52, "bytes": 4992}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 97, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 98, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 99, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 100, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 101, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip6", "field": "saddr"}}, "right": {"prefix": {"addr": "fe80::", "len": 10}}}}, {"xt": null}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-output", "handle": 140, "expr": [{"counter": {"packets": 55, "bytes": 11011}}, {"jump": {"target": "ufw6-user-output"}}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-before-forward", "handle": 9}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-forward", "handle": 53, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-forward", "handle": 57, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-forward", "handle": 102, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-forward", "handle": 103, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-forward", "handle": 104, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-forward", "handle": 105, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-forward", "handle": 106, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-forward", "handle": 107, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "ipv6-icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-before-forward", "handle": 141, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-user-forward"}}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-after-input", "handle": 10}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-after-input", "handle": 115, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-skip-to-policy-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-after-input", "handle": 116, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-skip-to-policy-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-after-input", "handle": 117, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-skip-to-policy-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-after-input", "handle": 118, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-skip-to-policy-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-after-input", "handle": 119, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-skip-to-policy-input"}}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-after-input", "handle": 120, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw6-skip-to-policy-input"}}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-after-output", "handle": 11}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-after-forward", "handle": 12}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-after-logging-input", "handle": 13}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-after-logging-input", "handle": 131, "expr": [{"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-after-logging-output", "handle": 14}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-after-logging-forward", "handle": 15}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-after-logging-forward", "handle": 132, "expr": [{"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-reject-input", "handle": 16}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-reject-output", "handle": 17}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-reject-forward", "handle": 18}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-track-input", "handle": 19}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-track-output", "handle": 20}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-track-output", "handle": 40, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-track-output", "handle": 41, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 31, "bytes": 8707}}, {"accept": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-track-forward", "handle": 21}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-logging-deny", "handle": 42}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-logging-deny", "handle": 133, "expr": [{"xt": null}, {"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"return": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-logging-deny", "handle": 134, "expr": [{"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-logging-allow", "handle": 43}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-logging-allow", "handle": 135, "expr": [{"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-skip-to-policy-input", "handle": 44}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-skip-to-policy-input", "handle": 47, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-skip-to-policy-output", "handle": 45}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-skip-to-policy-output", "handle": 48, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-skip-to-policy-forward", "handle": 46}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-skip-to-policy-forward", "handle": 49, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-user-input", "handle": 121}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-user-input", "handle": 129, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-user-input", "handle": 130, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-user-output", "handle": 122}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-user-forward", "handle": 123}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-user-logging-input", "handle": 124}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-user-logging-output", "handle": 125}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-user-logging-forward", "handle": 126}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-user-limit", "handle": 127}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-user-limit", "handle": 136, "expr": [{"limit": {"rate": 3, "per": "minute"}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-user-limit", "handle": 137, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip6", "table": "filter", "name": "ufw6-user-limit-accept", "handle": 128}}, {"rule": {"family": "ip6", "table": "filter", "chain": "ufw6-user-limit-accept", "handle": 138, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"table": {"family": "ip", "name": "filter", "handle": 2}}, {"chain": {"family": "ip", "table": "filter", "name": "INPUT", "handle": 1, "type": "filter", "hook": "input", "prio": 0, "policy": "drop"}}, {"rule": {"family": "ip", "table": "filter", "chain": "INPUT", "handle": 22, "expr": [{"counter": {"packets": 2007, "bytes": 1475839}}, {"jump": {"target": "ufw-before-logging-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "INPUT", "handle": 23, "expr": [{"counter": {"packets": 2007, "bytes": 1475839}}, {"jump": {"target": "ufw-before-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "INPUT", "handle": 24, "expr": [{"counter": {"packets": 108, "bytes": 16378}}, {"jump": {"target": "ufw-after-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "INPUT", "handle": 25, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-after-logging-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "INPUT", "handle": 26, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-reject-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "INPUT", "handle": 27, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-track-input"}}]}}, {"chain": {"family": "ip", "table": "filter", "name": "FORWARD", "handle": 2, "type": "filter", "hook": "forward", "prio": 0, "policy": "drop"}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 168, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "DOCKER-USER"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 163, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "DOCKER-ISOLATION-STAGE-1"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 162, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 161, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "DOCKER"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 160, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}}, {"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 159, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}}, {"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 34, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-before-logging-forward"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 35, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-before-forward"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 36, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-after-forward"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 37, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-after-logging-forward"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 38, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-reject-forward"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "FORWARD", "handle": 39, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-track-forward"}}]}}, {"chain": {"family": "ip", "table": "filter", "name": "OUTPUT", "handle": 3, "type": "filter", "hook": "output", "prio": 0, "policy": "accept"}}, {"rule": {"family": "ip", "table": "filter", "chain": "OUTPUT", "handle": 28, "expr": [{"counter": {"packets": 1973, "bytes": 967175}}, {"jump": {"target": "ufw-before-logging-output"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "OUTPUT", "handle": 29, "expr": [{"counter": {"packets": 1973, "bytes": 967175}}, {"jump": {"target": "ufw-before-output"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "OUTPUT", "handle": 30, "expr": [{"counter": {"packets": 260, "bytes": 44103}}, {"jump": {"target": "ufw-after-output"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "OUTPUT", "handle": 31, "expr": [{"counter": {"packets": 260, "bytes": 44103}}, {"jump": {"target": "ufw-after-logging-output"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "OUTPUT", "handle": 32, "expr": [{"counter": {"packets": 260, "bytes": 44103}}, {"jump": {"target": "ufw-reject-output"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "OUTPUT", "handle": 33, "expr": [{"counter": {"packets": 260, "bytes": 44103}}, {"jump": {"target": "ufw-track-output"}}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-before-logging-input", "handle": 4}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-before-logging-output", "handle": 5}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-before-logging-forward", "handle": 6}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-before-input", "handle": 7}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 95, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "lo"}}, {"counter": {"packets": 598, "bytes": 131626}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 97, "expr": [{"xt": null}, {"counter": {"packets": 1170, "bytes": 1298210}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 100, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-logging-deny"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 101, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 102, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 103, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 104, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 105, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 110, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 10, "bytes": 3280}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 111, "expr": [{"counter": {"packets": 229, "bytes": 42723}}, {"jump": {"target": "ufw-not-local"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 117, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "224.0.0.251"}}, {"xt": null}, {"counter": {"packets": 83, "bytes": 24065}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 118, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": "239.255.255.250"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-input", "handle": 144, "expr": [{"counter": {"packets": 146, "bytes": 18658}}, {"jump": {"target": "ufw-user-input"}}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-before-output", "handle": 8}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-output", "handle": 96, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "lo"}}, {"counter": {"packets": 598, "bytes": 131626}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-output", "handle": 98, "expr": [{"xt": null}, {"counter": {"packets": 1115, "bytes": 791446}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-output", "handle": 145, "expr": [{"counter": {"packets": 260, "bytes": 44103}}, {"jump": {"target": "ufw-user-output"}}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-before-forward", "handle": 9}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-forward", "handle": 99, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-forward", "handle": 106, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-forward", "handle": 107, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-forward", "handle": 108, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-forward", "handle": 109, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "icmp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-before-forward", "handle": 146, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-user-forward"}}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-after-input", "handle": 10}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-after-input", "handle": 119, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 64, "bytes": 6000}}, {"jump": {"target": "ufw-skip-to-policy-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-after-input", "handle": 120, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 44, "bytes": 10378}}, {"jump": {"target": "ufw-skip-to-policy-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-after-input", "handle": 121, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-skip-to-policy-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-after-input", "handle": 122, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-skip-to-policy-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-after-input", "handle": 123, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-skip-to-policy-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-after-input", "handle": 124, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-skip-to-policy-input"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-after-input", "handle": 125, "expr": [{"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-skip-to-policy-input"}}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-after-output", "handle": 11}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-after-forward", "handle": 12}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-after-logging-input", "handle": 13}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-after-logging-input", "handle": 136, "expr": [{"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-after-logging-output", "handle": 14}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-after-logging-forward", "handle": 15}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-after-logging-forward", "handle": 137, "expr": [{"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-reject-input", "handle": 16}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-reject-output", "handle": 17}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-reject-forward", "handle": 18}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-track-input", "handle": 19}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-track-output", "handle": 20}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-track-output", "handle": 40, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}}, {"xt": null}, {"counter": {"packets": 1, "bytes": 60}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-track-output", "handle": 41, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 227, "bytes": 42747}}, {"accept": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-track-forward", "handle": 21}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-logging-deny", "handle": 42}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-logging-deny", "handle": 138, "expr": [{"xt": null}, {"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"return": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-logging-deny", "handle": 139, "expr": [{"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-logging-allow", "handle": 43}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-logging-allow", "handle": 140, "expr": [{"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-skip-to-policy-input", "handle": 44}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-skip-to-policy-input", "handle": 47, "expr": [{"counter": {"packets": 108, "bytes": 16378}}, {"drop": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-skip-to-policy-output", "handle": 45}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-skip-to-policy-output", "handle": 48, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-skip-to-policy-forward", "handle": 46}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-skip-to-policy-forward", "handle": 49, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-not-local", "handle": 94}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-not-local", "handle": 112, "expr": [{"xt": null}, {"counter": {"packets": 38, "bytes": 2280}}, {"return": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-not-local", "handle": 113, "expr": [{"xt": null}, {"counter": {"packets": 83, "bytes": 24065}}, {"return": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-not-local", "handle": 114, "expr": [{"xt": null}, {"counter": {"packets": 108, "bytes": 16378}}, {"return": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-not-local", "handle": 115, "expr": [{"limit": {"rate": 3, "per": "minute", "burst": 10}}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "ufw-logging-deny"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-not-local", "handle": 116, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-user-input", "handle": 126}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-user-input", "handle": 134, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "tcp"}}, {"xt": null}, {"counter": {"packets": 38, "bytes": 2280}}, {"accept": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-user-input", "handle": 135, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "l4proto"}}, "right": "udp"}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-user-output", "handle": 127}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-user-forward", "handle": 128}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-user-logging-input", "handle": 129}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-user-logging-output", "handle": 130}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-user-logging-forward", "handle": 131}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-user-limit", "handle": 132}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-user-limit", "handle": 141, "expr": [{"limit": {"rate": 3, "per": "minute"}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-user-limit", "handle": 142, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "ufw-user-limit-accept", "handle": 133}}, {"rule": {"family": "ip", "table": "filter", "chain": "ufw-user-limit-accept", "handle": 143, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"accept": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "DOCKER", "handle": 147}}, {"chain": {"family": "ip", "table": "filter", "name": "DOCKER-ISOLATION-STAGE-1", "handle": 148}}, {"rule": {"family": "ip", "table": "filter", "chain": "DOCKER-ISOLATION-STAGE-1", "handle": 164, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}}, {"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "DOCKER-ISOLATION-STAGE-2"}}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "DOCKER-ISOLATION-STAGE-1", "handle": 150, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"return": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "DOCKER-ISOLATION-STAGE-2", "handle": 149}}, {"rule": {"family": "ip", "table": "filter", "chain": "DOCKER-ISOLATION-STAGE-2", "handle": 165, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}}, {"counter": {"packets": 0, "bytes": 0}}, {"drop": null}]}}, {"rule": {"family": "ip", "table": "filter", "chain": "DOCKER-ISOLATION-STAGE-2", "handle": 151, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"return": null}]}}, {"chain": {"family": "ip", "table": "filter", "name": "DOCKER-USER", "handle": 166}}, {"rule": {"family": "ip", "table": "filter", "chain": "DOCKER-USER", "handle": 167, "expr": [{"counter": {"packets": 0, "bytes": 0}}, {"return": null}]}}, {"table": {"family": "ip", "name": "nat", "handle": 4}}, {"chain": {"family": "ip", "table": "nat", "name": "PREROUTING", "handle": 1, "type": "nat", "hook": "prerouting", "prio": -100, "policy": "accept"}}, {"rule": {"family": "ip", "table": "nat", "chain": "PREROUTING", "handle": 8, "expr": [{"xt": null}, {"counter": {"packets": 45, "bytes": 4576}}, {"jump": {"target": "DOCKER"}}]}}, {"chain": {"family": "ip", "table": "nat", "name": "INPUT", "handle": 2, "type": "nat", "hook": "input", "prio": 100, "policy": "accept"}}, {"chain": {"family": "ip", "table": "nat", "name": "POSTROUTING", "handle": 3, "type": "nat", "hook": "postrouting", "prio": 100, "policy": "accept"}}, {"rule": {"family": "ip", "table": "nat", "chain": "POSTROUTING", "handle": 10, "expr": [{"match": {"op": "!=", "left": {"meta": {"key": "oifname"}}, "right": "docker0"}}, {"match": {"op": "==", "left": {"payload": {"protocol": "ip", "field": "saddr"}}, "right": {"prefix": {"addr": "172.17.0.0", "len": 16}}}}, {"counter": {"packets": 0, "bytes": 0}}, {"xt": null}]}}, {"chain": {"family": "ip", "table": "nat", "name": "OUTPUT", "handle": 4, "type": "nat", "hook": "output", "prio": -100, "policy": "accept"}}, {"rule": {"family": "ip", "table": "nat", "chain": "OUTPUT", "handle": 9, "expr": [{"match": {"op": "!=", "left": {"payload": {"protocol": "ip", "field": "daddr"}}, "right": {"prefix": {"addr": "127.0.0.0", "len": 8}}}}, {"xt": null}, {"counter": {"packets": 0, "bytes": 0}}, {"jump": {"target": "DOCKER"}}]}}, {"chain": {"family": "ip", "table": "nat", "name": "DOCKER", "handle": 5}}, {"rule": {"family": "ip", "table": "nat", "chain": "DOCKER", "handle": 11, "expr": [{"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "docker0"}}, {"counter": {"packets": 0, "bytes": 0}}, {"return": null}]}}]}

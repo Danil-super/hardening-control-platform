@@ -1,10 +1,13 @@
 import { execFile } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { actionRequiresTargetSudo, appendIncident, beginCustomAuditAssetExecution, endCustomAuditAssetExecution, executeAnsiblePlaybook, getRepoRoot, isSafeLimit, onDemandSudoHostForLimit, playbooks } from "@/lib/ansible-control";
 import { getInventoryTargetHosts } from "@/lib/inventory";
 import { ansibleLiteralExtraVars } from "@/lib/ansible-literal-vars";
+import { auditToolLabels } from "@/lib/audit-tool-labels";
 
 const execFileAsync = promisify(execFile);
 
@@ -33,6 +36,14 @@ export type RegisteredPlaybook = {
 type PlaybookMeta = Omit<RegisteredPlaybook, "source" | "file" | "timeout"> & {
   file?: string;
   timeout?: number;
+  revision?: string;
+  validation?: PlaybookValidation;
+};
+
+export type PlaybookValidation = {
+  revision?: string;
+  syntaxAt?: string;
+  trial?: { at: string; host: string };
 };
 
 export const customPlaybookDir = path.join("ansible", "playbooks", "custom");
@@ -62,7 +73,7 @@ export function customPlaybookCapabilities(): CustomPlaybookCapabilities {
       authoringEnabled: true,
       executionEnabled: false,
       productionLocked: true,
-      reason: "Черновики доступны, но проверка и запуск произвольного YAML на рабочем control node заблокированы.",
+      reason: "Сценарий из шаблона «Проверить пакет» можно запустить на выбранном хосте. Изменённый YAML проверяется в тестовом экземпляре.",
     };
   }
   return {
@@ -81,19 +92,6 @@ export function customPlaybookAuthoringEnabled() {
 export function customPlaybooksEnabled() {
   return customPlaybookCapabilities().executionEnabled;
 }
-
-const builtinTitles: Record<string, string> = {
-  ping: "Ping",
-  collectFacts: "Сбор фактов",
-  agentlessAudit: "Основной аудит профиля",
-  packageInventory: "Инвентарь пакетов",
-  collectEvents: "Сбор событий",
-  sshCryptoAudit: "SSH crypto-аудит (control node)",
-  networkPortScan: "Nmap: TCP-порты с выбранной глубиной (control node)",
-  lynisTemporaryAudit: "Lynis: временный аудит без установки",
-  openScapAudit: "OpenSCAP: проверка выбранного профиля конфигурации",
-  astraOvalAudit: "Astra: CVE по выбранной OVAL-базе",
-};
 
 const builtinVariables: Record<string, PlaybookVariable[]> = {
 };
@@ -168,6 +166,31 @@ export const playbookTemplates = [
   },
 ];
 
+const managedPackageContent = playbookTemplates[0].content.replace("become: true", "become: false");
+
+export type CustomPlaybookMode = "draft" | "test" | "package";
+
+export function customPlaybookMode(playbook: RegisteredPlaybook, content?: string): CustomPlaybookMode {
+  if (playbook.source !== "custom" || playbook.kind !== "audit" || !customPlaybookAuthoringEnabled()) return "draft";
+  if (customPlaybooksEnabled()) return "test";
+  if (playbook.variables.length !== 1 || playbook.variables[0].name !== "package_name" || playbook.variables[0].type !== "string") return "draft";
+  if (content === undefined && !existsSync(registeredPlaybookPath(playbook))) return "draft";
+  const yaml = (content ?? readPlaybookContent(playbook)).trim();
+  return yaml === managedPackageContent.trim() || yaml === playbookTemplates[0].content.trim() ? "package" : "draft";
+}
+
+async function withPackageTemplate<T>(run: (file: string) => Promise<T>) {
+  // Use fixed code even if someone saves a different YAML while a run is starting.
+  const directory = mkdtempSync(path.join(tmpdir(), "hcp-package-check-"));
+  try {
+    const file = path.join(directory, "check-package.yml");
+    writeFileSync(file, managedPackageContent, { mode: 0o600 });
+    return await run(file);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
 export function isSafePlaybookId(value: unknown): value is string {
   return typeof value === "string" && /^[a-zA-Z0-9_-]{3,64}$/.test(value);
 }
@@ -211,12 +234,23 @@ function readCustomMeta(id: string, repoRoot = getRepoRoot()) {
   }
 }
 
+function writeCustomMeta(meta: PlaybookMeta, repoRoot = getRepoRoot()) {
+  const file = getCustomMetaPath(meta.id, repoRoot);
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, JSON.stringify(meta, null, 2), { flag: "wx", mode: 0o600 });
+    renameSync(temporary, file);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
 export function listRegisteredPlaybooks(repoRoot = getRepoRoot()): RegisteredPlaybook[] {
   const builtin = Object.entries(playbooks)
     .filter(([, config]) => config.kind === "audit" && !("internal" in config && config.internal))
     .map(([id, config]) => ({
     id,
-    title: builtinTitles[id] ?? id,
+    title: auditToolLabels[id] ?? id,
     file: path.join("ansible", "playbooks", config.file),
     kind: config.kind,
     source: "builtin" as const,
@@ -267,6 +301,30 @@ export function readPlaybookContent(playbook: RegisteredPlaybook, repoRoot = get
   return readFileSync(registeredPlaybookPath(playbook, repoRoot), "utf8");
 }
 
+function playbookRevision(playbook: RegisteredPlaybook, meta: PlaybookMeta) {
+  return createHash("sha256").update(JSON.stringify([
+    meta.revision, meta.kind, meta.requiresLimit, meta.variables, readPlaybookContent(playbook),
+  ])).digest("hex");
+}
+
+export function getCustomPlaybookValidation(playbook: RegisteredPlaybook): PlaybookValidation {
+  if (playbook.source !== "custom") return {};
+  const meta = readCustomMeta(playbook.id);
+  if (!meta) return {};
+  const revision = playbookRevision(playbook, meta);
+  return meta.validation?.revision === revision ? meta.validation : { revision };
+}
+
+function recordPlaybookValidation(playbook: RegisteredPlaybook, revision: string | undefined, result: PlaybookValidation) {
+  if (!revision) return;
+  const meta = readCustomMeta(playbook.id);
+  if (!meta || !existsSync(registeredPlaybookPath(playbook)) || playbookRevision(playbook, meta) !== revision) return;
+  const previous = meta.validation?.revision === revision ? meta.validation : {};
+  writeCustomMeta({
+    ...meta, validation: { ...previous, ...result, revision },
+  });
+}
+
 function validateVariables(variables: PlaybookVariable[]) {
   if (!Array.isArray(variables) || variables.length > 50) throw new Error("Укажите не более 50 переменных.");
   const names = new Set<string>();
@@ -305,10 +363,6 @@ export function updateCustomPlaybook({
   if (kind !== "audit") {
     throw new Error("Пользовательские playbook'и могут выполнять только audit-проверки.");
   }
-  if (!content.trim().startsWith("---")) {
-    throw new Error("YAML playbook должен начинаться с ---.");
-  }
-
   const repoRoot = getRepoRoot();
   const meta: PlaybookMeta = {
     id: playbook.id,
@@ -317,10 +371,11 @@ export function updateCustomPlaybook({
     requiresLimit,
     variables: validateVariables(variables),
     timeout: playbook.timeout,
+    revision: randomUUID(),
   };
 
   writeFileSync(registeredPlaybookPath(playbook, repoRoot), content);
-  writeFileSync(getCustomMetaPath(playbook.id, repoRoot), JSON.stringify(meta, null, 2));
+  writeCustomMeta(meta, repoRoot);
   return getRegisteredPlaybook(playbook.id, repoRoot)!;
 }
 
@@ -367,26 +422,31 @@ export function createCustomPlaybook({
     kind: "audit",
     requiresLimit: true,
     variables: template.variables,
+    revision: randomUUID(),
   };
 
-  writeFileSync(playbookPath, template.content);
-  writeFileSync(metaPath, JSON.stringify(meta, null, 2));
+  writeFileSync(playbookPath, template.id === "audit-package" && !customPlaybooksEnabled() ? managedPackageContent : template.content);
+  writeCustomMeta(meta, repoRoot);
   return getRegisteredPlaybook(id, repoRoot)!;
 }
 
 export async function syntaxCheckPlaybook(playbook: RegisteredPlaybook) {
-  if (playbook.source === "custom" && !customPlaybooksEnabled()) {
+  const mode = customPlaybookMode(playbook);
+  if (playbook.source === "custom" && mode === "draft") {
     throw new Error("Проверка пользовательского YAML доступна только в тестовом контуре.");
   }
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
-  const playbookPath = registeredPlaybookPath(playbook, repoRoot);
-  return execFileAsync("ansible-playbook", ["-i", inventoryPath, playbookPath, "--syntax-check"], {
+  const { revision } = getCustomPlaybookValidation(playbook);
+  const check = (file: string) => execFileAsync("ansible-playbook", ["-i", inventoryPath, file, "--syntax-check"], {
     cwd: repoRoot,
     timeout: 120_000,
     maxBuffer: 1024 * 1024 * 4,
     env: { ...process.env, ANSIBLE_FORCE_COLOR: "false", ANSIBLE_PIPELINING: "False" },
   });
+  const result = await (mode === "package" ? withPackageTemplate(check) : check(registeredPlaybookPath(playbook, repoRoot)));
+  recordPlaybookValidation(playbook, revision, { syntaxAt: new Date().toISOString() });
+  return result;
 }
 
 export async function runRegisteredPlaybook({
@@ -403,22 +463,31 @@ export async function runRegisteredPlaybook({
   if (playbook.source === "builtin") {
     throw new Error("Встроенные проверки запускаются через /api/ansible/run с подтверждением и проверкой целей.");
   }
-  if (!customPlaybooksEnabled()) {
-    throw new Error("Пользовательские playbook отключены в production режиме.");
-  }
   if (playbook.kind !== "audit") {
     throw new Error("Response-playbook'и запускаются только через транзакционный контур remediation.");
   }
+  const mode = customPlaybookMode(playbook);
+  if (mode === "draft") throw new Error("Этот YAML можно запустить только в тестовом контуре (production режим).");
   if (!limit) {
     throw new Error("Для пользовательского сценария выберите конкретный host/group limit.");
   }
   if (limit && !isSafeLimit(limit)) {
     throw new Error("Limit может содержать только имена хостов/групп без пробелов.");
   }
-  if (!getInventoryTargetHosts(limit).some((host) => host.groups.includes("linux_hosts"))) {
+  const targets = getInventoryTargetHosts(limit);
+  if (!targets.some((host) => host.groups.includes("linux_hosts"))) {
     throw new Error("В выбранной цели нет подключённых хостов группы linux_hosts.");
   }
-  if (onDemandSudoHostForLimit(limit) && !becomePassword) throw new Error("Введите пароль sudo для этой операции. HCP не сохраняет его.");
+  if (mode === "package") {
+    if (targets.length !== 1 || targets[0].alias !== limit) throw new Error("Выберите один конкретный хост.");
+    if (becomePassword) throw new Error("Проверка пакета выполняется без sudo.");
+    const packageName = variables.package_name ?? playbook.variables[0].defaultValue;
+    if (typeof packageName !== "string" || !/^[A-Za-z0-9][A-Za-z0-9+_.:-]{0,127}$/.test(packageName)) {
+      throw new Error("Укажите допустимое имя пакета.");
+    }
+  } else if (onDemandSudoHostForLimit(limit) && !becomePassword) {
+    throw new Error("Введите пароль sudo для этой операции. HCP не сохраняет его.");
+  }
 
   for (const variable of playbook.variables) {
     const value = variables[variable.name] ?? variable.defaultValue;
@@ -431,7 +500,7 @@ export async function runRegisteredPlaybook({
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
   const playbookPath = registeredPlaybookPath(playbook, repoRoot);
   const args = ["-i", inventoryPath, playbookPath];
-  const extraVars: Record<string, string> = {};
+  const extraVars: Record<string, string | boolean> = {};
   for (const variable of playbook.variables) {
     const value = variables[variable.name] ?? variable.defaultValue;
     if (value) {
@@ -445,6 +514,7 @@ export async function runRegisteredPlaybook({
       extraVars[variable.name] = value;
     }
   }
+  if (mode === "package") extraVars.ansible_become = false;
   // JSON protects key boundaries; unsafe strings also prevent Jinja execution.
   if (Object.keys(extraVars).length) args.push("-e", ansibleLiteralExtraVars(extraVars));
   if (limit) {
@@ -453,11 +523,24 @@ export async function runRegisteredPlaybook({
 
   let result;
   let assetLease: Awaited<ReturnType<typeof beginCustomAuditAssetExecution>> | null = null;
+  const { revision } = getCustomPlaybookValidation(playbook);
   try {
     assetLease = await beginCustomAuditAssetExecution(limit);
+    if (mode === "package" && (assetLease.bindings.size !== 1 || !assetLease.bindings.has(limit))) {
+      throw new Error("Цель изменилась при подготовке. Выберите хост заново.");
+    }
     args[1] = assetLease.inventoryPath;
-    result = await executeAnsiblePlaybook({ args, timeout: playbook.timeout, becomePassword, sshTrust: assetLease.sshTrust, ansibleRuntime: assetLease.ansibleRuntime });
+    const { sshTrust, ansibleRuntime } = assetLease;
+    const execute = (file: string) => {
+      args[2] = file;
+      return executeAnsiblePlaybook({ args, timeout: playbook.timeout, becomePassword, sshTrust, ansibleRuntime });
+    };
+    result = await (mode === "package" ? withPackageTemplate(execute) : execute(playbookPath));
+    const [, recap = ""] = result.stdout.split(/^PLAY RECAP\s+\*+\s*$/m);
+    const completed = recap.match(/^([\w.-]+)\s+:\s+ok=[1-9]\d*\s+changed=\d+\s+unreachable=0\s+failed=0\b/m)?.[1];
+    if (mode === "package" && completed !== limit) throw new Error("Проверка пакета не завершилась на выбранном хосте.");
     if (/skipping: no hosts matched/i.test(result.stdout) && !/\s+ok=\d+\s+changed=\d+/.test(result.stdout)) throw new Error("Сценарий не выполнил задачи: его hosts не совпадает с выбранной целью.");
+    if (completed === limit) recordPlaybookValidation(playbook, revision, { trial: { at: new Date().toISOString(), host: limit } });
   } catch (error) {
     appendIncident({ action: playbook.id, kind: playbook.kind, status: "failed", profileId: "custom", limit, message: error instanceof Error ? error.message : "Сценарий завершился ошибкой." });
     throw error;

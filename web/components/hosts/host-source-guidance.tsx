@@ -88,10 +88,6 @@ export function HostSourceGuidance({ alias }: { alias: string | null }) {
             наличие свежего XML или достоверность CVE. Никаких команд на целевом хосте.
           </p>
         </div>
-        <LinkButton href={`/data-sources?host=${encodeURIComponent(alias)}#host-audit-preparation`}
-          variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-3 [&]:py-1 [&]:text-xs">
-          Источники и политики
-        </LinkButton>
       </div>
       {loading ? <p role="status" className="mt-3 text-xs text-slate-300">Чтение сохранённых назначений…</p> : null}
       {error ? <p role="alert" className="mt-3 flex gap-2 text-xs text-amber-200">
@@ -102,7 +98,7 @@ export function HostSourceGuidance({ alias }: { alias: string | null }) {
           <div className="mt-3 grid gap-3 lg:grid-cols-2">
             <SourceRow title="Astra OVAL" source={loaded.astraOval}
               description="Требуется только для отдельной CVE-оценки Astra по OVAL своего выпуска; для иных ОС отсутствие этой настройки не является ошибкой."
-              href={`/data-sources?host=${encodeURIComponent(alias)}#astra-oval-title`}
+              href="/data-sources#astra-oval-title"
               action="Проверить источник OVAL"/>
             <SourceRow title="Профиль OpenSCAP" source={loaded.openScap}
               description="Нужен только для выбранной конфигурационной проверки; назначение не подтверждает выполнение XCCDF/SCE."

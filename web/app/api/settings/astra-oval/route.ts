@@ -1,10 +1,12 @@
 import { NextResponse } from "next/server";
 import { listInventoryGroups } from "@/lib/openscap-policy";
 import { deleteAstraOvalPolicy, listAstraOvalPolicies, upsertAstraOvalPolicy } from "@/lib/state-store";
+import { ovalPreparationStatus } from "@/lib/astra-oval-preparation";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-const payload = () => ({ ok: true, inventoryGroups: listInventoryGroups(), policies: listAstraOvalPolicies() });
+const payload = () => ({ ok: true, inventoryGroups: listInventoryGroups(),
+  policies: listAstraOvalPolicies().map(policy => ({ ...policy, preparation: ovalPreparationStatus(policy.config) })) });
 const failure = (error: unknown) => NextResponse.json({ ok: false, message: error instanceof Error ? error.message : "Не удалось обработать настройки OVAL." }, { status: 400 });
 
 export async function GET() {

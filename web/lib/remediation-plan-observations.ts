@@ -20,7 +20,7 @@ export function planObservationState(item: Pick<RemediationPlanItem, "status" | 
   return {
     riskAcceptanceState: riskAcceptanceState(item, now),
     currentObservation: current ? {
-      id: current.id, title: current.title, risk: current.risk, status: current.status,
+      id: current.id, title: current.title, risk: current.risk, status: current.status, recommendation: current.recommendation,
       severityUnknown: current.severityUnknown, severityAssessment: current.severityAssessment ?? null,
       recurring: item.status === "confirmed" && current.sources.some((source) => Date.parse(source.createdAt ?? "") > Date.parse(item.updatedAt)),
       sources: current.sources.map((source) => ({ reportId: source.reportId, findingId: source.findingId,

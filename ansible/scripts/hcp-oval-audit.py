@@ -11,6 +11,7 @@ import argparse
 import datetime
 import hashlib
 import html
+import io
 import json
 import os
 import re
@@ -19,6 +20,7 @@ import shutil
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.parse
@@ -27,6 +29,9 @@ import xml.etree.ElementTree as ET
 
 DEFINITIONS_NS = 'http://oval.mitre.org/XMLSchema/oval-definitions-5'
 RESULTS_NS = 'http://oval.mitre.org/XMLSchema/oval-results-5'
+LINUX_DEFINITIONS = '{' + DEFINITIONS_NS + '#linux}'
+SYSTEM_NS = 'http://oval.mitre.org/XMLSchema/oval-system-characteristics-5'
+LINUX_SYSTEM = '{' + SYSTEM_NS + '#linux}'
 # The official Astra 1.7 feed on 2026-10-06 has 131721258 bytes and
 # 796021 XML nodes. Keep bounded headroom for it and OpenSCAP results.
 MAX_SOURCE_BYTES = 192 * 1024 * 1024
@@ -160,7 +165,7 @@ def read_regular(path, limit):
             os.close(fd)
 
 
-def safe_xml(raw):
+def check_xml_bytes(raw):
     # Reject alternate encodings so declaration scanning cannot be bypassed
     # with UTF-16/32. No DTD, entities or XInclude are needed by standalone OVAL.
     if b'\x00' in raw or re.search(br'<!\s*(?:DOCTYPE|ENTITY)', raw, re.I):
@@ -174,6 +179,10 @@ def safe_xml(raw):
         declaration = re.search(br'encoding\s*=\s*[\"\']([^\"\']+)', raw[start:end])
         if declaration and declaration.group(1).lower() not in (b'utf-8', b'utf8', b'us-ascii'):
             raise ValueError('Для OVAL поддерживается XML UTF-8.')
+
+
+def safe_xml(raw):
+    check_xml_bytes(raw)
     root = ET.fromstring(raw)
     count = 0
     pending = [(root, 0)]
@@ -620,7 +629,65 @@ def platform_applicability(affected):
             'foreignPlatforms': foreign, 'vendorReleaseApplicability': 'not_verified'}
 
 
-def severity_assessment(severity, title, description):
+def cvss3_metadata(metadata):
+    if metadata is None:
+        return None
+    values = []
+    metrics = {'AV': 'NALP', 'AC': 'LH', 'PR': 'NLH', 'UI': 'NR', 'S': 'UC', 'C': 'NLH', 'I': 'NLH', 'A': 'NLH'}
+    for bdu in metadata.iter():
+        if local_name(bdu.tag) != 'bdu':
+            continue
+        for node in bdu:
+            version = {'CVSS3.0': '3.0', 'CVSS3.1': '3.1'}.get(local_name(node.tag))
+            if not version:
+                continue
+            # Astra serializes this BDU field as a constructor string, never Python code.
+            # shortcut: vectors without a numeric score stay unrated; add a verified calculator if the feed stops publishing scores.
+            match = re.fullmatch(r"NistCVSS3\(cvss='([^']{1,200})', score=(\d{1,2}(?:\.\d)?)\)", node_text(node))
+            if not match:
+                continue
+            vector, score = match.group(1), float(match.group(2))
+            parts = vector.split('/')
+            if not 0 < score <= 10 or len(parts) != 8 or len(set(p.split(':')[0] for p in parts)) != 8:
+                continue
+            if any(len(p.split(':')) != 2 or p.split(':')[0] not in metrics or p.split(':')[1] not in metrics[p.split(':')[0]] or len(p.split(':')[1]) != 1 for p in parts):
+                continue
+            values.append({'version': version, 'score': score, 'vector': vector})
+    preferred = [value for value in values if value['version'] == max(v['version'] for v in values)] if values else []
+    return preferred[0] if preferred and all(value == preferred[0] for value in preferred) else None
+
+
+def cvss3_index(raw):
+    check_xml_bytes(raw)
+    output, seen, depth, nodes, definition_depth = {}, set(), 0, 0, None
+    for event, node in ET.iterparse(io.BytesIO(raw), events=('start', 'end')):
+        if event == 'start':
+            depth += 1
+            nodes += 1
+            if nodes == 1 and node.tag != '{' + DEFINITIONS_NS + '}oval_definitions':
+                raise ValueError('Нужна база OVAL definitions.')
+            if depth > 100 or nodes > MAX_XML_NODES or node.tag.startswith('{http://www.w3.org/2001/XInclude}'):
+                raise ValueError('Превышена допустимая сложность XML OVAL.')
+            if node.tag == '{' + DEFINITIONS_NS + '}definition':
+                definition_depth = depth
+        else:
+            depth -= 1
+            if node.tag == '{' + DEFINITIONS_NS + '}definition':
+                identifier = node.get('id')
+                if identifier in seen or len(seen) >= MAX_DEFINITIONS:
+                    raise ValueError('Повтор или избыток определений OVAL.')
+                seen.add(identifier)
+                value = cvss3_metadata(child(node, 'metadata'))
+                if value:
+                    output[identifier] = value
+                node.clear()
+                definition_depth = None
+            elif definition_depth is None:
+                node.clear()
+    return output
+
+
+def severity_assessment(severity, title, description, cvss=None):
     levels = {'critical': 'critical', 'high': 'high', 'important': 'high',
               'medium': 'medium', 'moderate': 'medium', 'low': 'low'}
     if severity:
@@ -631,6 +698,11 @@ def severity_assessment(severity, title, description):
             r'\(Chromium security severity:\s*(Critical|High|Medium|Low)\)', description, re.I))
         if len(labels) == 1:
             return {'level': labels.pop(), 'source': 'chromium_description'}
+    if cvss:
+        score = cvss['score']
+        # FIRST CVSS 3.x qualitative scale: https://www.first.org/cvss/v3.1/specification-document#Qualitative-Severity-Rating-Scale
+        level = 'critical' if score >= 9 else 'high' if score >= 7 else 'medium' if score >= 4 else 'low'
+        return dict(cvss, level=level, source='oval_cvss3')
     return None
 
 
@@ -655,7 +727,7 @@ def definition_metadata(node):
             'title': node_text(child(metadata, 'title')) if metadata is not None else '',
             'description': node_text(child(metadata, 'description')) if metadata is not None else '',
             'references': references, 'affected': affected, 'platformApplicability': platform_applicability(affected),
-            'cveIds': sorted(cves), 'vendorSeverity': severity or None,
+            'cveIds': sorted(cves), 'vendorSeverity': severity or None, 'cvss3': cvss3_metadata(metadata),
             'criteria': xml_evidence(child(node, 'criteria'))}
 
 
@@ -704,7 +776,53 @@ def finish(report):
     return report
 
 
-def parse_results(root, definitions, report, evidence_projection='detailed'):
+def dpkg_update_guidance(source, system):
+    """Join exact native DPKG matches to simple vendor version thresholds."""
+    if source is None:
+        return {}
+    definitions_ns, results_ns, system_ns = ('{' + value + '}' for value in (DEFINITIONS_NS, RESULTS_NS, SYSTEM_NS))
+    objects = {node.get('id'): node for node in source.findall(definitions_ns + 'objects/' + LINUX_DEFINITIONS + 'dpkginfo_object')}
+    states = {node.get('id'): node for node in source.findall(definitions_ns + 'states/' + LINUX_DEFINITIONS + 'dpkginfo_state')}
+    native = {node.get('test_id'): node for node in system.findall(results_ns + 'tests/' + results_ns + 'test') if node.get('result') == 'true'}
+    items = {node.get('id'): node for node in system.findall(system_ns + 'oval_system_characteristics/' + system_ns + 'system_data/' + LINUX_SYSTEM + 'dpkginfo_item')
+             if node.get('status') in (None, 'exists')}
+    guidance = {}
+    for test in source.findall(definitions_ns + 'tests/' + LINUX_DEFINITIONS + 'dpkginfo_test'):
+        identifier = test.get('id')
+        result = native.get(identifier)
+        if result is None or len(test) != 2:
+            continue
+        if result.get('version') != test.get('version') or result.get('variable_instance', '1') != '1':
+            continue
+        obj, state = child(test, 'object'), child(test, 'state')
+        obj = objects.get(obj.get('object_ref')) if obj is not None else None
+        state = states.get(state.get('state_ref')) if state is not None else None
+        if obj is None or len(obj) != 1 or state is None or len(state) != 1:
+            continue
+        name, evr = obj[0], state[0]
+        if name.tag != LINUX_DEFINITIONS + 'name' or set(name.attrib) - {'operation'} or name.get('operation', 'equals') != 'equals':
+            continue
+        if evr.tag != LINUX_DEFINITIONS + 'evr' or evr.attrib != {'datatype': 'debian_evr_string', 'operation': 'less than'}:
+            continue
+        package, threshold = node_text(name), node_text(evr)
+        if not re.fullmatch(r'[a-z0-9][a-z0-9+.-]{0,127}', package) or not re.fullmatch(r'(?:[0-9]+:)?[0-9][a-zA-Z0-9.+~-]{0,159}', threshold):
+            continue
+        matches = []
+        for match in result:
+            if local_name(match.tag) != 'tested_item' or match.get('result') != 'true':
+                continue
+            item = items.get(match.get('item_id'))
+            if item is None or node_text(child(item, 'name')) != package:
+                continue
+            installed = node_text(child(item, 'evr'))
+            if re.fullmatch(r'(?:[0-9]+:)?[0-9][a-zA-Z0-9.+~-]{0,159}', installed):
+                matches.append((package, installed, threshold))
+        if matches:
+            guidance[identifier] = matches[:8]
+    return guidance
+
+
+def parse_results(root, definitions, report, evidence_projection='detailed', source_root=None):
     if root.tag != '{' + RESULTS_NS + '}oval_results':
         raise ValueError('OpenSCAP не вернул документ oval_results.')
     results = root.find('{' + RESULTS_NS + '}results')
@@ -712,6 +830,7 @@ def parse_results(root, definitions, report, evidence_projection='detailed'):
     if len(systems) != 1 or local_name(systems[0].tag) != 'system':
         raise ValueError('Ожидается результат OVAL ровно для одной локальной системы.')
     system = systems[0]
+    updates = dpkg_update_guidance(source_root, system)
     nodes = child(system, 'definitions')
     mapped = {}
     if nodes is not None:
@@ -765,6 +884,7 @@ def parse_results(root, definitions, report, evidence_projection='detailed'):
                 'class': entry['class'],
                 'cveIds': entry['cveIds'],
                 'vendorSeverity': entry['vendorSeverity'],
+                'cvss3': entry.get('cvss3'),
                 'platformApplicability': entry['platformApplicability'],
             })
         else:
@@ -781,17 +901,28 @@ def parse_results(root, definitions, report, evidence_projection='detailed'):
                             'referencedCveIds': entry['cveIds']}, ensure_ascii=False)))
         elif status == 'true' and entry['class'] == 'vulnerability':
             positive_cves.update(entry['cveIds'])
-            assessment = severity_assessment(entry['vendorSeverity'], entry['title'], entry['description'])
+            assessment = severity_assessment(entry['vendorSeverity'], entry['title'], entry['description'], entry.get('cvss3'))
             risk = ('high' if assessment['level'] == 'critical' else assessment['level']) if assessment else 'info'
             item = finding(identifier, (', '.join(entry['cveIds']) + ': ' if entry['cveIds'] else '') + (entry['title'] or identifier),
                 'failed', entry['description'] or 'OpenSCAP подтвердил условия vulnerability-определения OVAL.',
                 json.dumps({'definitionId': identifier, 'cveIds': entry['cveIds'], 'result': status,
-                            'vendorSeverity': entry['vendorSeverity'], 'criteria': entry['resultCriteria']}, ensure_ascii=False), risk)
+                            'vendorSeverity': entry['vendorSeverity'], 'cvss3': entry.get('cvss3'), 'criteria': entry['resultCriteria']}, ensure_ascii=False), risk)
             item['severityUnknown'] = risk == 'info'
             if assessment:
                 item['severityAssessment'] = assessment
             item['vulnerability'] = {'cveIds': entry['cveIds'], 'definitionId': identifier,
-                'severitySource': assessment['source'] if assessment else 'not_provided', 'cvss': None}
+                'severitySource': assessment['source'] if assessment else 'not_provided', 'cvss': entry.get('cvss3')}
+            criteria = child(source, 'criteria')
+            if criteria is not None and criteria.get('negate', 'false') == 'false':
+                matches = sorted(set(match for criterion in criteria
+                    if local_name(criterion.tag) == 'criterion' and criterion.get('negate', 'false') == 'false'
+                    and criterion.get('applicability_check', 'false') == 'false'
+                    for match in updates.get(criterion.get('test_ref'), [])))
+                if matches:
+                    versions = '\n'.join('{}: в отчёте {}, порог OVAL {}.'.format(package, installed, threshold)
+                                         for package, installed, threshold in matches[:5])
+                    item['recommendation'] = ('Сверьте доступные версии в репозитории Astra для выпуска хоста. '
+                        'После установки исправленного пакета повторите аудит с той же базой.\n' + versions)
             report['findings'].append(item)
         elif status == 'true' and entry['class'] not in ('vulnerability', 'inventory'):
             report['findings'].append(finding(identifier, 'OVAL ' + entry['class'] + ': ' + (entry['title'] or identifier),
@@ -884,7 +1015,7 @@ def evaluate(args):
             if getattr(args, 'raw_results_output', ''):
                 write_bytes(args.raw_results_output, result_raw)
             parse_results(safe_xml(result_raw), definitions, report,
-                          evidence_projection=config['evidenceProjection'])
+                          evidence_projection=config['evidenceProjection'], source_root=root)
     except (OSError, ValueError, ET.ParseError, UnicodeError, subprocess.SubprocessError) as error:
         scanner['partialReasons'].append(str(error))
     return finish(report)
@@ -892,18 +1023,27 @@ def evaluate(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('command', choices=('prepare', 'evaluate', 'unavailable'))
+    parser.add_argument('command', choices=('prepare', 'evaluate', 'unavailable', 'cvss-metadata'))
     parser.add_argument('--config', default='{}')
     parser.add_argument('--input', default='')
     parser.add_argument('--validate', action='store_true')
     parser.add_argument('--source-validation', default='{}')
     parser.add_argument('--raw-source-output', default='')
     parser.add_argument('--raw-results-output', default='')
-    parser.add_argument('--output', required=True)
+    parser.add_argument('--output', default='')
     parser.add_argument('--inventory-host', default='localhost')
     parser.add_argument('--run-id', default='manual')
     parser.add_argument('--reason', default='Источник OVAL недоступен.')
     args = parser.parse_args()
+    if args.command == 'cvss-metadata':
+        resource.setrlimit(resource.RLIMIT_AS, (512 * 1024 * 1024, 512 * 1024 * 1024))
+        raw = sys.stdin.buffer.read(MAX_SOURCE_BYTES + 1)
+        if len(raw) > MAX_SOURCE_BYTES:
+            raise ValueError('Превышен предел размера OVAL.')
+        print(json.dumps(cvss3_index(raw)))
+        return 0
+    if not args.output:
+        parser.error('--output обязателен')
     if args.command == 'prepare':
         try:
             result = prepare(parse_config(args.config), args.output, validate=args.validate)

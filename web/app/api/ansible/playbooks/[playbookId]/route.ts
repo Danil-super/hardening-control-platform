@@ -3,7 +3,9 @@ import {
   deleteCustomPlaybook,
   customPlaybookAuthoringEnabled,
   customPlaybookCapabilities,
+  customPlaybookMode,
   getRegisteredPlaybook,
+  getCustomPlaybookValidation,
   readPlaybookContent,
   updateCustomPlaybook,
   type PlaybookVariable,
@@ -25,10 +27,13 @@ export async function GET(
     return NextResponse.json({ ok: false, message: customPlaybookCapabilities().reason }, { status: 403 });
   }
 
+  const content = readPlaybookContent(playbook);
   return NextResponse.json({
     ok: true,
     playbook,
-    content: readPlaybookContent(playbook),
+    content,
+    executionMode: customPlaybookMode(playbook, content),
+    validation: getCustomPlaybookValidation(playbook),
   });
 }
 
