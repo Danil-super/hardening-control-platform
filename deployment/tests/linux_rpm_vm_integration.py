@@ -37,10 +37,11 @@ SOURCES = {
         "checksumUrl": "https://vault.almalinux.org/9.8/cloud/x86_64/images/CHECKSUM",
     },
     "rocky": {
-        "url": "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
+        # The versioned release directory retains the pinned build when /9 moves forward.
+        "url": "https://download.rockylinux.org/pub/rocky/9.8/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2",
         "sha256": "92c206cc6f790c61583247eefe87890f8828420662c17cacf247cec78ab4eec8",
         "bytes": 645988352,
-        "checksumUrl": "https://download.rockylinux.org/pub/rocky/9/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2.CHECKSUM",
+        "checksumUrl": "https://download.rockylinux.org/pub/rocky/9.8/images/x86_64/Rocky-9-GenericCloud-Base-9.8-20260525.0.x86_64.qcow2.CHECKSUM",
     },
 }
 

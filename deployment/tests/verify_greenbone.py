@@ -118,6 +118,19 @@ def element(name, text=None, **attributes):
     return result
 
 
+def pull_images(compose, command, remaining):
+    pull = compose + ["--parallel", "2", "pull", "--quiet"]
+    for delay in (15, 30, 0):
+        try:
+            command(pull, timeout=1800)
+            return
+        except RuntimeError as error:
+            if not delay or not re.search(r"\b(?:429|500|502|503|504)\b|TLS handshake timeout", str(error)):
+                raise
+            print(f"Registry temporarily unavailable. Retrying image pull in {delay}s.", flush=True)
+            time.sleep(remaining(delay))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", default=".lab/greenbone-acceptance")
@@ -265,7 +278,7 @@ def main():
         command(compose + ["config", "--quiet"], timeout=30)
         record("Pinned official stack adapted to internal network with no published ports")
         stage("pull actual scanner and feed images")
-        command(compose + ["pull", "--quiet"], timeout=1800)
+        pull_images(compose, command, remaining)
         images = []
         for image_name in sorted({service["image"] for service in stack["services"].values()}):
             details = json.loads(command(["docker", "image", "inspect", image_name]))[0]
