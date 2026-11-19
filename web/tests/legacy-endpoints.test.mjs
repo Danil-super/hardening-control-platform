@@ -21,7 +21,7 @@ function load(relativePath, replacements = {}) {
   const module = { exports: {} };
   const next = { NextResponse: { json: (body, init = {}) => Response.json(body, init) } };
   const resolve = (name) => name in replacements ? replacements[name] : name === "next/server" ? next
-    : name === "@/lib/ansible-literal-vars" ? load("lib/ansible-literal-vars.ts") : nativeRequire(name);
+    : ["@/lib/ansible-literal-vars", "@/lib/audit-tool-labels"].includes(name) ? load(`${name.slice(2)}.ts`) : nativeRequire(name);
   vm.runInThisContext(`(function(require, module, exports) { ${code}\n})`, { filename })(resolve, module, module.exports);
   return module.exports;
 }
@@ -216,7 +216,7 @@ test("custom variable values remain one JSON value rather than injected Ansible 
 test("custom runner rejects malformed bodies and insecure sudo transport before execution", async () => {
   let executed = false;
   const route = load("app/api/ansible/playbooks/[playbookId]/run/route.ts", {
-    "@/lib/playbook-registry": { customPlaybooksEnabled:()=>true, customPlaybookCapabilities:()=>({}), getRegisteredPlaybook:()=>({id:"custom-test",source:"custom"}), runRegisteredPlaybook:()=>{executed=true;} },
+    "@/lib/playbook-registry": { customPlaybookMode:()=>"test", getRegisteredPlaybook:()=>({id:"custom-test",source:"custom"}), runRegisteredPlaybook:()=>{executed=true;} },
     "@/app/api/ansible/run/route": {},
     "@/lib/ssh-bootstrap": {credentialTransportAllowed:()=>false},
   });
@@ -274,4 +274,104 @@ test("invalid variable definitions cannot corrupt a saved draft", () => {
     assert.throws(()=>registry.updateCustomPlaybook({playbook:{id:"test-draft",source:"custom",timeout:1000},title:"Draft",kind:"audit",requiresLimit:true,variables,content:"---\n"}),/переменн/i);
   }
   assert.equal(writes,0);
+});
+
+test("YAML feedback locates syntax errors without resolving Ansible tags", () => {
+  const { playbookYamlIssue } = load("lib/playbook-yaml.ts");
+  assert.equal(playbookYamlIssue("- hosts: linux_hosts\n  vars: { package: !unsafe bash }\n"), null);
+  assert.equal(playbookYamlIssue("- hosts: linux_hosts\n  tasks: [\n").line, 2);
+  assert.match(playbookYamlIssue("hosts: linux_hosts\n").message, /список/);
+});
+
+test("custom draft keeps validation for the checked revision only", async () => {
+  const fs = nativeRequire("node:fs");
+  const directory = fs.mkdtempSync("/tmp/hcp-draft-validation-");
+  const environment = { ...process.env };
+  let finishSyntax;
+  const exec = () => {};
+  exec[promisify.custom] = () => new Promise(resolve => { finishSyntax = resolve; });
+  const registry = load("lib/playbook-registry.ts", {
+    "node:child_process": { execFile: exec },
+    "@/lib/ansible-control": {
+      getRepoRoot: () => directory, playbooks: {}, isSafeLimit: () => true,
+      onDemandSudoHostForLimit: () => null, appendIncident: () => {},
+      beginCustomAuditAssetExecution: async () => ({ inventoryPath: "/tmp/fixture-inventory" }),
+      endCustomAuditAssetExecution: () => {},
+      executeAnsiblePlaybook: async () => ({ stdout: "PLAY RECAP *****\nfixture : ok=1 changed=0 unreachable=0 failed=0 skipped=0\n", stderr: "" }),
+    },
+    "@/lib/inventory": { getInventoryTargetHosts: () => [{ alias: "fixture", groups: ["linux_hosts"] }] },
+  });
+  Object.assign(process.env, { HCP_STATE_DIR: directory, HCP_ENABLE_CUSTOM_AUDITS: "true", HCP_PRODUCTION_MODE: "false" });
+  try {
+    const draft = registry.createCustomPlaybook({ id: "validation-fixture", title: "Проверка", templateId: "audit-package" });
+    const initial = registry.getCustomPlaybookValidation(draft);
+    assert.ok(initial.revision);
+    assert.equal(initial.syntaxAt, undefined);
+    assert.equal(initial.trial, undefined);
+    const syntax = registry.syntaxCheckPlaybook(draft);
+    finishSyntax({ stdout: "", stderr: "" });
+    await syntax;
+    assert.ok(registry.getCustomPlaybookValidation(draft).syntaxAt);
+    await registry.runRegisteredPlaybook({ playbook: draft, limit: "fixture", variables: { package_name: "bash" } });
+    assert.equal(registry.getCustomPlaybookValidation(draft).trial.host, "fixture");
+    const pending = registry.syntaxCheckPlaybook(draft);
+    const updated = registry.updateCustomPlaybook({ playbook: draft, title: draft.title, kind: "audit", requiresLimit: true, variables: draft.variables, content: "- hosts: [" });
+    finishSyntax({ stdout: "", stderr: "" });
+    await pending;
+    assert.equal(registry.readPlaybookContent(updated), "- hosts: [");
+    const current = registry.getCustomPlaybookValidation(updated);
+    assert.notEqual(current.revision, initial.revision);
+    assert.equal(current.syntaxAt, undefined);
+    assert.equal(current.trial, undefined);
+  } finally {
+    for (const key of ["HCP_STATE_DIR", "HCP_ENABLE_CUSTOM_AUDITS", "HCP_PRODUCTION_MODE"]) {
+      if (environment[key] === undefined) delete process.env[key];
+      else process.env[key] = environment[key];
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("production executes only the trusted package template against one explicit inventory host without sudo", async () => {
+  const fs = nativeRequire("node:fs");
+  const directory = fs.mkdtempSync("/tmp/hcp-package-scenario-");
+  const keys = ["HCP_STATE_DIR", "HCP_ENABLE_CUSTOM_AUDITS", "HCP_PRODUCTION_MODE"];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  let calls = 0;
+  const registry = load("lib/playbook-registry.ts", {
+    "@/lib/ansible-control": {
+      getRepoRoot: () => directory, playbooks: {}, isSafeLimit: () => true, appendIncident: () => {},
+      onDemandSudoHostForLimit: () => { throw new Error("The package lookup must stay unprivileged"); },
+      beginCustomAuditAssetExecution: async () => ({ inventoryPath: "/tmp/isolated-inventory", bindings: new Map([["fixture", {}]]) }),
+      endCustomAuditAssetExecution: () => {},
+      executeAnsiblePlaybook: async ({args, becomePassword}) => {
+        calls++;
+        assert.notEqual(args[2], registry.getCustomPlaybookPath("package-test"));
+        assert.equal(fs.readFileSync(args[2], "utf8"), registry.playbookTemplates[0].content.replace("become: true", "become: false"));
+        assert.equal(becomePassword, undefined);
+        assert.deepEqual(JSON.parse(args[args.indexOf("-e") + 1]), { package_name: { __ansible_unsafe: "python3-yaml" }, ansible_become: false });
+        return { stdout: "PLAY RECAP ***\nfixture : ok=6 changed=0 unreachable=0 failed=0\n", stderr: "" };
+      },
+    },
+    "@/lib/inventory": { getInventoryTargetHosts: () => [{ alias: "fixture", groups: ["linux_hosts"] }] },
+  });
+  Object.assign(process.env, { HCP_STATE_DIR: directory, HCP_ENABLE_CUSTOM_AUDITS: "true", HCP_PRODUCTION_MODE: "true" });
+  try {
+    const playbook = registry.createCustomPlaybook({ id: "package-test", title: "Версия YAML", templateId: "audit-package" });
+    assert.equal(registry.customPlaybookMode(playbook), "package");
+    const run = (limit, package_name, options = {}) => registry.runRegisteredPlaybook({ playbook, limit, variables: { package_name }, ...options });
+    await assert.rejects(run("linux_hosts", "python3-yaml"), /один/);
+    await assert.rejects(run("fixture", "-bad"), /имя пакета/i);
+    await assert.rejects(run("fixture", "python3-yaml", { becomePassword: "fixture" }), /sudo/);
+    await run("fixture", "python3-yaml");
+    assert.equal(calls,1);
+    fs.appendFileSync(registry.getCustomPlaybookPath(playbook.id), "\n# изменённый YAML\n");
+    await assert.rejects(run("fixture", "python3-yaml"), /тестов/);
+    assert.equal(calls,1);
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key];
+    }
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });

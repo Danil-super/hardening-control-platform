@@ -39,6 +39,7 @@ test("the old in-memory scheduler is not part of the application API", () => {
 test("operator interface keeps routine work visible and allows guarded report cleanup", () => {
   const shell = read(path.join("web", "components", "layout", "app-shell.tsx"));
   const hosts = read(path.join("web", "components", "hosts", "ansible-control-client.tsx"));
+  const toolLabels = read(path.join("web", "lib", "audit-tool-labels.ts"));
   const reports = read(path.join("web", "app", "reports", "agentless", "page.tsx"));
   const reportDetail = read(path.join("web", "app", "reports", "agentless", "[reportId]", "page.tsx"));
   const dashboard = read(path.join("web", "components", "dashboard", "workspace-dashboard.tsx"));
@@ -47,7 +48,8 @@ test("operator interface keeps routine work visible and allows guarded report cl
   assert.match(shell, /w-60/);
   assert.doesNotMatch(shell, /label: "Вход"/);
   assert.match(hosts, /2\. Проверки выбранного хоста/);
-  assert.match(hosts, /Локальные правила HCP — Ansible/);
+  assert.match(hosts, /label: auditToolLabels\.agentlessAudit/);
+  assert.match(toolLabels, /agentlessAudit: "Локальные правила HCP — Ansible"/);
   assert.match(hosts, /Набор правил HCP/);
   assert.match(hosts, /Сетевые проверки/);
   assert.match(hosts, /Без входа по SSH и без sudo/);

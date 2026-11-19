@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { customPlaybookCapabilities, customPlaybooksEnabled, getRegisteredPlaybook, runRegisteredPlaybook } from "@/lib/playbook-registry";
+import { customPlaybookMode, getCustomPlaybookValidation, getRegisteredPlaybook, runRegisteredPlaybook } from "@/lib/playbook-registry";
 import { POST as runManagedPlaybook } from "@/app/api/ansible/run/route";
 import { credentialTransportAllowed } from "@/lib/ssh-bootstrap";
 
@@ -17,8 +17,8 @@ export async function POST(
   if (!playbook) {
     return NextResponse.json({ ok: false, message: "Playbook не найден." }, { status: 404 });
   }
-  if (playbook.source === "custom" && !customPlaybooksEnabled()) {
-    return NextResponse.json({ ok: false, message: customPlaybookCapabilities().reason }, { status: 403 });
+  if (playbook.source === "custom" && customPlaybookMode(playbook) === "draft") {
+    return NextResponse.json({ ok: false, message: "Этот YAML можно запустить в тестовом экземпляре HCP." }, { status: 403 });
   }
   if (playbook.source === "builtin") {
     // Keep a single execution path for target validation, SSH configuration,
@@ -44,7 +44,7 @@ export async function POST(
       variables: body?.variables && typeof body.variables === "object" ? body.variables : {},
       becomePassword: sudoPassword || undefined,
     });
-    return NextResponse.json({ ok: true, stdout, stderr, command });
+    return NextResponse.json({ ok: true, stdout, stderr, command, validation: getCustomPlaybookValidation(playbook) });
   } catch (error) {
     const output = error as { stdout?: string; stderr?: string; message?: string };
     return NextResponse.json(

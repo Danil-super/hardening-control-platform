@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getRegisteredPlaybook, syntaxCheckPlaybook } from "@/lib/playbook-registry";
+import { getCustomPlaybookValidation, getRegisteredPlaybook, syntaxCheckPlaybook } from "@/lib/playbook-registry";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -16,7 +16,7 @@ export async function POST(
 
   try {
     const { stdout, stderr } = await syntaxCheckPlaybook(playbook);
-    return NextResponse.json({ ok: true, stdout, stderr });
+    return NextResponse.json({ ok: true, stdout, stderr, validation: getCustomPlaybookValidation(playbook) });
   } catch (error) {
     const output = error as { stdout?: string; stderr?: string; message?: string };
     return NextResponse.json(

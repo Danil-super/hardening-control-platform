@@ -97,6 +97,17 @@ test("successful closeout checkpoints remote revocation before local cleanup and
   assert.equal(store.verifyAuditChain().valid, true);
 });
 
+test("bare group memberships preserve the SSH identity and disappear on closeout", async () => {
+  const filename = path.join(directory, "ansible/inventory.ini");
+  const connection = readFileSync(filename, "utf8");
+  writeFileSync(filename, `[qa] # group membership\n${host.alias}\n${connection}\n[web]\n${host.alias}\n`);
+  assert.deepEqual(inventory.readInventoryCloseoutHost(host.alias), { ...host, credentialId: id });
+  await closeout.decommissionHost(host.alias);
+  assert.equal(countInvocations(), 1);
+  assert.doesNotMatch(readFileSync(filename, "utf8"), /fixture-closeout/);
+  assert.match(readFileSync(filename, "utf8"), /\[qa\]/);
+});
+
 test("known partial key removal survives Python JSON and is recovered without another SSH attempt", async () => {
   setRemoteResult({ ok: false, error: "unsafe_sudo_rule", keyRemoved: true });
   await assert.rejects(closeout.decommissionHost(host.alias), error => error.code === "closeout_recovery_required" && error.remoteRevoked === true);

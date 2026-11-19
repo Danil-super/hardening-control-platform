@@ -14,6 +14,7 @@ import {
   Server,
   ShieldCheck,
   Terminal,
+  Trash2,
   Upload,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -35,6 +36,7 @@ import { HostRiskSummary } from "@/components/hosts/host-risk-summary";
 import { HostAuditNextStep } from "@/components/hosts/host-audit-next-step";
 import { OvalPreparation } from "@/components/hosts/oval-preparation";
 import { auditReportLabels, auditCompletionMessage } from "@/lib/audit-job-status";
+import { auditToolLabels } from "@/lib/audit-tool-labels";
 import type { HostRiskSummary as RiskSummary } from "@/lib/host-risk-summary";
 
 type HealthPayload = {
@@ -129,6 +131,9 @@ type HostsPayload = {
   };
 };
 
+type HostGroupMembership = { alias: string; groups: string[]; directGroups: string[] };
+type HostGroupsPayload = { groups: string[]; hosts: HostGroupMembership[] };
+
 type PreflightPayload = {
   ok?: boolean;
   message?: string;
@@ -163,21 +168,21 @@ const profileOptions = [
 const additionalAuditActions = [
   {
     id: "agentlessAudit",
-    label: "Локальные правила HCP — Ansible",
+    label: auditToolLabels.agentlessAudit,
     group: "Безопасность и конфигурация",
     description: "Авторский набор правил HCP: настройки SSH, firewall, служб и прав доступа. Частично пересекается с OpenSCAP и Lynis; полезен для проверки выбранной роли хоста. Настройки не изменяются.",
     icon: ShieldCheck,
   },
   {
     id: "packageInventory",
-    label: "Пакеты и CVE — Trivy",
+    label: auditToolLabels.packageInventory,
     group: "CVE и пакеты",
     description: "Собирает установленное ПО, формирует SBOM и сопоставляет пакеты с общей CVE-базой. В сетевом режиме HCP сам подготовит её при необходимости.",
     icon: FileText,
   },
   {
     id: "astraOvalAudit",
-    label: "CVE Astra — OVAL / OpenSCAP",
+    label: auditToolLabels.astraOvalAudit,
     group: "CVE и пакеты",
     description: "Проверяет пакеты Astra по назначенной официальной OVAL-базе. Не изменяет хост.",
     icon: ShieldCheck,
@@ -185,7 +190,7 @@ const additionalAuditActions = [
   },
   {
     id: "openScapAudit",
-    label: "Профиль конфигурации — OpenSCAP",
+    label: auditToolLabels.openScapAudit,
     group: "Безопасность и конфигурация",
     description: "Сверяет настройки хоста с выбранным профилем безопасности HCP. Не изменяет хост.",
     icon: ShieldCheck,
@@ -193,14 +198,14 @@ const additionalAuditActions = [
   },
   {
     id: "sshCryptoAudit",
-    label: "Защита SSH — ssh-audit",
+    label: auditToolLabels.sshCryptoAudit,
     group: "Безопасность и конфигурация",
     description: "Проверяет алгоритмы и настройки SSH с управляющей машины, без входа на хост.",
     icon: ShieldCheck,
   },
   {
     id: "lynisTemporaryAudit",
-    label: "Рекомендации hardening — Lynis",
+    label: auditToolLabels.lynisTemporaryAudit,
     group: "Безопасность и конфигурация",
     description: "Временно запускает Lynis на хосте и удаляет его рабочие файлы после проверки.",
     icon: ShieldCheck,
@@ -208,7 +213,7 @@ const additionalAuditActions = [
   },
   {
     id: "networkPortScan",
-    label: "Открытые TCP-порты — Nmap",
+    label: auditToolLabels.networkPortScan,
     group: "Диагностика",
     description: "Проверяет TCP-порты выбранного хоста с управляющей машины. Перед запуском выберите глубину проверки.",
     icon: Search,
@@ -216,21 +221,21 @@ const additionalAuditActions = [
   },
   {
     id: "ping",
-    label: "Подключение SSH — Ansible",
+    label: auditToolLabels.ping,
     group: "Диагностика",
     description: "Проверяет подключение Ansible к выбранному хосту. Настройки не изменяются.",
     icon: Server,
   },
   {
     id: "collectFacts",
-    label: "Сведения о хосте — Ansible",
+    label: auditToolLabels.collectFacts,
     group: "Диагностика",
     description: "Собирает версии ОС, ядра и компонентов для диагностики подключения.",
     icon: FileText,
   },
   {
     id: "collectEvents",
-    label: "События безопасности — Ansible",
+    label: auditToolLabels.collectEvents,
     group: "Диагностика",
     description: "Собирает события безопасности для разбора инцидента; это не основной аудит.",
     icon: Terminal,
@@ -327,7 +332,15 @@ export function AnsibleControlClient() {
   const [manualAddress, setManualAddress] = useState("");
   const [manualUser, setManualUser] = useState("");
   const [manualPort, setManualPort] = useState("22");
-  const [manualGroup, setManualGroup] = useState("linux_hosts");
+  const [groupInventory, setGroupInventory] = useState<HostGroupsPayload | null>(null);
+  const [groupFilter, setGroupFilter] = useState("");
+  const [newGroup, setNewGroup] = useState("");
+  const [groupCreateOpen, setGroupCreateOpen] = useState(false);
+  const [groupEdit, setGroupEdit] = useState<{ alias: string; previousGroups: string[]; groups: string[] } | null>(null);
+  const [groupSaving, setGroupSaving] = useState(false);
+  const [groupLoadError, setGroupLoadError] = useState(false);
+  const groupReadSequence = useRef(0);
+  const inventoryAliases = useRef<string | null>(null);
   // The host form always verifies administrative access before saving.
   const manualBecome = true;
   const [preflight, setPreflight] = useState<PreflightPayload | null>(null);
@@ -391,6 +404,19 @@ export function AnsibleControlClient() {
   }, []);
 
   useEffect(() => {
+    const controller = new AbortController();
+    const refreshGroups = () => { if (!document.hidden) void loadHostGroups(controller.signal); };
+    refreshGroups();
+    window.addEventListener("focus", refreshGroups);
+    const timer = window.setInterval(refreshGroups, 8000);
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", refreshGroups);
+      window.clearInterval(timer);
+    };
+  }, []);
+
+  useEffect(() => {
     setSecureCredentialTransport(window.location.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]", "::1"].includes(window.location.hostname));
   }, []);
 
@@ -436,7 +462,10 @@ export function AnsibleControlClient() {
         if (requested && nextHosts.hosts?.some((item: ManagedHost) => item.alias === requested)) return requested;
         return nextHosts.hosts?.[0]?.alias ?? "";
       });
-      if (announce) notify("Данные хостов обновлены.", "success");
+      if (announce) {
+        await loadHostGroups();
+        notify("Данные хостов обновлены.", "success");
+      }
       return nextHosts as HostsPayload;
     } catch (error) {
       notify(errorMessage(error, "Не удалось обновить данные. Проверьте подключение к платформе и повторите запрос."), "error");
@@ -451,6 +480,64 @@ export function AnsibleControlClient() {
     if (!response.ok) throw new Error(payload.message || "Не удалось загрузить хосты.");
     setHosts(payload);
     return payload as HostsPayload;
+  }
+
+  async function loadHostGroups(signal?: AbortSignal) {
+    const sequence = ++groupReadSequence.current;
+    try {
+      const response = await fetch("/api/ansible/hosts?view=groups", { cache: "no-store", signal });
+      const payload = await readApiResponse(response);
+      if (!response.ok || !payload.ok) throw new Error("Не удалось обновить группы.");
+      if (signal?.aborted || sequence !== groupReadSequence.current) return;
+      const snapshot: HostGroupsPayload = { groups: payload.groups, hosts: payload.hosts };
+      const aliases = snapshot.hosts.map((host) => host.alias).join("\0");
+      const changed = inventoryAliases.current !== null && aliases !== inventoryAliases.current;
+      inventoryAliases.current = aliases;
+      setGroupInventory(snapshot);
+      setGroupLoadError(false);
+      setGroupFilter((current) => snapshot.groups.includes(current) ? current : "");
+      if (changed) {
+        const updated = await loadHosts();
+        setSelectedAlias((current) => updated.hosts?.some((host) => host.alias === current) ? current : updated.hosts?.[0]?.alias ?? "");
+      }
+    } catch {
+      if (!signal?.aborted && sequence === groupReadSequence.current) setGroupLoadError(true);
+    }
+  }
+
+  async function saveHostGroups(body: { group: string; confirmedGroup?: string; expectedMembers?: string[] } | NonNullable<typeof groupEdit>) {
+    setGroupSaving(true);
+    try {
+      const removing = "confirmedGroup" in body;
+      const response = await fetch("/api/ansible/hosts", {
+        method: removing ? "DELETE" : "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const payload = await readApiResponse(response);
+      if (!response.ok || !payload.ok) {
+        if (response.status === 409) await loadHostGroups();
+        throw new Error(payload.message || "Не удалось сохранить группы.");
+      }
+      if ("alias" in body) setGroupEdit(null);
+      else if (!removing) {
+        setNewGroup("");
+        setGroupCreateOpen(false);
+      }
+      await loadHostGroups();
+      notify(payload.message || "Группы обновлены.", "success");
+    } catch (error) {
+      notify(errorMessage(error, "Не удалось сохранить группы."), "error");
+    } finally {
+      setGroupSaving(false);
+    }
+  }
+
+  function removeSelectedGroup() {
+    if (!groupInventory || !groupFilter || groupFilter === "linux_hosts" || groupSaving) return;
+    if (!window.confirm(`Удалить группу «${groupFilter}»? Хосты останутся в списке.`)) return;
+    const expectedMembers = groupInventory.hosts.filter((host) => host.groups.includes(groupFilter)).map((host) => host.alias);
+    void saveHostGroups({ group: groupFilter, confirmedGroup: groupFilter, expectedMembers });
   }
 
   async function loadRemediations() {
@@ -537,7 +624,7 @@ export function AnsibleControlClient() {
     setLoading("connect-trust");
     setPreflight(null); setPreflightFor(""); setRunResult(null);
     const connection = { alias: connectionAlias, address: manualAddress.trim(), user: manualUser.trim(), port: manualPort,
-      group: manualGroup, become: manualBecome, credentialId: manualCredentialId };
+      become: manualBecome, credentialId: manualCredentialId };
     try {
       const outcome = await connectAndSaveHost(connection, secrets, {
         editing: Boolean(editingHost),
@@ -564,6 +651,7 @@ export function AnsibleControlClient() {
       if (!editingHost) startNewHost();
       else setCredentialResult((previous) => ({ ...previous, ok: true, message: "Подключение проверено и сохранено." }));
       await refreshAll();
+      await loadHostGroups();
       setSelectedAlias(connection.alias);
     } catch (error) {
       const message = errorMessage(error, "Ответ не получен. Проверьте список хостов перед повторной попыткой; созданная пара сохраняется.");
@@ -911,7 +999,6 @@ export function AnsibleControlClient() {
     setManualAddress(address);
     setManualUser("");
     setManualPort("22");
-    setManualGroup("linux_hosts");
     setPreflight(null);
     setPreflightFor("");
     if (address) notify(`Адрес ${address} подставлен. Введите пользователя и пароль сервера ниже.`, "info");
@@ -929,7 +1016,6 @@ export function AnsibleControlClient() {
     setManualAddress(host.address);
     setManualUser(host.user ?? "");
     setManualPort(String(host.port ?? 22));
-    setManualGroup(host.groups[0] ?? "linux_hosts");
     if (formRef.current) {
       formRef.current.scrollIntoView({ block: "start" });
     }
@@ -937,6 +1023,12 @@ export function AnsibleControlClient() {
   }
 
   const summary = hosts?.summary;
+  const groupsByHost = new Map(groupInventory?.hosts.map((host) => [host.alias, host]));
+  const groupCounts = new Map<string, number>();
+  for (const host of groupInventory?.hosts ?? []) {
+    for (const group of host.groups) groupCounts.set(group, (groupCounts.get(group) ?? 0) + 1);
+  }
+  const visibleHosts = (hosts?.hosts ?? []).filter((host) => !groupFilter || (groupsByHost.get(host.alias)?.groups ?? host.groups).includes(groupFilter));
   const selectedAdditionalAction = additionalAuditActions.find((action) => action.id === additionalAuditActionId) ?? additionalAuditActions[0];
   const SelectedAdditionalActionIcon = selectedAdditionalAction.icon;
   const selectedNmapScanScope = nmapScanScopeOptions.find((scope) => scope.id === nmapScanScope) ?? nmapScanScopeOptions[0];
@@ -971,7 +1063,57 @@ export function AnsibleControlClient() {
           </div>
         </div>
 
-        {hosts?.hosts?.length ? (
+        <div className="space-y-3 border-b border-slate-800 px-4 py-3">
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="w-64 max-w-full">
+              <label htmlFor="host-group-filter" className="mb-2 block text-xs font-semibold text-slate-400">Группы хостов</label>
+              <Select id="host-group-filter" className="!min-h-10 !w-full h-10" value={groupFilter} onValueChange={setGroupFilter} disabled={!groupInventory || groupSaving}>
+                <option value="">Все группы</option>
+                {groupInventory?.groups.map((group) => <option key={group} value={group}>{group} · {groupCounts.get(group) ?? 0}</option>)}
+              </Select>
+            </div>
+            <Button variant="secondary" aria-expanded={groupCreateOpen} aria-controls="host-group-create" disabled={!groupInventory || groupSaving} onClick={() => setGroupCreateOpen((open) => !open)}>
+              <Plus size={16} aria-hidden="true" /> Новая группа
+            </Button>
+            {groupFilter && groupFilter !== "linux_hosts" && <Button variant="danger" disabled={groupSaving} onClick={removeSelectedGroup}>
+              <Trash2 size={16} aria-hidden="true" /> Удалить группу
+            </Button>}
+          </div>
+          <form id="host-group-create" hidden={!groupCreateOpen} onSubmit={(event) => { event.preventDefault(); void saveHostGroups({ group: newGroup.trim() }); }}>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="w-64 max-w-full">
+                <Field label="Имя новой группы" value={newGroup} onChange={setNewGroup} placeholder="web_servers" disabled={groupSaving} />
+              </div>
+              <Button type="submit" variant="primary" disabled={groupSaving || !newGroup.trim()}>Создать группу</Button>
+            </div>
+          </form>
+          {groupLoadError && <p role="status" className="text-xs text-amber-200">Не удалось обновить состав групп.</p>}
+          {groupEdit && <form id="host-group-edit" className="rounded-md border border-slate-700 p-3" onSubmit={(event) => { event.preventDefault(); void saveHostGroups(groupEdit); }}>
+            <fieldset disabled={groupSaving}>
+              <legend className="text-sm font-semibold text-white">Группы хоста {groupEdit.alias}</legend>
+              <div className="mt-2 flex flex-wrap gap-x-5 gap-y-2 text-sm text-slate-300">
+                <span>linux_hosts · общая</span>
+                {groupInventory?.groups.filter((group) => group !== "linux_hosts").map((group) => (
+                  <label key={group} className="flex items-center gap-2">
+                    <input type="checkbox" checked={groupEdit.groups.includes(group)} onChange={(event) => {
+                      const checked = event.currentTarget.checked;
+                      setGroupEdit((current) => current && { ...current,
+                        groups: checked ? [...current.groups, group] : current.groups.filter((name) => name !== group),
+                      });
+                    }} />
+                    {group}{groupsByHost.get(groupEdit.alias)?.groups.includes(group) && !groupEdit.previousGroups.includes(group) ? " · по вложенной группе" : ""}
+                  </label>
+                ))}
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button type="submit">Сохранить группы</Button>
+                <Button type="button" variant="secondary" onClick={() => setGroupEdit(null)}>Отмена</Button>
+              </div>
+            </fieldset>
+          </form>}
+        </div>
+
+        {visibleHosts.length ? (
           <div className="overflow-x-auto">
             <table className="w-full min-w-[880px] text-left text-sm">
               <thead className="bg-slate-900/70 text-xs uppercase text-slate-500">
@@ -984,13 +1126,18 @@ export function AnsibleControlClient() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-800">
-                {hosts.hosts.map((host) => (
+                {visibleHosts.map((host) => (
                   <tr key={host.alias} className={selectedAlias === host.alias ? "bg-sky-500/5" : ""}>
                     <td className="px-3 py-2">
                       <button onClick={() => { setSelectedAlias(host.alias); document.getElementById("ansible-actions")?.scrollIntoView({ block: "start" }); }} title={host.alias} className="block max-w-36 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-300">
                         <span className="block truncate font-semibold text-white">{host.alias}</span>
                         <span className="block text-xs text-slate-500">{host.address}</span>
                       </button>
+                      <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-slate-300">
+                        {(groupsByHost.get(host.alias)?.groups ?? host.groups).map((group) => (
+                          <span key={group} className="rounded bg-slate-900 px-1.5 py-0.5">{group}</span>
+                        ))}
+                      </div>
                     </td>
                     <td className="px-3 py-2 text-slate-300">
                       <span className="block max-w-28 truncate" title={host.user ?? undefined}>{host.user ?? "не указан"}</span>
@@ -1008,6 +1155,12 @@ export function AnsibleControlClient() {
                         <Button variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" onClick={() => fillHostForm(host)}>
                           Настроить
                         </Button>
+                        <Button variant="secondary" aria-label={`Изменить группы хоста ${host.alias}`} className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" disabled={!groupsByHost.has(host.alias) || groupSaving} onClick={() => {
+                          const membership = groupsByHost.get(host.alias);
+                          if (!membership) return;
+                          setGroupEdit({ alias: host.alias, groups: membership.directGroups, previousGroups: membership.directGroups });
+                          requestAnimationFrame(() => document.getElementById("host-group-edit")?.scrollIntoView({ block: "nearest" }));
+                        }}>Группы</Button>
                         {host.lastReport ? (
                           <LinkButton href={reportHref(host.lastReport.fileName)} prefetch={false} variant="secondary" className="[&]:min-h-8 [&]:rounded-lg [&]:px-2.5 [&]:py-1 [&]:text-xs" aria-label={`Последний отчёт хоста ${host.alias}`} title="Последний отчёт">
                             Отчёт
@@ -1024,7 +1177,7 @@ export function AnsibleControlClient() {
             </table>
           </div>
         ) : (
-          <div className="p-5 text-sm leading-6 text-slate-400">Нет хостов. Нажмите «Подключить хост».</div>
+          <div className="p-5 text-sm leading-6 text-slate-400">{groupFilter ? "В выбранной группе нет хостов." : "Нет хостов. Нажмите «Подключить хост»."}</div>
         )}
       </section>
 
@@ -1054,11 +1207,10 @@ export function AnsibleControlClient() {
           <Field label="Адрес сервера" value={manualAddress} onChange={(value) => { setManualAddress(value); invalidateCredential(); }} placeholder="192.168.1.10" />
           <Field label="Администратор сервера" value={manualUser} onChange={(value) => { setManualUser(value); invalidateCredential(); }} placeholder="root или логин администратора" />
           <details className="rounded-lg border border-slate-800 p-3 sm:col-span-2">
-            <summary className="cursor-pointer text-sm text-slate-300">Дополнительные параметры: имя, порт и группа</summary>
-            <div className="mt-3 grid gap-3 sm:grid-cols-3">
+            <summary className="cursor-pointer text-sm text-slate-300">Дополнительные параметры: имя и порт</summary>
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
               <Field label="Имя в списке (необязательно)" value={manualAlias} onChange={(value) => { setManualAlias(value); invalidateCredential(); }} placeholder={defaultHostAlias(manualAddress) || "Определится по адресу"} disabled={Boolean(editingHost)} />
               <Field label="Порт SSH" value={manualPort} onChange={(value) => { setManualPort(value); invalidateCredential(); }} placeholder="22" />
-              <Field label="Группа хостов" value={manualGroup} onChange={setManualGroup} placeholder="linux_hosts" />
             </div>
           </details>
         </fieldset>
@@ -1229,7 +1381,7 @@ export function AnsibleControlClient() {
                 return (
                   <Button key={action.id} variant={action.id === "networkPortScan" ? "primary" : "secondary"} onClick={() => runAction(action.id)} disabled={Boolean(loading) || !selectedHost}>
                     <Icon size={16} className={loading === action.id ? "animate-spin" : ""} aria-hidden="true" />
-                    {action.id === "networkPortScan" ? "Проверить порты" : "Проверить SSH"}
+                    {action.label}
                   </Button>
                 );
               })}

@@ -6,8 +6,8 @@ import { getReportsDir, listAnsibleReportsAsync, type AnsibleReportSummary, targ
 import { buildHostRiskSummary, isSecurityAudit, type HostRiskSummary } from "@/lib/host-risk-summary";
 import { isSafeSshHostAddress, normalizeSshPort } from "@/lib/ssh-access";
 import { HostCredentialError, credentialKeyPath, publicCredentialSummary, validateHostCredential } from "@/lib/host-credentials";
-import { assertAssetIdle, hasActiveRemediationForHost } from "@/lib/state-store";
-import { withInventoryConnectionView } from "@/lib/inventory";
+import { assertAssetIdle, hasActiveRemediationForHost, listAstraOvalPolicies, listOpenScapExceptions, listOpenScapPolicies } from "@/lib/state-store";
+import { parseStaticInventory, withInventoryConnectionView } from "@/lib/inventory";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -100,22 +100,22 @@ function parseBoolean(value: string | undefined) {
   return null;
 }
 
-function readInventoryHosts(inventoryPath: string) {
-  if (!existsSync(inventoryPath)) {
-    return [];
-  }
+function inventorySection(line: string) {
+  return line.match(/^\[([A-Za-z0-9_.-]+(?::(?:vars|children))?)\]\s*(?:[#;].*)?$/)?.[1];
+}
 
+function readInventoryHosts(inventoryText: string) {
   const hosts: InventoryHost[] = [];
-  let currentGroup = "";
-  for (const rawLine of readFileSync(inventoryPath, "utf8").split("\n")) {
+  let currentGroup = "ungrouped";
+  for (const rawLine of inventoryText.split("\n")) {
     const line = rawLine.trim();
-    if (!line || line.startsWith("#")) {
+    if (!line || /^[#;]/.test(line)) {
       continue;
     }
 
-    const groupMatch = line.match(/^\[(.+)]$/);
-    if (groupMatch) {
-      currentGroup = groupMatch[1];
+    const section = inventorySection(line);
+    if (section) {
+      currentGroup = section;
       continue;
     }
 
@@ -153,6 +153,19 @@ function readInventoryHosts(inventoryPath: string) {
   return hosts;
 }
 
+function inventoryMembership(inventoryText: string, connections = readInventoryHosts(inventoryText)) {
+  const inventory = parseStaticInventory(inventoryText);
+  const direct = new Map(connections.map((host) => [host.alias, host.groups.filter(isUserGroup).sort()]));
+  return {
+    groups: inventory.groups.filter(isUserGroup),
+    hosts: inventory.hosts.map(({ alias, groups }) => ({ alias, groups: groups.filter(isUserGroup), directGroups: direct.get(alias) ?? [] })),
+  };
+}
+
+function isUserGroup(group: string) {
+  return group !== "all" && group !== "ungrouped";
+}
+
 function hostLine({
   alias,
   address,
@@ -173,31 +186,31 @@ function hostLine({
 
 function removeHostLine(lines: string[], alias: string) {
   let currentGroup = "";
-  let removed = false;
+  const removedLines: string[] = [];
   const next = lines.filter((rawLine) => {
     const line = rawLine.trim();
-    const groupMatch = line.match(/^\[(.+)]$/);
-    if (groupMatch) {
-      currentGroup = groupMatch[1];
+    const section = inventorySection(line);
+    if (section) {
+      currentGroup = section;
       return true;
     }
-    if (!line || line.startsWith("#") || currentGroup.endsWith(":vars") || currentGroup.endsWith(":children")) {
+    if (!line || /^[#;]/.test(line) || currentGroup.endsWith(":vars") || currentGroup.endsWith(":children")) {
       return true;
     }
     const [currentAlias] = line.split(/\s+/);
     if (currentAlias === alias) {
-      removed = true;
+      removedLines.push(rawLine.trim());
       return false;
     }
     return true;
   });
-  return { lines: next, removed };
+  return { lines: next, removed: removedLines.length > 0, removedLines };
 }
 
-function insertHostLine(lines: string[], group: string, line: string) {
-  const varsIndex = lines.findIndex((item) => item.trim() === "[linux_hosts:vars]");
+function insertHostLine(lines: string[], group: string, line: string, attachToLinux = true) {
+  const varsIndex = lines.findIndex((item) => inventorySection(item.trim()) === "linux_hosts:vars");
   const groupHeader = `[${group}]`;
-  const hostsIndex = lines.findIndex((item) => item.trim() === groupHeader);
+  const hostsIndex = lines.findIndex((item) => inventorySection(item.trim()) === group);
 
   if (hostsIndex === -1) {
     const insertIndex = varsIndex === -1 ? lines.length : varsIndex;
@@ -207,7 +220,7 @@ function insertHostLine(lines: string[], group: string, line: string) {
     lines.splice(hostsIndex + 1, 0, line);
   }
 
-  if (group !== "linux_hosts") {
+  if (attachToLinux && group !== "linux_hosts") {
     const childrenHeaderIndex = lines.findIndex((item) => item.trim() === "[linux_hosts:children]");
     if (childrenHeaderIndex === -1) {
       const nextVarsIndex = lines.findIndex((item) => item.trim() === "[linux_hosts:vars]");
@@ -234,6 +247,14 @@ function insertHostLine(lines: string[], group: string, line: string) {
 
 function normalizeInventoryText(lines: string[]) {
   return lines.join("\n").replace(/\n{3,}/g, "\n\n").trimEnd() + "\n";
+}
+
+function moveHostToGroups(lines: string[], alias: string, [primary = "ungrouped", ...otherGroups]: string[]) {
+  const removed = removeHostLine(lines, alias);
+  const connectionLines = removed.removedLines.filter((line) => line !== alias);
+  insertHostLine(removed.lines, primary, connectionLines.join("\n") || alias, false);
+  for (const group of otherGroups) insertHostLine(removed.lines, group, alias, false);
+  return removed.lines;
 }
 
 function saveInventory(inventoryPath: string, lines: string[]) {
@@ -269,7 +290,16 @@ function attachReports(hosts: InventoryHost[], reports: AnsibleReportSummary[]) 
   });
 }
 
-export async function GET() {
+export async function GET(request?: Request) {
+  if (request && new URL(request.url).searchParams.get("view") === "groups") {
+    const inventoryPath = path.join(getRepoRoot(), "ansible", "inventory.ini");
+    try {
+      const inventoryText = existsSync(inventoryPath) ? readFileSync(inventoryPath, "utf8") : "";
+      return NextResponse.json({ ok: true, ...inventoryMembership(inventoryText) }, { headers: { "Cache-Control": "no-store" } });
+    } catch {
+      return NextResponse.json({ ok: false, message: "Проверьте формат групп в inventory." }, { status: 400 });
+    }
+  }
   const reports = await listAnsibleReportsAsync();
   return withInventoryConnectionView(() => hostListResponse(reports));
 }
@@ -278,7 +308,13 @@ function hostListResponse(reports: AnsibleReportSummary[]) {
   const repoRoot = getRepoRoot();
   const inventoryPath = path.join(repoRoot, "ansible", "inventory.ini");
   const reportsPath = getReportsDir(repoRoot);
-  const hosts = attachReports(readInventoryHosts(inventoryPath), reports).map((host) => ({ ...host, ...publicCredentialSummary(host.credentialId) }));
+  const inventoryText = existsSync(inventoryPath) ? readFileSync(inventoryPath, "utf8") : "";
+  const connections = readInventoryHosts(inventoryText);
+  const membership = inventoryMembership(inventoryText, connections);
+  const byAlias = new Map(membership.hosts.map((host) => [host.alias, host]));
+  const hosts = attachReports(connections, reports).map((host) => ({
+    ...host, ...byAlias.get(host.alias), ...publicCredentialSummary(host.credentialId),
+  }));
 
   const withReports = hosts.filter((host) => host.lastReport).length;
   const becomeEnabled = hosts.filter((host) => host.become).length;
@@ -342,7 +378,7 @@ export async function POST(request: Request) {
   const repoRoot = getRepoRoot();
   const inventoryPath = ensureInventory(repoRoot);
   const current = readFileSync(inventoryPath, "utf8");
-  const hosts = readInventoryHosts(inventoryPath);
+  const hosts = readInventoryHosts(current);
 
   if (identityCollides(current, alias, group)) {
     return NextResponse.json({ ok: false, message: "Имя хоста не должно совпадать с именем inventory-группы." }, { status: 400 });
@@ -405,8 +441,8 @@ export async function PUT(request: Request) {
   const repoRoot = getRepoRoot();
   const inventoryPath = ensureInventory(repoRoot);
   const current = readFileSync(inventoryPath, "utf8");
-  const hosts = readInventoryHosts(inventoryPath);
-  if (identityCollides(current, alias, group)) {
+  const hosts = readInventoryHosts(current);
+  if (body?.group !== undefined && identityCollides(current, alias, group)) {
     return NextResponse.json({ ok: false, message: "Имя хоста не должно совпадать с именем inventory-группы." }, { status: 400 });
   }
   if (hasActiveRemediationForHost(alias)) {
@@ -430,22 +466,115 @@ export async function PUT(request: Request) {
   catch (error) { return NextResponse.json({ ok: false, message: error instanceof HostCredentialError ? error.message : "Ключ хоста недоступен." }, { status: 400 }); }
 
   const removed = removeHostLine(current.split("\n"), alias);
-  const nextLines = insertHostLine(
-    removed.lines,
-    group,
-    hostLine({ alias, address, port, user, become, credentialId }),
-  );
+  const directGroups = body?.group === undefined ? existing.groups : [group];
+  const line = hostLine({ alias, address, port, user, become, credentialId });
+  const nextLines = directGroups.reduce((lines, name, index) =>
+    insertHostLine(lines, name, index === 0 ? line : alias, body?.group !== undefined), removed.lines);
   saveInventory(inventoryPath, nextLines);
 
   return NextResponse.json({
     ok: true,
     message: "Хост обновлен.",
-    host: { alias, address, user, port, become, groups: [group], ...publicCredentialSummary(credentialId) },
+    host: { alias, address, user, port, become, groups: directGroups, ...publicCredentialSummary(credentialId) },
   });
+}
+
+export async function PATCH(request: Request) {
+  const body = await request.json().catch(() => null);
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    return NextResponse.json({ ok: false, message: "Укажите группу или состав групп хоста." }, { status: 400 });
+  }
+  const inventoryPath = ensureInventory(getRepoRoot());
+  const current = readFileSync(inventoryPath, "utf8");
+  const inventory = inventoryMembership(current);
+  const conflict = () => NextResponse.json({ ok: false, message: "Группы хоста уже изменились. Откройте их заново." }, { status: 409 });
+  if (body.alias === undefined) {
+    const group = typeof body.group === "string" ? body.group.trim() : "";
+    if (!isSafeGroup(group) || inventory.hosts.some((host) => host.alias === group)) {
+      return NextResponse.json({ ok: false, message: "Введите имя группы из латинских букв, цифр и подчёркиваний. Имя должно отличаться от имени хоста." }, { status: 400 });
+    }
+    if (inventory.groups.includes(group)) return NextResponse.json({ ok: true });
+    saveInventory(inventoryPath, [...current.split("\n"), "", `[${group}]`]);
+    return NextResponse.json({ ok: true }, { status: 201 });
+  }
+
+  const { alias, groups, previousGroups } = body;
+  if (!isSafeAlias(alias) || !Array.isArray(groups) || groups.length > 256
+      || groups.some((name: unknown) => typeof name !== "string" || !inventory.groups.includes(name))
+      || !Array.isArray(previousGroups) || previousGroups.some((name: unknown) => typeof name !== "string")) {
+    return NextResponse.json({ ok: false, message: "Выберите существующие группы для хоста." }, { status: 400 });
+  }
+  const host = inventory.hosts.find((candidate) => candidate.alias === alias);
+  if (!host) return NextResponse.json({ ok: false, message: "Хост не найден в inventory." }, { status: 404 });
+  if (JSON.stringify([...new Set(previousGroups)].sort()) !== JSON.stringify(host.directGroups)) return conflict();
+  const roleGroups = [...new Set<string>(groups)].filter((name) => name !== "linux_hosts").sort();
+  if (host.groups.includes("linux_hosts") && JSON.stringify(roleGroups) === JSON.stringify(host.directGroups.filter((name) => name !== "linux_hosts"))) {
+    return NextResponse.json({ ok: true });
+  }
+  try { assertAssetIdle(alias); }
+  catch { return NextResponse.json({ ok: false, message: "Дождитесь завершения операции на хосте." }, { status: 409 }); }
+
+  saveInventory(inventoryPath, moveHostToGroups(current.split("\n"), alias, ["linux_hosts", ...roleGroups]));
+  return NextResponse.json({ ok: true });
+}
+
+function deleteHostGroup(group: unknown, confirmedGroup: unknown, expectedMembers: unknown) {
+  const fail = (message: string, status: number) => NextResponse.json({ ok: false, message }, { status });
+  if (typeof group !== "string" || !/^[A-Za-z0-9_.-]+$/.test(group) || [".", "..", "all", "ungrouped", "linux_hosts"].includes(group)
+      || group !== confirmedGroup || !Array.isArray(expectedMembers) || expectedMembers.some((alias) => typeof alias !== "string")) {
+    return fail("Укажите пользовательскую группу и подтвердите удаление.", 400);
+  }
+  const inventoryPath = ensureInventory(getRepoRoot());
+  const current = readFileSync(inventoryPath, "utf8");
+  const inventory = inventoryMembership(current);
+  if (!inventory.groups.includes(group)) return fail("Группа не найдена.", 404);
+  const members = inventory.hosts.filter((host) => host.groups.includes(group));
+  if (JSON.stringify([...expectedMembers].sort()) !== JSON.stringify(members.map((host) => host.alias).sort())) {
+    return fail("Состав группы изменился. Проверьте его перед удалением.", 409);
+  }
+  if ([...listOpenScapPolicies(), ...listAstraOvalPolicies(), ...listOpenScapExceptions()].some((item) => item.groupName === group)) {
+    return fail("У группы есть настройки OpenSCAP, OVAL или исключения. Сначала перенесите или удалите их.", 409);
+  }
+  const inventoryDirs = new Set([path.dirname(inventoryPath), path.dirname(realpathSync(inventoryPath))]);
+  if ([...inventoryDirs].some((dir) => ["", ".yml", ".yaml"].some((suffix) => existsSync(path.join(dir, "group_vars", group + suffix))))) {
+    return fail("Для группы заданы переменные в group_vars. Сначала перенесите их.", 409);
+  }
+  const original = current.split("\n");
+  const parents = new Set<string>();
+  let section = "";
+  let next: string[] = [];
+  for (const raw of original) {
+    const line = raw.trim();
+    const header = inventorySection(line);
+    if (header) section = header;
+    if ([`${group}:vars`, `${group}:children`].includes(section) && !header && line && !/^[#;]/.test(line)) {
+      return fail("У группы есть переменные или вложенные группы. Сначала перенесите их.", 409);
+    }
+    if ([group, `${group}:vars`, `${group}:children`].includes(section)) continue;
+    if (section.endsWith(":children") && line.split(/\s+/)[0] === group) {
+      parents.add(section.slice(0, -":children".length));
+      continue;
+    }
+    next.push(raw);
+  }
+  for (const host of members) {
+    try { assertAssetIdle(host.alias); }
+    catch { return fail("Дождитесь завершения операций на хостах этой группы.", 409); }
+    const groups = [...new Set([...parents, ...host.directGroups])].filter((name) => name !== group && name !== "all");
+    // Extract from the original inventory before removing connection lines in the deleted section.
+    const { removedLines } = removeHostLine(original, host.alias);
+    next = removeHostLine(next, host.alias).lines;
+    const [primary = "ungrouped", ...others] = groups;
+    insertHostLine(next, primary, removedLines.filter((line) => line !== host.alias).join("\n") || host.alias, false);
+    for (const other of others) insertHostLine(next, other, host.alias, false);
+  }
+  saveInventory(inventoryPath, next);
+  return NextResponse.json({ ok: true, message: "Группа удалена. Хосты сохранены." });
 }
 
 export async function DELETE(request: Request) {
   const body = await request.json().catch(() => ({}));
+  if (body?.group !== undefined) return deleteHostGroup(body.group, body.confirmedGroup, body.expectedMembers);
   const alias = typeof body?.alias === "string" ? body.alias.trim() : "";
   if (!isSafeAlias(alias)) {
     return NextResponse.json({ ok: false, message: "Укажите корректный alias." }, { status: 400 });

@@ -9,13 +9,8 @@ function safeAlias(value: string) {
   return /^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,63}$/.test(value) && !["all", "ungrouped"].includes(value);
 }
 
-function parseValues(tokens: string[]) {
-  const values = new Map<string, string>();
-  for (const token of tokens) {
-    const index = token.indexOf("=");
-    if (index > 0) values.set(token.slice(0, index), token.slice(index + 1));
-  }
-  return values;
+function inventorySection(line: string) {
+  return line.match(/^\[([A-Za-z0-9_.-]+(?::(?:vars|children))?)\]\s*(?:[#;].*)?$/)?.[1];
 }
 
 function inventoryPath() {
@@ -26,41 +21,49 @@ export function readInventoryCloseoutHost(alias: string): InventoryCloseoutHost 
   if (!safeAlias(alias)) return null;
   const pathname = inventoryPath();
   if (!existsSync(pathname)) return null;
-  let section = "";
-  let found: InventoryCloseoutHost | null = null;
+  let section = "ungrouped";
+  let found = false;
+  const connection = new Map<string, string>();
   for (const raw of readFileSync(pathname, "utf8").split("\n")) {
     const line = raw.trim();
-    const header = line.match(/^\[(.+)]$/);
-    if (header) { section = header[1]; continue; }
-    if (!line || line.startsWith("#") || !section || section.endsWith(":vars") || section.endsWith(":children")) continue;
+    const header = inventorySection(line);
+    if (header) { section = header; continue; }
+    if (!line || /^[#;]/.test(line) || section.endsWith(":vars") || section.endsWith(":children")) continue;
     const [name, ...tokens] = line.split(/\s+/);
     if (name !== alias) continue;
-    const values = parseValues(tokens);
-    const address = values.get("ansible_host") ?? alias;
-    const user = values.get("ansible_user") ?? "";
-    const port = normalizeSshPort(values.get("ansible_port")) ?? 22;
-    const credentialId = values.get("hcp_ssh_credential_id") ?? null;
-    if (!user || !safeAlias(user) || !safeAlias(name)) throw new Error("Строка хоста в inventory имеет некорректные параметры.");
-    const value = { alias, address, user, port, credentialId };
-    if (found && (found.address !== value.address || found.user !== value.user || found.port !== value.port || found.credentialId !== value.credentialId)) {
-      throw new Error("В inventory найдены противоречивые строки этого хоста. Завершение работ остановлено.");
+    found = true;
+    for (const token of tokens) {
+      if (/^[#;]/.test(token)) break;
+      const match = token.match(/^(ansible_host|ansible_user|ansible_port|hcp_ssh_credential_id)=(.*)$/);
+      if (!match) continue;
+      const [, key, value] = match;
+      if (connection.has(key) && connection.get(key) !== value) {
+        throw new Error("В inventory найдены противоречивые строки этого хоста. Завершение работ остановлено.");
+      }
+      connection.set(key, value);
     }
-    found = value;
   }
-  return found;
+  if (!found) return null;
+  const user = connection.get("ansible_user") ?? "";
+  if (!safeAlias(user)) throw new Error("Строка хоста в inventory имеет некорректные параметры.");
+  return {
+    alias, user, address: connection.get("ansible_host") ?? alias,
+    port: normalizeSshPort(connection.get("ansible_port")) ?? 22,
+    credentialId: connection.get("hcp_ssh_credential_id") ?? null,
+  };
 }
 
 export function removeInventoryCloseoutHost(alias: string) {
   if (!safeAlias(alias)) throw new Error("Некорректный alias хоста.");
   const pathname = inventoryPath();
   if (!existsSync(pathname)) throw new Error("Файл inventory не найден.");
-  let section = "";
+  let section = "ungrouped";
   let removed = false;
   const lines = readFileSync(pathname, "utf8").split("\n").filter((raw) => {
     const line = raw.trim();
-    const header = line.match(/^\[(.+)]$/);
-    if (header) { section = header[1]; return true; }
-    if (!line || line.startsWith("#") || !section || section.endsWith(":vars") || section.endsWith(":children")) return true;
+    const header = inventorySection(line);
+    if (header) { section = header; return true; }
+    if (!line || /^[#;]/.test(line) || section.endsWith(":vars") || section.endsWith(":children")) return true;
     if (line.split(/\s+/)[0] === alias) { removed = true; return false; }
     return true;
   });
